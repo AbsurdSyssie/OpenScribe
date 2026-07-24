@@ -142,6 +142,30 @@ Current implementation:
   - `always`: always set `Secure`
   - `never`: never set `Secure` and use only for local development
 
+## Library bundle boundaries
+
+- Template and Quick Action export is limited to caller-owned Personal assets and
+  Team assets visible in the caller's current team. Smart Phrase export is
+  owner-only. Any inaccessible identifier fails the whole export.
+- Import never trusts file content for scope or identity. Personal imports are
+  caller-owned; Team Template and Quick Action imports require current-team
+  leader authority. Smart Phrase import is always Personal.
+- Preflight is read-only. Confirmation resubmits and revalidates the original file,
+  then creates all selected assets in one database transaction.
+- Imported Templates and Quick Actions are active independent version-1 roots.
+  Imported Smart Phrases reset usage count and last-used state. Bundle UUIDs,
+  owner/team identifiers, creator identity, timestamps, version numbers, active
+  state, and usage metadata are not accepted as portable authority.
+- Uploads are limited to 1 MiB and 100 entries. Structured configuration retains
+  the strict EMIS profile, section-key, label, order, uniqueness, and instruction
+  validation.
+- Import/export audit events contain scope/count/outcome metadata and object
+  identifiers only. Uploaded JSON, names, triggers, expansions, descriptions,
+  prompts, and structured instructions are excluded.
+- The implemented model has Personal ownership and Team scope only. Watcher,
+  visibility, system-scope, and derived-template fields in historical
+  `DatabasePlan.md` material are not implemented or part of the bundle contract.
+
 ## Browser CSP and local runtime assets
 
 OpenScribe enforces a response-specific nonce-based Content Security Policy.

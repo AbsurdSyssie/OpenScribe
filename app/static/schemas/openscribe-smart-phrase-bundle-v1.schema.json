@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OpenScribe smart phrase bundle version 1",
+  "type": "object",
+  "required": ["format", "format_version", "smart_phrases"],
+  "properties": {
+    "format": {"const": "openscribe-smart-phrase-bundle"},
+    "format_version": {"const": 1},
+    "smart_phrases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": {"$ref": "#/$defs/smart_phrase"}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "smart_phrase": {
+      "type": "object",
+      "required": ["trigger", "expansion_text", "description"],
+      "properties": {
+        "trigger": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9_]{1,64}$"},
+        "expansion_text": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "description": {"type": ["string", "null"], "maxLength": 255}
+      },
+      "additionalProperties": false
+    }
+  }
+}

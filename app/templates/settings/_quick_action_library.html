@@ -10,11 +10,13 @@
         <a class="btn-primary-sm" href="/workspace/library/quick-actions?scope=personal&amp;quick_action_id=new">New</a>
       </div>
 
+      <div class="template-library-groups">
       <section class="template-library-group" aria-labelledby="personal-quick-action-heading">
         <div class="template-library-group__header"><h3 id="personal-quick-action-heading">Personal</h3><span>{{ personal_quick_actions|length }}</span></div>
         <div class="template-library-list">
           {% for quick_action in personal_quick_actions %}{% set selection_url = '/workspace/library/quick-actions?scope=personal&quick_action_id=' ~ quick_action.id %}
-          <div class="template-library-row{% if selected_scope == 'personal' and selected_action and selected_action.id == quick_action.id %} is-current{% endif %}">
+          <div class="template-library-row{% if selected_scope == 'personal' and selected_action and selected_action.id == quick_action.id %} is-current{% endif %}" data-quick-action-export-row>
+            <label class="template-library-row__check" hidden><input type="checkbox" value="{{ quick_action.id }}" data-quick-action-export-checkbox><span class="sr-only">Export {{ quick_action.name }}</span></label>
             <a class="template-library-row__select" href="{{ selection_url }}" {% if selected_scope == 'personal' and selected_action and selected_action.id == quick_action.id %}aria-current="page"{% endif %}><strong>{{ quick_action.name }}</strong><small>{{ 'Enabled' if quick_action.is_active else 'Disabled' }}</small></a>
             <div class="template-library-row__actions setting-actions">
               <a href="{{ selection_url }}" aria-label="Edit {{ quick_action.name }}"><i data-lucide="pencil"></i></a>
@@ -30,7 +32,8 @@
         <div class="template-library-group__header"><h3 id="team-quick-action-heading">Team</h3><span>{{ team_quick_actions|length }}</span>{% if is_manager %}<a href="/workspace/library/quick-actions?scope=team&amp;quick_action_id=new" aria-label="New team quick action"><i data-lucide="plus"></i></a>{% endif %}</div>
         <div class="template-library-list">
           {% for quick_action in team_quick_actions %}{% set selection_url = '/workspace/library/quick-actions?scope=team&quick_action_id=' ~ quick_action.id %}
-          <div class="template-library-row{% if selected_scope == 'team' and selected_action and selected_action.id == quick_action.id %} is-current{% endif %}">
+          <div class="template-library-row{% if selected_scope == 'team' and selected_action and selected_action.id == quick_action.id %} is-current{% endif %}" data-quick-action-export-row>
+            <label class="template-library-row__check" hidden><input type="checkbox" value="{{ quick_action.id }}" data-quick-action-export-checkbox><span class="sr-only">Export {{ quick_action.name }}</span></label>
             <a class="template-library-row__select" href="{{ selection_url }}" {% if selected_scope == 'team' and selected_action and selected_action.id == quick_action.id %}aria-current="page"{% endif %}><strong>{{ quick_action.name }}</strong><small>{{ 'Enabled' if quick_action.is_active else 'Disabled' }}{% if not is_manager %} · Read only{% endif %}</small></a>
             <div class="template-library-row__actions setting-actions">
               <form method="post" action="/home/team-quick-actions/{{ quick_action.id }}/fork"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="quick-actions"><button type="submit" aria-label="Copy {{ quick_action.name }} to Personal"><i data-lucide="copy-plus"></i></button></form>
@@ -44,6 +47,21 @@
           {% else %}<p class="template-library-empty">No team quick actions.</p>{% endfor %}
         </div>
       </section>
+      </div>
+
+      <div class="template-library-utilities" aria-label="Quick action import and export">
+        <div class="template-library-utilities__default">
+          <button type="button" class="template-library-utility" data-quick-action-import-open aria-haspopup="dialog" aria-controls="quick-action-import-dialog" title="Add quick actions from a JSON file or pasted JSON"><i data-lucide="upload" aria-hidden="true"></i><span>Import</span></button>
+          <button type="button" class="template-library-utility" data-quick-action-export-open title="Download selected quick actions as a JSON file"><i data-lucide="download" aria-hidden="true"></i><span>Export</span></button>
+          <button type="button" class="template-library-utility template-library-utility--help" data-quick-action-help-open aria-haspopup="dialog" aria-controls="quick-action-help-dialog" title="Learn how to add or save quick actions" aria-label="Help with importing and exporting quick actions"><i data-lucide="circle-help" aria-hidden="true"></i><span>Help</span></button>
+        </div>
+        <div class="template-library-utilities__selection" data-quick-action-export-actions hidden>
+          <button type="button" class="btn-ghost-sm" data-quick-action-export-select-all>Select all</button>
+          <button type="button" class="btn-primary-sm" data-quick-action-export-submit disabled>Export selected</button>
+          <button type="button" class="btn-ghost-sm" data-quick-action-export-cancel>Cancel</button>
+          <p class="template-library-utility-status" data-quick-action-export-status role="status" aria-live="polite"></p>
+        </div>
+      </div>
     </aside>
 
     <div class="template-library-detail">
@@ -57,4 +75,45 @@
       {% endif %}
     </div>
   </div>
+
+  <dialog class="template-import-dialog" id="quick-action-import-dialog" data-quick-action-import-dialog aria-labelledby="quick-action-import-title">
+    <form method="dialog" class="template-import-dialog__frame">
+      <header class="template-import-dialog__header"><div><span class="settings-kicker">Portable bundle</span><h2 id="quick-action-import-title">Import quick actions</h2></div><button type="submit" class="template-import-dialog__close" value="cancel" aria-label="Close import dialog"><i data-lucide="x" aria-hidden="true"></i></button></header>
+      <div class="template-import-dialog__body">
+        <p data-quick-action-import-intro>Choose where every selected quick action in the JSON bundle will be created. <a href="/static/schemas/openscribe-quick-action-bundle-v1.schema.json" target="_blank" rel="noopener">View the bundle schema</a>.</p>
+        <div class="template-import-destinations" data-quick-action-import-inputs>
+          <fieldset class="template-import-scope"><legend>Import to</legend><label><input type="radio" name="quick-action-import-destination" value="personal" checked data-quick-action-import-destination> Personal</label>{% if is_manager %}<label><input type="radio" name="quick-action-import-destination" value="team" data-quick-action-import-destination> Team</label>{% endif %}</fieldset>
+          <label class="template-import-dropzone" data-quick-action-import-dropzone><i data-lucide="file-up" aria-hidden="true"></i><strong>Upload JSON file</strong><span>Drop a JSON bundle here or browse</span><input type="file" accept="application/json,.json" data-quick-action-import-file></label>
+          <div class="template-import-paste"><label for="quick-action-import-json"><strong>Paste JSON</strong></label><textarea id="quick-action-import-json" rows="8" data-quick-action-import-json placeholder='Paste the complete {"format":"openscribe-quick-action-bundle", ...} JSON bundle here' spellcheck="false"></textarea><button type="button" class="btn-primary-sm" data-quick-action-import-paste-submit>Submit</button></div>
+        </div>
+        <p class="template-import-status" data-quick-action-import-status role="status" aria-live="polite"></p>
+        <section class="template-import-preflight" data-quick-action-import-preflight hidden aria-labelledby="quick-action-import-preview-title"><div class="template-import-preflight__header"><div><h3 id="quick-action-import-preview-title">Review import</h3><p data-quick-action-import-summary></p></div><button type="button" class="btn-ghost-sm" data-quick-action-import-change>Choose different JSON</button></div><div class="template-import-warning" data-quick-action-import-warnings hidden></div><div class="template-import-results" data-quick-action-import-results></div></section>
+        <section class="template-import-success" data-quick-action-import-success hidden aria-labelledby="quick-action-import-success-title"><div class="template-import-success__icon" aria-hidden="true"><i data-lucide="party-popper"></i></div><h3 id="quick-action-import-success-title">Import complete</h3><p data-quick-action-import-success-message></p></section>
+      </div>
+      <footer class="template-import-dialog__footer"><button type="submit" class="btn-ghost-sm" value="cancel" data-quick-action-import-cancel>Cancel</button><button type="button" class="btn-primary" data-quick-action-import-confirm disabled>Import quick actions</button><button type="button" class="btn-primary" data-quick-action-import-continue hidden>Close (5)</button></footer>
+    </form>
+  </dialog>
+
+  <dialog class="template-import-dialog template-help-dialog" id="quick-action-help-dialog" data-quick-action-help-dialog aria-labelledby="quick-action-help-title">
+    <form method="dialog" class="template-import-dialog__frame">
+      <header class="template-import-dialog__header"><div><span class="settings-kicker">Quick action help</span><h2 id="quick-action-help-title">Create a quick action with AI</h2></div><button type="submit" class="template-import-dialog__close" value="cancel" aria-label="Close quick action help"><i data-lucide="x" aria-hidden="true"></i></button></header>
+      <div class="template-import-dialog__body template-help-dialog__body">
+        <p>Quick actions give OpenScribe a reusable instruction for the current consultation—for example, producing a referral letter, a focused summary, or a patient message. If the existing actions do not fit your work, an AI assistant can help create one. You do not need to write any code.</p>
+        <div class="template-help-io-summary"><p><strong>Import</strong> adds quick actions from a JSON file or pasted text.</p><p><strong>Export</strong> saves selected quick actions as a JSON file so you can keep or move them.</p></div>
+        <div class="template-help-warning"><i data-lucide="shield-alert" aria-hidden="true"></i><p>Do not include patient information, transcripts, clinical notes, credentials, or other confidential data.</p></div>
+        <h3>How to create a quick action</h3>
+        <ol class="template-help-steps">
+          <li>Select <strong>Copy instructions for AI</strong>. This copies everything the AI needs to create a quick action OpenScribe can understand.</li>
+          <li>Open the AI assistant you normally use and paste the instructions.</li>
+          <li>Describe what you want the action to produce, who it is for, its tone and format, and anything it must include or avoid. The AI will ask questions if anything is unclear.</li>
+          <li>Copy all the finished JSON the AI returns. You do not need to understand or edit it.</li>
+          <li>Return to OpenScribe, select <strong>Import</strong>, paste the JSON, then select <strong>Submit</strong>.</li>
+        </ol>
+        <button type="button" class="btn-primary" data-quick-action-help-copy>Copy instructions for AI</button>
+        <p class="template-import-status" data-quick-action-help-status role="status" aria-live="polite"></p>
+        <div data-quick-action-help-fallback hidden><label for="quick-action-help-prompt"><strong>Your browser could not copy automatically. Copy all the text below.</strong></label><textarea id="quick-action-help-prompt" rows="12" readonly data-quick-action-help-prompt></textarea></div>
+      </div>
+      <footer class="template-import-dialog__footer"><button type="submit" class="btn-ghost-sm" value="cancel">Close</button></footer>
+    </form>
+  </dialog>
 </section>

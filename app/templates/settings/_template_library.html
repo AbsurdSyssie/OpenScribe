@@ -10,12 +10,14 @@
         <a class="btn-primary-sm" href="/workspace/library/templates?scope=personal&amp;template_id=new">New</a>
       </div>
 
+      <div class="template-library-groups">
       <section class="template-library-group" aria-labelledby="personal-template-heading">
         <div class="template-library-group__header"><h3 id="personal-template-heading">Personal</h3><span>{{ personal_templates|length }}</span></div>
         <div class="template-library-list">
           {% for template in personal_templates %}{% set latest_version = template.versions|sort(attribute='version_no')|last %}
           {% set selection_url = '/workspace/library/templates?scope=personal&template_id=' ~ template.id %}
-          <div class="template-library-row{% if selected_scope == 'personal' and selected_template and selected_template.id == template.id %} is-current{% endif %}">
+          <div class="template-library-row{% if selected_scope == 'personal' and selected_template and selected_template.id == template.id %} is-current{% endif %}" data-template-export-row>
+            <label class="template-library-row__check" hidden><input type="checkbox" value="{{ template.id }}" data-template-export-checkbox><span class="sr-only">Export {{ template.name }}</span></label>
             <a class="template-library-row__select" href="{{ selection_url }}" {% if selected_scope == 'personal' and selected_template and selected_template.id == template.id %}aria-current="page"{% endif %}>
               <strong>{{ template.name }}</strong><small>{{ latest_version.mode.value }} · {{ 'Enabled' if template.is_active else 'Disabled' }}</small>
             </a>
@@ -34,7 +36,8 @@
         <div class="template-library-list">
           {% for template in team_templates %}{% set latest_version = template.versions|sort(attribute='version_no')|last %}
           {% set selection_url = '/workspace/library/templates?scope=team&template_id=' ~ template.id %}
-          <div class="template-library-row{% if selected_scope == 'team' and selected_template and selected_template.id == template.id %} is-current{% endif %}">
+          <div class="template-library-row{% if selected_scope == 'team' and selected_template and selected_template.id == template.id %} is-current{% endif %}" data-template-export-row>
+            <label class="template-library-row__check" hidden><input type="checkbox" value="{{ template.id }}" data-template-export-checkbox><span class="sr-only">Export {{ template.name }}</span></label>
             <a class="template-library-row__select" href="{{ selection_url }}" {% if selected_scope == 'team' and selected_template and selected_template.id == template.id %}aria-current="page"{% endif %}>
               <strong>{{ template.name }}</strong><small>{{ latest_version.mode.value }} · {{ 'Enabled' if template.is_active else 'Disabled' }}{% if not is_manager %} · Read only{% endif %}</small>
             </a>
@@ -48,6 +51,21 @@
           {% else %}<p class="template-library-empty">No team templates.</p>{% endfor %}
         </div>
       </section>
+      </div>
+
+      <div class="template-library-utilities" aria-label="Template import and export">
+        <div class="template-library-utilities__default">
+          <button type="button" class="template-library-utility" data-template-import-open aria-haspopup="dialog" aria-controls="template-import-dialog" title="Add templates from a JSON file or pasted JSON"><i data-lucide="upload" aria-hidden="true"></i><span>Import</span></button>
+          <button type="button" class="template-library-utility" data-template-export-open title="Download selected templates as a JSON file"><i data-lucide="download" aria-hidden="true"></i><span>Export</span></button>
+          <button type="button" class="template-library-utility template-library-utility--help" data-template-help-open aria-haspopup="dialog" aria-controls="template-help-dialog" title="Learn how to add, save, or create templates" aria-label="Help with importing, exporting, and creating templates"><i data-lucide="circle-help" aria-hidden="true"></i><span>Help</span></button>
+        </div>
+        <div class="template-library-utilities__selection" data-template-export-actions hidden>
+          <button type="button" class="btn-ghost-sm" data-template-export-select-all>Select all</button>
+          <button type="button" class="btn-primary-sm" data-template-export-submit disabled>Export selected</button>
+          <button type="button" class="btn-ghost-sm" data-template-export-cancel>Cancel</button>
+          <p class="template-library-utility-status" data-template-export-status role="status" aria-live="polite"></p>
+        </div>
+      </div>
     </aside>
 
     <div class="template-library-detail">
@@ -68,4 +86,67 @@
       {% endif %}
     </div>
   </div>
+
+  <dialog class="template-import-dialog" id="template-import-dialog" data-template-import-dialog aria-labelledby="template-import-title">
+    <form method="dialog" class="template-import-dialog__frame">
+      <header class="template-import-dialog__header"><div><span class="settings-kicker">Portable bundle</span><h2 id="template-import-title">Import templates</h2></div><button type="submit" class="template-import-dialog__close" value="cancel" aria-label="Close import dialog"><i data-lucide="x" aria-hidden="true"></i></button></header>
+      <div class="template-import-dialog__body">
+        <p data-template-import-intro>Choose where every selected template in the JSON bundle will be created. Imported templates are enabled. <a href="/static/schemas/openscribe-template-bundle-v1.schema.json" target="_blank" rel="noopener">View the bundle schema</a>.</p>
+        <div class="template-import-destinations" data-template-import-inputs>
+          <fieldset class="template-import-scope">
+            <legend>Import to</legend>
+            <label><input type="radio" name="template-import-destination" value="personal" checked data-template-import-destination> Personal</label>
+            {% if is_manager %}<label><input type="radio" name="template-import-destination" value="team" data-template-import-destination> Team</label>{% endif %}
+          </fieldset>
+          <label class="template-import-dropzone" data-template-import-dropzone><i data-lucide="file-up" aria-hidden="true"></i><strong>Upload JSON file</strong><span>Drop a JSON bundle here or browse</span><input type="file" accept="application/json,.json" data-template-import-file></label>
+          <div class="template-import-paste">
+            <label for="template-import-json"><strong>Paste JSON</strong></label>
+            <textarea id="template-import-json" rows="8" data-template-import-json placeholder='Paste the complete {"format":"openscribe-template-bundle", ...} JSON bundle here' spellcheck="false"></textarea>
+            <button type="button" class="btn-primary-sm" data-template-import-paste-submit>Submit</button>
+          </div>
+        </div>
+        <p class="template-import-status" data-template-import-status role="status" aria-live="polite"></p>
+        <section class="template-import-preflight" data-template-import-preflight hidden aria-labelledby="template-import-preview-title">
+          <div class="template-import-preflight__header"><div><h3 id="template-import-preview-title">Review import</h3><p data-template-import-summary></p></div><button type="button" class="btn-ghost-sm" data-template-import-change>Choose different JSON</button></div>
+          <div class="template-import-warning" data-template-import-warnings hidden></div>
+          <div class="template-import-results" data-template-import-results></div>
+        </section>
+        <section class="template-import-success" data-template-import-success hidden aria-labelledby="template-import-success-title">
+          <div class="template-import-success__icon" aria-hidden="true"><i data-lucide="party-popper"></i></div>
+          <h3 id="template-import-success-title">Import complete</h3>
+          <p data-template-import-success-message></p>
+        </section>
+      </div>
+      <footer class="template-import-dialog__footer"><button type="submit" class="btn-ghost-sm" value="cancel" data-template-import-cancel>Cancel</button><button type="button" class="btn-primary" data-template-import-confirm disabled>Import templates</button><button type="button" class="btn-primary" data-template-import-continue hidden>Close (5)</button></footer>
+    </form>
+  </dialog>
+
+  <dialog class="template-import-dialog template-help-dialog" id="template-help-dialog" data-template-help-dialog aria-labelledby="template-help-title">
+    <form method="dialog" class="template-import-dialog__frame">
+      <header class="template-import-dialog__header"><div><span class="settings-kicker">Template help</span><h2 id="template-help-title">Create a template with AI</h2></div><button type="submit" class="template-import-dialog__close" value="cancel" aria-label="Close template help"><i data-lucide="x" aria-hidden="true"></i></button></header>
+      <div class="template-import-dialog__body template-help-dialog__body">
+        <p>Templates tell OpenScribe how to organise and write your finished note. If the existing templates do not suit the way you work, an AI assistant can help you create one. You do not need to write any code.</p>
+        <div class="template-help-io-summary">
+          <p><strong>Import</strong> adds a template to OpenScribe from a JSON file or pasted text.</p>
+          <p><strong>Export</strong> saves selected templates as a JSON file so you can keep or move them.</p>
+        </div>
+        <div class="template-help-warning"><i data-lucide="shield-alert" aria-hidden="true"></i><p>Do not include patient information, transcripts, clinical notes, credentials, or other confidential data.</p></div>
+        <h3>How to create a template</h3>
+        <ol class="template-help-steps">
+          <li>Select <strong>Copy instructions for AI</strong>. This copies everything the AI needs to create a template OpenScribe can understand.</li>
+          <li>Open the AI assistant you normally use and paste the instructions.</li>
+          <li>Describe the note you want—for example, its purpose, headings, level of detail, and anything it should leave out. The AI will ask questions if anything is unclear.</li>
+          <li>When the AI gives you the finished JSON, copy all of it. JSON is simply the specially formatted text OpenScribe needs—you do not need to understand or edit it.</li>
+          <li>Return to OpenScribe, select <strong>Import</strong>, paste the JSON, then select <strong>Submit</strong>.</li>
+        </ol>
+        <button type="button" class="btn-primary" data-template-help-copy>Copy instructions for AI</button>
+        <p class="template-import-status" data-template-help-status role="status" aria-live="polite"></p>
+        <div data-template-help-fallback hidden>
+          <label for="template-help-prompt"><strong>Your browser could not copy automatically. Copy all the text below.</strong></label>
+          <textarea id="template-help-prompt" rows="12" readonly data-template-help-prompt></textarea>
+        </div>
+      </div>
+      <footer class="template-import-dialog__footer"><button type="submit" class="btn-ghost-sm" value="cancel">Close</button></footer>
+    </form>
+  </dialog>
 </section>

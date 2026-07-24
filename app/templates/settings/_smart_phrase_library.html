@@ -13,18 +13,20 @@
         <a class="btn-primary-sm" href="/workspace/library/smart-phrases?smart_phrase_id=new">New</a>
       </div>
 
-      <label class="smart-phrase-library-search">
-        <span>Search personal phrases</span>
-        <input type="search" data-smart-phrase-search placeholder="Search trigger or expansion" autocomplete="off">
-      </label>
-      <div class="smart-phrase-library-feedback" data-smart-phrase-library-feedback role="alert" hidden></div>
+      <div class="smart-phrase-library-content">
+        <label class="smart-phrase-library-search">
+          <span>Search personal phrases</span>
+          <input type="search" data-smart-phrase-search placeholder="Search trigger or expansion" autocomplete="off">
+        </label>
+        <div class="smart-phrase-library-feedback" data-smart-phrase-library-feedback role="alert" hidden></div>
 
-      <section class="smart-phrase-library-group" aria-labelledby="personal-smart-phrase-heading">
+        <section class="smart-phrase-library-group" aria-labelledby="personal-smart-phrase-heading">
         <div class="smart-phrase-library-group__header"><h3 id="personal-smart-phrase-heading">Personal</h3><span data-smart-phrase-count>{{ personal_smart_phrases|length }}</span></div>
         <div class="smart-phrase-library-list" data-smart-phrase-list>
           {% for phrase in personal_smart_phrases|sort(attribute='trigger') %}
           {% set selection_url = '/workspace/library/smart-phrases?smart_phrase_id=' ~ phrase.id %}
           <div class="smart-phrase-library-row{% if selected_smart_phrase and selected_smart_phrase.id == phrase.id %} is-current{% endif %}" data-smart-phrase-row data-smart-phrase-record="{{ {'id': phrase.id|string, 'trigger': phrase.trigger, 'expansion_text': phrase.expansion_text, 'description': phrase.description or ''}|tojson|forceescape }}">
+            <label class="smart-phrase-library-row__check" hidden><input type="checkbox" value="{{ phrase.id }}" data-smart-phrase-export-checkbox><span class="sr-only">Export {{ phrase.trigger }}</span></label>
             <a class="smart-phrase-library-row__select" href="{{ selection_url }}" {% if selected_smart_phrase and selected_smart_phrase.id == phrase.id %}aria-current="page"{% endif %}>
               <strong>/{{ phrase.trigger }}</strong>
               <small>{{ phrase.expansion_text.replace('\n', ' ')[:90] }}</small>
@@ -39,7 +41,22 @@
           <p class="smart-phrase-library-empty" data-smart-phrase-empty>No personal smart phrases.</p>
           {% endfor %}
         </div>
-      </section>
+        </section>
+      </div>
+
+      <div class="smart-phrase-library-utilities" aria-label="Smart phrase import and export">
+        <div class="smart-phrase-library-utilities__default">
+          <button type="button" class="smart-phrase-library-utility" data-smart-phrase-import-open aria-haspopup="dialog" aria-controls="smart-phrase-import-dialog" title="Add smart phrases from a JSON file or pasted JSON"><i data-lucide="upload" aria-hidden="true"></i><span>Import</span></button>
+          <button type="button" class="smart-phrase-library-utility" data-smart-phrase-export-open title="Download selected smart phrases as a JSON file"><i data-lucide="download" aria-hidden="true"></i><span>Export</span></button>
+          <button type="button" class="smart-phrase-library-utility smart-phrase-library-utility--help" data-smart-phrase-help-open aria-haspopup="dialog" aria-controls="smart-phrase-help-dialog" title="Learn how to add or save smart phrases" aria-label="Help with importing and exporting smart phrases"><i data-lucide="circle-help" aria-hidden="true"></i><span>Help</span></button>
+        </div>
+        <div class="smart-phrase-library-utilities__selection" data-smart-phrase-export-actions hidden>
+          <button type="button" class="btn-ghost-sm" data-smart-phrase-export-select-all>Select all</button>
+          <button type="button" class="btn-primary-sm" data-smart-phrase-export-submit disabled>Export selected</button>
+          <button type="button" class="btn-ghost-sm" data-smart-phrase-export-cancel>Cancel</button>
+          <p class="smart-phrase-library-utility-status" data-smart-phrase-export-status role="status" aria-live="polite"></p>
+        </div>
+      </div>
     </aside>
 
     <div class="smart-phrase-library-detail">
@@ -83,4 +100,35 @@
       {% endif %}
     </div>
   </div>
+
+  <dialog class="smart-phrase-import-dialog" id="smart-phrase-import-dialog" data-smart-phrase-import-dialog aria-labelledby="smart-phrase-import-title">
+    <form method="dialog" class="smart-phrase-import-dialog__frame">
+      <header class="smart-phrase-import-dialog__header"><div><span class="settings-kicker">Portable bundle</span><h2 id="smart-phrase-import-title">Import smart phrases</h2></div><button type="submit" class="smart-phrase-import-dialog__close" value="cancel" aria-label="Close import dialog"><i data-lucide="x" aria-hidden="true"></i></button></header>
+      <div class="smart-phrase-import-dialog__body"><p>Imported smart phrases are personal to you. <a href="/static/schemas/openscribe-smart-phrase-bundle-v1.schema.json" target="_blank" rel="noopener">View the bundle schema</a>.</p><div class="smart-phrase-import-inputs" data-smart-phrase-import-inputs><label class="smart-phrase-import-dropzone" data-smart-phrase-import-dropzone><i data-lucide="file-up" aria-hidden="true"></i><strong>Upload JSON file</strong><span>Drop a JSON bundle here or browse</span><input type="file" accept="application/json,.json" data-smart-phrase-import-file></label><div class="smart-phrase-import-paste"><label for="smart-phrase-import-json"><strong>Paste JSON</strong></label><textarea id="smart-phrase-import-json" rows="8" data-smart-phrase-import-json placeholder='Paste the complete {"format":"openscribe-smart-phrase-bundle", ...} JSON bundle here' spellcheck="false"></textarea><button type="button" class="btn-primary-sm" data-smart-phrase-import-paste-submit>Submit</button></div></div><p class="smart-phrase-import-status" data-smart-phrase-import-status role="status" aria-live="polite"></p><section class="smart-phrase-import-preflight" data-smart-phrase-import-preflight hidden aria-labelledby="smart-phrase-import-preview-title"><div class="smart-phrase-import-preflight__header"><div><h3 id="smart-phrase-import-preview-title">Review import</h3><p data-smart-phrase-import-summary></p></div><button type="button" class="btn-ghost-sm" data-smart-phrase-import-change>Choose different JSON</button></div><div class="smart-phrase-import-warning" data-smart-phrase-import-warnings hidden></div><div class="smart-phrase-import-results" data-smart-phrase-import-results></div></section><section class="smart-phrase-import-success" data-smart-phrase-import-success hidden aria-labelledby="smart-phrase-import-success-title"><div class="smart-phrase-import-success__icon" aria-hidden="true"><i data-lucide="party-popper"></i></div><h3 id="smart-phrase-import-success-title">Import complete</h3><p data-smart-phrase-import-success-message></p></section></div>
+      <footer class="smart-phrase-import-dialog__footer"><button type="submit" class="btn-ghost-sm" value="cancel" data-smart-phrase-import-cancel>Cancel</button><button type="button" class="btn-primary" data-smart-phrase-import-confirm disabled>Import smart phrases</button><button type="button" class="btn-primary" data-smart-phrase-import-continue hidden>Close (5)</button></footer>
+    </form>
+  </dialog>
+
+  <dialog class="smart-phrase-import-dialog smart-phrase-help-dialog" id="smart-phrase-help-dialog" data-smart-phrase-help-dialog aria-labelledby="smart-phrase-help-title">
+    <form method="dialog" class="smart-phrase-import-dialog__frame">
+      <header class="smart-phrase-import-dialog__header"><div><span class="settings-kicker">Smart phrase help</span><h2 id="smart-phrase-help-title">Create a smart phrase with AI</h2></div><button type="submit" class="smart-phrase-import-dialog__close" value="cancel" aria-label="Close smart phrase help"><i data-lucide="x" aria-hidden="true"></i></button></header>
+      <div class="smart-phrase-import-dialog__body template-help-dialog__body">
+        <p>Smart phrases insert reusable text when you type a slash and trigger, such as <strong>/FOLLOWUP</strong>, in the note editor. An AI assistant can help draft useful wording and package it for OpenScribe. You do not need to write any code.</p>
+        <div class="smart-phrase-help-summary"><p><strong>Import</strong> adds your personal smart phrases from a JSON file or pasted text.</p><p><strong>Export</strong> saves selected smart phrases as a JSON file so you can keep or move them.</p></div>
+        <div class="smart-phrase-help-warning"><i data-lucide="shield-alert" aria-hidden="true"></i><p>Do not include patient information, transcripts, clinical notes, credentials, or other confidential data.</p></div>
+        <h3>How to create a smart phrase</h3>
+        <ol class="template-help-steps">
+          <li>Select <strong>Copy instructions for AI</strong>. This copies everything the AI needs to create smart phrases OpenScribe can understand.</li>
+          <li>Open the AI assistant you normally use and paste the instructions.</li>
+          <li>Describe the reusable text you need, when you use it, and any wording or placeholders it should contain. The AI will ask questions if anything is unclear.</li>
+          <li>Copy all the finished JSON the AI returns. You do not need to understand or edit it.</li>
+          <li>Return to OpenScribe, select <strong>Import</strong>, paste the JSON, then select <strong>Submit</strong>.</li>
+        </ol>
+        <button type="button" class="btn-primary" data-smart-phrase-help-copy>Copy instructions for AI</button>
+        <p class="smart-phrase-import-status" data-smart-phrase-help-status role="status" aria-live="polite"></p>
+        <div data-smart-phrase-help-fallback hidden><label for="smart-phrase-help-prompt"><strong>Your browser could not copy automatically. Copy all the text below.</strong></label><textarea id="smart-phrase-help-prompt" rows="12" readonly data-smart-phrase-help-prompt></textarea></div>
+      </div>
+      <footer class="smart-phrase-import-dialog__footer"><button type="submit" class="btn-ghost-sm" value="cancel">Close</button></footer>
+    </form>
+  </dialog>
 </section>

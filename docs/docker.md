@@ -88,8 +88,8 @@ recovery procedure is being followed deliberately.
 
 ## Configuration inside Compose
 
-Compose loads `.env`, then overrides addresses that must use the internal Docker
-network:
+Compose reads `.env` for variable interpolation, then overrides addresses that
+must use the internal Docker network:
 
 - `DATABASE_URL` uses `postgres:5432`
 - `RATE_LIMIT_STORAGE_URL` uses `redis:6379/0`
@@ -112,6 +112,40 @@ docker compose --profile runtime up -d
 ```
 
 See [environment.md](environment.md) for the complete configuration reference.
+
+## Google Application Default Credentials
+
+Gemini Enterprise can use Application Default Credentials (ADC). Do not copy a
+credential file into the image or put its JSON in `.env`. The optional
+`docker-compose.adc.yml` override mounts one host credential file read-only into
+the single container that runs both the web and generation-worker processes.
+
+Set the host path, then include both Compose files:
+
+```bash
+export GOOGLE_ADC_HOST_FILE="$HOME/.config/gcloud/application_default_credentials.json"
+
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.adc.yml \
+  --profile runtime \
+  up -d --build
+```
+
+Confirm resolution without printing a token or credential content:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.adc.yml \
+  exec openscribe \
+  python -c 'import google.auth; c,p=google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"]); print(type(c).__name__, p, c.quota_project_id)'
+```
+
+The container runs as UID `10001`; the mounted file must be readable by that UID.
+Do not make the credential world-readable to bypass a permission problem. For a
+production workload, prefer an attached service identity or Workload Identity
+Federation rather than a user ADC refresh-token file.
 
 ## Reverse proxy and network exposure
 

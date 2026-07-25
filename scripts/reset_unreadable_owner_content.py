@@ -12,7 +12,6 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from app.errors import AppError
 from app.models import (
     SessionStatus,
     Transcript,
@@ -37,22 +36,23 @@ def _user_has_key_dependent_mfa(db: Session, *, user: User) -> bool:
     return False
 
 
+def _user_has_key_dependent_data(db: Session, *, user: User) -> bool:
+    has_transcript = db.scalar(select(Transcript.id).where(Transcript.owner_user_id == user.id).limit(1)) is not None
+    return has_transcript or _user_has_key_dependent_mfa(db, user=user)
+
+
 def user_content_key_is_unreadable(db: Session, *, user: User) -> bool:
+    if not _user_has_key_dependent_data(db, user=user):
+        return False
     key_record = get_active_user_key(db, user_id=user.id)
     if key_record is None:
-        has_transcript = db.scalar(select(Transcript.id).where(Transcript.owner_user_id == user.id).limit(1)) is not None
-        return has_transcript or _user_has_key_dependent_mfa(db, user=user)
-    try:
-        unwrap_user_content_data_key(
-            wrapped_dek=key_record.wrapped_dek,
-            mount_point=key_record.kek_mount,
-            key_name=key_record.kek_key_name,
-        )
-        return False
-    except AppError as exc:
-        if exc.code != "vault_read_failed":
-            raise
         return True
+    unwrap_user_content_data_key(
+        wrapped_dek=key_record.wrapped_dek,
+        mount_point=key_record.kek_mount,
+        key_name=key_record.kek_key_name,
+    )
+    return False
 
 
 def reset_owner_content_for_user(db: Session, *, user: User) -> None:
@@ -108,6 +108,7 @@ def reset_unreadable_owner_content(
     apply: bool = False,
 ) -> list[str]:
     unreadable: list[str] = []
+    users_to_reset: list[User] = []
     query = select(User).order_by(User.email)
     for user in db.scalars(query):
         if emails and user.email not in emails:
@@ -115,17 +116,19 @@ def reset_unreadable_owner_content(
         if not user_content_key_is_unreadable(db, user=user):
             continue
         unreadable.append(user.email)
-        if apply:
+        users_to_reset.append(user)
+    if apply:
+        for user in users_to_reset:
             reset_owner_content_for_user(db, user=user)
     return unreadable
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Reset user data and MFA state that depend on an unreadable DEK.")
+    parser = argparse.ArgumentParser(description="Reset user data and MFA state whose DEK record is missing.")
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Delete unreadable transcript-derived content, clear MFA state, revoke auth authority, and issue a fresh DEK.",
+        help="Delete data whose DEK record is missing, clear MFA state, revoke auth authority, and issue a fresh DEK.",
     )
     parser.add_argument("--email", action="append", default=[], help="Limit the reset to one or more specific user emails.")
     args = parser.parse_args()
@@ -140,13 +143,13 @@ def main() -> None:
         unreadable = reset_unreadable_owner_content(db, emails=emails, apply=args.apply)
 
     if not unreadable:
-        print("No unreadable user-data keys found.")
+        print("No missing user-data keys found.")
         return
 
     for email in unreadable:
         print(email)
     if not args.apply:
-        print("Dry run only. Re-run with --apply to reset dependent content and MFA state and issue fresh DEKs.")
+        print("Dry run only. Re-run with --apply to reset missing-key dependencies and issue fresh DEKs.")
 
 
 if __name__ == "__main__":

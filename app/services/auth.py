@@ -37,7 +37,7 @@ TRUSTED_DEVICE_LIFETIME = timedelta(days=30)
 MFA_FRESHNESS_WINDOW = timedelta(days=1)
 RECOVERY_CODE_COUNT = 8
 TOTP_SECRET_MAX_LENGTH = 128
-TOTP_SECRET_PATTERN = re.compile(r"^[A-Z2-7]+$")
+TOTP_SECRET_PATTERN = re.compile(r"^[A-Za-z2-7]+={0,6}$")
 TOTP_SECRET_TABLE = "user_mfa_methods"
 TOTP_SECRET_FIELD = "secret"
 
@@ -281,9 +281,9 @@ def update_password_for_onboarding(db: Session, user: User, *, new_password_hash
 def _validated_totp_secret(value: str) -> str:
     if not value or len(value) > TOTP_SECRET_MAX_LENGTH or TOTP_SECRET_PATTERN.fullmatch(value) is None:
         raise AppError(500, "mfa_secret_unreadable", "The authenticator configuration could not be read")
-    padded = value + "=" * ((8 - len(value) % 8) % 8)
+    padded = value if "=" in value else value + "=" * ((8 - len(value) % 8) % 8)
     try:
-        decoded = base64.b32decode(padded, casefold=False)
+        decoded = base64.b32decode(padded, casefold=True)
     except (binascii.Error, ValueError) as exc:
         raise AppError(500, "mfa_secret_unreadable", "The authenticator configuration could not be read") from exc
     if not decoded:

@@ -2,11 +2,12 @@
 
 OpenScribe reads configuration from process environment variables. For local use,
 copy `.env.example` to `.env`. The host-based development script sources that
-file directly; Docker Compose also loads it for the `openscribe` service.
+file directly; Docker Compose reads it for variable interpolation.
 
 The persistent Compose runtime overrides only the addresses that must use Docker
 service DNS (`postgres`, `redis`, and `vault`) plus the container's internal web
-bind. All other values still come from `.env`.
+bind. Other mapped runtime values use `.env` when present and documented defaults
+when it is absent.
 
 ## Configuration rules
 
@@ -50,7 +51,7 @@ new deployments should use `APP_ENV` consistently.
 | `CELERY_BROKER_URL` | `redis://localhost:6379/2` | Celery broker. Compose overrides the host to `redis`. |
 | `CELERY_RESULT_BACKEND` | broker URL | Celery result backend. |
 | `CELERY_LOG_LEVEL` | `INFO` | Worker and Beat log level. |
-| `CELERY_TASK_ALWAYS_EAGER` | `false` | Test-only synchronous execution switch. Do not enable in a persistent runtime. |
+| `CELERY_TASK_ALWAYS_EAGER` | `false` | Test-only synchronous execution switch. The persistent Compose runtime forces this to `false`. |
 
 The local Compose stack enables Redis append-only persistence. PostgreSQL remains
 the authoritative application store; Redis persistence protects queued work and
@@ -122,6 +123,16 @@ audio inspection and normalization.
 
 See [docker.md](docker.md) for startup, upgrade, persistence, and reverse-proxy
 instructions.
+
+## External runtime identity
+
+`GOOGLE_APPLICATION_CREDENTIALS` is a standard Google SDK setting rather than an
+OpenScribe secret. Do not put credential JSON in `.env`. For the optional local
+Docker ADC override, set `GOOGLE_ADC_HOST_FILE` in the host shell to the path of a
+single ADC JSON file and start Compose with `docker-compose.adc.yml`. The override
+mounts that file read-only and sets the in-container
+`GOOGLE_APPLICATION_CREDENTIALS` path. See [docker.md](docker.md) and
+[gemini-enterprise-setup.md](gemini-enterprise-setup.md).
 
 ## Host development only
 

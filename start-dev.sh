@@ -26,7 +26,7 @@ set +a
 : "${DEV_FORWARDED_ALLOW_IPS:=192.168.1.234}"
 export APP_HOST APP_PORT DEV_ALLOW_REMOTE_BIND DEV_PURGE_CELERY_QUEUE DEV_FORWARDED_ALLOW_IPS
 
-docker compose up -d
+docker compose up -d postgres redis vault
 
 .venv/bin/python scripts/security/check_service_exposure.py
 
@@ -89,6 +89,7 @@ import os
 import time
 
 from sqlalchemy import create_engine, text
+
 
 database_url = os.environ["DATABASE_URL"]
 engine = create_engine(database_url, future=True)

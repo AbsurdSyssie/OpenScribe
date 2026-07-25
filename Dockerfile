@@ -12,6 +12,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         ffmpeg \
+        gosu \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
@@ -29,8 +30,6 @@ RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin openscribe \
     && mkdir -p /app/.local/vault \
     && chown -R openscribe:openscribe /app \
     && chmod +x /app/docker/entrypoint.sh
-
-USER openscribe
 
 EXPOSE 8080
 

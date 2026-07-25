@@ -15,3 +15,11 @@ UI_Extract
 docs
 tests
 transcriber_changes
+!transcriber_changes/
+transcriber_changes/*
+!transcriber_changes/workspace/
+transcriber_changes/workspace/*
+!transcriber_changes/workspace/static/
+!transcriber_changes/workspace/static/**
+!transcriber_changes/workspace/templates/
+!transcriber_changes/workspace/templates/**

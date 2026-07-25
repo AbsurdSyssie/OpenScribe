@@ -11,9 +11,13 @@ docker compose up -d
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 cp .env.example .env
 ```
+
+`requirements-dev.txt` pulls in the runtime set from `requirements.txt` plus the
+test tools (`pytest`, `pytest-xdist`). The Docker runtime image installs
+`requirements.txt` only, so containers do not carry test tooling.
 
 Native PHI redaction now depends on Presidio plus spaCy:
 

@@ -13,7 +13,10 @@ on:
       - alembic/**
       - alembic.ini
       - scripts/**
+      - transcriber_changes/workspace/static/**
+      - transcriber_changes/workspace/templates/**
       - .github/workflows/docker-smoke.yml
+      - .github/scripts/**
   push:
     branches:
       - master
@@ -28,7 +31,10 @@ on:
       - alembic/**
       - alembic.ini
       - scripts/**
+      - transcriber_changes/workspace/static/**
+      - transcriber_changes/workspace/templates/**
       - .github/workflows/docker-smoke.yml
+      - .github/scripts/**
 
 jobs:
   smoke-test:
@@ -53,35 +59,16 @@ jobs:
 
       - name: Wait for OpenScribe health
         shell: bash
+        run: bash .github/scripts/wait-for-openscribe-health.sh
+
+      - name: Restart runtime on persistent volumes
         run: |
-          container_id="$(docker compose --profile runtime ps -q openscribe)"
+          docker compose --profile runtime down
+          docker compose --profile runtime up -d --no-build
 
-          diagnose() {
-            echo "--- compose status ---"
-            docker compose --profile runtime ps -a
-            echo "--- OpenScribe state ---"
-            docker inspect --format '{{json .State}}' "$container_id" || true
-            echo "--- OpenScribe logs ---"
-            docker compose --profile runtime logs --no-color --tail=200 openscribe || true
-          }
-
-          for attempt in {1..60}; do
-            status="$(docker inspect --format '{{.State.Health.Status}}' "$container_id" 2>/dev/null || echo missing)"
-            if [[ "$status" == "healthy" ]]; then
-              curl --fail --silent --show-error http://127.0.0.1:8080/health
-              exit 0
-            fi
-            if [[ "$status" == "unhealthy" || "$status" == "missing" ]]; then
-              echo "OpenScribe health status: ${status}" >&2
-              diagnose
-              exit 1
-            fi
-            sleep 5
-          done
-
-          echo "OpenScribe did not become healthy in time" >&2
-          diagnose
-          exit 1
+      - name: Wait for OpenScribe health after restart
+        shell: bash
+        run: bash .github/scripts/wait-for-openscribe-health.sh
 
       - name: Show final container status
         if: always()

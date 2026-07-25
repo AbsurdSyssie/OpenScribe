@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Test-only dependencies. Developer and CI test environments install this file;
+# the Docker runtime image installs requirements.txt only.
+pytest==8.3.3
+pytest-xdist==3.6.1

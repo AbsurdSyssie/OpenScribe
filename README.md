@@ -50,10 +50,13 @@ For host-based development with live reload:
 cp .env.example .env
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 python -m spacy download en_core_web_sm
 ./start-dev.sh
 ```
+
+The dev requirements include the runtime set plus test tools; the Docker image
+installs `requirements.txt` only.
 
 For a persistent restartable Docker runtime:
 

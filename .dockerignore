@@ -1,0 +1,16 @@
+.git
+.github
+.env
+.env.docker
+.venv
+.local
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+celerybeat-schedule*
+frontend/node_modules
+frontend/.next
+.playwright-mcp
+.vscode
+docs/Compliance/security-evidence

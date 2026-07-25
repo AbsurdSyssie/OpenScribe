@@ -22,7 +22,6 @@ For the project entered in the wizard:
    ```
 
    For a service account, use `serviceAccount:SERVICE_ACCOUNT_EMAIL` instead of `user:...`.
-
 4. Confirm the intended model is available in the chosen location. Google model and regional availability changes over time; check Google's current model-lifecycle and location documentation before production rollout.
 
 Project IDs and quota projects are different concepts. OpenScribe addresses model requests to the project entered in the wizard. The local-development commands below set the same project as the ADC quota/billing project. If an organization deliberately uses a different quota project, the authenticated identity needs `serviceusage.services.use` there and `aiplatform.googleapis.com` must also be enabled there; model access IAM still applies to the wizard project.
@@ -84,53 +83,35 @@ sudo chmod 600 /etc/openscribe/google/adc.json
 
 Do not place Google credentials in `.env`, command-line arguments, repository files, logs, or world-readable locations.
 
-## Existing OpenScribe Docker Compose layout
+## Persistent Docker runtime with ADC
 
-The repository's current `docker-compose.yml` containerizes Postgres, Redis, and Vault only. `./start-dev.sh` launches FastAPI, the Celery worker, and Celery Beat on the bare-metal host through the project virtualenv. In that layout, no Google credential mount is needed: host ADC works when FastAPI and the generation worker run as the same user that owns `$HOME/.config/gcloud/application_default_credentials.json`.
+The `runtime` Compose profile runs FastAPI and the Celery generation worker in the same `openscribe` container. Both therefore resolve the same mounted ADC file and runtime identity.
 
-Both FastAPI and every Celery generation worker need the same credential access. A web process that can inspect Gemini while a worker cannot read ADC will allow setup but fail generation.
-
-## Running OpenScribe itself in Docker
-
-For local development only, mount the single ADC file read-only into every OpenScribe application and Celery service. Do not mount the whole gcloud configuration directory.
-
-```yaml
-services:
-  app:
-    # image/build/command omitted: use your OpenScribe deployment definition
-    environment:
-      GOOGLE_APPLICATION_CREDENTIALS: /var/run/secrets/google/adc.json
-    volumes:
-      - ${HOME}/.config/gcloud/application_default_credentials.json:/var/run/secrets/google/adc.json:ro
-
-  worker:
-    # same OpenScribe image, running Celery
-    environment:
-      GOOGLE_APPLICATION_CREDENTIALS: /var/run/secrets/google/adc.json
-    volumes:
-      - ${HOME}/.config/gcloud/application_default_credentials.json:/var/run/secrets/google/adc.json:ro
-```
-
-`${HOME}` is expanded by Docker Compose on the host. Confirm the source path before starting. The container user must be able to read the mounted file; do not solve permission failures with `chmod 644`. Use an appropriate container UID/GID or a secrets mechanism.
-
-Equivalent local `docker run` flags:
+For local development only, use the repository's optional Compose override to mount the single ADC JSON file read-only. Do not mount the whole gcloud configuration directory:
 
 ```bash
-docker run \
-  -e GOOGLE_APPLICATION_CREDENTIALS=/var/run/secrets/google/adc.json \
-  --mount type=bind,src="$HOME/.config/gcloud/application_default_credentials.json",dst=/var/run/secrets/google/adc.json,readonly \
-  YOUR_OPENSCRIBE_IMAGE
+export GOOGLE_ADC_HOST_FILE="$HOME/.config/gcloud/application_default_credentials.json"
+
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.adc.yml \
+  --profile runtime \
+  up -d --build
 ```
 
-Verify inside each running service without printing credentials or tokens:
+The override sets the container path to `/var/run/secrets/google/adc.json` through `GOOGLE_APPLICATION_CREDENTIALS`. `${GOOGLE_ADC_HOST_FILE}` is expanded by Docker Compose on the host. Confirm the source path before starting.
+
+Verify inside the running container without printing credentials or tokens:
 
 ```bash
-docker compose exec app python -c \
-  'import google.auth; c,p=google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"]); print(type(c).__name__, p, c.quota_project_id)'
-
-docker compose exec worker python -c \
-  'import google.auth; c,p=google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"]); print(type(c).__name__, p, c.quota_project_id)'
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.adc.yml \
+  exec openscribe \
+  python -c 'import google.auth; c,p=google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"]); print(type(c).__name__, p, c.quota_project_id)'
 ```
+
+The image runs as UID `10001`. The host file must be readable by that UID; do not solve permission failures with `chmod 644`. Use an appropriate ownership/ACL arrangement or a deployment secrets mechanism.
 
 For production containers, do not copy a user ADC refresh-token file into the image. Preferred choices are:
 
@@ -138,7 +119,7 @@ For production containers, do not copy a user ADC refresh-token file into the im
 - Outside Google Cloud: configure Workload Identity Federation and expose its ADC configuration through the deployment secret mechanism.
 - Advanced fallback: select Service-account JSON in the OpenScribe wizard; OpenScribe validates it and stores it in Vault. Long-lived keys require rotation and create greater operational risk.
 
-Never bake credentials into an image layer, Compose file, environment-variable value, or Kubernetes ConfigMap. Mount secret material read-only and ensure both web and worker services receive it.
+Never bake credentials into an image layer, Compose file, environment-variable value, or Kubernetes ConfigMap. Mount secret material read-only and ensure every web and generation-worker process receives it.
 
 ## Network requirements
 
@@ -174,7 +155,7 @@ ADC configurations show `Credential source: Runtime identity` and have no Vault 
 
 ### “Default credentials unavailable”
 
-- Run the virtualenv verification above in the same host/container and as the same user as FastAPI and Celery.
+- Run the virtualenv or container verification above in the same runtime identity as FastAPI and Celery.
 - Check `GOOGLE_APPLICATION_CREDENTIALS` points to a readable file inside that runtime, not a host-only path.
 - For attached identities, verify metadata-server access.
 
@@ -218,16 +199,4 @@ OpenScribe uses the `v1beta1` publisher-model catalog for this step. Check API a
 
 ### “LLM generation returned invalid JSON”
 
-Current OpenScribe requests explicit JSON Schema for note-producing Gemini calls and constrains Gemini thinking. Every Gemini generation request sets `max_output_tokens=30000`; short, normal, and long remain saved/snapshotted preference metadata, but currently add no semantic prompt guard and do not lower this provider ceiling. Quota reservation uses the same 30,000-token ceiling and releases unused units during settlement. Restart both FastAPI and Celery after upgrading; queued generation runs in the worker. New truncation failures use `llm_generation_truncated`. If this persists, record the safe document error code, model ID, finish reason, and token counts; never copy clinical provider output into logs or support messages.
-
-## Security and operations checklist
-
-- Use least-privilege runtime identities; avoid owner/editor roles.
-- Prefer attached identities or WIF over long-lived keys.
-- Keep ADC/service-account files out of Git and logs.
-- Give web and worker identical credential and network configuration.
-- Validate both intended production location and `global` only when policy permits it.
-- Test credential rotation and Vault cleanup for service-account mode.
-- Keep standard CI fully mocked; run live probes only in a dedicated low-privilege staging project.
-
-Official references: [ADC setup](https://docs.cloud.google.com/docs/authentication/provide-credentials-adc), [ADC search order](https://docs.cloud.google.com/docs/authentication/application-default-credentials), [Gemini Enterprise Agent Platform endpoints](https://docs.cloud.google.com/gemini-enterprise-agent-platform/resources/locations), [Gemini 3.5 Flash availability](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-5-flash), [Provisioned Throughput routing](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/provisioned-throughput/use-provisioned-throughput), and [Count Tokens API](https://docs.cloud.google.com/gemini-enterprise-agent-platform/reference/models/count-tokens).
+This is a provider-output validation failure rather than an ADC failure. Check the selected model, prompt contract, and provider response logs that are safe to inspect; do not weaken structured-output validation.

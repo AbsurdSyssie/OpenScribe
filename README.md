@@ -2,17 +2,19 @@
 
 Entry points:
 
-- setup and local run: [docs/setup.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/setup.md)
-- authentication and access control: [docs/auth.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/auth.md)
-- frontend direction and migration plan: [docs/frontend-roadmap.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/frontend-roadmap.md)
-- Next.js frontend implementation notes: [docs/frontend-nextjs.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/frontend-nextjs.md)
-- API contract and behavior: [docs/api.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/api.md)
-- team STT configuration and Vault fit: [docs/stt-config.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/stt-config.md)
-- transcript capture and team STT planning: [docs/transcript-capture.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/transcript-capture.md)
-- XSS testing plan and probe script: [docs/security-xss.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/security-xss.md)
-- test strategy and non-DB coverage: [docs/testing.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/testing.md)
-- database behavior, DB safety, and DB-specific tests: [docs/dbtesting.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/dbtesting.md)
-- admin usage observability design: [docs/usage_tab.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/usage_tab.md)
+- setup and local run: [docs/setup.md](docs/setup.md)
+- persistent Docker runtime: [docs/docker.md](docs/docker.md)
+- environment variables: [docs/environment.md](docs/environment.md)
+- authentication and access control: [docs/auth.md](docs/auth.md)
+- frontend direction and migration plan: [docs/frontend-roadmap.md](docs/frontend-roadmap.md)
+- Next.js frontend implementation notes: [docs/frontend-nextjs.md](docs/frontend-nextjs.md)
+- API contract and behavior: [docs/api.md](docs/api.md)
+- team STT configuration and Vault fit: [docs/stt-config.md](docs/stt-config.md)
+- transcript capture and team STT planning: [docs/transcript-capture.md](docs/transcript-capture.md)
+- XSS testing plan and probe script: [docs/security-xss.md](docs/security-xss.md)
+- test strategy and non-DB coverage: [docs/testing.md](docs/testing.md)
+- database behavior, DB safety, and DB-specific tests: [docs/dbtesting.md](docs/dbtesting.md)
+- admin usage observability design: [docs/usage_tab.md](docs/usage_tab.md)
 
 Documentation convention:
 
@@ -40,19 +42,44 @@ Preview note:
 - the preview routes reuse the real owner-only transcribe workspace context
 - the GLM 2 route now keeps its own restored shell while using the same owner-only workspace runtime for session switching, note/follow-up/history rendering, EMIS autosave, upload, and microphone flows
 
-Quick start:
+## Quick start
 
-- run `./start-dev.sh` from the project root to start infra, apply migrations, launch the Celery worker plus Beat retention scheduler, and launch the dev server
-- local `.env` should include `APP_ENV=local` and `COOKIE_SECURE_MODE=auto`; copy the current `.env.example` if these are missing
-- production must set `APP_ENV=production` and `COOKIE_SECURE_MODE=always`; CSRF secret material is read from `CSRF_SECRET`/`SECRET_KEY` when set, otherwise the app creates or reuses a stable Vault KV secret
-- production must choose HSTS ownership: keep `HSTS_SOURCE=app` when OpenScribe emits `Strict-Transport-Security`, set `HSTS_SOURCE=proxy` when Cloudflare/reverse proxy emits HSTS for all responses, or set `HSTS_SOURCE=proxy_static_fallback` when the proxy covers dynamic pages but misses `/static/` assets
-- `./start-dev.sh` now bootstraps a persistent local Vault, stores the local root token and unseal key under `.local/vault/`, and keeps Postgres/Vault state aligned across restarts
-- by default `./start-dev.sh` also seeds a dev team plus one leader and one user account with no MFA so manual scripts can exercise features quickly
-- the default dev bind exposes FastAPI only on `127.0.0.1`; set `APP_HOST` explicitly when a reverse proxy or another machine must reach the frontend
-- Postgres, Redis, and Vault still stay localhost-only unless you explicitly change their Docker port bindings and opt into `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true`
-- `./start-dev.sh` now also checks live Docker port bindings for Postgres, Redis, and Vault and aborts with a terminal error if they are exposed beyond localhost unless `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true`
+For host-based development with live reload:
 
-Resend transactional email setup:
+```bash
+cp .env.example .env
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m spacy download en_core_web_sm
+./start-dev.sh
+```
+
+For a persistent restartable Docker runtime:
+
+```bash
+cp .env.example .env
+docker compose --profile runtime up -d --build
+docker compose logs -f openscribe
+```
+
+The persistent profile stores PostgreSQL, Redis, Vault, and Vault bootstrap state
+in named volumes. It initializes or unseals Vault, applies migrations, and starts
+the web server, Celery worker, and Celery Beat whenever the application container
+starts. See [docs/docker.md](docs/docker.md) before exposing it beyond localhost.
+
+Local `.env` should include `APP_ENV=local` and `COOKIE_SECURE_MODE=auto`.
+Production must set `APP_ENV=production` and `COOKIE_SECURE_MODE=always`; CSRF
+secret material is read from `CSRF_SECRET`/`SECRET_KEY` when set, otherwise the
+app creates or reuses a stable Vault KV secret. Production must also choose HSTS
+ownership through `HSTS_SOURCE`.
+
+`./start-dev.sh` bootstraps a persistent local Vault, stores local root-token and
+unseal material under `.local/vault/`, and seeds local test accounts by default.
+It keeps the FastAPI frontend, PostgreSQL, Redis, and Vault localhost-only unless
+remote binding and service exposure are enabled explicitly.
+
+## Resend transactional email setup
 
 OpenScribe can use Resend for account setup, password reset, and manager-assisted recovery email. Email is instance-level platform infrastructure, not team-scoped provider configuration.
 

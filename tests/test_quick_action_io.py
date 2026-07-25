@@ -140,6 +140,16 @@ def test_parse_enforces_size_limit_and_strict_known_field_types():
     )
 
 
+def test_parse_rejects_quick_actions_missing_required_description():
+    entry = quick_action("Missing description")
+    del entry["description"]
+
+    entries, _, issues = parse_quick_action_bundle(bundle_bytes(entry))
+
+    assert entries == [None]
+    assert issues[0][0]["path"] == "quick_actions[0].description"
+
+
 def test_public_schema_accepts_supported_bundle_and_enforces_freeform_mode():
     schema = json.loads(
         Path(

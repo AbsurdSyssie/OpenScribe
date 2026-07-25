@@ -1,6 +1,7 @@
 import { csrfFetch } from '../csrf.js';
 
 const MAX_BUNDLE_BYTES = 1024 * 1024;
+const MAX_EXPORT_ITEMS = 100;
 
 async function errorMessage(response) {
   try {
@@ -41,7 +42,7 @@ function initExport(library) {
   const sync = () => {
     const count = selected().length;
     submit.disabled = count === 0;
-    status.textContent = count ? `${count} template${count === 1 ? '' : 's'} selected` : 'Select at least one template.';
+    status.textContent = count ? `${count} template${count === 1 ? '' : 's'} selected (maximum ${MAX_EXPORT_ITEMS}).` : 'Select up to 100 templates.';
   };
   const close = () => {
     sidebar.classList.remove('is-exporting');
@@ -58,16 +59,27 @@ function initExport(library) {
     checks[0]?.focus();
     sync();
   });
-  checks.forEach((checkbox) => checkbox.addEventListener('change', sync));
+  checks.forEach((checkbox) => checkbox.addEventListener('change', () => {
+    if (checkbox.checked && selected().length > MAX_EXPORT_ITEMS) {
+      checkbox.checked = false;
+      status.textContent = `You can export up to ${MAX_EXPORT_ITEMS} templates at once.`;
+      return;
+    }
+    sync();
+  }));
   library.querySelector('[data-template-export-select-all]')?.addEventListener('click', () => {
-    const shouldSelect = checks.some((checkbox) => !checkbox.checked);
-    checks.forEach((checkbox) => { checkbox.checked = shouldSelect; });
+    const shouldSelect = selected().length < Math.min(checks.length, MAX_EXPORT_ITEMS);
+    checks.forEach((checkbox, index) => { checkbox.checked = shouldSelect && index < MAX_EXPORT_ITEMS; });
     sync();
   });
   library.querySelector('[data-template-export-cancel]')?.addEventListener('click', close);
   submit?.addEventListener('click', async () => {
     const templateIds = selected().map((checkbox) => checkbox.value);
     if (!templateIds.length) return;
+    if (templateIds.length > MAX_EXPORT_ITEMS) {
+      status.textContent = `You can export up to ${MAX_EXPORT_ITEMS} templates at once.`;
+      return;
+    }
     submit.disabled = true;
     status.textContent = 'Preparing export…';
     try {
@@ -105,6 +117,8 @@ function initImport(library) {
   let currentFile = null;
   let currentDestination = null;
   let closeTimer = null;
+  let isCommitting = false;
+  let preflightRequestId = 0;
   const libraryUrl = '/workspace/library/templates';
   const finishImport = () => window.location.assign(libraryUrl);
   const startCloseCountdown = () => {
@@ -126,6 +140,8 @@ function initImport(library) {
   const selectedIndexes = () => [...results.querySelectorAll('input[data-template-import-index]:checked')].map((input) => Number(input.value));
   const syncConfirm = () => { confirm.disabled = selectedIndexes().length === 0 || !currentFile; };
   const reset = () => {
+    if (isCommitting) return;
+    preflightRequestId += 1;
     clearInterval(closeTimer);
     closeTimer = null;
     currentFile = null;
@@ -213,7 +229,8 @@ function initImport(library) {
     syncConfirm();
   };
   const importCurrent = async (indexes) => {
-    if (!currentFile || !indexes.length) return;
+    if (isCommitting || !currentFile || !indexes.length) return;
+    isCommitting = true;
     confirm.disabled = true;
     inputs.hidden = true;
     status.classList.remove('is-error');
@@ -227,6 +244,7 @@ function initImport(library) {
       if (!response.ok) throw new Error(await errorMessage(response));
       const body = await response.json();
       const imported = body.summary?.imported ?? 0;
+      isCommitting = false;
       status.textContent = '';
       preflight.hidden = true;
       intro.hidden = true;
@@ -239,6 +257,7 @@ function initImport(library) {
       startCloseCountdown();
       pasteInput.value = '';
     } catch (error) {
+      isCommitting = false;
       showError(error.message);
       if (!preflight.hidden) syncConfirm();
       else inputs.hidden = false;
@@ -255,6 +274,8 @@ function initImport(library) {
       && !(entry.warnings || []).length;
   };
   const preflightFile = async (file) => {
+    if (isCommitting) return;
+    const requestId = ++preflightRequestId;
     preflight.hidden = true;
     results.replaceChildren();
     warningBox.replaceChildren();
@@ -274,14 +295,17 @@ function initImport(library) {
     data.append('bundle', file, file.name);
     try {
       const response = await csrfFetch('/api/v1/templates/import/preflight', { method: 'POST', credentials: 'include', body: data });
+      if (requestId !== preflightRequestId) return;
       if (!response.ok) throw new Error(await errorMessage(response));
       const body = await response.json();
+      if (requestId !== preflightRequestId) return;
       if (isCleanSingleTemplate(body)) {
         await importCurrent([body.entries[0].index]);
         return;
       }
       renderPreflight(body);
     } catch (error) {
+      if (requestId !== preflightRequestId) return;
       currentFile = null;
       showError(error.message);
     }
@@ -304,7 +328,9 @@ function initImport(library) {
   };
 
   library.querySelector('[data-template-import-open]')?.addEventListener('click', () => { reset(); dialog.showModal(); });
-  dialog.addEventListener('close', () => { if (!success.hidden) finishImport(); else reset(); });
+  dialog.querySelector('form')?.addEventListener('submit', (event) => { if (isCommitting) event.preventDefault(); });
+  dialog.addEventListener('cancel', (event) => { if (isCommitting) event.preventDefault(); });
+  dialog.addEventListener('close', () => { if (isCommitting) return; if (!success.hidden) finishImport(); else reset(); });
   fileInput.addEventListener('change', () => preflightFile(fileInput.files?.[0]));
   pasteSubmit.addEventListener('click', () => {
     const file = pastedFile();
@@ -333,19 +359,9 @@ Treat any description the user supplies as the brief. Ask only the questions nee
 
 Create one template unless the user explicitly asks for several or clearly describes a set.
 
-Choose "freeform" when the user wants one formatted document. Choose "structured" only when they explicitly want separate EMIS-compatible sections. If that choice is not obvious, ask before generating the bundle. Structured templates may use only the section keys, labels, ordering, and "emis" profile permitted by the JSON Schema. Never invent a profile or section key.
+Choose "freeform" when the user wants one formatted document. Choose "structured" only when they explicitly want separate EMIS-compatible sections. If that choice is not obvious, ask before generating the bundle. Structured templates may use only the section keys, ordering, and "emis" profile permitted by the JSON Schema. Never invent a profile or section key.
 
-For every structured section, use the exact matching label below. These labels are fixed and are not custom headings:
-- problem → Problem
-- history → History
-- family_history → Family history
-- social_history → Social history
-- examination → Examination
-- comment → Comment
-- tasks → Tasks
-- investigations → Investigations
-
-List structured sections in the intended display order. Set section_order to consecutive integers starting at 1 in that same array order, and never repeat a section_key. Put any more specific user-facing emphasis in the section instruction, not by changing section_label.
+List structured sections in the intended display order. Set section_order to consecutive integers starting at 1 in that same array order, and never repeat a section_key. OpenScribe derives each user-facing section label from section_key, so do not add a section_label field. Put any more specific user-facing emphasis in the section instruction.
 
 Do not ask for or include patient information, transcripts, clinical notes, credentials, or other confidential data. Use fictional or generic examples only.
 
@@ -374,7 +390,7 @@ function initTemplateHelp(library) {
   let prompt = '';
   const loadPrompt = async () => {
     if (prompt) return prompt;
-    const response = await fetch('/static/schemas/openscribe-template-bundle-v1.schema.json?v=20260724-canonical-emis-labels', { credentials: 'same-origin' });
+    const response = await fetch('/static/schemas/openscribe-template-bundle-v1.schema.json?v=20260725-section-keys', { credentials: 'same-origin' });
     if (!response.ok) throw new Error('The template instructions could not be loaded.');
     prompt = templateMakerPrompt(await response.json());
     return prompt;

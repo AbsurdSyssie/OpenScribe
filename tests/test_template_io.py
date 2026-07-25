@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from jsonschema import validate
@@ -8,7 +9,7 @@ from sqlalchemy import func, select
 
 from app.errors import AppError
 from app.models import PromptTemplate, PromptTemplateVersion, SecurityAuditEvent, TeamRole, TemplateMode, TemplateScope
-from app.services.templates import import_template_bundle, parse_template_bundle, plan_template_bundle_import
+from app.services.templates import export_template_bundle, import_template_bundle, parse_template_bundle, plan_template_bundle_import
 
 
 def bundle_bytes(*templates: dict, **extra: object) -> bytes:
@@ -66,6 +67,66 @@ def test_parse_rejects_non_null_freeform_config_and_boolean_version():
         parse_template_bundle(json.dumps({"format": "openscribe-template-bundle", "format_version": True, "templates": [freeform("One")]}).encode())
 
 
+@pytest.mark.parametrize(
+    ("entry", "expected_path"),
+    [
+        (
+            {
+                "name": "Missing description",
+                "latest_version": {
+                    "mode": "freeform",
+                    "prompt_text": "Write a note",
+                    "config_json": None,
+                },
+            },
+            "templates[0].description",
+        ),
+        (
+            {
+                "name": "Missing config",
+                "description": None,
+                "latest_version": {
+                    "mode": "freeform",
+                    "prompt_text": "Write a note",
+                },
+            },
+            "templates[0].latest_version.config_json",
+        ),
+    ],
+)
+def test_parse_rejects_template_entries_missing_required_fields(entry, expected_path):
+    entries, _, issues = parse_template_bundle(bundle_bytes(entry))
+
+    assert entries == [None]
+    assert issues[0][0]["path"] == expected_path
+
+
+def test_parse_rejects_boolean_structured_section_order():
+    structured = {
+        "name": "Boolean section order",
+        "description": None,
+        "latest_version": {
+            "mode": "structured",
+            "prompt_text": "Write sections",
+            "config_json": {
+                "profile": "emis",
+                "sections": [
+                    {
+                        "section_key": "problem",
+                        "instruction": "Summarise the problem.",
+                        "section_order": True,
+                    }
+                ],
+            },
+        },
+    }
+
+    entries, _, issues = parse_template_bundle(bundle_bytes(structured))
+
+    assert entries == [None]
+    assert issues[0][0]["path"] == "templates[0].latest_version.config_json.sections.0.section_order"
+
+
 def test_public_schema_accepts_supported_bundle_and_enforces_mode_config_pairing():
     schema = json.loads(Path("app/static/schemas/openscribe-template-bundle-v1.schema.json").read_text(encoding="utf-8"))
     validate(json.loads(bundle_bytes(freeform("Portable"))), schema)
@@ -75,18 +136,8 @@ def test_public_schema_accepts_supported_bundle_and_enforces_mode_config_pairing
         validate(json.loads(bundle_bytes(invalid)), schema)
 
 
-def test_public_schema_enforces_canonical_emis_label_for_each_section_key():
+def test_public_schema_uses_section_keys_without_redundant_labels():
     schema = json.loads(Path("app/static/schemas/openscribe-template-bundle-v1.schema.json").read_text(encoding="utf-8"))
-    labels = {
-        "problem": "Problem",
-        "history": "History",
-        "family_history": "Family history",
-        "social_history": "Social history",
-        "examination": "Examination",
-        "comment": "Comment",
-        "tasks": "Tasks",
-        "investigations": "Investigations",
-    }
     structured = {
         "name": "Anxiety assessment",
         "description": None,
@@ -98,7 +149,6 @@ def test_public_schema_enforces_canonical_emis_label_for_each_section_key():
                 "sections": [
                     {
                         "section_key": "problem",
-                        "section_label": "Wrong label",
                         "instruction": "Record the presenting concern.",
                         "section_order": 1,
                     }
@@ -107,14 +157,93 @@ def test_public_schema_enforces_canonical_emis_label_for_each_section_key():
         },
     }
 
-    section = structured["latest_version"]["config_json"]["sections"][0]
-    for section_key, section_label in labels.items():
-        section["section_key"] = section_key
-        section["section_label"] = "Wrong label"
-        with pytest.raises(JsonSchemaValidationError):
-            validate(json.loads(bundle_bytes(structured)), schema)
-        section["section_label"] = section_label
+    validate(json.loads(bundle_bytes(structured)), schema)
+    structured["latest_version"]["config_json"]["sections"][0]["section_label"] = "Problem"
+    with pytest.raises(JsonSchemaValidationError):
         validate(json.loads(bundle_bytes(structured)), schema)
+
+
+def test_parse_accepts_label_free_sections_and_rejects_redundant_labels():
+    structured = {
+        "name": "Anxiety assessment",
+        "description": None,
+        "latest_version": {
+            "mode": "structured",
+            "prompt_text": "Write an assessment",
+            "config_json": {
+                "profile": "emis",
+                "sections": [
+                    {
+                        "section_key": "problem",
+                        "instruction": "Record the presenting concern.",
+                        "section_order": 1,
+                    }
+                ],
+            },
+        },
+    }
+
+    entries, _, issues = parse_template_bundle(bundle_bytes(structured))
+    assert entries[0] is not None
+    assert issues == [[]]
+
+    structured["latest_version"]["config_json"]["sections"][0]["section_label"] = "Problem"
+    entries, _, issues = parse_template_bundle(bundle_bytes(structured))
+    assert entries == [None]
+    assert issues[0][0]["path"] == "templates[0].latest_version.config_json.sections[0].section_label"
+
+
+def test_import_stores_label_free_config_and_export_normalizes_legacy_config(db_session, make_user):
+    user = make_user()
+    structured = {
+        "name": "Anxiety assessment",
+        "description": None,
+        "latest_version": {
+            "mode": "structured",
+            "prompt_text": "Write an assessment",
+            "config_json": {
+                "profile": "emis",
+                "sections": [
+                    {
+                        "section_key": "problem",
+                        "instruction": "Record the presenting concern.",
+                        "section_order": 1,
+                    }
+                ],
+            },
+        },
+    }
+
+    result = import_template_bundle(
+        db_session,
+        user,
+        destination=TemplateScope.user,
+        raw_bundle=bundle_bytes(structured),
+        selected_indexes=[0],
+    )
+    template_id = result["created"][0]["template_id"]
+    version = db_session.scalar(
+        select(PromptTemplateVersion).where(PromptTemplateVersion.template_id == UUID(template_id))
+    )
+    assert "section_label" not in version.config_json["sections"][0]
+
+    version.config_json = {
+        "profile": "emis",
+        "sections": [
+            {
+                "section_key": "problem",
+                "section_label": "Legacy label",
+                "instruction": "Record the presenting concern.",
+                "section_order": 1,
+            }
+        ],
+    }
+    db_session.add(version)
+    db_session.commit()
+    db_session.refresh(version)
+    assert version.config_json["sections"][0]["section_label"] == "Legacy label"
+    exported = export_template_bundle(db_session, user, template_ids=[version.template_id])
+    assert "section_label" not in exported["templates"][0]["latest_version"]["config_json"]["sections"][0]
 
 
 def test_import_preflight_and_commit_handle_exact_copy_and_suffix_atomically(db_session, make_user):

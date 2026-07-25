@@ -243,7 +243,7 @@ def _structured_section_definitions_snapshot(template_config: StructuredTemplate
         "sections": [
             {
                 "section_key": section.section_key,
-                "section_label": section.section_label,
+                "section_label": EMIS_SECTION_LABELS[section.section_key],
                 "section_order": section.section_order,
             }
             for section in sorted(template_config.sections, key=lambda item: item.section_order)
@@ -629,7 +629,6 @@ def _serialize_template_config(payload: PromptTemplateUpsert) -> dict | None:
         selected_sections.append(
             {
                 "section_key": section_key,
-                "section_label": EMIS_SECTION_LABELS[section_key],
                 "instruction": instruction,
                 "section_order": index,
             }
@@ -718,6 +717,7 @@ def export_template_bundle(db: Session, actor: User, *, template_ids: list[UUID]
     for template_id in template_ids:
         template = by_id[template_id]
         version = _latest_template_version(db, template_id=template.id)
+        template_config = _template_version_config(version)
         entries.append(
             {
                 "name": template.name,
@@ -725,7 +725,7 @@ def export_template_bundle(db: Session, actor: User, *, template_ids: list[UUID]
                 "latest_version": {
                     "mode": version.mode.value,
                     "prompt_text": version.prompt_text,
-                    "config_json": version.config_json,
+                    "config_json": template_config.model_dump(mode="json") if template_config is not None else None,
                 },
             }
         )
@@ -782,16 +782,19 @@ def parse_template_bundle(raw_bundle: bytes) -> tuple[list[TemplateBundleEntry |
                         for section_index, raw_section in enumerate(raw_sections):
                             if isinstance(raw_section, dict):
                                 for key in raw_section:
-                                    if key not in {"section_key", "section_label", "instruction", "section_order"}:
+                                    if key not in {"section_key", "instruction", "section_order"}:
                                         issues.append({"path": f"templates[{index}].latest_version.config_json.sections[{section_index}].{key}", "message": "Unknown structured section field"})
             cleaned = {
-                "name": raw_entry.get("name"),
-                "description": raw_entry.get("description"),
-                "latest_version": {
-                    key: raw_version.get(key)
-                    for key in ("mode", "prompt_text", "config_json")
-                } if isinstance(raw_version, dict) else raw_version,
+                key: raw_entry[key]
+                for key in ("name", "description", "latest_version")
+                if key in raw_entry
             }
+            if isinstance(raw_version, dict) and "latest_version" in cleaned:
+                cleaned["latest_version"] = {
+                    key: raw_version[key]
+                    for key in ("mode", "prompt_text", "config_json")
+                    if key in raw_version
+                }
         else:
             cleaned = raw_entry
         try:
@@ -800,8 +803,6 @@ def parse_template_bundle(raw_bundle: bytes) -> tuple[list[TemplateBundleEntry |
             entry = TemplateBundleEntry.model_validate(cleaned)
             if entry.latest_version.mode is TemplateMode.structured and entry.latest_version.config_json is not None:
                 for section_index, section in enumerate(entry.latest_version.config_json.sections, start=1):
-                    if section.section_label != EMIS_SECTION_LABELS.get(section.section_key):
-                        raise AppError(422, "validation_error", "Structured section label does not match its key", {"field": f"config_json.sections.{section_index - 1}.section_label"})
                     if section.section_order != section_index:
                         raise AppError(422, "validation_error", "Structured section order must be consecutive and one-based", {"field": f"config_json.sections.{section_index - 1}.section_order"})
             normalized_payload = PromptTemplateUpsert(
@@ -863,11 +864,13 @@ def _import_content(entry: TemplateBundleEntry) -> tuple[object, ...]:
 
 def _stored_template_content(db: Session, template: PromptTemplate) -> tuple[object, ...]:
     version = _latest_template_version(db, template_id=template.id)
+    template_config = _template_version_config(version)
+    normalized_config = template_config.model_dump(mode="json") if template_config is not None else None
     return (
         (template.description or "").strip() or None,
         version.mode.value,
         version.prompt_text.strip(),
-        json.dumps(version.config_json, sort_keys=True, separators=(",", ":")) if version.config_json is not None else None,
+        json.dumps(normalized_config, sort_keys=True, separators=(",", ":")) if normalized_config is not None else None,
     )
 
 
@@ -2573,7 +2576,7 @@ def _structured_note_response_json_schema(
                     "properties": {
                         section.section_key: {
                             "type": "string",
-                            "description": f"{section.section_label}: {section.instruction}",
+                            "description": f"{EMIS_SECTION_LABELS[section.section_key]}: {section.instruction}",
                         }
                         for section in ordered_sections
                     },
@@ -2801,7 +2804,7 @@ def _parse_generated_structured_note_json(
         parsed_sections.append(
             {
                 "section_key": section.section_key,
-                "section_label": section.section_label,
+                "section_label": EMIS_SECTION_LABELS[section.section_key],
                 "section_order": section.section_order,
                 "text": normalized,
             }

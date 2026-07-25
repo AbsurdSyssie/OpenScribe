@@ -77,7 +77,6 @@ from .schemas import (
     PostConsultationDictationUpdate,
     PromptContextPreview,
     EMIS_SECTION_KEYS,
-    EMIS_SECTION_LABELS,
     ErrorResponse,
     GenerateFollowupRequest,
     GenerateQuickActionRequest,
@@ -1136,7 +1135,6 @@ def _structured_template_config_from_form(*, section_values: dict[str, str]) -> 
             sections.append(
                 {
                     "section_key": section_key,
-                    "section_label": EMIS_SECTION_LABELS[section_key],
                     "instruction": instruction,
                     "section_order": index,
                 }

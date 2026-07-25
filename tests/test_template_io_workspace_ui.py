@@ -108,6 +108,27 @@ def test_template_io_frontend_supports_shared_upload_paste_and_clean_single_temp
     assert "importCurrent(selectedIndexes())" in script
 
 
+def test_template_io_frontend_limits_exports_and_keeps_commits_open():
+    script = read("app/static/js/settings/template-io.js")
+
+    assert "const MAX_EXPORT_ITEMS = 100;" in script
+    assert "selected().length < Math.min(checks.length, MAX_EXPORT_ITEMS)" in script
+    assert "checkbox.checked = shouldSelect && index < MAX_EXPORT_ITEMS;" in script
+    assert "if (templateIds.length > MAX_EXPORT_ITEMS)" in script
+    assert "let isCommitting = false;" in script
+    assert "dialog.querySelector('form')?.addEventListener('submit', (event) => { if (isCommitting) event.preventDefault(); });" in script
+    assert "dialog.addEventListener('cancel', (event) => { if (isCommitting) event.preventDefault(); });" in script
+
+
+def test_template_io_ignores_superseded_preflight_responses():
+    script = read("app/static/js/settings/template-io.js")
+
+    assert "let preflightRequestId = 0;" in script
+    assert "preflightRequestId += 1;" in script
+    assert "const requestId = ++preflightRequestId;" in script
+    assert script.count("if (requestId !== preflightRequestId) return;") >= 2
+
+
 def test_template_io_help_exposes_ai_prompt_copy_and_manual_fallback_hooks():
     markup = read("app/templates/settings/_template_library.html")
     script = read("app/static/js/settings/template-io.js")
@@ -133,8 +154,8 @@ def test_template_io_help_exposes_ai_prompt_copy_and_manual_fallback_hooks():
         assert f"[{hook}]" in script
     assert "navigator.clipboard.writeText" in script
     assert "Instructions copied" in script
-    assert "problem → Problem" in script
-    assert "social_history → Social history" in script
+    assert "do not add a section_label field" in script
+    assert "Never invent a profile or section key" in script
     assert "section_order to consecutive integers starting at 1" in script
     assert "check the entire output with JSON.parse" in script
     assert "Never place an unescaped double quote inside a string value" in script

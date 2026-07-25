@@ -304,6 +304,27 @@ def test_quick_action_import_shows_success_state_before_library_refresh():
     assert "continueButton.addEventListener('click', finishImport)" in script
 
 
+def test_quick_action_io_frontend_limits_exports_and_keeps_commits_open():
+    script = Path("app/static/js/settings/quick-action-io.js").read_text(encoding="utf-8")
+
+    assert "const MAX_EXPORT_ITEMS = 100;" in script
+    assert "selected().length < Math.min(checks.length, MAX_EXPORT_ITEMS)" in script
+    assert "checkbox.checked = shouldSelect && index < MAX_EXPORT_ITEMS;" in script
+    assert "if (quickActionIds.length > MAX_EXPORT_ITEMS)" in script
+    assert "let isCommitting = false;" in script
+    assert "dialog.querySelector('form')?.addEventListener('submit', (event) => { if (isCommitting) event.preventDefault(); });" in script
+    assert "dialog.addEventListener('cancel', (event) => { if (isCommitting) event.preventDefault(); });" in script
+
+
+def test_quick_action_io_ignores_superseded_preflight_responses():
+    script = Path("app/static/js/settings/quick-action-io.js").read_text(encoding="utf-8")
+
+    assert "let preflightRequestId = 0;" in script
+    assert "preflightRequestId += 1;" in script
+    assert "const requestId = ++preflightRequestId;" in script
+    assert script.count("if (requestId !== preflightRequestId) return;") >= 2
+
+
 def test_quick_action_help_copies_schema_aware_ai_instructions():
     script = Path("app/static/js/settings/quick-action-io.js").read_text(encoding="utf-8")
     markup = Path("app/templates/settings/_quick_action_library.html").read_text(encoding="utf-8")

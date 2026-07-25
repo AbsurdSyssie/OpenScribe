@@ -1,6 +1,6 @@
-import { initTemplateIO } from './template-io.js?v=20260724-import-success-countdown';
-import { initQuickActionIO } from './quick-action-io.js?v=20260724-ai-instructions';
-import { initSmartPhraseIO } from './smart-phrase-io.js?v=20260724-ai-instructions';
+import { initTemplateIO } from './template-io.js?v=20260724-portability-guards';
+import { initQuickActionIO } from './quick-action-io.js?v=20260724-portability-guards';
+import { initSmartPhraseIO } from './smart-phrase-io.js?v=20260724-portability-guards';
 
 function snapshot(form) {
   const data = new FormData(form); data.delete('_csrf_token'); return new URLSearchParams(data).toString();

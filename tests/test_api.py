@@ -9811,8 +9811,8 @@ def test_template_api_returns_structured_config_json(
     assert returned_template["latest_version"]["config_json"] == {
         "profile": "emis",
         "sections": [
-            {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise the problem.", "section_order": 1},
-            {"section_key": "history", "section_label": "History", "instruction": "Summarise the history.", "section_order": 2},
+            {"section_key": "problem", "instruction": "Summarise the problem.", "section_order": 1},
+            {"section_key": "history", "instruction": "Summarise the history.", "section_order": 2},
         ],
     }
 
@@ -9873,7 +9873,6 @@ def test_member_forks_latest_same_team_template_version_to_owned_personal_copy(
         "sections": [
             {
                 "section_key": "history",
-                "section_label": "History",
                 "instruction": "Use relevant history only.",
                 "section_order": 1,
             }

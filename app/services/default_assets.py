@@ -42,14 +42,14 @@ BUILTIN_DEFAULT_TEMPLATE = {
     "config_json": {
         "profile": "emis",
         "sections": [
-            {"section_key": "problem", "section_label": "Problem", "instruction": "Summarise presenting problems and diagnoses.", "section_order": 1},
-            {"section_key": "history", "section_label": "History", "instruction": "Summarise relevant history, symptoms, and timeline.", "section_order": 2},
-            {"section_key": "family_history", "section_label": "Family history", "instruction": "Include relevant family history only when mentioned.", "section_order": 3},
-            {"section_key": "social_history", "section_label": "Social history", "instruction": "Include relevant social context, occupation, smoking, alcohol, and support details only when mentioned.", "section_order": 4},
-            {"section_key": "examination", "section_label": "Examination", "instruction": "Summarise examination findings and observations.", "section_order": 5},
-            {"section_key": "comment", "section_label": "Comment", "instruction": "Summarise assessment, safety-netting, and plan narrative.", "section_order": 6},
-            {"section_key": "tasks", "section_label": "Tasks", "instruction": "List agreed actions, referrals, prescriptions, and follow-up tasks.", "section_order": 7},
-            {"section_key": "investigations", "section_label": "Investigations", "instruction": "List investigations ordered, reviewed, or discussed.", "section_order": 8},
+            {"section_key": "problem", "instruction": "Summarise presenting problems and diagnoses.", "section_order": 1},
+            {"section_key": "history", "instruction": "Summarise relevant history, symptoms, and timeline.", "section_order": 2},
+            {"section_key": "family_history", "instruction": "Include relevant family history only when mentioned.", "section_order": 3},
+            {"section_key": "social_history", "instruction": "Include relevant social context, occupation, smoking, alcohol, and support details only when mentioned.", "section_order": 4},
+            {"section_key": "examination", "instruction": "Summarise examination findings and observations.", "section_order": 5},
+            {"section_key": "comment", "instruction": "Summarise assessment, safety-netting, and plan narrative.", "section_order": 6},
+            {"section_key": "tasks", "instruction": "List agreed actions, referrals, prescriptions, and follow-up tasks.", "section_order": 7},
+            {"section_key": "investigations", "instruction": "List investigations ordered, reviewed, or discussed.", "section_order": 8},
         ],
     },
 }

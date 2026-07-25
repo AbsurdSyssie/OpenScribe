@@ -1,0 +1,6 @@
+services:
+  openscribe:
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /var/run/secrets/google/adc.json
+    volumes:
+      - ${GOOGLE_ADC_HOST_FILE:?Set GOOGLE_ADC_HOST_FILE to the host ADC JSON path}:/var/run/secrets/google/adc.json:ro

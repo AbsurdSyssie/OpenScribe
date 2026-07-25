@@ -23,6 +23,8 @@ RUN python -m pip install --upgrade pip \
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
+COPY transcriber_changes/workspace/static ./transcriber_changes/workspace/static
+COPY transcriber_changes/workspace/templates ./transcriber_changes/workspace/templates
 COPY scripts ./scripts
 COPY docker ./docker
 

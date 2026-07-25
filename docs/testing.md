@@ -15,6 +15,11 @@ Documentation convention:
 
 ## Run the suite
 
+Test dependencies live in `requirements-dev.txt`, which includes the runtime set
+from `requirements.txt` plus `pytest` and `pytest-xdist`. Install it into the
+virtualenv before running the suite; the Docker runtime image installs only
+`requirements.txt`.
+
 ```bash
 source .venv/bin/activate
 export $(grep -v '^#' .env | xargs)

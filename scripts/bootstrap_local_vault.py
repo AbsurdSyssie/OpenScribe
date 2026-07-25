@@ -33,9 +33,19 @@ def _read_secret(path: Path, *, label: str) -> str:
     try:
         value = path.read_text(encoding="utf-8").strip()
     except OSError as exc:
-        raise SystemExit(f"Local Vault is initialized but {label} is missing at {path}") from exc
+        raise SystemExit(
+            f"Local Vault is initialized but {label} is missing at {path}. "
+            "Restore the bootstrap files into the Vault bootstrap location without "
+            "printing their contents; see the Vault troubleshooting section in "
+            "docs/docker.md."
+        ) from exc
     if not value:
-        raise SystemExit(f"Local Vault is initialized but {label} is empty at {path}")
+        raise SystemExit(
+            f"Local Vault is initialized but {label} is empty at {path}. "
+            "Restore the bootstrap files into the Vault bootstrap location without "
+            "printing their contents; see the Vault troubleshooting section in "
+            "docs/docker.md."
+        )
     return value
 
 

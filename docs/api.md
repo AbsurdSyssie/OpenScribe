@@ -177,16 +177,14 @@ Bundles must be UTF-8 JSON, no larger than 1 MiB, and contain 1 to 100 entries.
 Unsupported formats or versions and malformed required fields are rejected.
 Unknown additive fields at bundle, template, and latest-version level are ignored
 with path-specific warnings. Structured `config_json` is strict: unknown fields,
-unsupported profiles or section keys, incorrect labels/order, duplicate sections,
+unsupported profiles or section keys, incorrect ordering, duplicate sections,
 and empty instructions invalidate the entry. Freeform entries require
 `config_json: null`.
 
-Each structured EMIS key has one canonical label: `problem` → `Problem`,
-`history` → `History`, `family_history` → `Family history`,
-`social_history` → `Social history`, `examination` → `Examination`, `comment` →
-`Comment`, `tasks` → `Tasks`, and `investigations` → `Investigations`. The public
-JSON Schema encodes these fixed pairs so external template generators cannot
-mistake `section_label` for a custom heading.
+Structured sections carry `section_key`, `instruction`, and `section_order`;
+OpenScribe derives the canonical user-facing label from `section_key`. The public
+JSON Schema rejects `section_label`, limits every supported key to one occurrence,
+and requires each sections array to carry positional one-based order `1..n`.
 
 `POST /api/v1/templates/import/preflight` performs no writes. It returns source
 indexes, proposed names, default selections, entry errors, ignored-field warnings,
@@ -264,6 +262,11 @@ excluded. Import reuses the maintained trigger and text validation, resets usage
 metadata, and proposes deterministic `_COPY`, `_COPY_2`, and later suffixes for
 collisions while remaining within the 64-character trigger limit. Unknown fields
 are rejected. Selected entries are revalidated and created atomically.
+
+Across the Template, Quick Action, and Smart Phrase workspace libraries, export
+selection is capped at the API limit of 100 items. While an import commit is
+pending, Cancel, the dialog close control, and Escape do not close or reset the
+dialog; controls become available again if the request fails.
 
 ### Team transcription configuration
 

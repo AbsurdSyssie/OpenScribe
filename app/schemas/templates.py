@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictInt, field_validator
 
 from app.models import GeneratedDocumentGeneratorType, GeneratedDocumentStatus, HallucinationCheckStatus, TemplateMode, TemplateScope
 
@@ -31,9 +31,8 @@ EMIS_SECTION_LABELS = {
 
 class StructuredTemplateSectionConfig(BaseModel):
     section_key: str
-    section_label: str
     instruction: str
-    section_order: int
+    section_order: StrictInt
 
 
 class StructuredTemplateConfig(BaseModel):

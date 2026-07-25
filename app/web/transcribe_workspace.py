@@ -206,11 +206,10 @@ def _structured_section_definitions_for_template(template) -> list[dict[str, str
         section_key = section.get("section_key")
         if section_key not in EMIS_SECTION_KEYS:
             continue
-        label = section.get("section_label")
         definitions.append(
             {
                 "key": section_key,
-                "label": label if isinstance(label, str) and label.strip() else EMIS_SECTION_LABELS[section_key],
+                "label": EMIS_SECTION_LABELS[section_key],
             }
         )
     return definitions or _default_emis_section_definitions()

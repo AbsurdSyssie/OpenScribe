@@ -1,6 +1,7 @@
 import { csrfFetch } from '../csrf.js';
 
 const MAX_BUNDLE_BYTES = 1024 * 1024;
+const MAX_EXPORT_ITEMS = 100;
 
 async function errorMessage(response) {
   try {
@@ -38,7 +39,7 @@ function initExport(library) {
   const sync = () => {
     const count = selected().length;
     submit.disabled = count === 0;
-    status.textContent = count ? `${count} smart phrase${count === 1 ? '' : 's'} selected` : 'Select at least one smart phrase.';
+    status.textContent = count ? `${count} smart phrase${count === 1 ? '' : 's'} selected (maximum ${MAX_EXPORT_ITEMS}).` : 'Select up to 100 smart phrases.';
   };
   const close = () => {
     sidebar.classList.remove('is-exporting');
@@ -71,16 +72,27 @@ function initExport(library) {
       event.stopImmediatePropagation();
     }
   }, true);
-  checks.forEach((checkbox) => checkbox.addEventListener('change', sync));
+  checks.forEach((checkbox) => checkbox.addEventListener('change', () => {
+    if (checkbox.checked && selected().length > MAX_EXPORT_ITEMS) {
+      checkbox.checked = false;
+      status.textContent = `You can export up to ${MAX_EXPORT_ITEMS} smart phrases at once.`;
+      return;
+    }
+    sync();
+  }));
   library.querySelector('[data-smart-phrase-export-select-all]')?.addEventListener('click', () => {
-    const shouldSelect = checks.some((checkbox) => !checkbox.checked);
-    checks.forEach((checkbox) => { checkbox.checked = shouldSelect; });
+    const shouldSelect = selected().length < Math.min(checks.length, MAX_EXPORT_ITEMS);
+    checks.forEach((checkbox, index) => { checkbox.checked = shouldSelect && index < MAX_EXPORT_ITEMS; });
     sync();
   });
   library.querySelector('[data-smart-phrase-export-cancel]')?.addEventListener('click', close);
   submit?.addEventListener('click', async () => {
     const smartPhraseIds = selected().map((checkbox) => checkbox.value);
     if (!smartPhraseIds.length) return;
+    if (smartPhraseIds.length > MAX_EXPORT_ITEMS) {
+      status.textContent = `You can export up to ${MAX_EXPORT_ITEMS} smart phrases at once.`;
+      return;
+    }
     submit.disabled = true;
     status.textContent = 'Preparing export…';
     try {
@@ -115,6 +127,8 @@ function initImport(library) {
   const pasteInput = dialog.querySelector('[data-smart-phrase-import-json]');
   let currentFile = null;
   let closeTimer = null;
+  let isCommitting = false;
+  let preflightRequestId = 0;
   const libraryUrl = '/workspace/library/smart-phrases';
   const finishImport = () => window.location.assign(libraryUrl);
   const startCloseCountdown = () => {
@@ -129,6 +143,8 @@ function initImport(library) {
   const syncConfirm = () => { confirm.disabled = selectedIndexes().length === 0 || !currentFile; };
   const showError = (message) => { status.textContent = message; status.classList.add('is-error'); confirm.disabled = true; };
   const reset = () => {
+    if (isCommitting) return;
+    preflightRequestId += 1;
     clearInterval(closeTimer); closeTimer = null;
     currentFile = null; preflight.hidden = true; inputs.hidden = false; success.hidden = true; intro.hidden = false; results.replaceChildren(); warningBox.replaceChildren(); warningBox.hidden = true;
     status.textContent = ''; status.classList.remove('is-error'); confirm.disabled = true; confirm.hidden = false; cancelButton.hidden = false; continueButton.hidden = true; continueButton.textContent = 'Close (5)'; fileInput.value = ''; pasteInput.value = '';
@@ -154,24 +170,27 @@ function initImport(library) {
     inputs.hidden = true; preflight.hidden = false; status.textContent = ''; syncConfirm();
   };
   const importCurrent = async (indexes) => {
-    if (!currentFile || !indexes.length) return;
+    if (isCommitting || !currentFile || !indexes.length) return;
+    isCommitting = true;
     confirm.disabled = true; inputs.hidden = true; status.classList.remove('is-error'); status.textContent = 'Importing smart phrases…';
     const data = new FormData(); data.append('bundle', currentFile, currentFile.name); data.append('selected_indexes', JSON.stringify(indexes));
     try {
       const response = await csrfFetch('/api/v1/smart-phrases/import', { method: 'POST', credentials: 'include', body: data });
       if (!response.ok) throw new Error(await errorMessage(response));
-      const body = await response.json(); const imported = body.summary?.imported ?? 0;
+      const body = await response.json(); const imported = body.summary?.imported ?? 0; isCommitting = false;
       status.textContent = ''; preflight.hidden = true; intro.hidden = true;
       successMessage.textContent = `${imported} smart phrase${imported === 1 ? '' : 's'} imported and ready to use.`;
       success.hidden = false; confirm.hidden = true; cancelButton.hidden = true; continueButton.hidden = false; continueButton.focus(); startCloseCountdown();
       pasteInput.value = '';
-    } catch (error) { showError(error.message); if (!preflight.hidden) syncConfirm(); else inputs.hidden = false; }
+    } catch (error) { isCommitting = false; showError(error.message); if (!preflight.hidden) syncConfirm(); else inputs.hidden = false; }
   };
   const isCleanSingleSmartPhrase = (body) => {
     const entries = Array.isArray(body.entries) ? body.entries : []; const entry = entries[0];
     return entries.length === 1 && entry?.status === 'ready' && entry.selectable && entry.selected_by_default && !(body.warnings || []).length && !(entry.warnings || []).length;
   };
   const preflightFile = async (file) => {
+    if (isCommitting) return;
+    const requestId = ++preflightRequestId;
     preflight.hidden = true; results.replaceChildren(); warningBox.replaceChildren(); warningBox.hidden = true; status.textContent = ''; status.classList.remove('is-error'); confirm.disabled = true; currentFile = null;
     if (!file) return;
     if (file.size > MAX_BUNDLE_BYTES) return showError('Choose a JSON bundle no larger than 1 MiB.');
@@ -179,11 +198,17 @@ function initImport(library) {
     const data = new FormData(); data.append('bundle', file, file.name);
     try {
       const response = await csrfFetch('/api/v1/smart-phrases/import/preflight', { method: 'POST', credentials: 'include', body: data });
+      if (requestId !== preflightRequestId) return;
       if (!response.ok) throw new Error(await errorMessage(response));
       const body = await response.json();
+      if (requestId !== preflightRequestId) return;
       if (isCleanSingleSmartPhrase(body)) { await importCurrent([body.entries[0].index]); return; }
       renderPreflight(body);
-    } catch (error) { currentFile = null; showError(error.message); }
+    } catch (error) {
+      if (requestId !== preflightRequestId) return;
+      currentFile = null;
+      showError(error.message);
+    }
   };
   const pastedFile = () => {
     let json = pasteInput.value.trim(); const fenced = json.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```\s*$/i);
@@ -193,7 +218,9 @@ function initImport(library) {
     return new File([json], 'pasted-openscribe-smart-phrases.json', { type: 'application/json' });
   };
   library.querySelector('[data-smart-phrase-import-open]')?.addEventListener('click', () => { reset(); dialog.showModal(); });
-  dialog.addEventListener('close', () => { if (!success.hidden) finishImport(); else reset(); });
+  dialog.querySelector('form')?.addEventListener('submit', (event) => { if (isCommitting) event.preventDefault(); });
+  dialog.addEventListener('cancel', (event) => { if (isCommitting) event.preventDefault(); });
+  dialog.addEventListener('close', () => { if (isCommitting) return; if (!success.hidden) finishImport(); else reset(); });
   fileInput.addEventListener('change', () => preflightFile(fileInput.files?.[0]));
   dialog.querySelector('[data-smart-phrase-import-paste-submit]')?.addEventListener('click', () => { const file = pastedFile(); if (file) preflightFile(file); });
   pasteInput.addEventListener('input', () => { if (status.classList.contains('is-error')) { status.textContent = ''; status.classList.remove('is-error'); } });

@@ -219,15 +219,17 @@ def parse_quick_action_bundle(
                     if key not in _VERSION_FIELDS
                 )
                 cleaned_version: object = {
-                    key: raw_version.get(key) for key in _VERSION_FIELDS
+                    key: raw_version[key]
+                    for key in _VERSION_FIELDS
+                    if key in raw_version
                 }
             else:
                 cleaned_version = raw_version
-            cleaned: object = {
-                "name": raw_entry.get("name"),
-                "description": raw_entry.get("description"),
-                "latest_version": cleaned_version,
+            cleaned = {
+                key: raw_entry[key] for key in _ENTRY_FIELDS if key in raw_entry
             }
+            if "latest_version" in cleaned:
+                cleaned["latest_version"] = cleaned_version
         else:
             cleaned = raw_entry
 

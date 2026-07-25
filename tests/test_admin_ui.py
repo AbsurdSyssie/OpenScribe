@@ -807,7 +807,7 @@ def test_settings_role_scopes_user_and_leader_sections(client, make_team, make_u
     assert user_page.status_code == 200
     assert user_page.headers["Cache-Control"] == "no-store"
     assert '<link rel="stylesheet" href="/static/css/components.css?v=20260718-brand-lockup">' in user_page.text
-    assert '<link rel="stylesheet" href="/static/css/settings.css?v=20260721-template-grid-density">' in user_page.text
+    assert '<link rel="stylesheet" href="/static/css/settings.css?v=20260724-import-celebration">' in user_page.text
     assert 'aria-current="page"' in user_page.text
     assert "Preferences" in user_page.text
     assert '<div class="workspace-nav__group"><p data-sidebar-full>My Library</p>' in user_page.text

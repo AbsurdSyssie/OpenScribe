@@ -332,6 +332,26 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         json_body=_json(scope="user", name="Personal Template", prompt_text="Write a personal note", mode="freeform", is_active=True),
     ),
     AuditCase("DELETE", f"/api/v1/templates/personal/{PLACEHOLDER_UUID}", AccessTier.full),
+    AuditCase(
+        "POST",
+        "/api/v1/templates/export",
+        AccessTier.full,
+        json_body=_json(template_ids=[PLACEHOLDER_UUID]),
+    ),
+    AuditCase(
+        "POST",
+        "/api/v1/templates/import/preflight",
+        AccessTier.full,
+        form_data=_json(destination="personal"),
+        files={"bundle": ("templates.json", b'{"format":"openscribe-template-bundle","format_version":1,"templates":[]}', "application/json")},
+    ),
+    AuditCase(
+        "POST",
+        "/api/v1/templates/import",
+        AccessTier.full,
+        form_data=_json(destination="personal", selected_indexes="[0]"),
+        files={"bundle": ("templates.json", b'{"format":"openscribe-template-bundle","format_version":1,"templates":[]}', "application/json")},
+    ),
     AuditCase("GET", "/api/v1/quick-actions/available", AccessTier.full),
     AuditCase("GET", "/api/v1/quick-actions/team", AccessTier.manager),
     AuditCase(

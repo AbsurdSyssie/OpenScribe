@@ -68,10 +68,21 @@ services:
     networks:
       - openscribe
 
+  volume-init:
+    <<: *app-common
+    user: "0:0"
+    command: ["sh", "-c", "chown -R 10001:10001 /app/.local/vault /app/.runtime"]
+    restart: "no"
+    volumes:
+      - vault_bootstrap:/app/.local/vault
+      - celerybeat_data:/app/.runtime
+
   vault-bootstrap:
     <<: *app-common
     command: ["vault-bootstrap"]
     depends_on:
+      volume-init:
+        condition: service_completed_successfully
       vault:
         condition: service_healthy
     healthcheck:

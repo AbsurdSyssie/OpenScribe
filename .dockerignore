@@ -1,0 +1,17 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+.local
+.venv
+.pytest_cache
+__pycache__
+*.py[cod]
+*.log
+celerybeat-schedule*
+frontend
+UI_Extract
+docs
+tests
+transcriber_changes

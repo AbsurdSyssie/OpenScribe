@@ -43,33 +43,51 @@ jobs:
         run: cp .env.example .env
 
       - name: Validate Compose configuration
-        run: docker compose --profile runtime config
+        run: docker compose --profile runtime config --quiet
 
-      - name: Build and start runtime
-        run: docker compose --profile runtime up -d --build
+      - name: Build runtime image
+        run: docker compose --profile runtime build --quiet
+
+      - name: Start runtime
+        run: docker compose --profile runtime up -d --no-build
 
       - name: Wait for OpenScribe health
         shell: bash
         run: |
           container_id="$(docker compose --profile runtime ps -q openscribe)"
+
+          diagnose() {
+            echo "--- compose status ---"
+            docker compose --profile runtime ps -a
+            echo "--- OpenScribe state ---"
+            docker inspect --format '{{json .State}}' "$container_id" || true
+            echo "--- OpenScribe logs ---"
+            docker compose --profile runtime logs --no-color --tail=200 openscribe || true
+          }
+
           for attempt in {1..60}; do
-            status="$(docker inspect --format '{{.State.Health.Status}}' "$container_id")"
+            status="$(docker inspect --format '{{.State.Health.Status}}' "$container_id" 2>/dev/null || echo missing)"
             if [[ "$status" == "healthy" ]]; then
               curl --fail --silent --show-error http://127.0.0.1:8080/health
               exit 0
             fi
-            if [[ "$status" == "unhealthy" ]]; then
-              echo "OpenScribe became unhealthy" >&2
+            if [[ "$status" == "unhealthy" || "$status" == "missing" ]]; then
+              echo "OpenScribe health status: ${status}" >&2
+              diagnose
               exit 1
             fi
             sleep 5
           done
+
           echo "OpenScribe did not become healthy in time" >&2
+          diagnose
           exit 1
 
-      - name: Show container logs
+      - name: Show final container status
         if: always()
-        run: docker compose --profile runtime logs --no-color
+        run: |
+          docker compose --profile runtime ps -a
+          docker compose --profile runtime logs --no-color --tail=100 openscribe || true
 
       - name: Stop runtime
         if: always()

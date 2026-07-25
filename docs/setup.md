@@ -123,7 +123,7 @@ These seeded accounts are:
 - `mfa_required = false`
 - `mfa_enabled = false`
 - restricted to localhost requests only; non-local login attempts are rejected and any reused non-local session is revoked immediately
-- the seeded admin is system-admin-only, has no team, and does not receive a user content encryption key
+- the seeded admin is system-admin-only and has no team, but receives a per-user DEK for encrypted authentication material; this does not grant transcript ownership or access
 - on localhost, these seeded dev accounts also get a `/transcribe` redaction-debug view for the latest note/follow-up so PHI placeholdering can be verified during development without exposing that view to normal users
 - `Sectioned EMIS note`, `Patient follow-up message`, and `Referral letter` team assets are hard-coded into the dev seed and recreated if missing
 

@@ -54,6 +54,7 @@ from ..services.quick_action_io import (
     plan_quick_action_bundle_import as plan_quick_action_bundle_import_service,
 )
 from ..services.stt import check_selected_stt_health as check_selected_stt_health_service
+from ..services.auth import totp_secret_for_method
 from ..models import AttemptKind
 from ..services.transcripts import (
     clear_working_note as clear_working_note_service,
@@ -338,9 +339,10 @@ def api_onboarding_password(payload: PasswordChangeRequest, request: Request, co
 def api_onboarding_totp_start(request: Request, context: AuthenticatedContext = Depends(require_authenticated_context), db: Session = Depends(get_db)):
     method = start_totp_enrollment(db, context.user)
     record_security_event(db, action="totp_enrollment_started", actor=context.user, target=context.user, request=request, details={"category": "mfa", "outcome": "success"})
-    uri = provisioning_uri(context.user, method)
+    plaintext_secret = totp_secret_for_method(db, user=context.user, method=method)
+    uri = provisioning_uri(user=context.user, plaintext_secret=plaintext_secret)
     return TotpEnrollmentStartResponse(
-        secret=method.secret,
+        secret=plaintext_secret,
         provisioning_uri=uri,
         qr_code_svg_data_uri=provisioning_qr_svg_data_uri(uri),
     )
@@ -494,7 +496,7 @@ def break_glass_password_reset(
         raise AppError(422, "confirmation_required", "Confirm that email recovery is unavailable before using break-glass recovery")
     if not _break_glass_allowed():
         raise AppError(409, "break_glass_not_available", "Break-glass recovery is not available while email recovery is enabled")
-    verify_active_totp_for_user(context.user, code=payload.mfa_code)
+    verify_active_totp_for_user(db, context.user, code=payload.mfa_code)
     user = get_manageable_user_for_recovery_service(db, context.user, user_id)
     temporary_password, expires_at = reset_user_password_to_temporary_service(
         db,
@@ -532,7 +534,7 @@ def break_glass_account_recovery(
         raise AppError(422, "confirmation_required", "Confirm that email recovery is unavailable before using break-glass recovery")
     if not _break_glass_allowed():
         raise AppError(409, "break_glass_not_available", "Break-glass recovery is not available while email recovery is enabled")
-    verify_active_totp_for_user(context.user, code=payload.mfa_code)
+    verify_active_totp_for_user(db, context.user, code=payload.mfa_code)
     user = get_manageable_user_for_recovery_service(db, context.user, user_id)
     temporary_password, expires_at = reset_user_password_to_temporary_service(
         db,

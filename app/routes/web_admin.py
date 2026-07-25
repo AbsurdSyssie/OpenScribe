@@ -2672,7 +2672,7 @@ def admin_break_glass_password_reset(request: Request, user_id: UUID, mfa_code: 
             raise AppError(422, "confirmation_required", "Confirm that email recovery is unavailable before using break-glass recovery")
         if not _admin_break_glass_allowed():
             raise AppError(409, "break_glass_not_available", "Break-glass recovery is not available while email recovery is enabled")
-        verify_active_totp_for_user(context.user, code=mfa_code)
+        verify_active_totp_for_user(db, context.user, code=mfa_code)
         user = get_manageable_user_for_recovery_service(db, context.user, user_id)
         temporary_password, expires_at = reset_user_password_to_temporary_service(db, user, actor=context.user, reset_mfa=False, break_glass=True)
         record_security_event(db, action="break_glass_password_reset_generated", actor=context.user, target=user, request=request, details={"reason": reason, "expires_at": expires_at.isoformat()})
@@ -2737,7 +2737,7 @@ def admin_break_glass_account_recovery(request: Request, user_id: UUID, mfa_code
             raise AppError(422, "confirmation_required", "Confirm that email recovery is unavailable before using break-glass recovery")
         if not _admin_break_glass_allowed():
             raise AppError(409, "break_glass_not_available", "Break-glass recovery is not available while email recovery is enabled")
-        verify_active_totp_for_user(context.user, code=mfa_code)
+        verify_active_totp_for_user(db, context.user, code=mfa_code)
         user = get_manageable_user_for_recovery_service(db, context.user, user_id)
         temporary_password, expires_at = reset_user_password_to_temporary_service(db, user, actor=context.user, reset_mfa=True, break_glass=True)
         record_security_event(db, action="break_glass_account_recovery_generated", actor=context.user, target=user, request=request, details={"reason": reason, "expires_at": expires_at.isoformat()})

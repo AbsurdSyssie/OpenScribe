@@ -214,9 +214,16 @@ Expected search results: no matches.
 
 - TOTP is the first MFA method
 - TOTP setup is mandatory for managed-account onboarding
+- new and re-enrolled TOTP seeds use AES-256-GCM envelopes under the owning user's existing per-user DEK, with AAD bound to the `user_mfa_methods.secret` location plus user and method UUIDs
+- enrollment plaintext is disclosed only to the authenticated onboarding user and enrollment browser/API responses are `no-store`
+- encrypted-MFA Vault/key failures fail closed as an unavailable MFA service, separately from an invalid TOTP code; malformed, missing-key, or AEAD-invalid values are controlled unreadable-secret failures
+- temporary development/pre-production compatibility permits legacy plaintext Base32 seeds to be read without migration, rewrite, or DEK creation on read
+- all newly created local users, including teamless system administrators, receive DEKs for encrypted authentication material; this does not confer transcript ownership or content access
 - recovery codes are optional to generate in MVP
 - recovery codes are stored hashed only
 - displayed recovery codes are one-time display material and must not be recoverable from the database in plaintext
+
+The plaintext compatibility fallback, key-purpose separation, production Vault operations, rotation/history, and recovery runbook remain deferred production work. See [mfa-secret-encryption.md](mfa-secret-encryption.md).
 
 ## Account-request security rules
 

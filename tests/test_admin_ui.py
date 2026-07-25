@@ -70,6 +70,7 @@ from app.models import (
     TranscriptStatus,
     TranscriptVersion,
     User,
+    UserEncryptionKey,
     UserAppPreference,
     UserLlmPreference,
     UserMfaMethod,
@@ -82,6 +83,7 @@ from app.models import (
 )
 from app.services.default_assets import BUILTIN_DEFAULT_QUICK_ACTIONS, BUILTIN_DEFAULT_TEMPLATE, ensure_builtin_team_assets, import_team_assets_to_defaults
 from app.services.admin import admin_usage_overview
+from app.services.content_crypto import is_encrypted_envelope
 from app.services.dictations import update_post_consultation_dictation
 from app.services.passwords import verify_password
 from app.schemas.llm import LlmConfigInspectResult
@@ -224,7 +226,7 @@ def test_dev_seed_account_browser_login_is_restricted_to_localhost(client, make_
     assert "Dev test accounts are available only from localhost" in response.text
 
 
-def test_bootstrap_redirects_to_onboarding_and_requires_totp_setup(client):
+def test_bootstrap_system_admin_gets_dek_and_browser_totp_enrollment_uses_encrypted_secret(client, db_session):
     bootstrap_response = client.post(
         "/bootstrap/system-admin",
         data={"email": "admin@example.com", "password": "AdminPassword123"},
@@ -239,13 +241,26 @@ def test_bootstrap_redirects_to_onboarding_and_requires_totp_setup(client):
     assert "OpenScribe account setup" in page.text
 
     start_page = client.post("/onboarding/totp/start")
+    secret_match = re.search(r'<strong>([A-Z2-7]+)</strong>', start_page.text)
+    enrolled_admin = db_session.scalar(select(User).where(User.email == "admin@example.com"))
+    enrolled_method = db_session.scalar(select(UserMfaMethod).where(UserMfaMethod.user_id == enrolled_admin.id))
+    key_count = db_session.scalar(
+        select(func.count()).select_from(UserEncryptionKey).where(
+            UserEncryptionKey.user_id == enrolled_admin.id,
+            UserEncryptionKey.is_active.is_(True),
+        )
+    )
     assert start_page.status_code == 200
     assert "Scan this QR code with your authenticator app." in start_page.text
     assert "data:image/svg+xml" in start_page.text
+    assert start_page.headers["Cache-Control"] == "no-store"
+    assert start_page.headers["Pragma"] == "no-cache"
+    assert secret_match is not None
+    assert enrolled_method is not None
+    assert is_encrypted_envelope(enrolled_method.secret)
+    assert key_count == 1
 
-    start = client.post("/api/v1/onboarding/totp/start")
-    code = pyotp.TOTP(start.json()["secret"]).now()
-    verify = client.post("/onboarding/totp/verify", data={"code": code})
+    verify = client.post("/onboarding/totp/verify", data={"code": pyotp.TOTP(secret_match.group(1)).now()})
     assert verify.status_code == 200
     assert "Recovery codes" in verify.text
 
@@ -1163,13 +1178,11 @@ def test_settings_account_password_change_validates_and_rotates_session(client, 
     assert any(session.status is SessionStatus.revoked and session.revoke_reason == "password_changed" for session in sessions)
 
 
-def test_settings_account_email_requires_active_totp_when_configured(client, db_session, make_team, make_user):
+def test_settings_account_email_requires_active_totp_when_configured(client, db_session, make_team, make_user, make_totp_method):
     team = make_team(name="Clinic Account MFA")
     member = make_user(email="account-mfa@example.com", password="Password123", team=team)
     client.post("/login", data={"email": member.email, "password": "Password123"}, follow_redirects=False)
-    secret = pyotp.random_base32()
-    db_session.add(UserMfaMethod(user_id=member.id, method_type=MfaMethodType.totp, secret=secret, is_primary=True, is_active=True))
-    db_session.commit()
+    _, secret = make_totp_method(user=member)
 
     missing = client.post(
         "/settings/account/email",

@@ -203,20 +203,9 @@ def test_session_cookie_and_csrf_cookie_are_httponly(raw_client, make_user):
     )
 
 
-def test_trusted_device_cookie_is_httponly(raw_client, db_session, make_user):
+def test_trusted_device_cookie_is_httponly(raw_client, db_session, make_user, make_totp_method):
     user = make_user(email="cookie-trusted@example.com", password="password-1", mfa_required=True, mfa_enabled=True)
-    secret = "JBSWY3DPEHPK3PXP"
-    db_session.add(
-        UserMfaMethod(
-            user_id=user.id,
-            method_type=MfaMethodType.totp,
-            secret=secret,
-            is_primary=True,
-            is_active=True,
-            verified_at=utcnow(),
-        )
-    )
-    db_session.commit()
+    _, secret = make_totp_method(user=user, verified_at=utcnow())
 
     login_response = raw_client.post("/api/v1/auth/login", json={"email": "cookie-trusted@example.com", "password": "password-1"})
     csrf = raw_client.cookies.get(CSRF_COOKIE_NAME)

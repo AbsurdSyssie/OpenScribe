@@ -161,6 +161,8 @@ def ensure_dev_system_admin(
         db.delete(session)
     for key_record in list(db.scalars(select(UserEncryptionKey).where(UserEncryptionKey.user_id == user.id))):
         db.delete(key_record)
+    db.flush()
+    ensure_user_dek(db, user=user)
     db.commit()
     db.refresh(user)
     return user

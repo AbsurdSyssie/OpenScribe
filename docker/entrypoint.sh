@@ -2,6 +2,12 @@
 
 set -euo pipefail
 
+if [[ "$(id -u)" -eq 0 ]]; then
+  mkdir -p /app/.local/vault
+  chown -R openscribe:openscribe /app/.local/vault
+  exec gosu openscribe "$0" "$@"
+fi
+
 wait_for_postgres() {
   python - <<'PY'
 import os

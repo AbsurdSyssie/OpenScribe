@@ -14,6 +14,7 @@ from ..main import (
     _set_trusted_device_cookie,
 )
 from ..models import UserOnboardingState
+from ..services.auth import totp_secret_for_method
 from ..services.passwords import validate_password_strength
 
 
@@ -341,8 +342,12 @@ def onboarding_page(request: Request, db: Session = Depends(get_db)):
     if context.session.auth_level.value == "full":
         return RedirectResponse(url=_post_login_redirect(context), status_code=status.HTTP_303_SEE_OTHER)
     method = current_pending_totp_method(db, context.user)
-    secret = method.secret if method and context.user.onboarding_state.value == "pending_totp_enrollment" else None
-    uri = provisioning_uri(context.user, method) if method and secret else None
+    secret = (
+        totp_secret_for_method(db, user=context.user, method=method)
+        if method and context.user.onboarding_state.value == "pending_totp_enrollment"
+        else None
+    )
+    uri = provisioning_uri(user=context.user, plaintext_secret=secret) if secret else None
     qr_uri = provisioning_qr_svg_data_uri(uri) if uri else None
     return render_onboarding(request, current_user=context.user, totp_secret=secret, totp_uri=uri, totp_qr_svg_data_uri=qr_uri)
 
@@ -416,12 +421,14 @@ def onboarding_totp_start_submit(request: Request, csrf_protected: BrowserCsrf =
         return render_onboarding(request, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
     record_security_event(db, action="totp_enrollment_started", actor=context.user, target=context.user, request=request, details={"category": "mfa", "outcome": "success"})
     refreshed_user = db.get(User, context.user.id)
+    plaintext_secret = totp_secret_for_method(db, user=refreshed_user, method=method)
+    uri = provisioning_uri(user=refreshed_user, plaintext_secret=plaintext_secret)
     return render_onboarding(
         request,
         current_user=refreshed_user,
-        totp_secret=method.secret,
-        totp_uri=provisioning_uri(refreshed_user, method),
-        totp_qr_svg_data_uri=provisioning_qr_svg_data_uri(provisioning_uri(refreshed_user, method)),
+        totp_secret=plaintext_secret,
+        totp_uri=uri,
+        totp_qr_svg_data_uri=provisioning_qr_svg_data_uri(uri),
         message="TOTP secret created. Enter the 6-digit code from your authenticator app.",
         message_kind="success",
     )
@@ -433,16 +440,20 @@ def onboarding_totp_verify_submit(request: Request, code: str = Form(...), csrf_
     if response is not None:
         return response
     method = current_pending_totp_method(db, context.user)
+    plaintext_secret = None
+    uri = None
     try:
+        plaintext_secret = totp_secret_for_method(db, user=context.user, method=method) if method else None
+        uri = provisioning_uri(user=context.user, plaintext_secret=plaintext_secret) if plaintext_secret else None
         user = verify_totp_enrollment(db, context.user, code=code)
     except AppError as exc:
         record_security_event(db, action="totp_enrollment_failure", actor=context.user, target=context.user, request=request, details={"category": "mfa", "outcome": "failure", "reason_code": exc.code, "status_code": exc.status_code})
         return render_onboarding(
             request,
             current_user=context.user,
-            totp_secret=method.secret if method else None,
-            totp_uri=provisioning_uri(context.user, method) if method else None,
-            totp_qr_svg_data_uri=provisioning_qr_svg_data_uri(provisioning_uri(context.user, method)) if method else None,
+            totp_secret=plaintext_secret,
+            totp_uri=uri,
+            totp_qr_svg_data_uri=provisioning_qr_svg_data_uri(uri) if uri else None,
             message=exc.message,
             message_kind="error",
             status_code=exc.status_code,

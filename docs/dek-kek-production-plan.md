@@ -5,6 +5,7 @@
 Define a production-grade DEK/KEK design for OpenScribe that:
 
 - encrypts transcript-derived content at rest
+- supports the implemented encrypted TOTP-seed path without changing transcript authorization
 - preserves the current owner-only access model
 - allows password reset and account recovery without data loss
 - avoids home-grown cryptographic primitives
@@ -53,7 +54,9 @@ This aligns best with current production guidance:
 Keep the architecture already described in this repo:
 
 - one random DEK per normal user / team leader account that may own transcripts
-- no DEK for system-admin-only accounts that do not own transcript-derived content
+- the implemented authentication path also provisions a DEK for every newly created local user, including teamless system-admin-only accounts, because TOTP seeds are encrypted under the owning user's DEK
+
+This amends the earlier system-admin exclusion rather than changing content ownership: a DEK may protect authentication material, but it does not make a system administrator a transcript owner or grant transcript readability.
 
 This preserves account recovery:
 
@@ -403,6 +406,20 @@ Do not delete the wrapped DEK first. That can strand ciphertext that still needs
   - retire old DEK only after all owned content is migrated
 
 ## Rollout plan
+
+### Current MFA implementation and production gap
+
+The current development/pre-production implementation stores new and re-enrolled TOTP seeds as AES-256-GCM envelopes using the existing per-user DEK. AAD follows the existing format with `user_mfa_methods`, `secret`, the owning user UUID, and the MFA-method UUID. Legacy plaintext TOTP rows remain readable temporarily without read-time migration or key creation.
+
+This compatibility path is not production-complete. Before production enforcement, explicitly plan and deliver:
+
+- a plaintext-TOTP backfill and removal of the plaintext fallback;
+- a decision whether MFA/authentication material requires a separate DEK or key purpose from transcript-derived content;
+- Vault Agent/auth-path operation, timeouts, availability monitoring, and alerting suitable for an MFA dependency;
+- KEK/DEK rotation and envelope/key-version history; and
+- an operator recovery/runbook, including the destructive unreadable-key reset procedure.
+
+For current behavior and the reset tool's dry-run/`--apply` semantics, see [mfa-secret-encryption.md](mfa-secret-encryption.md).
 
 ### Phase 0: foundation decision
 

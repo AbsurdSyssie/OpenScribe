@@ -101,6 +101,17 @@ For users whose onboarding is already complete:
 - successful TOTP verification rotates the `pending_mfa` session into a normal `full` session
 - if the user opts in to remembering the browser, the app also issues a trusted-device cookie
 
+### TOTP seed storage and availability
+
+- new and re-enrolled TOTP seeds are stored as AES-GCM envelopes under the owning user's existing per-user DEK, with associated data bound to `user_mfa_methods`, `secret`, the user UUID, and the MFA-method UUID
+- enrollment exposes the plaintext seed, provisioning URI, and QR code only to the authenticated onboarding user; browser and API enrollment responses are `no-store`
+- an encrypted method fails closed when Vault/key access is unavailable (`503 mfa_service_unavailable`), rather than being reported as an invalid code; unreadable or malformed stored secret material is a controlled unreadable-secret failure
+- compatibility-only legacy plaintext Base32 seeds remain readable without rewrite, migration, or DEK creation on read; this keeps current development accounts usable while production backfill/removal is deferred
+- recovery codes remain hash-only and are never recoverable from database state
+- per-user DEKs are provisioned for all newly created local users, including teamless system administrators, to support encrypted authentication material; this does not change transcript ownership or owner-only transcript authorization
+
+See [mfa-secret-encryption.md](mfa-secret-encryption.md) for compatibility, recovery, and production follow-up details.
+
 ### Trusted-device freshness
 
 - trusted devices do not authenticate by themselves
@@ -156,6 +167,7 @@ For users whose onboarding is already complete:
 - when outbound mail is disabled, self-service password reset is hidden in the browser and the reset request endpoint returns `503 mail_transport_disabled`; users must ask a team leader or system administrator for recovery
 - password reset changes password auth material only; it does not rotate or delete the user DEK
 - password reset revokes sessions and trusted devices
+- password-only reset preserves TOTP methods and recovery-code state; explicit MFA reset and account-recovery flows clear both and require reenrollment
 - password reset/setup confirmation validates the token before running Argon2id password hashing
 - user-chosen permanent passwords for onboarding, activation, and reset must be at least 12 characters and include uppercase, lowercase, and number characters
 - password hashes use Argon2id with OWASP baseline parameters; non-Argon2id local dev hashes can be rotated with `scripts/force_argon2id_password_rotation.py`

@@ -13,16 +13,35 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from app.errors import AppError
-from app.models import Transcript, User, UserEncryptionKey
-from app.services.content_crypto import ensure_user_dek, get_active_user_key
+from app.models import (
+    SessionStatus,
+    Transcript,
+    User,
+    UserEncryptionKey,
+    UserMfaMethod,
+    UserOnboardingState,
+    UserRecoveryCode,
+    UserSession,
+    UserTrustedDevice,
+    utcnow,
+)
+from app.services.content_crypto import ensure_user_dek, get_active_user_key, is_encrypted_envelope
 from app.services.transcripts import process_transcript_audio_cleanup_jobs, queue_retry_source_cleanup_for_transcripts
 from app.services.vault import unwrap_user_content_data_key
+
+
+def _user_has_key_dependent_mfa(db: Session, *, user: User) -> bool:
+    for stored_secret in db.scalars(select(UserMfaMethod.secret).where(UserMfaMethod.user_id == user.id)):
+        if is_encrypted_envelope(stored_secret) or stored_secret.lstrip().startswith("{"):
+            return True
+    return False
 
 
 def user_content_key_is_unreadable(db: Session, *, user: User) -> bool:
     key_record = get_active_user_key(db, user_id=user.id)
     if key_record is None:
-        return db.scalar(select(Transcript.id).where(Transcript.owner_user_id == user.id).limit(1)) is not None
+        has_transcript = db.scalar(select(Transcript.id).where(Transcript.owner_user_id == user.id).limit(1)) is not None
+        return has_transcript or _user_has_key_dependent_mfa(db, user=user)
     try:
         unwrap_user_content_data_key(
             wrapped_dek=key_record.wrapped_dek,
@@ -37,16 +56,49 @@ def user_content_key_is_unreadable(db: Session, *, user: User) -> bool:
 
 
 def reset_owner_content_for_user(db: Session, *, user: User) -> None:
-    transcript_rows = list(db.scalars(select(Transcript).where(Transcript.owner_user_id == user.id)))
-    cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=[transcript.id for transcript in transcript_rows])
-    for transcript in transcript_rows:
-        db.delete(transcript)
-    for key_record in list(db.scalars(select(UserEncryptionKey).where(UserEncryptionKey.user_id == user.id))):
-        db.delete(key_record)
-    db.commit()
+    cleanup_job_ids = []
+    try:
+        transcript_rows = list(db.scalars(select(Transcript).where(Transcript.owner_user_id == user.id)))
+        cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(
+            db,
+            transcript_ids=[transcript.id for transcript in transcript_rows],
+        )
+        for transcript in transcript_rows:
+            db.delete(transcript)
+        for key_record in list(db.scalars(select(UserEncryptionKey).where(UserEncryptionKey.user_id == user.id))):
+            db.delete(key_record)
+
+        for method in db.scalars(select(UserMfaMethod).where(UserMfaMethod.user_id == user.id)):
+            db.delete(method)
+        for recovery_code in db.scalars(select(UserRecoveryCode).where(UserRecoveryCode.user_id == user.id)):
+            db.delete(recovery_code)
+
+        now = utcnow()
+        for device in db.scalars(
+            select(UserTrustedDevice).where(UserTrustedDevice.user_id == user.id, UserTrustedDevice.revoked_at.is_(None))
+        ):
+            device.revoked_at = now
+            device.revoke_reason = "encryption_key_reset"
+            db.add(device)
+        for session in db.scalars(
+            select(UserSession).where(UserSession.user_id == user.id, UserSession.status == SessionStatus.active)
+        ):
+            session.status = SessionStatus.revoked
+            session.revoked_at = now
+            session.revoke_reason = "encryption_key_reset"
+            db.add(session)
+
+        user.mfa_enabled = False
+        if user.onboarding_state is not UserOnboardingState.pending_password_change:
+            user.onboarding_state = UserOnboardingState.pending_totp_enrollment
+        db.add(user)
+        db.flush()
+        ensure_user_dek(db, user=user)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     process_transcript_audio_cleanup_jobs(db, job_ids=cleanup_job_ids)
-    ensure_user_dek(db, user=user)
-    db.commit()
 
 
 def reset_unreadable_owner_content(
@@ -56,7 +108,7 @@ def reset_unreadable_owner_content(
     apply: bool = False,
 ) -> list[str]:
     unreadable: list[str] = []
-    query = select(User).where(User.is_system_admin.is_(False)).order_by(User.email)
+    query = select(User).order_by(User.email)
     for user in db.scalars(query):
         if emails and user.email not in emails:
             continue
@@ -69,8 +121,12 @@ def reset_unreadable_owner_content(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Reset unreadable transcript-derived content for local owner accounts.")
-    parser.add_argument("--apply", action="store_true", help="Delete unreadable transcript-derived content and issue a fresh DEK.")
+    parser = argparse.ArgumentParser(description="Reset user data and MFA state that depend on an unreadable DEK.")
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Delete unreadable transcript-derived content, clear MFA state, revoke auth authority, and issue a fresh DEK.",
+    )
     parser.add_argument("--email", action="append", default=[], help="Limit the reset to one or more specific user emails.")
     args = parser.parse_args()
 
@@ -84,13 +140,13 @@ def main() -> None:
         unreadable = reset_unreadable_owner_content(db, emails=emails, apply=args.apply)
 
     if not unreadable:
-        print("No unreadable owner-content keys found.")
+        print("No unreadable user-data keys found.")
         return
 
     for email in unreadable:
         print(email)
     if not args.apply:
-        print("Dry run only. Re-run with --apply to delete unreadable transcript-derived content and issue fresh DEKs.")
+        print("Dry run only. Re-run with --apply to reset dependent content and MFA state and issue fresh DEKs.")
 
 
 if __name__ == "__main__":

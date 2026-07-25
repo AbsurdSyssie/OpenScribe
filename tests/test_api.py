@@ -25,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from scripts.seed_dev_accounts import ensure_dev_system_admin, repair_dev_user_content_key_if_needed
-from scripts.reset_unreadable_owner_content import reset_unreadable_owner_content
+from scripts.reset_unreadable_owner_content import reset_owner_content_for_user, reset_unreadable_owner_content
 
 from app.errors import AppError
 from app.services import transcripts as transcript_service
@@ -62,6 +62,7 @@ from app.models import (
     LlmAdapterKind,
     LlmAuthMode,
     LlmConfigSetupStatus,
+    MfaMethodType,
     DeidentificationAdapterKind,
     DeidentificationAuthMode,
     ProviderUsageEvent,
@@ -118,6 +119,7 @@ from app.models import (
     UserEncryptionKey,
     UserAppPreference,
     UserLlmPreference,
+    UserMfaMethod,
     UserOnboardingState,
     UserRecoveryCode,
     UserSession,
@@ -13262,7 +13264,7 @@ def test_recovery_code_generation_hashes_codes_and_unlocks_full_session(client, 
     assert client.get("/api/v1/auth/me").json()["auth_level"] == "full"
 
 
-def test_totp_start_returns_qr_code_svg_data_uri(client, make_team, make_user):
+def test_totp_start_returns_encrypted_secret_and_valid_api_provisioning_data(client, db_session, make_team, make_user):
     team = make_team(name="Clinical Team")
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
     login(client, email="admin@example.com", password="password-1")
@@ -13287,6 +13289,115 @@ def test_totp_start_returns_qr_code_svg_data_uri(client, make_team, make_user):
     assert start.status_code == 200
     assert start.json()["provisioning_uri"].startswith("otpauth://totp/")
     assert start.json()["qr_code_svg_data_uri"].startswith("data:image/svg+xml")
+    enrolled_user = db_session.scalar(select(User).where(User.email == "managed@example.com"))
+    enrolled_method = db_session.scalar(select(UserMfaMethod).where(UserMfaMethod.user_id == enrolled_user.id))
+    assert enrolled_method is not None
+    assert is_encrypted_envelope(enrolled_method.secret)
+    assert db_session.scalar(
+        select(UserEncryptionKey).where(
+            UserEncryptionKey.user_id == enrolled_user.id,
+            UserEncryptionKey.is_active.is_(True),
+        )
+    ) is not None
+    verified = client.post(
+        "/api/v1/onboarding/totp/verify",
+        json={"code": pyotp.TOTP(start.json()["secret"]).now()},
+    )
+    assert verified.status_code == 200
+
+
+def test_encrypted_totp_completes_login_and_sensitive_break_glass_verification(
+    client, db_session, make_team, make_user, make_totp_method, monkeypatch,
+):
+    monkeypatch.delenv("MAIL_TRANSPORT", raising=False)
+    team = make_team(name="Encrypted MFA Sensitive Action Team")
+    leader = make_user(email="encrypted-mfa-leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    target = make_user(email="encrypted-mfa-target@example.com", password="password-2", team=team, mfa_required=False, mfa_enabled=False)
+    method, plaintext_secret = make_totp_method(user=leader, verified_at=utcnow())
+
+    pending = login(client, email=leader.email, password="password-1")
+    challenge = complete_mfa_challenge(client, plaintext_secret)
+    sensitive_action = client.post(
+        f"/api/v1/users/{target.id}/break-glass-password-reset",
+        json={
+            "mfa_code": pyotp.TOTP(plaintext_secret).now(),
+            "reason": "synthetic test recovery",
+            "confirm_email_unavailable": True,
+        },
+    )
+
+    assert pending.status_code == 200
+    assert pending.json()["auth_level"] == "pending_mfa"
+    assert challenge.status_code == 200
+    assert sensitive_action.status_code == 200
+    assert is_encrypted_envelope(method.secret)
+
+
+def test_legacy_plaintext_totp_preserves_login_and_pending_enrollment_access(
+    client, db_session, make_team, make_user, make_totp_method,
+):
+    team = make_team(name="Legacy MFA Compatibility Team")
+    login_user = make_user(email="legacy-login-mfa@example.com", password="password-1", team=team)
+    _, login_secret = make_totp_method(user=login_user, encrypted=False, verified_at=utcnow())
+
+    pending_login = login(client, email=login_user.email, password="password-1")
+    completed_login = complete_mfa_challenge(client, login_secret)
+    assert pending_login.json()["auth_level"] == "pending_mfa"
+    assert completed_login.status_code == 200
+    assert db_session.scalar(select(UserEncryptionKey).where(UserEncryptionKey.user_id == login_user.id)) is None
+
+    client.cookies.clear()
+    onboarding_user = make_user(
+        email="legacy-onboarding-mfa@example.com",
+        password="password-2",
+        team=team,
+        onboarding_state=UserOnboardingState.pending_totp_enrollment,
+        mfa_enabled=False,
+    )
+    _, onboarding_secret = make_totp_method(
+        user=onboarding_user,
+        encrypted=False,
+        is_active=False,
+    )
+    onboarding_login = login(client, email=onboarding_user.email, password="password-2")
+    onboarding_page = client.get("/onboarding")
+    verified = client.post(
+        "/api/v1/onboarding/totp/verify",
+        json={"code": pyotp.TOTP(onboarding_secret).now()},
+    )
+
+    assert onboarding_login.json()["auth_level"] == "onboarding"
+    assert onboarding_page.status_code == 200
+    assert onboarding_page.headers["Cache-Control"] == "no-store"
+    assert verified.status_code == 200
+    assert db_session.scalar(select(UserEncryptionKey).where(UserEncryptionKey.user_id == onboarding_user.id)) is None
+
+
+def test_vault_failure_during_encrypted_login_mfa_is_not_an_invalid_code_or_trusted_device(
+    client, db_session, make_user, make_totp_method, monkeypatch,
+):
+    user = make_user(email="encrypted-mfa-vault@example.com", password="password-1")
+    _, plaintext_secret = make_totp_method(user=user, verified_at=utcnow())
+    pending = login(client, email=user.email, password="password-1")
+    db_session.info.pop("openscribe_owner_unwrapped_deks", None)
+
+    def fail_unwrap(**_kwargs):
+        raise AppError(502, "vault_read_failed", "Vault data key unwrap failed")
+
+    monkeypatch.setattr("app.services.content_crypto.unwrap_user_content_data_key", fail_unwrap)
+    failed = client.post(
+        "/api/v1/auth/mfa/totp",
+        json={"code": pyotp.TOTP(plaintext_secret).now(), "remember_device": True},
+    )
+
+    assert pending.status_code == 200
+    assert_error(
+        failed,
+        status_code=503,
+        code="mfa_service_unavailable",
+        message="Authenticator verification is temporarily unavailable",
+    )
+    assert db_session.scalars(select(UserTrustedDevice).where(UserTrustedDevice.user_id == user.id)).all() == []
 
 
 def test_locking_a_user_revokes_active_sessions_immediately(client, db_session, make_user):
@@ -13638,7 +13749,7 @@ def test_dev_seed_repair_resets_transcript_content_when_active_key_cannot_be_unw
     assert repaired_key.wrapped_dek != old_wrapped_dek
 
 
-def test_dev_seed_system_admin_is_teamless_full_auth_and_content_key_free(
+def test_dev_seed_system_admin_is_teamless_full_auth_with_a_fresh_active_dek(
     db_session,
     make_team,
     make_user,
@@ -13683,12 +13794,18 @@ def test_dev_seed_system_admin_is_teamless_full_auth_and_content_key_free(
     assert db_session.get(UserSession, session.id) is None
     assert db_session.get(UserTrustedDevice, trusted_device.id) is None
     assert db_session.get(UserEncryptionKey, stale_key.id) is None
+    fresh_key = db_session.scalar(
+        select(UserEncryptionKey).where(UserEncryptionKey.user_id == admin.id, UserEncryptionKey.is_active.is_(True))
+    )
+    assert fresh_key is not None
+    assert fresh_key.id != stale_key.id
 
 
-def test_reset_unreadable_owner_content_dry_run_and_apply(
+def test_reset_unreadable_owner_content_dry_run_and_apply_clears_encrypted_mfa_recovery_and_authority(
     db_session,
     make_team,
     make_user,
+    make_totp_method,
     monkeypatch,
 ):
     team = make_team(name="Unreadable Owner Reset Team")
@@ -13733,6 +13850,22 @@ def test_reset_unreadable_owner_content_dry_run_and_apply(
         retention_expires_at=utcnow() + timedelta(days=30),
     )
     db_session.add_all([broken_transcript, healthy_transcript])
+    broken_method, _ = make_totp_method(user=broken_user, verified_at=utcnow())
+    broken_recovery_code = UserRecoveryCode(user_id=broken_user.id, code_hash="synthetic-recovery-code-hash")
+    broken_session = UserSession(
+        user_id=broken_user.id,
+        session_token_hash="synthetic-reset-session",
+        auth_level=SessionAuthLevel.full,
+        status=SessionStatus.active,
+        expires_at=utcnow() + timedelta(hours=1),
+    )
+    broken_device = UserTrustedDevice(
+        user_id=broken_user.id,
+        device_token_hash="synthetic-reset-device",
+        expires_at=utcnow() + timedelta(hours=1),
+        last_mfa_verified_at=utcnow(),
+    )
+    db_session.add_all([broken_recovery_code, broken_session, broken_device])
     db_session.commit()
     old_wrapped_dek = broken_key.wrapped_dek
 
@@ -13751,6 +13884,15 @@ def test_reset_unreadable_owner_content_dry_run_and_apply(
     assert applied == ["broken-owner@example.com"]
     assert db_session.get(Transcript, broken_transcript.id) is None
     assert db_session.get(Transcript, healthy_transcript.id) is not None
+    assert db_session.get(UserMfaMethod, broken_method.id) is None
+    assert db_session.get(UserRecoveryCode, broken_recovery_code.id) is None
+    db_session.refresh(broken_session)
+    db_session.refresh(broken_device)
+    db_session.refresh(broken_user)
+    assert broken_session.status is SessionStatus.revoked
+    assert broken_device.revoked_at is not None
+    assert broken_user.mfa_enabled is False
+    assert broken_user.onboarding_state is UserOnboardingState.pending_totp_enrollment
 
     repaired_key = (
         db_session.query(UserEncryptionKey)
@@ -13758,6 +13900,64 @@ def test_reset_unreadable_owner_content_dry_run_and_apply(
         .one()
     )
     assert repaired_key.wrapped_dek != old_wrapped_dek
+
+
+def test_reset_unreadable_owner_content_detects_mfa_only_system_admin_dependency(
+    db_session, make_user, make_totp_method,
+):
+    admin = make_user(email="mfa-only-admin@example.com", password="password-1", is_system_admin=True)
+    method, _ = make_totp_method(user=admin, verified_at=utcnow())
+    old_key = db_session.scalar(
+        select(UserEncryptionKey).where(UserEncryptionKey.user_id == admin.id, UserEncryptionKey.is_active.is_(True))
+    )
+    db_session.delete(old_key)
+    db_session.commit()
+
+    detected = reset_unreadable_owner_content(db_session, apply=False)
+    applied = reset_unreadable_owner_content(db_session, apply=True)
+
+    db_session.refresh(admin)
+    assert detected == [admin.email]
+    assert applied == [admin.email]
+    assert db_session.get(UserMfaMethod, method.id) is None
+    assert admin.mfa_enabled is False
+    assert admin.onboarding_state is UserOnboardingState.pending_totp_enrollment
+    assert db_session.scalar(
+        select(UserEncryptionKey).where(UserEncryptionKey.user_id == admin.id, UserEncryptionKey.is_active.is_(True))
+    ) is not None
+
+
+def test_reset_owner_content_rolls_back_all_dependent_state_when_new_dek_fails(
+    db_session, make_user, make_totp_method, monkeypatch,
+):
+    user = make_user(email="failed-key-reset@example.com", password="password-1")
+    method, _ = make_totp_method(user=user, verified_at=utcnow())
+    original_key = db_session.scalar(select(UserEncryptionKey).where(UserEncryptionKey.user_id == user.id))
+    recovery_code = UserRecoveryCode(user_id=user.id, code_hash="synthetic-reset-rollback-code")
+    session = UserSession(
+        user_id=user.id,
+        session_token_hash="synthetic-reset-rollback-session",
+        auth_level=SessionAuthLevel.full,
+        status=SessionStatus.active,
+        expires_at=utcnow() + timedelta(hours=1),
+    )
+    db_session.add_all([recovery_code, session])
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "scripts.reset_unreadable_owner_content.ensure_user_dek",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AppError(502, "vault_write_failed", "Vault unavailable")),
+    )
+    with pytest.raises(AppError):
+        reset_owner_content_for_user(db_session, user=user)
+
+    db_session.refresh(user)
+    db_session.refresh(session)
+    assert db_session.get(UserMfaMethod, method.id) is not None
+    assert db_session.get(UserRecoveryCode, recovery_code.id) is not None
+    assert db_session.get(UserEncryptionKey, original_key.id) is not None
+    assert session.status is SessionStatus.active
+    assert user.mfa_enabled is True
 
 
 def test_transcript_detail_route_is_owner_only(client, make_team, make_user):

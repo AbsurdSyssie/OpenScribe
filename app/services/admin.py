@@ -1297,8 +1297,8 @@ def create_user(db: Session, payload: UserCreate, *, actor: User | None = None) 
     )
     try:
         db.flush()
+        ensure_user_dek(db, user=user)
         if not user.is_system_admin:
-            ensure_user_dek(db, user=user)
             ensure_default_smart_phrase_for_user(db, user, commit=False)
         db.commit()
     except IntegrityError as exc:
@@ -1747,10 +1747,15 @@ def create_bootstrap_admin(db: Session, *, email: str, password: str) -> User:
     )
     user.must_change_password = False
     try:
+        db.flush()
+        ensure_user_dek(db, user=user)
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise AppError(409, "conflict", "User already exists", {"resource": "user", "field": "email"}) from exc
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(user)
     record_security_event(
         db,

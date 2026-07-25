@@ -17,14 +17,14 @@ _email_adapter = TypeAdapter(EmailStr)
 _whitespace_re = re.compile(r"\s+")
 
 
-def _reauthenticate(user: User, *, current_password: str, mfa_code: str = "") -> None:
+def _reauthenticate(db: Session, user: User, *, current_password: str, mfa_code: str = "") -> None:
     if not verify_password(current_password, user.password_hash):
         raise AppError(401, "reauthentication_failed", "Current password is incorrect")
     if active_primary_totp_method(user) is None:
         return
     if not mfa_code.strip():
         raise AppError(403, "fresh_mfa_required", "Authenticator code is required")
-    verify_active_totp_for_user(user, code=mfa_code.strip())
+    verify_active_totp_for_user(db, user, code=mfa_code.strip())
 
 
 def update_own_name(db: Session, user: User, *, full_name: str) -> User:
@@ -46,7 +46,7 @@ def update_own_email(
     current_password: str,
     mfa_code: str = "",
 ) -> User:
-    _reauthenticate(user, current_password=current_password, mfa_code=mfa_code)
+    _reauthenticate(db, user, current_password=current_password, mfa_code=mfa_code)
     try:
         validated_email = str(_email_adapter.validate_python(email))
     except ValidationError as exc:
@@ -75,7 +75,7 @@ def update_own_password(
     confirm_password: str,
     mfa_code: str = "",
 ) -> User:
-    _reauthenticate(user, current_password=current_password, mfa_code=mfa_code)
+    _reauthenticate(db, user, current_password=current_password, mfa_code=mfa_code)
     if new_password != confirm_password:
         raise AppError(422, "password_mismatch", "New passwords do not match")
     validate_password_strength(new_password)

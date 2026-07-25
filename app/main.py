@@ -750,6 +750,8 @@ app.mount(
 
 SENSITIVE_NO_STORE_PATH_PREFIXES = (
     "/admin",
+    "/onboarding",
+    "/mfa/challenge",
     "/api/v1/transcribe",
     "/api/v1/transcripts",
     "/api/v1/generated-documents",

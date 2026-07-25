@@ -1,7 +1,10 @@
+import base64
+import binascii
 import hashlib
+import re
 import secrets
 from datetime import datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pyotp
 import segno
@@ -23,6 +26,7 @@ from app.models import (
     utcnow,
 )
 from app.normalization import normalize_email
+from app.services.content_crypto import decrypt_text_for_owner, encrypt_text_for_owner, ensure_user_dek, is_encrypted_envelope
 from app.services.passwords import hash_password, password_needs_rehash, verify_password
 
 
@@ -32,6 +36,10 @@ SESSION_LIFETIME = timedelta(hours=12)
 TRUSTED_DEVICE_LIFETIME = timedelta(days=30)
 MFA_FRESHNESS_WINDOW = timedelta(days=1)
 RECOVERY_CODE_COUNT = 8
+TOTP_SECRET_MAX_LENGTH = 128
+TOTP_SECRET_PATTERN = re.compile(r"^[A-Z2-7]+$")
+TOTP_SECRET_TABLE = "user_mfa_methods"
+TOTP_SECRET_FIELD = "secret"
 
 
 def opaque_token_hash(token: str) -> str:
@@ -270,12 +278,81 @@ def update_password_for_onboarding(db: Session, user: User, *, new_password_hash
     return user
 
 
-def verify_active_totp_for_user(user: User, *, code: str) -> None:
+def _validated_totp_secret(value: str) -> str:
+    if not value or len(value) > TOTP_SECRET_MAX_LENGTH or TOTP_SECRET_PATTERN.fullmatch(value) is None:
+        raise AppError(500, "mfa_secret_unreadable", "The authenticator configuration could not be read")
+    padded = value + "=" * ((8 - len(value) % 8) % 8)
+    try:
+        decoded = base64.b32decode(padded, casefold=False)
+    except (binascii.Error, ValueError) as exc:
+        raise AppError(500, "mfa_secret_unreadable", "The authenticator configuration could not be read") from exc
+    if not decoded:
+        raise AppError(500, "mfa_secret_unreadable", "The authenticator configuration could not be read")
+    return value
+
+
+def _encrypt_totp_secret(db: Session, *, user: User, method_id: UUID, plaintext_secret: str) -> str:
+    try:
+        stored_secret = encrypt_text_for_owner(
+            db,
+            owner_user_id=user.id,
+            table=TOTP_SECRET_TABLE,
+            field=TOTP_SECRET_FIELD,
+            record_id=method_id,
+            plaintext=_validated_totp_secret(plaintext_secret),
+        )
+    except AppError as exc:
+        if exc.code.startswith("vault_"):
+            raise AppError(
+                503,
+                "mfa_service_unavailable",
+                "Authenticator verification is temporarily unavailable",
+            ) from exc
+        raise
+    if stored_secret is None:
+        raise AppError(500, "mfa_secret_unreadable", "The authenticator configuration could not be read")
+    return stored_secret
+
+
+def totp_secret_for_method(db: Session, *, user: User, method: UserMfaMethod) -> str:
+    stored_secret = method.secret
+    encrypted = is_encrypted_envelope(stored_secret)
+    if not encrypted:
+        # A JSON-like value may be a damaged or unsupported envelope and must
+        # never be interpreted as a legacy Base32 seed.
+        if stored_secret.lstrip().startswith("{"):
+            raise AppError(500, "mfa_secret_unreadable", "The authenticator configuration could not be read")
+        return _validated_totp_secret(stored_secret)
+    try:
+        plaintext_secret = decrypt_text_for_owner(
+            db,
+            owner_user_id=user.id,
+            table=TOTP_SECRET_TABLE,
+            field=TOTP_SECRET_FIELD,
+            record_id=method.id,
+            stored_value=stored_secret,
+        )
+    except AppError as exc:
+        if exc.code.startswith("vault_"):
+            raise AppError(
+                503,
+                "mfa_service_unavailable",
+                "Authenticator verification is temporarily unavailable",
+            ) from exc
+        if exc.code in {"content_crypto_invalid", "content_crypto_missing_key"}:
+            raise AppError(500, "mfa_secret_unreadable", "The authenticator configuration could not be read") from exc
+        raise
+    if plaintext_secret is None:
+        raise AppError(500, "mfa_secret_unreadable", "The authenticator configuration could not be read")
+    return _validated_totp_secret(plaintext_secret)
+
+
+def verify_active_totp_for_user(db: Session, user: User, *, code: str) -> None:
     method = active_primary_totp_method(user)
     if method is None:
         raise AppError(403, "fresh_mfa_required", "A verified TOTP method is required for this action")
 
-    totp = pyotp.TOTP(method.secret)
+    totp = pyotp.TOTP(totp_secret_for_method(db, user=user, method=method))
     if not totp.verify(code, valid_window=1):
         raise AppError(422, "business_rule_violation", "Invalid TOTP code")
 
@@ -292,7 +369,7 @@ def verify_login_totp(
     if method is None:
         raise AppError(409, "conflict", "TOTP challenge is not available for this user")
 
-    totp = pyotp.TOTP(method.secret)
+    totp = pyotp.TOTP(totp_secret_for_method(db, user=user, method=method))
     if not totp.verify(code, valid_window=1):
         raise AppError(422, "business_rule_violation", "Invalid TOTP code")
 
@@ -322,21 +399,38 @@ def start_totp_enrollment(db: Session, user: User) -> UserMfaMethod:
     if user.onboarding_state is not UserOnboardingState.pending_totp_enrollment:
         raise AppError(409, "conflict", "TOTP enrollment is not pending for this user")
 
-    existing_methods = db.scalars(
-        select(UserMfaMethod).where(UserMfaMethod.user_id == user.id, UserMfaMethod.method_type == MfaMethodType.totp)
-    )
-    for method in existing_methods:
-        db.delete(method)
+    try:
+        ensure_user_dek(db, user=user)
+        existing_methods = db.scalars(
+            select(UserMfaMethod).where(UserMfaMethod.user_id == user.id, UserMfaMethod.method_type == MfaMethodType.totp)
+        )
+        for method in existing_methods:
+            db.delete(method)
 
-    method = UserMfaMethod(
-        user_id=user.id,
-        method_type=MfaMethodType.totp,
-        secret=pyotp.random_base32(),
-        is_primary=True,
-        is_active=False,
-    )
-    db.add(method)
-    db.commit()
+        method_id = uuid4()
+        plaintext_secret = pyotp.random_base32()
+        method = UserMfaMethod(
+            id=method_id,
+            user_id=user.id,
+            method_type=MfaMethodType.totp,
+            secret=_encrypt_totp_secret(db, user=user, method_id=method_id, plaintext_secret=plaintext_secret),
+            is_primary=True,
+            is_active=False,
+        )
+        db.add(method)
+        db.commit()
+    except AppError as exc:
+        db.rollback()
+        if exc.code.startswith("vault_"):
+            raise AppError(
+                503,
+                "mfa_service_unavailable",
+                "Authenticator verification is temporarily unavailable",
+            ) from exc
+        raise
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(method)
     return method
 
@@ -351,8 +445,8 @@ def current_pending_totp_method(db: Session, user: User) -> UserMfaMethod | None
     )
 
 
-def provisioning_uri(user: User, method: UserMfaMethod) -> str:
-    totp = pyotp.TOTP(method.secret)
+def provisioning_uri(*, user: User, plaintext_secret: str) -> str:
+    totp = pyotp.TOTP(_validated_totp_secret(plaintext_secret))
     return totp.provisioning_uri(name=user.email, issuer_name="OpenScribe")
 
 
@@ -368,7 +462,7 @@ def verify_totp_enrollment(db: Session, user: User, *, code: str) -> User:
     if method is None:
         raise AppError(409, "conflict", "TOTP enrollment has not been started")
 
-    totp = pyotp.TOTP(method.secret)
+    totp = pyotp.TOTP(totp_secret_for_method(db, user=user, method=method))
     if not totp.verify(code, valid_window=1):
         raise AppError(422, "business_rule_violation", "Invalid TOTP code")
 

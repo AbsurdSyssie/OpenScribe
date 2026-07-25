@@ -28,6 +28,7 @@ from app.models import (
     GeneratedDocumentStatus,
     LlmAdapterKind,
     LlmAuthMode,
+    MfaMethodType,
     PromptTemplate,
     PromptTemplateVersion,
     QuickAction,
@@ -52,6 +53,7 @@ from app.models import (
     TranscriptVersion,
     User,
     UserAppPreference,
+    UserMfaMethod,
     UserLlmPreference,
     UserOnboardingState,
     UserStatus,
@@ -398,6 +400,53 @@ def make_user(db_session: Session, make_team: Callable[..., Team]) -> Callable[.
         db_session.commit()
         db_session.refresh(user)
         return user
+
+    return factory
+
+
+@pytest.fixture
+def make_totp_method(db_session: Session) -> Callable[..., tuple[UserMfaMethod, str]]:
+    """Create a TOTP method through the production owner-encryption boundary.
+
+    Legacy plaintext rows are supported only when a test explicitly requests
+    ``encrypted=False`` so normal authentication tests exercise encrypted MFA.
+    """
+
+    def factory(
+        *,
+        user: User,
+        plaintext_secret: str = "JBSWY3DPEHPK3PXP",
+        encrypted: bool = True,
+        is_primary: bool = True,
+        is_active: bool = True,
+        verified_at=None,
+    ) -> tuple[UserMfaMethod, str]:
+        method_id = uuid4()
+        stored_secret = (
+            encrypt_text_for_owner(
+                db_session,
+                owner_user_id=user.id,
+                table="user_mfa_methods",
+                field="secret",
+                record_id=method_id,
+                plaintext=plaintext_secret,
+            )
+            if encrypted
+            else plaintext_secret
+        )
+        method = UserMfaMethod(
+            id=method_id,
+            user_id=user.id,
+            method_type=MfaMethodType.totp,
+            secret=stored_secret,
+            is_primary=is_primary,
+            is_active=is_active,
+            verified_at=verified_at,
+        )
+        db_session.add(method)
+        db_session.commit()
+        db_session.refresh(method)
+        return method, plaintext_secret
 
     return factory
 

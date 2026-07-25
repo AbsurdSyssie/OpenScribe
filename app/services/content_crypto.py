@@ -66,11 +66,12 @@ def _parse_envelope(value: str) -> tuple[int, bytes, bytes]:
     if not isinstance(parsed, dict) or parsed.get("v") != ENVELOPE_VERSION or parsed.get("alg") != ENVELOPE_ALGORITHM:
         raise AppError(500, "content_crypto_invalid", "Encrypted content envelope is invalid")
     try:
+        dek_version = int(parsed.get("dkv") or 1)
         nonce = base64.b64decode(str(parsed["n"]), validate=True)
         ciphertext = base64.b64decode(str(parsed["ct"]), validate=True)
-    except (KeyError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError) as exc:
         raise AppError(500, "content_crypto_invalid", "Encrypted content envelope is invalid") from exc
-    return int(parsed.get("dkv") or 1), nonce, ciphertext
+    return dek_version, nonce, ciphertext
 
 
 def get_active_user_key(db: Session, *, user_id: UUID) -> UserEncryptionKey | None:
@@ -120,8 +121,12 @@ def _owner_dek(db: Session, *, owner_user_id: UUID, create_if_missing: bool) -> 
 
 
 def ensure_user_dek(db: Session, *, user: User) -> UserEncryptionKey:
-    if user.is_system_admin or user.team_id is None:
-        raise AppError(403, "forbidden", "System-admin accounts cannot own transcript content")
+    """Ensure key material exists for user-owned encrypted data.
+
+    Key eligibility is intentionally separate from transcript ownership and
+    authorization. System administrators may need a DEK for authentication
+    secrets without gaining access to transcript-derived content.
+    """
     existing = get_active_user_key(db, user_id=user.id)
     if existing is not None:
         return existing

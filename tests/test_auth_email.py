@@ -276,7 +276,7 @@ def test_account_activation_sets_password_and_creates_onboarding_session(client,
     assert user.onboarding_state is UserOnboardingState.pending_totp_enrollment
 
 
-def test_account_activation_is_restricted_to_first_password_setup(client, db_session, make_user, monkeypatch):
+def test_legacy_plaintext_totp_does_not_bypass_completed_account_activation(client, db_session, make_user, make_totp_method, monkeypatch):
     _enable_stdout_mail(monkeypatch)
     captured = []
     monkeypatch.setattr("app.services.auth_email.send_transactional_email", lambda message: captured.append(message))
@@ -288,9 +288,7 @@ def test_account_activation_is_restricted_to_first_password_setup(client, db_ses
         mfa_required=True,
         mfa_enabled=True,
     )
-    mfa_method = UserMfaMethod(user_id=user.id, method_type=MfaMethodType.totp, secret="JBSWY3DPEHPK3PXP", is_primary=True, is_active=True, verified_at=utcnow())
-    db_session.add(mfa_method)
-    db_session.commit()
+    mfa_method, _ = make_totp_method(user=user, encrypted=False, verified_at=utcnow())
     from app.services.auth_email import issue_auth_email_token, send_account_activation_email
 
     with pytest.raises(AppError) as exc:
@@ -391,11 +389,11 @@ def test_manager_email_recovery_blocks_inactive_targets(client, db_session, make
     assert token_row is None
 
 
-def test_break_glass_recover_password_generates_temp_password_and_preserves_mfa(client, db_session, make_team, make_user, monkeypatch):
+def test_break_glass_recover_password_generates_temp_password_and_preserves_mfa(client, db_session, make_team, make_user, make_totp_method, monkeypatch):
     _disable_mail(monkeypatch)
     team = make_team(name="Temp Password Team")
     leader = make_user(email="leader-temp@example.com", password="password-1", team=team, team_role=TeamRole.leader, mfa_required=False, mfa_enabled=True)
-    leader_mfa = UserMfaMethod(user_id=leader.id, method_type=MfaMethodType.totp, secret="JBSWY3DPEHPK3PXP", is_primary=True, is_active=True, verified_at=utcnow())
+    leader_mfa, leader_secret = make_totp_method(user=leader, verified_at=utcnow())
     target = make_user(email="target-temp@example.com", password="old-password-1", team=team, mfa_required=True, mfa_enabled=True)
     old_session = create_session(db_session, target)
     trusted_device = UserTrustedDevice(
@@ -404,7 +402,7 @@ def test_break_glass_recover_password_generates_temp_password_and_preserves_mfa(
         expires_at=utcnow(),
         last_mfa_verified_at=utcnow(),
     )
-    mfa_method = UserMfaMethod(user_id=target.id, method_type=MfaMethodType.totp, secret="JBSWY3DPEHPK3PXP", is_primary=True, is_active=True, verified_at=utcnow())
+    mfa_method, _ = make_totp_method(user=target, verified_at=utcnow())
     recovery_code = UserRecoveryCode(user_id=target.id, code_hash="stored-password-only-recovery-code-hash")
     token = AuthEmailToken(
         user_id=target.id,
@@ -412,10 +410,10 @@ def test_break_glass_recover_password_generates_temp_password_and_preserves_mfa(
         token_hash="existing-reset-token-hash",
         expires_at=utcnow(),
     )
-    db_session.add_all([leader_mfa, trusted_device, mfa_method, recovery_code, token])
+    db_session.add_all([trusted_device, recovery_code, token])
     db_session.commit()
     client.post("/api/v1/auth/login", json={"email": "leader-temp@example.com", "password": "password-1"})
-    mfa_code = pyotp.TOTP(leader_mfa.secret).now()
+    mfa_code = pyotp.TOTP(leader_secret).now()
 
     response = client.post(
         f"/api/v1/users/{target.id}/break-glass-password-reset",
@@ -467,18 +465,18 @@ def test_break_glass_recover_password_generates_temp_password_and_preserves_mfa(
     assert db_session.get(UserRecoveryCode, recovery_code.id) is not None
 
 
-def test_break_glass_recover_account_generates_temp_password_and_clears_mfa(client, db_session, make_team, make_user, monkeypatch):
+def test_break_glass_recover_account_generates_temp_password_and_clears_mfa(client, db_session, make_team, make_user, make_totp_method, monkeypatch):
     _disable_mail(monkeypatch)
     team = make_team(name="Full Recovery Team")
     leader = make_user(email="leader-full-recovery@example.com", password="password-1", team=team, team_role=TeamRole.leader, mfa_required=False, mfa_enabled=True)
-    leader_mfa = UserMfaMethod(user_id=leader.id, method_type=MfaMethodType.totp, secret="JBSWY3DPEHPK3PXP", is_primary=True, is_active=True, verified_at=utcnow())
+    leader_mfa, leader_secret = make_totp_method(user=leader, verified_at=utcnow())
     target = make_user(email="target-full-recovery@example.com", password="old-password-1", team=team, mfa_required=True, mfa_enabled=True)
-    mfa_method = UserMfaMethod(user_id=target.id, method_type=MfaMethodType.totp, secret="JBSWY3DPEHPK3PXP", is_primary=True, is_active=True, verified_at=utcnow())
+    mfa_method, _ = make_totp_method(user=target, verified_at=utcnow())
     recovery_code = UserRecoveryCode(user_id=target.id, code_hash="stored-recovery-code-hash")
-    db_session.add_all([leader_mfa, mfa_method, recovery_code])
+    db_session.add(recovery_code)
     db_session.commit()
     client.post("/api/v1/auth/login", json={"email": "leader-full-recovery@example.com", "password": "password-1"})
-    mfa_code = pyotp.TOTP(leader_mfa.secret).now()
+    mfa_code = pyotp.TOTP(leader_secret).now()
 
     response = client.post(
         f"/api/v1/users/{target.id}/break-glass-account-recovery",
@@ -520,14 +518,12 @@ def test_break_glass_requires_manager_totp_and_confirmation(client, make_team, m
     assert no_totp.json()["error"]["code"] == "fresh_mfa_required"
 
 
-def test_break_glass_totp_attempts_are_rate_limited(client, db_session, make_team, make_user, monkeypatch):
+def test_break_glass_totp_attempts_are_rate_limited(client, db_session, make_team, make_user, make_totp_method, monkeypatch):
     _disable_mail(monkeypatch)
     team = make_team(name="Break Glass Rate Limit Team")
     leader = make_user(email="leader-break-glass-rate@example.com", password="password-1", team=team, team_role=TeamRole.leader, mfa_required=False, mfa_enabled=True)
-    leader_mfa = UserMfaMethod(user_id=leader.id, method_type=MfaMethodType.totp, secret="JBSWY3DPEHPK3PXP", is_primary=True, is_active=True, verified_at=utcnow())
+    leader_mfa, leader_secret = make_totp_method(user=leader, verified_at=utcnow())
     target = make_user(email="target-break-glass-rate@example.com", password="old-password-1", team=team, mfa_required=False, mfa_enabled=False)
-    db_session.add(leader_mfa)
-    db_session.commit()
     client.post("/api/v1/auth/login", json={"email": "leader-break-glass-rate@example.com", "password": "password-1"})
 
     for _ in range(10):
@@ -539,7 +535,7 @@ def test_break_glass_totp_attempts_are_rate_limited(client, db_session, make_tea
 
     limited = client.post(
         f"/api/v1/users/{target.id}/break-glass-password-reset",
-        json={"mfa_code": pyotp.TOTP(leader_mfa.secret).now(), "reason": "email outage", "confirm_email_unavailable": True},
+        json={"mfa_code": pyotp.TOTP(leader_secret).now(), "reason": "email outage", "confirm_email_unavailable": True},
     )
 
     assert limited.status_code == 429
@@ -596,7 +592,7 @@ def test_temporary_recovery_password_expiry_blocks_login(client, db_session, mak
     assert login.json()["error"]["code"] == "temporary_password_expired"
 
 
-def test_manager_reset_mfa_preserves_pending_password_change(client, db_session, make_team, make_user):
+def test_manager_reset_mfa_preserves_pending_password_change(client, db_session, make_team, make_user, make_totp_method):
     team = make_team(name="MFA Reset Pending Password Team")
     make_user(email="leader-mfa-reset@example.com", password="password-1", team=team, team_role=TeamRole.leader, mfa_required=False, mfa_enabled=False)
     target = make_user(
@@ -615,9 +611,9 @@ def test_manager_reset_mfa_preserves_pending_password_change(client, db_session,
         expires_at=utcnow(),
         last_mfa_verified_at=utcnow(),
     )
-    mfa_method = UserMfaMethod(user_id=target.id, method_type=MfaMethodType.totp, secret="JBSWY3DPEHPK3PXP", is_primary=True, is_active=True, verified_at=utcnow())
+    mfa_method, _ = make_totp_method(user=target, verified_at=utcnow())
     recovery_code = UserRecoveryCode(user_id=target.id, code_hash="stored-mfa-reset-recovery-code-hash")
-    db_session.add_all([trusted_device, mfa_method, recovery_code])
+    db_session.add_all([trusted_device, recovery_code])
     db_session.commit()
     client.post("/api/v1/auth/login", json={"email": "leader-mfa-reset@example.com", "password": "password-1"})
 
@@ -637,19 +633,17 @@ def test_manager_reset_mfa_preserves_pending_password_change(client, db_session,
     assert trusted_device.revoked_at is not None
 
 
-def test_browser_break_glass_recovery_shows_temp_password_modal_not_toast(client, db_session, make_team, make_user, monkeypatch):
+def test_browser_break_glass_recovery_shows_temp_password_modal_not_toast(client, db_session, make_team, make_user, make_totp_method, monkeypatch):
     _disable_mail(monkeypatch)
     team = make_team(name="Recovery Modal Team")
     leader = make_user(email="leader-modal@example.com", password="password-1", team=team, team_role=TeamRole.leader, mfa_required=False, mfa_enabled=True)
-    leader_mfa = UserMfaMethod(user_id=leader.id, method_type=MfaMethodType.totp, secret="JBSWY3DPEHPK3PXP", is_primary=True, is_active=True, verified_at=utcnow())
-    db_session.add(leader_mfa)
-    db_session.commit()
+    leader_mfa, leader_secret = make_totp_method(user=leader, verified_at=utcnow())
     target = make_user(email="target-modal@example.com", password="old-password-1", team=team, mfa_required=False, mfa_enabled=False)
     client.post("/login", data={"email": "leader-modal@example.com", "password": "password-1"}, follow_redirects=False)
 
     response = client.post(
         f"/home/users/{target.id}/break-glass-password-reset",
-        data={"return_tab": "team-management", "reason": "email outage", "mfa_code": pyotp.TOTP(leader_mfa.secret).now(), "confirm_email_unavailable": "true"},
+        data={"return_tab": "team-management", "reason": "email outage", "mfa_code": pyotp.TOTP(leader_secret).now(), "confirm_email_unavailable": "true"},
     )
 
     match = re.search(r'<input[^>]+value="([^"]+)"[^>]+data-recovery-temp-password', response.text)
@@ -662,18 +656,16 @@ def test_browser_break_glass_recovery_shows_temp_password_modal_not_toast(client
     assert f'<div class="panel flash success">Break-glass temporary password generated. It is shown once.</div>' in response.text
 
 
-def test_browser_temporary_recovery_password_login_is_audited(client, db_session, make_team, make_user, monkeypatch):
+def test_browser_temporary_recovery_password_login_is_audited(client, db_session, make_team, make_user, make_totp_method, monkeypatch):
     _disable_mail(monkeypatch)
     team = make_team(name="Browser Recovery Login Audit Team")
     leader = make_user(email="leader-browser-audit@example.com", password="password-1", team=team, team_role=TeamRole.leader, mfa_required=False, mfa_enabled=True)
-    leader_mfa = UserMfaMethod(user_id=leader.id, method_type=MfaMethodType.totp, secret="JBSWY3DPEHPK3PXP", is_primary=True, is_active=True, verified_at=utcnow())
-    db_session.add(leader_mfa)
-    db_session.commit()
+    leader_mfa, leader_secret = make_totp_method(user=leader, verified_at=utcnow())
     target = make_user(email="target-browser-audit@example.com", password="old-password-1", team=team, mfa_required=False, mfa_enabled=False)
     client.post("/login", data={"email": "leader-browser-audit@example.com", "password": "password-1"}, follow_redirects=False)
     recovery = client.post(
         f"/home/users/{target.id}/break-glass-password-reset",
-        data={"return_tab": "team-management", "reason": "email outage", "mfa_code": pyotp.TOTP(leader_mfa.secret).now(), "confirm_email_unavailable": "true"},
+        data={"return_tab": "team-management", "reason": "email outage", "mfa_code": pyotp.TOTP(leader_secret).now(), "confirm_email_unavailable": "true"},
     )
     temporary_password = re.search(r'<input[^>]+value="([^"]+)"[^>]+data-recovery-temp-password', recovery.text).group(1)
     client.cookies.clear()

@@ -100,11 +100,35 @@ def test_legacy_plaintext_totp_remains_usable_without_creating_or_mutating_a_dek
     assert db_session.scalars(select(UserEncryptionKey).where(UserEncryptionKey.user_id == user.id)).all() == []
 
 
+def test_legacy_lowercase_plaintext_totp_remains_usable(db_session, make_user, make_totp_method):
+    user = make_user(email="legacy-lowercase-totp@example.com")
+    method, plaintext_secret = make_totp_method(user=user, encrypted=False, verified_at=utcnow())
+    method.secret = plaintext_secret.lower()
+    db_session.commit()
+
+    verify_active_totp_for_user(db_session, user, code=pyotp.TOTP(method.secret).now())
+
+
+def test_legacy_padded_plaintext_totp_remains_usable(db_session, make_user, make_totp_method):
+    user = make_user(email="legacy-padded-totp@example.com")
+    method, plaintext_secret = make_totp_method(
+        user=user,
+        plaintext_secret="MZXW6===",
+        encrypted=False,
+        verified_at=utcnow(),
+    )
+
+    verify_active_totp_for_user(db_session, user, code=pyotp.TOTP(plaintext_secret).now())
+
+
 @pytest.mark.parametrize(
     "stored_secret",
     [
         "",
         "NOT-BASE32-0",
+        "MZXW6==",
+        "MZ=XW6==",
+        "MZXW6=======",
         "A" * 129,
         "   ",
         "{",

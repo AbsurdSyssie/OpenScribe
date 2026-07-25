@@ -13868,13 +13868,12 @@ def test_reset_unreadable_owner_content_dry_run_and_apply_clears_encrypted_mfa_r
     db_session.add_all([broken_recovery_code, broken_session, broken_device])
     db_session.commit()
     old_wrapped_dek = broken_key.wrapped_dek
-
-    def fail_unwrap(*, wrapped_dek: str, mount_point: str | None = None, key_name: str | None = None) -> bytes:
-        if wrapped_dek == old_wrapped_dek:
-            raise AppError(502, "vault_read_failed", "Vault data key unwrap failed")
-        return b"healthy-key"
-
-    monkeypatch.setattr("scripts.reset_unreadable_owner_content.unwrap_user_content_data_key", fail_unwrap)
+    db_session.delete(broken_key)
+    db_session.commit()
+    monkeypatch.setattr(
+        "scripts.reset_unreadable_owner_content.unwrap_user_content_data_key",
+        lambda **_kwargs: b"healthy-key",
+    )
 
     dry_run = reset_unreadable_owner_content(db_session, apply=False)
     assert dry_run == ["broken-owner@example.com"]
@@ -13900,6 +13899,167 @@ def test_reset_unreadable_owner_content_dry_run_and_apply_clears_encrypted_mfa_r
         .one()
     )
     assert repaired_key.wrapped_dek != old_wrapped_dek
+
+
+def test_reset_unreadable_owner_content_aborts_without_changes_on_operational_vault_failure(
+    db_session,
+    make_user,
+    make_totp_method,
+    monkeypatch,
+):
+    user = make_user(email="vault-unavailable-reset@example.com", password="password-1")
+    method, _ = make_totp_method(user=user, verified_at=utcnow())
+    key = db_session.scalar(
+        select(UserEncryptionKey).where(UserEncryptionKey.user_id == user.id, UserEncryptionKey.is_active.is_(True))
+    )
+    recovery_code = UserRecoveryCode(user_id=user.id, code_hash="synthetic-operational-failure-recovery")
+    session = UserSession(
+        user_id=user.id,
+        session_token_hash="synthetic-operational-failure-session",
+        auth_level=SessionAuthLevel.full,
+        status=SessionStatus.active,
+        expires_at=utcnow() + timedelta(hours=1),
+    )
+    trusted_device = UserTrustedDevice(
+        user_id=user.id,
+        device_token_hash="synthetic-operational-failure-device",
+        expires_at=utcnow() + timedelta(hours=1),
+        last_mfa_verified_at=utcnow(),
+    )
+    db_session.add_all([recovery_code, session, trusted_device])
+    db_session.commit()
+
+    def fail_unwrap(**_kwargs) -> bytes:
+        raise AppError(502, "vault_read_failed", "Vault data key unwrap failed")
+
+    monkeypatch.setattr("scripts.reset_unreadable_owner_content.unwrap_user_content_data_key", fail_unwrap)
+
+    with pytest.raises(AppError) as exc_info:
+        reset_unreadable_owner_content(db_session, apply=True)
+
+    assert exc_info.value.code == "vault_read_failed"
+    db_session.refresh(user)
+    db_session.refresh(session)
+    db_session.refresh(trusted_device)
+    assert db_session.get(UserEncryptionKey, key.id) is not None
+    assert db_session.get(UserMfaMethod, method.id) is not None
+    assert db_session.get(UserRecoveryCode, recovery_code.id) is not None
+    assert session.status is SessionStatus.active
+    assert trusted_device.revoked_at is None
+    assert user.mfa_enabled is True
+    assert user.onboarding_state is UserOnboardingState.complete
+
+
+def test_reset_unreadable_owner_content_preflights_all_users_before_any_apply(
+    db_session,
+    make_team,
+    make_user,
+    make_totp_method,
+    monkeypatch,
+):
+    team = make_team(name="Reset Preflight Team")
+    missing_key_user = make_user(email="a-missing-key@example.com", password="password-1", team=team)
+    missing_key_method, _ = make_totp_method(user=missing_key_user, verified_at=utcnow())
+    missing_key = db_session.scalar(
+        select(UserEncryptionKey).where(
+            UserEncryptionKey.user_id == missing_key_user.id,
+            UserEncryptionKey.is_active.is_(True),
+        )
+    )
+    missing_key_session = UserSession(
+        user_id=missing_key_user.id,
+        session_token_hash="synthetic-preflight-first-session",
+        auth_level=SessionAuthLevel.full,
+        status=SessionStatus.active,
+        expires_at=utcnow() + timedelta(hours=1),
+    )
+    db_session.add(missing_key_session)
+
+    operational_failure_user = make_user(email="z-vault-failure@example.com", password="password-1", team=team)
+    make_totp_method(user=operational_failure_user, verified_at=utcnow())
+    operational_failure_key = db_session.scalar(
+        select(UserEncryptionKey).where(
+            UserEncryptionKey.user_id == operational_failure_user.id,
+            UserEncryptionKey.is_active.is_(True),
+        )
+    )
+    db_session.delete(missing_key)
+    db_session.commit()
+
+    def fail_later_user(*, wrapped_dek: str, **_kwargs) -> bytes:
+        if wrapped_dek == operational_failure_key.wrapped_dek:
+            raise AppError(502, "vault_read_failed", "Vault data key unwrap failed")
+        return b"healthy-key"
+
+    monkeypatch.setattr("scripts.reset_unreadable_owner_content.unwrap_user_content_data_key", fail_later_user)
+
+    with pytest.raises(AppError) as exc_info:
+        reset_unreadable_owner_content(db_session, apply=True)
+
+    assert exc_info.value.code == "vault_read_failed"
+    db_session.refresh(missing_key_user)
+    db_session.refresh(missing_key_session)
+    assert db_session.get(UserMfaMethod, missing_key_method.id) is not None
+    assert missing_key_session.status is SessionStatus.active
+    assert missing_key_user.mfa_enabled is True
+    assert missing_key_user.onboarding_state is UserOnboardingState.complete
+    assert db_session.scalar(
+        select(UserEncryptionKey).where(
+            UserEncryptionKey.user_id == missing_key_user.id,
+            UserEncryptionKey.is_active.is_(True),
+        )
+    ) is None
+
+
+def test_reset_unreadable_owner_content_skips_user_without_key_dependent_data(
+    db_session,
+    make_user,
+    monkeypatch,
+):
+    admin = make_user(email="plaintext-mfa-admin@example.com", password="password-1", is_system_admin=True)
+    ensure_user_dek(db_session, user=admin)
+    plaintext_method = UserMfaMethod(
+        user_id=admin.id,
+        method_type=MfaMethodType.totp,
+        secret=pyotp.random_base32(),
+        is_primary=True,
+        is_active=True,
+        verified_at=utcnow(),
+    )
+    recovery_code = UserRecoveryCode(user_id=admin.id, code_hash="synthetic-plaintext-admin-recovery")
+    session = UserSession(
+        user_id=admin.id,
+        session_token_hash="synthetic-plaintext-admin-session",
+        auth_level=SessionAuthLevel.full,
+        status=SessionStatus.active,
+        expires_at=utcnow() + timedelta(hours=1),
+    )
+    trusted_device = UserTrustedDevice(
+        user_id=admin.id,
+        device_token_hash="synthetic-plaintext-admin-device",
+        expires_at=utcnow() + timedelta(hours=1),
+        last_mfa_verified_at=utcnow(),
+    )
+    db_session.add_all([plaintext_method, recovery_code, session, trusted_device])
+    db_session.commit()
+
+    def unexpected_unwrap(**_kwargs) -> bytes:
+        raise AssertionError("users without key-dependent data must not be unwrapped")
+
+    monkeypatch.setattr("scripts.reset_unreadable_owner_content.unwrap_user_content_data_key", unexpected_unwrap)
+
+    assert reset_unreadable_owner_content(db_session, apply=False) == []
+    assert reset_unreadable_owner_content(db_session, apply=True) == []
+
+    db_session.refresh(admin)
+    db_session.refresh(session)
+    db_session.refresh(trusted_device)
+    assert db_session.get(UserMfaMethod, plaintext_method.id) is not None
+    assert db_session.get(UserRecoveryCode, recovery_code.id) is not None
+    assert session.status is SessionStatus.active
+    assert trusted_device.revoked_at is None
+    assert admin.mfa_enabled is True
+    assert admin.onboarding_state is UserOnboardingState.complete
 
 
 def test_reset_unreadable_owner_content_detects_mfa_only_system_admin_dependency(

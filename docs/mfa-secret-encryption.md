@@ -32,9 +32,12 @@ All newly created local users, including teamless system administrators, receive
 
 - Password-only reset preserves enrolled TOTP methods and recovery-code hashes, while revoking sessions and trusted devices.
 - Explicit MFA reset and account-recovery flows clear TOTP methods and recovery-code state, revoke sessions and trusted devices, and require TOTP reenrollment (subject to the existing pending-password-change ordering).
-- `scripts/reset_unreadable_owner_content.py` is an operator recovery tool for a user whose active DEK cannot be read and who has dependent transcript content or encrypted MFA. Its default mode is a dry run. Only `--apply` deletes the user's dependent transcript content, clears MFA and recovery-code state, revokes active sessions and trusted devices, forces reenrollment, and provisions a fresh DEK.
+- `scripts/reset_unreadable_owner_content.py` is an operator recovery tool for a user whose DEK record is missing while dependent transcript content or encrypted MFA remains. Its default mode is a dry run. Only `--apply` deletes the user's dependent transcript content, clears MFA and recovery-code state, revokes active sessions and trusted devices, forces reenrollment, and provisions a fresh DEK.
+- The tool preflights every scoped user before applying any reset. Existing DEKs are unwrapped during preflight, and any Vault availability, authorization, configuration, or unwrap failure aborts before destructive work begins. Users without transcript or encrypted-MFA dependencies are skipped.
 
-The tool is intentionally destructive because retaining ciphertext encrypted under an unreadable key cannot restore access. Limit execution with `--email` where appropriate and verify the dry-run list before applying it.
+The tool is intentionally destructive because ciphertext whose DEK record is missing cannot be restored through this path. It does not guess that a broad Vault failure proves permanent key loss. Limit execution with `--email` where appropriate and verify the dry-run list before applying it.
+
+Each user's database reset is atomic, but a multi-user `--apply` run is not one transaction: an apply-time failure after preflight may leave earlier users completed and later users untouched. Re-run the dry run to establish remaining work.
 
 ## Deferred production requirements
 

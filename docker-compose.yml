@@ -10,12 +10,25 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ambient -d ambient_scribe"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   redis:
     image: redis:7
     restart: unless-stopped
+    command: redis-server --appendonly yes
     ports:
       - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   vault:
     image: hashicorp/vault:1.17
@@ -28,7 +41,55 @@ services:
       - ./docker/vault/local.hcl:/vault/config/local.hcl:ro
       - vault_data:/vault/file
     command: vault server -config=/vault/config/local.hcl
+    healthcheck:
+      test: ["CMD-SHELL", "VAULT_ADDR=http://127.0.0.1:8200 vault status >/dev/null 2>&1 || test $$? -eq 2"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  openscribe:
+    profiles:
+      - runtime
+    build:
+      context: .
+    image: openscribe:local
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8080
+      CONTAINER_APP_PORT: 8080
+      DATABASE_URL: postgresql+psycopg://ambient:ambient@postgres:5432/ambient_scribe
+      RATE_LIMIT_STORAGE_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/2
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN_FILE: /app/.local/vault/root-token
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    ports:
+      - "${DOCKER_APP_BIND:-127.0.0.1}:${APP_PORT:-8080}:8080"
+    volumes:
+      - vault_bootstrap:/app/.local/vault
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
 
 volumes:
   postgres_data:
+  redis_data:
   vault_data:
+  vault_bootstrap:

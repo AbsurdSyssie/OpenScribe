@@ -6,6 +6,7 @@ on:
       - Dockerfile
       - .dockerignore
       - docker-compose.yml
+      - docker-compose.adc.yml
       - docker/**
       - requirements.txt
       - app/**
@@ -20,6 +21,7 @@ on:
       - Dockerfile
       - .dockerignore
       - docker-compose.yml
+      - docker-compose.adc.yml
       - docker/**
       - requirements.txt
       - app/**

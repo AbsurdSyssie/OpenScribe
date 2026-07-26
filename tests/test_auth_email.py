@@ -653,7 +653,8 @@ def test_browser_break_glass_recovery_shows_temp_password_modal_not_toast(client
     assert 'Copy password' in response.text
     assert match is not None
     assert len(match.group(1)) >= 24
-    assert f'<div class="panel flash success">Break-glass temporary password generated. It is shown once.</div>' in response.text
+    assert '<div class="flash success">Break-glass temporary password generated. It is shown once.</div>' in response.text
+    assert 'data-workspace-section="team-members"' in response.text
 
 
 def test_browser_temporary_recovery_password_login_is_audited(client, db_session, make_team, make_user, make_totp_method, monkeypatch):

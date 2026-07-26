@@ -64,11 +64,10 @@ The application defaults to production behavior when `APP_ENV`, `ENVIRONMENT`, a
 - Onboarding: `http://127.0.0.1:8080/onboarding`
 - MFA challenge: `http://127.0.0.1:8080/mfa/challenge`
 - Permanent user workspace: `http://127.0.0.1:8080/workspace`
-- Current normal-user compatibility landing: `http://127.0.0.1:8080/home`
 - Admin: `http://127.0.0.1:8080/admin`
 - Health: `http://127.0.0.1:8080/health`
 
-`/transcribe` and `/settings` redirect to canonical workspace routes. Normal-user login still lands on `/home` during the transition. See [workspace.md](workspace.md).
+Full normal-user and team-leader login lands on `/workspace`. Legacy `GET /home`, `/transcribe`, and `/settings` links redirect to canonical workspace routes. See [workspace.md](workspace.md).
 
 ## First account
 

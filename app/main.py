@@ -437,14 +437,6 @@ audit_subject_hash_secret_configured_for_environment()
 app = FastAPI(title="OpenScribe MVP", docs_url=None, redoc_url=None, openapi_url=None)
 LOCALHOST_NAMES = {"localhost", "127.0.0.1", "::1", "testserver", "testclient"}
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
-TRANSCRIBER_COL_CHANGES_STATIC_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)),
-    "transcriber_changes",
-    "workspace",
-    "static",
-)
-
-
 def _local_only_dev_emails() -> set[str]:
     return {
         os.getenv("DEV_TEST_ADMIN_EMAIL", "dev.admin@example.com").strip().lower(),
@@ -735,17 +727,12 @@ async def browser_not_found_handler(request: Request, exc: HTTPException):
     session_factory = getattr(request.app.state, "db_session_factory", SessionLocal)
     with session_factory() as db:
         context = _current_context_optional(request, db)
-    redirect_to = "/home" if context is not None else "/login"
+    redirect_to = _post_login_redirect(context) if context is not None else "/login"
     return RedirectResponse(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
 
 
 app.add_exception_handler(404, browser_not_found_handler)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-app.mount(
-    "/transcriber_col_changes/static",
-    StaticFiles(directory=TRANSCRIBER_COL_CHANGES_STATIC_DIR),
-    name="transcriber_col_changes_static",
-)
 
 
 SENSITIVE_NO_STORE_PATH_PREFIXES = (
@@ -756,7 +743,6 @@ SENSITIVE_NO_STORE_PATH_PREFIXES = (
     "/api/v1/transcripts",
     "/api/v1/generated-documents",
     "/api/v1/post-consultation-dictation",
-    "/transcriber_col_changes",
     "/workspace",
 )
 PUBLIC_NO_STORE_PATHS = {
@@ -972,14 +958,14 @@ def _post_login_redirect(context: AuthenticatedContext) -> str:
         return "/onboarding"
     if context.session.auth_level.value == "pending_mfa":
         return "/mfa/challenge"
-    return "/admin" if context.user.is_system_admin else "/home"
+    return "/admin" if context.user.is_system_admin else "/workspace"
 
 
 def _post_login_redirect_for_user(user: User) -> str:
     auth_level = determine_auth_level(user)
     if auth_level.value == "onboarding":
         return "/onboarding"
-    return "/admin" if user.is_system_admin else "/home"
+    return "/admin" if user.is_system_admin else "/workspace"
 
 
 def _user_count(db: Session) -> int:

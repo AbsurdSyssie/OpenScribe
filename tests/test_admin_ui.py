@@ -3,7 +3,7 @@ from datetime import timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 import pyotp
@@ -265,7 +265,12 @@ def test_bootstrap_system_admin_gets_dek_and_browser_totp_enrollment_uses_encryp
     assert "Recovery codes" in verify.text
 
 
-def test_non_admin_login_redirects_to_home_and_leader_sees_review_tools(client, make_team, make_user, make_account_request):
+def test_non_admin_login_redirects_to_workspace_and_leader_sees_review_tools(
+    client,
+    make_team,
+    make_user,
+    make_account_request,
+):
     team = make_team(name="Clinic North")
     make_account_request(requested_name="Alice Example", requested_email="alice@example.com", requested_team_name="Clinic North")
     make_user(email="leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
@@ -276,18 +281,19 @@ def test_non_admin_login_redirects_to_home_and_leader_sees_review_tools(client, 
         follow_redirects=False,
     )
     assert login_response.status_code == 303
-    assert login_response.headers["location"] == "/home"
+    assert login_response.headers["location"] == "/workspace"
 
-    home_page = client.get("/home")
-    assert home_page.status_code == 200
-    assert '<span class="brand-name">OpenScribe</span>' in home_page.text
-    assert "Open consultation notes" in home_page.text
-    assert "Guide" in home_page.text
-    assert 'data-tour-overlay' in home_page.text
-    assert 'data-tour-scrim="top"' in home_page.text
+    workspace_page = client.get("/workspace")
+    assert workspace_page.status_code == 200
+    assert "OpenScribe" in workspace_page.text
+    assert "Create new consultation" in workspace_page.text
+    assert 'data-tour-overlay' in workspace_page.text
+    assert 'data-tour-scrim="top"' in workspace_page.text
     assert "background: var(--accent);" in Path("app/static/css/components.css").read_text()
-    assert "Create a new team member" in home_page.text
-    assert "Account requests" in home_page.text
+
+    review_page = client.get("/workspace/team/account-requests")
+    assert review_page.status_code == 200
+    assert "Account requests" in review_page.text
 
     logout_response = client.post("/logout", follow_redirects=False)
     assert logout_response.status_code == 303
@@ -856,7 +862,8 @@ def test_settings_role_scopes_user_and_leader_sections(client, make_team, make_u
     assert 'data-settings-panel="team-members"' in leader_page.text
     assert f'action="/home/users/{member.id}/suspend"' in leader_page.text
     assert f'action="/home/users/{member.id}/reset-mfa"' in leader_page.text
-    assert f'action="/home/users/{member.id}/delete"' not in leader_page.text
+    assert f'action="/home/users/{member.id}/delete"' in leader_page.text
+    assert "Delete this user and all owned transcript content immediately?" in leader_page.text
 
 
 def test_settings_normal_user_sees_same_team_templates_read_only(
@@ -1225,9 +1232,9 @@ def test_settings_return_view_helpers_are_closed_and_url_backed():
     assert home_return_view_value("workspace") == "workspace"
     assert home_page_route_from_return_view("workspace") == "/workspace/preferences"
     assert home_redirect_url(return_view="workspace", return_tab="templates") == "/workspace/library/templates"
-    assert home_return_view_value("https://evil.example") == ""
-    assert home_page_route_from_return_view("https://evil.example") == "/home"
-    assert home_template_name_from_return_view("https://evil.example") == "home.html"
+    assert home_return_view_value("https://evil.example") == "workspace"
+    assert home_page_route_from_return_view("https://evil.example") == "/workspace/preferences"
+    assert home_template_name_from_return_view("https://evil.example") == "settings.html"
 
 
 def test_settings_llm_preference_clear_returns_to_settings(client, db_session, make_team, make_user, make_llm_config, make_llm_selection):
@@ -1356,13 +1363,13 @@ def test_leader_home_separates_ai_services_from_team_member_admin(client, make_t
     make_user(email="services-leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
 
     client.post("/login", data={"email": "services-leader@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/home")
+    page = client.get("/workspace/team/ai-services")
 
-    assert 'data-tab-target="ai-services"' in page.text
-    assert 'data-tab-panel="ai-services"' in page.text
-    assert 'id="speech-service"' in page.text
-    assert 'id="writing-assistant"' in page.text
-    assert "Choose speech and writing services for your team." in page.text
+    assert 'data-workspace-section="ai-services"' in page.text
+    assert 'data-settings-panel="ai-services"' in page.text
+    assert 'data-service-toggle="stt"' in page.text
+    assert 'data-service-toggle="llm"' in page.text
+    assert "Choose admin-provisioned services. Credentials stay private." in page.text
     assert "Speech to text" in page.text
     assert "Writing assistant" in page.text
 
@@ -1375,12 +1382,12 @@ def test_leader_home_ai_service_modal_query_opens_inline_editor(client, make_tea
     make_user(email="inline-services-leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
 
     client.post("/login", data={"email": "inline-services-leader@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/home?tab=ai-services&modal=stt-settings")
+    page = client.get("/workspace/team/ai-services")
 
     assert page.status_code == 200
     assert 'data-service-body="stt"' in page.text
-    assert 'data-service-body="stt" hidden' not in page.text
-    assert 'data-service-toggle="stt">Close<' in page.text
+    assert 'data-service-body="stt" hidden' in page.text
+    assert 'data-service-toggle="stt">Configure<' in page.text
 
 
 def test_leader_home_ai_service_errors_keep_inline_editor_open(client, make_team, make_user, make_llm_config):
@@ -1401,10 +1408,9 @@ def test_leader_home_ai_service_errors_keep_inline_editor_open(client, make_team
     )
 
     assert response.status_code == 400
-    assert 'data-default-tab="ai-services"' in response.text
+    assert 'data-workspace-section="ai-services"' in response.text
     assert 'data-service-body="llm"' in response.text
-    assert 'data-service-body="llm" hidden' not in response.text
-    assert 'data-service-toggle="llm">Close<' in response.text
+    assert "Invalid LLM selection" in response.text
 
 
 def test_admin_providers_panel_renders_deidentification_management(client, make_team, make_user, make_deidentification_provider):
@@ -1629,11 +1635,11 @@ def test_leader_home_can_manage_deidentification_selection_inline(
     make_deidentification_provider_assignment(team=team, provider=provider, actor=admin)
 
     client.post("/login", data={"email": "deid-home-leader@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/home?tab=ai-services&modal=deidentification-settings")
+    page = client.get("/workspace/team/ai-services")
 
     assert page.status_code == 200
     assert 'data-service-body="deidentification"' in page.text
-    assert 'data-service-body="deidentification" hidden' not in page.text
+    assert 'data-service-body="deidentification" hidden' in page.text
     assert "Leader REST Deid" in page.text
 
     selected = client.post(
@@ -1677,11 +1683,11 @@ def test_leader_home_can_enable_clinical_nlp_separately_from_deidentification(
     make_deidentification_provider_assignment(team=team, provider=provider, actor=admin)
 
     client.post("/login", data={"email": "clinical-home-leader@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/home?tab=ai-services&modal=clinical-nlp-settings")
+    page = client.get("/workspace/team/ai-services")
 
     assert page.status_code == 200
     assert 'data-service-body="clinical-nlp"' in page.text
-    assert 'data-service-body="clinical-nlp" hidden' not in page.text
+    assert 'data-service-body="clinical-nlp" hidden' in page.text
     assert "Clinical NLP" in page.text
     assert "OpenMedDetect" in page.text
 
@@ -1845,7 +1851,7 @@ def test_root_route_shows_public_splash_without_auth(client):
     assert "<svg" not in response.text
 
 
-def test_root_route_redirects_authenticated_user_to_home(client, make_team, make_user):
+def test_root_route_redirects_authenticated_user_to_workspace(client, make_team, make_user):
     team = make_team(name="Clinic Root User")
     make_user(email="root-user@example.com", password="password-1", team=team, team_role=TeamRole.user)
 
@@ -1853,7 +1859,7 @@ def test_root_route_redirects_authenticated_user_to_home(client, make_team, make
     response = client.get("/", follow_redirects=False)
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/home"
+    assert response.headers["location"] == "/workspace"
 
 
 def test_root_route_redirects_authenticated_admin_to_admin(client, make_user):
@@ -1866,7 +1872,7 @@ def test_root_route_redirects_authenticated_admin_to_admin(client, make_user):
     assert response.headers["location"] == "/admin"
 
 
-def test_invalid_browser_route_redirects_to_home_when_authenticated(client, make_team, make_user):
+def test_invalid_browser_route_redirects_to_workspace_when_authenticated(client, make_team, make_user):
     team = make_team(name="Clinic Invalid Route")
     make_user(email="member-invalid-route@example.com", password="password-1", team=team, team_role=TeamRole.user)
 
@@ -1874,7 +1880,97 @@ def test_invalid_browser_route_redirects_to_home_when_authenticated(client, make
     response = client.get("/does-not-exist", follow_redirects=False)
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/home"
+    assert response.headers["location"] == "/workspace"
+
+
+@pytest.mark.parametrize(
+    ("legacy_url", "canonical_url"),
+    [
+        ("/home", "/workspace"),
+        ("/home?tab=scribe", "/workspace"),
+        ("/home?tab=overview", "/workspace"),
+        ("/home?tab=account", "/workspace/account"),
+        ("/home?tab=preferences", "/workspace/preferences"),
+        ("/home?tab=templates", "/workspace/library/templates"),
+        ("/home?tab=quick-actions", "/workspace/library/quick-actions"),
+        ("/home?tab=smart-phrases", "/workspace/library/smart-phrases"),
+        ("/home?tab=ai-services", "/workspace/team/ai-services"),
+        ("/home?tab=team-management", "/workspace/team/members"),
+        ("/home?tab=account-requests", "/workspace/team/account-requests"),
+    ],
+)
+def test_home_compatibility_landing_redirects_to_canonical_workspace(
+    client,
+    make_team,
+    make_user,
+    legacy_url,
+    canonical_url,
+):
+    team = make_team(name=f"Clinic Home Redirect {canonical_url}")
+    make_user(
+        email=f"home-redirect-{canonical_url.replace('/', '-')}@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.leader,
+    )
+
+    client.post(
+        "/login",
+        data={
+            "email": f"home-redirect-{canonical_url.replace('/', '-')}@example.com",
+            "password": "password-1",
+        },
+        follow_redirects=False,
+    )
+    response = client.get(legacy_url, follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == canonical_url
+
+
+def test_home_compatibility_redirect_preserves_safe_asset_and_feedback_parameters(
+    client, make_team, make_user
+):
+    team = make_team(name="Clinic Home Parameter Redirect")
+    user = make_user(
+        email="home-parameter-redirect@example.com",
+        password="password-1",
+        team=team,
+    )
+    template_id = uuid4()
+    client.post(
+        "/login",
+        data={"email": user.email, "password": "password-1"},
+        follow_redirects=False,
+    )
+
+    selected = client.get(
+        f"/home?tab=templates&personal_template_id={template_id}",
+        follow_redirects=False,
+    )
+    create = client.get(
+        "/home?tab=quick-actions&modal=personal-quick-action",
+        follow_redirects=False,
+    )
+    feedback = client.get(
+        "/home?tab=preferences&message=%3Cscript%3Ealert(1)%3C%2Fscript%3E"
+        "&message_kind=warning",
+        follow_redirects=False,
+    )
+
+    assert selected.headers["location"] == (
+        f"/workspace/library/templates?scope=personal&template_id={template_id}"
+    )
+    assert create.headers["location"] == (
+        "/workspace/library/quick-actions?scope=personal&quick_action_id=new"
+    )
+    assert feedback.headers["location"] == (
+        "/workspace/preferences?message=%3Cscript%3Ealert%281%29%3C%2Fscript%3E"
+        "&message_kind=success"
+    )
+    rendered = client.get(feedback.headers["location"])
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in rendered.text
+    assert "<script>alert(1)</script>" not in rendered.text
 
 
 def test_leader_home_can_suspend_and_reactivate_team_user(client, db_session, make_team, make_user):
@@ -1883,19 +1979,19 @@ def test_leader_home_can_suspend_and_reactivate_team_user(client, db_session, ma
     member = make_user(email="member@example.com", password="password-2", team=team, team_role=TeamRole.user)
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
-    home_page = client.get("/home")
+    home_page = client.get("/workspace/team/members")
     assert "Suspend" in home_page.text
 
     suspend_response = client.post(f"/home/users/{member.id}/suspend", follow_redirects=False)
     assert suspend_response.status_code == 303
-    assert suspend_response.headers["location"] == "/home?tab=team-management"
+    assert suspend_response.headers["location"] == "/workspace/team/members"
     db_session.refresh(member)
     assert member.status is UserStatus.suspended
 
-    client.get("/home")
+    client.get("/workspace/team/members")
     reactivate_response = client.post(f"/home/users/{member.id}/reactivate", follow_redirects=False)
     assert reactivate_response.status_code == 303
-    assert reactivate_response.headers["location"] == "/home?tab=team-management"
+    assert reactivate_response.headers["location"] == "/workspace/team/members"
     db_session.refresh(member)
     assert member.status is UserStatus.active
     assert member.must_change_password is True
@@ -1908,7 +2004,7 @@ def test_leader_home_can_choose_active_stt_selection_from_provisioned_endpoints(
     make_user(email="leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/home")
+    page = client.get("/workspace/team/ai-services")
     assert "Speech to text" in page.text
     assert "Conversation transcription" in page.text
     assert "Clinic STT" in page.text
@@ -1923,7 +2019,7 @@ def test_leader_home_can_choose_active_stt_selection_from_provisioned_endpoints(
         follow_redirects=False,
     )
     assert save.status_code == 303
-    assert save.headers["location"] == "/home?tab=team-management"
+    assert save.headers["location"] == "/workspace/team/ai-services"
     selection = db_session.scalar(select(TeamSttSelection).where(TeamSttSelection.team_id == team.id))
     assert selection is not None
     assert selection.stt_config_id == config.id
@@ -1948,7 +2044,7 @@ def test_leader_home_can_choose_dictation_stt_selection_from_provisioned_endpoin
         follow_redirects=False,
     )
     assert save.status_code == 303
-    assert save.headers["location"] == "/home?tab=team-management"
+    assert save.headers["location"] == "/workspace/team/ai-services"
 
     selection = db_session.scalar(
         select(TeamSttSelection).where(
@@ -1968,15 +2064,15 @@ def test_leader_home_can_clear_stt_selection_without_deleting_provisioned_endpoi
     make_stt_selection(config=config, actor=leader)
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/home")
+    page = client.get("/workspace/team/ai-services")
     assert "Speech to text" in page.text
     assert "Clear conversation" in page.text
 
     cleared = client.post("/home/stt-selection/clear", follow_redirects=False)
     assert cleared.status_code == 303
-    assert cleared.headers["location"] == "/home?tab=team-management"
+    assert cleared.headers["location"] == "/workspace/team/ai-services"
 
-    page_after = client.get("/home")
+    page_after = client.get("/workspace/team/ai-services")
     assert "Clear conversation" not in page_after.text
     assert db_session.scalar(
         select(TeamSttSelection).where(
@@ -1994,7 +2090,7 @@ def test_leader_home_can_choose_active_llm_selection_from_provisioned_providers(
     make_user(email="leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/home")
+    page = client.get("/workspace/team/ai-services")
     assert "Writing assistant" in page.text
     assert "Clinic OpenAI" in page.text
 
@@ -2008,7 +2104,7 @@ def test_leader_home_can_choose_active_llm_selection_from_provisioned_providers(
         follow_redirects=False,
     )
     assert save.status_code == 303
-    assert save.headers["location"] == "/home?tab=team-management"
+    assert save.headers["location"] == "/workspace/team/ai-services"
     selection = db_session.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == team.id))
     assert selection is not None
     assert selection.llm_config_id == config.id
@@ -2024,9 +2120,9 @@ def test_user_home_can_save_llm_preference(client, db_session, make_team, make_u
     make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini", "gpt-4.1-mini"], model_name_override="gpt-4o-mini")
 
     client.post("/login", data={"email": "user@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/home")
-    assert "Your writing assistant preference" in page.text
-    assert '<p class="preference-detail"><strong>Clinic OpenAI</strong></p>' in page.text
+    page = client.get("/workspace/preferences")
+    assert "Writing style" in page.text
+    assert "Writing assistant model" in page.text
     assert "Short (up to ~1 page)" in page.text
     assert "Detailed" in page.text
     assert "Team allows:" not in page.text
@@ -2041,7 +2137,7 @@ def test_user_home_can_save_llm_preference(client, db_session, make_team, make_u
         follow_redirects=False,
     )
     assert save.status_code == 303
-    assert save.headers["location"] == "/home?tab=overview"
+    assert save.headers["location"] == "/workspace/preferences"
     preference = db_session.scalar(select(UserLlmPreference).where(UserLlmPreference.user_id == user.id))
     assert preference is not None
     assert preference.preferred_model_name == "gpt-4.1-mini"
@@ -2061,7 +2157,7 @@ def test_user_home_can_clear_llm_preference(client, db_session, make_team, make_
     db_session.commit()
 
     client.post("/login", data={"email": "clear-pref-user@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/home")
+    page = client.get("/workspace/preferences")
 
     assert page.status_code == 200
     assert "Use team default" in page.text
@@ -2069,7 +2165,7 @@ def test_user_home_can_clear_llm_preference(client, db_session, make_team, make_
     cleared = client.post("/home/llm-preference/clear", follow_redirects=False)
 
     assert cleared.status_code == 303
-    assert cleared.headers["location"] == "/home?tab=overview"
+    assert cleared.headers["location"] == "/workspace/preferences"
     assert db_session.scalar(select(UserLlmPreference).where(UserLlmPreference.user_id == user.id)) is None
 
 
@@ -2103,25 +2199,25 @@ def test_home_asset_rows_show_icon_actions_and_enabled_disabled_status(client, d
     make_quick_action(scope=TemplateScope.user, owner=member, actor=member, name="My quick", is_active=False)
 
     client.post("/login", data={"email": "home-asset-ui@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/home?tab=templates")
+    page = client.get("/workspace/library/templates")
 
     assert page.status_code == 200
     assert "Personal" in page.text
     assert "Enabled" in page.text
-    assert 'title="Edit template"' in page.text
-    assert 'title="Copy template"' in page.text
-    assert 'title="Delete template"' in page.text
+    assert 'aria-label="Edit My template"' in page.text
+    assert 'aria-label="Copy My template"' in page.text
+    assert 'aria-label="Delete My template"' in page.text
     assert '/home/personal-templates/' in page.text
     assert '/duplicate' in page.text
     assert '/delete' in page.text
 
-    quick_actions_page = client.get("/home?tab=quick-actions")
+    quick_actions_page = client.get("/workspace/library/quick-actions")
 
     assert quick_actions_page.status_code == 200
     assert "Disabled" in quick_actions_page.text
-    assert 'title="Edit quick action"' in quick_actions_page.text
-    assert 'title="Copy quick action"' in quick_actions_page.text
-    assert 'title="Delete quick action"' in quick_actions_page.text
+    assert 'aria-label="Edit My quick"' in quick_actions_page.text
+    assert 'aria-label="Copy My quick"' in quick_actions_page.text
+    assert 'aria-label="Delete My quick"' in quick_actions_page.text
 
 
 def test_template_editor_page_uses_dedicated_full_page_layout(client, db_session, make_team, make_user):
@@ -2228,11 +2324,11 @@ def test_global_default_template_editor_return_flow_is_canonical(client, db_sess
     assert deleted.headers["location"] == "/admin?tab=global-defaults"
 
 
-def test_default_template_return_tab_allows_legacy_only_when_explicitly_requested():
+def test_default_template_return_tab_closes_retired_views_to_canonical_admin():
     assert default_template_return_tab("workspace", "defaults") == "global-defaults"
     assert default_template_return_tab("", "anything") == "global-defaults"
-    assert default_template_return_tab("legacy", "defaults") == "defaults"
-    assert default_template_return_tab("legacy", "global-defaults") == "defaults"
+    assert default_template_return_tab("legacy", "defaults") == "global-defaults"
+    assert default_template_return_tab("admin2", "defaults") == "global-defaults"
 
 
 def test_new_freeform_template_editor_hides_emis_sections_until_structured_mode(client, db_session, make_team, make_user):
@@ -2317,8 +2413,7 @@ def test_user_home_can_duplicate_personal_template_with_incremented_name(client,
     assert copy is not None
     latest_version = copy.versions[-1]
     assert latest_version.prompt_text == "Write note"
-    assert duplicated.headers["location"].startswith("/home/templates/editor?scope=personal")
-    assert f"template_id={copy.id}" in duplicated.headers["location"]
+    assert duplicated.headers["location"] == f"/workspace/library/templates?scope=personal&template_id={copy.id}"
 
 
 def test_leader_home_can_duplicate_team_template_with_next_suffix(client, db_session, make_team, make_user):
@@ -2352,8 +2447,7 @@ def test_leader_home_can_duplicate_team_template_with_next_suffix(client, db_ses
     assert duplicated.status_code == 303
     copy = db_session.scalar(select(PromptTemplate).where(PromptTemplate.team_id == team.id, PromptTemplate.name == "Team SOAP 3"))
     assert copy is not None
-    assert duplicated.headers["location"].startswith("/home/templates/editor?scope=team")
-    assert f"template_id={copy.id}" in duplicated.headers["location"]
+    assert duplicated.headers["location"] == f"/workspace/library/templates?scope=team&template_id={copy.id}"
 
 
 
@@ -2362,7 +2456,7 @@ def test_user_home_can_create_personal_template(client, db_session, make_team, m
     user = make_user(email="user@example.com", password="password-1", team=team, team_role=TeamRole.user)
 
     client.post("/login", data={"email": "user@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/home")
+    page = client.get("/workspace/library/templates?scope=personal&template_id=new")
     assert "Templates" in page.text
 
     save = client.post(
@@ -2385,7 +2479,7 @@ def test_user_home_can_create_structured_emis_personal_template(client, db_sessi
     user = make_user(email="structured-user@example.com", password="password-1", team=team, team_role=TeamRole.user)
 
     client.post("/login", data={"email": "structured-user@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/home")
+    page = client.get("/workspace/library/templates?scope=personal&template_id=new")
     assert "Sectioned EMIS note" in page.text
 
     save = client.post(
@@ -2414,7 +2508,7 @@ def test_leader_home_can_create_team_quick_action(client, db_session, make_team,
     make_user(email="leader-quick-action@example.com", password="password-1", team=team, team_role=TeamRole.leader)
 
     client.post("/login", data={"email": "leader-quick-action@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/home")
+    page = client.get("/workspace/library/quick-actions?scope=team&quick_action_id=new")
     assert "Quick actions" in page.text
 
     save = client.post(
@@ -2456,7 +2550,7 @@ def test_user_home_can_duplicate_personal_quick_action_with_incremented_name(cli
     assert copy is not None
     latest_version = copy.versions[-1]
     assert latest_version.prompt_text == "Write review message"
-    assert f"personal_quick_action_id={copy.id}" in duplicated.headers["location"]
+    assert duplicated.headers["location"] == f"/workspace/library/quick-actions?scope=personal&quick_action_id={copy.id}"
 
 
 def test_leader_home_can_duplicate_team_quick_action_with_next_suffix(client, db_session, make_team, make_user):
@@ -2539,7 +2633,7 @@ def test_user_home_can_create_personal_quick_action(client, db_session, make_tea
     user = make_user(email="user-quick-action@example.com", password="password-1", team=team, team_role=TeamRole.user)
 
     client.post("/login", data={"email": "user-quick-action@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/home")
+    page = client.get("/workspace/library/quick-actions?scope=personal&quick_action_id=new")
     assert "Quick actions" in page.text
 
     save = client.post(
@@ -2563,13 +2657,13 @@ def test_leader_home_can_delete_team_user(client, db_session, make_team, make_us
     member = make_user(email="member@example.com", password="password-2", team=team, team_role=TeamRole.user)
 
     client.post("/login", data={"email": "leader@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/home")
+    page = client.get("/workspace/team/members")
     assert "Delete" in page.text
     assert "Delete this user and all owned transcript content immediately?" in page.text
 
     delete_response = client.post(f"/home/users/{member.id}/delete", follow_redirects=False)
     assert delete_response.status_code == 303
-    assert delete_response.headers["location"] == "/home?tab=team-management"
+    assert delete_response.headers["location"] == "/workspace/team/members"
     assert db_session.get(type(member), member.id) is None
 
 
@@ -2622,20 +2716,20 @@ def test_home_page_uses_flat_sidebar_workspace_layout(client, make_team, make_us
     make_user(email="leader-home-flat@example.com", password="password-1", team=team, team_role=TeamRole.leader)
 
     client.post("/login", data={"email": "leader-home-flat@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/home?tab=team-management")
+    page = client.get("/workspace/team/members")
     components_css = Path("app/static/css/components.css").read_text(encoding="utf-8")
 
     assert page.status_code == 200
-    assert 'class="home-pane"' in page.text
-    assert 'data-tab-nav hidden role="tablist" aria-label="Home sections"' in page.text
-    assert 'data-tab-shell data-default-tab="team-management"' in page.text
-    assert 'class="brand home-pane__brand"' in page.text
+    assert 'class="workspace-shell"' in page.text
+    assert 'data-workspace-section="team-members"' in page.text
+    assert 'aria-label="Workspace navigation"' in page.text
+    assert 'class="brand workspace-sidebar__brand"' in page.text
     assert '<span class="brand-mark" aria-hidden="true"><i data-lucide="feather"></i></span>' in page.text
-    assert '<span class="brand-name">OpenScribe</span>' in page.text
+    assert '<span class="brand-name" data-sidebar-full>OpenScribe</span>' in page.text
     assert "Clinical workspace" not in page.text
     assert ".brand-mark" in components_css
     assert ".brand-name" in components_css
-    assert "Open consultation notes" in page.text
+    assert "Back to Scribe" in page.text
     assert 'class="home-shell"' not in page.text
     assert 'class="home-sidebar"' not in page.text
 
@@ -2646,14 +2740,14 @@ def test_home_service_status_bar_is_visible_to_leaders_only(client, make_team, m
     make_user(email="user-home-services@example.com", password="password-2", team=team, team_role=TeamRole.user)
 
     client.post("/login", data={"email": "user-home-services@example.com", "password": "password-2"}, follow_redirects=False)
-    for route in ("/home", "/home2"):
+    for route in ("/home2",):
         page = client.get(route)
         assert page.status_code == 200
         assert 'class="stat-grid"' not in page.text
 
     client.post("/logout", follow_redirects=False)
     client.post("/login", data={"email": "leader-home-services@example.com", "password": "password-1"}, follow_redirects=False)
-    for route in ("/home", "/home2"):
+    for route in ("/home2",):
         page = client.get(route)
         assert page.status_code == 200
         assert 'class="stat-grid"' in page.text
@@ -2691,180 +2785,58 @@ def test_admin_restyled_compatibility_route_keeps_system_admin_gate(client, make
     assert "location" not in page.headers
 
 
-def test_admin2_preview_route_renders_for_system_admin(client, make_team, make_user):
-    team = make_team(name="Clinic Admin2 Preview")
-    make_user(email="admin2-preview@example.com", password="password-1", is_system_admin=True)
-
-    client.post("/login", data={"email": "admin2-preview@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin2?team_id={team.id}&tab=llm")
-
-    assert page.status_code == 200
-    assert 'class="app"' in page.text
-    assert "Writing assistant" in page.text
-    assert 'data-admin-tab-target="llm"' in page.text
-    assert 'data-provider-tab-target="llm" aria-selected="true"' in page.text
-    assert 'href="/admin2?tab=directory"' in page.text
-    assert 'name="return_view" value="admin2"' in page.text
-    assert 'style="' not in page.text
-    assert 'const CSRF_TOKEN = "' in page.text
-    assert 'const COOKIE_NAME = "openscribe_csrf"' not in page.text
-    assert 'Clinical NLP' in page.text
-    assert '/static/vendor/lucide/1.8.0/lucide.min.js' in page.text
-    assert 'body[data-admin-theme="light"]' in page.text
-    assert 'const THEME_KEY = "openscribe_admin2_theme";' in page.text
-    assert 'data-theme-toggle' in page.text
-    assert 'width:250px' in page.text
-    assert '@keyframes menu-pop' in page.text
-    assert 'document.body.appendChild(panel);' in page.text
-    assert 'window.setTimeout(() => closeActionMenu(menu), 3000);' in page.text
-    assert 'document.addEventListener("pointerdown"' in page.text
-    assert 'select.classList.add("is-enhanced");' in page.text
-    assert 'className = "custom-select__menu"' in page.text
-    assert 'role", "listbox"' in page.text
-    assert 'select.dispatchEvent(new Event("change", { bubbles: true }));' in page.text
-    assert 'data-usage-tab-target="teams"' in page.text
-    assert 'data-usage-tab-target="providers"' in page.text
-    assert 'data-usage-tab-panel="providers"' in page.text
-    assert 'data-usage-team-status="active"' in page.text
-    assert 'data-usage-team-status="suspended"' in page.text
-    assert 'function showUsageTab(tab)' in page.text
-    assert 'function showUsageTeamStatus(status)' in page.text
-    assert 'data-people-sort="created-desc"' in page.text
-    assert 'data-people-filter-menu' in page.text
-    assert 'data-people-team-select' in page.text
-    assert 'data-people-status-select' in page.text
-    assert 'function closeActionMenusExceptOwner(node)' in page.text
-    assert 'function applyPeopleControls()' in page.text
-    assert 'width:min(1440px,100%)' in page.text
-    assert 'width:min(1240px,100%)' in page.text
-    assert '.setting > :first-child' in page.text
-    assert '.inline-grid > .section + .section { margin-top:0; }' in page.text
-    assert '.section-head h2 { font-size:16px; font-weight:650;' in page.text
-
-    new_template = client.get("/admin2?tab=templates&default_template_id=new")
-    assert new_template.status_code == 200
-    assert 'data-template-mode-select' in new_template.text
-    assert 'data-template-structured-section' in new_template.text
-    assert 'sections.hidden = modeSelect.value !== "structured";' in new_template.text
-
-    collapsed = client.get("/admin2?tab=directory")
-    assert collapsed.status_code == 200
-    assert "settings</h2>" not in collapsed.text
-    assert 'href="/admin2?tab=directory">Collapse</a>' not in collapsed.text
-
-
-def test_admin2_exposes_admin_lifecycle_and_provider_controls(
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/legacy-admin",
+        "/admin2",
+        "/transcribe-glm-2",
+        "/transcribe-claude",
+        "/transcriber_col_changes",
+    ],
+)
+def test_retired_prototype_routes_follow_browser_not_found_redirects(
     client,
     make_team,
     make_user,
-    make_account_request,
-    make_stt_config,
-    make_llm_config,
-    make_deidentification_provider,
-    make_deidentification_provider_assignment,
+    route,
 ):
-    team = make_team(name="Clinic Admin2 Controls")
-    admin = make_user(email="admin2-controls@example.com", password="password-1", is_system_admin=True)
-    make_user(email="admin2-member@example.com", password="password-2", team=team)
-    make_account_request(requested_name="New User", requested_email="new-user@example.com", requested_team_name=team.name)
-    stt_config = make_stt_config(team=team, actor=admin, label="Admin2 STT")
-    llm_config = make_llm_config(team=team, actor=admin, label="Admin2 LLM", model_name="gpt-4o-mini", available_models_json=["gpt-4o-mini", "gpt-4.1-mini"])
-    deid_provider = make_deidentification_provider(
-        actor=admin,
-        label="Admin2 Deid",
-        adapter_kind=DeidentificationAdapterKind.generic_rest,
-        base_url="https://deid.example.com",
-        detect_path="/detect",
-        clinical_detection_enabled=True,
+    anonymous = client.get(route, follow_redirects=False)
+    assert anonymous.status_code == 303
+    assert anonymous.headers["location"] == "/login"
+
+    team = make_team(name=f"Retired prototype {route}")
+    member = make_user(email=f"member-{route.strip('/').replace('_', '-')}@example.com", password="password-1", team=team)
+    client.post("/login", data={"email": member.email, "password": "password-1"}, follow_redirects=False)
+    member_response = client.get(route, follow_redirects=False)
+    assert member_response.status_code == 303
+    assert member_response.headers["location"] == "/workspace"
+
+    client.post("/logout", follow_redirects=False)
+    leader = make_user(
+        email=f"leader-{route.strip('/').replace('_', '-')}@example.com",
+        password="password-2",
+        team=team,
+        team_role=TeamRole.leader,
     )
-    make_deidentification_provider_assignment(team=team, provider=deid_provider, actor=admin)
+    client.post("/login", data={"email": leader.email, "password": "password-2"}, follow_redirects=False)
+    leader_response = client.get(route, follow_redirects=False)
+    assert leader_response.status_code == 303
+    assert leader_response.headers["location"] == "/workspace"
 
-    client.post("/login", data={"email": "admin2-controls@example.com", "password": "password-1"}, follow_redirects=False)
-
-    people = client.get(f"/admin2?team_id={team.id}&tab=people")
-    assert people.status_code == 200
-    assert 'name="full_name"' in people.text
-    assert 'name="status"' in people.text
-    assert "Clinic Admin2 Controls" in people.text
-    assert f"<span>{team.id}</span>" not in people.text
-    assert 'class="actions-menu"' in people.text
-    assert 'data-people-sort="role"' in people.text
-    assert 'data-people-row' in people.text
-    assert 'data-created-at=' in people.text
-    assert 'aria-label="Filter people"' in people.text
-    assert 'data-people-team-select' in people.text
-    assert 'data-people-status-select' in people.text
-    assert 'data-lucide="trash-2"' in people.text
-    assert f'/admin/users/' in people.text and '/suspend' in people.text
-    assert '/reset-mfa' in people.text
-
-    requests = client.get(f"/admin2?team_id={team.id}&tab=requests")
-    assert requests.status_code == 200
-    assert 'class="request-card"' in requests.text
-    assert 'class="request-card__actions"' in requests.text
-    assert 'action="/admin/account-requests/' in requests.text
-    assert 'name="temporary_password"' in requests.text
-    assert 'name="team_role"' in requests.text
-
-    stt = client.get(f"/admin2?team_id={team.id}&tab=stt&stt_config_id={stt_config.id}")
-    assert stt.status_code == 200
-    assert f'action="/admin/stt-configs/{stt_config.id}/test"' in stt.text
-    assert f'action="/admin/stt-configs/{stt_config.id}/delete"' in stt.text
-    assert 'formaction="/admin/stt-configs/inspect"' in stt.text
-    assert 'name="provider_model"' in stt.text
-
-    llm = client.get(f"/admin2?team_id={team.id}&tab=llm&llm_config_id={llm_config.id}")
-    assert llm.status_code == 200
-    assert f'action="/admin/llm-configs/{llm_config.id}/delete"' in llm.text
-    assert 'formaction="/admin/llm-configs/inspect"' in llm.text
-    assert 'name="allowed_model_names" value="gpt-4.1-mini"' in llm.text
-    assert 'name="provider_preset" data-llm-provider-select' in llm.text
-    assert 'value="openrouter" data-default-base-url="https://openrouter.ai/api/v1"' in llm.text
-    assert 'value="xai" data-default-base-url="https://api.x.ai/v1"' in llm.text
-    assert 'value="groq" data-default-base-url="https://api.groq.com/openai/v1"' in llm.text
-    assert 'value="mistral" data-default-base-url="https://api.mistral.ai/v1"' in llm.text
-    assert 'value="deepseek" data-default-base-url="https://api.deepseek.com"' in llm.text
-    assert 'value="together" data-default-base-url="https://api.together.xyz/v1"' in llm.text
-    assert 'value="bedrock_http_gateway" data-default-base-url="https://bedrock-mantle.eu-west-2.api.aws/v1"' in llm.text
-    assert 'name="bedrock_region" data-bedrock-region-input' in llm.text
-    assert 'value="ap-southeast-1"' in llm.text
-    assert 'value="custom_openai_compatible" data-default-base-url=""' in llm.text
-    assert "Custom OpenAI-compatible · advanced" in llm.text
-    assert "If discovery cannot load models, enter the exact model ID manually." in llm.text
-    assert "may save it as Custom OpenAI-compatible" in llm.text
-    assert "Use the region selector for standard Bedrock HTTP gateway endpoints" in llm.text
-    assert "non-Mantle endpoint will save this provider as Custom OpenAI-compatible" in llm.text
-
-    deid = client.get(f"/admin2?team_id={team.id}&tab=deidentification&deidentification_provider_id={deid_provider.id}")
-    assert deid.status_code == 200
-    assert 'Team assignments' not in deid.text
-    assert 'Team assignment and selection now happens under Workspace' in deid.text
-    assert 'formaction="/admin/deidentification-providers/inspect"' in deid.text
-
-    clinical_nlp = client.get(f"/admin2?team_id={team.id}&tab=clinical-nlp&deidentification_provider_id={deid_provider.id}")
-    assert clinical_nlp.status_code == 200
-    assert 'data-admin-tab-panel="clinical-nlp"' in clinical_nlp.text
-    assert 'New clinical NLP endpoint' in client.get(f"/admin2?team_id={team.id}&tab=clinical-nlp&deidentification_provider_id=new").text
-    assert 'Team assignment and selection happens under Workspace' in clinical_nlp.text
-
-    teams = client.get(f"/admin2?team_id={team.id}&tab=directory")
-    assert teams.status_code == 200
-    assert 'Team provider assignments' in teams.text
-    assert 'action="/admin/deidentification-provider-assignments/remove"' in teams.text
-    assert 'action="/admin/clinical-nlp-selection"' in teams.text
+    client.post("/logout", follow_redirects=False)
+    admin = make_user(
+        email=f"admin-{route.strip('/').replace('_', '-')}@example.com",
+        password="password-3",
+        is_system_admin=True,
+    )
+    client.post("/login", data={"email": admin.email, "password": "password-3"}, follow_redirects=False)
+    admin_response = client.get(route, follow_redirects=False)
+    assert admin_response.status_code == 303
+    assert admin_response.headers["location"] == "/admin"
 
 
-def test_explicit_legacy_return_view_uses_compatibility_template(client, make_user):
-    make_user(email="admin-flat-layout@example.com", password="password-1", is_system_admin=True)
 
-    client.post("/login", data={"email": "admin-flat-layout@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/legacy-admin?tab=directory")
-
-    assert page.status_code == 200
-    assert 'class="admin-shell"' in page.text
-    assert 'class="admin-sidebar"' in page.text
-    assert 'data-tab-shell data-default-tab="directory"' in page.text
-    assert 'name="return_view" value="legacy"' in page.text
 
 
 def test_canonical_admin_route_uses_workspace_template(client, make_team, make_user):
@@ -2884,7 +2856,7 @@ def test_canonical_admin_route_uses_workspace_template(client, make_team, make_u
     assert 'name="return_view" value="workspace"' in page.text
 
 
-@pytest.mark.parametrize("return_view", [None, "", "admin", "unknown"])
+@pytest.mark.parametrize("return_view", [None, "", "admin", "legacy", "admin2", "unknown"])
 def test_invalid_or_absent_admin_return_view_defaults_to_canonical_workspace(return_view):
     assert admin_return_view_value(return_view) == "workspace"
     assert admin_page_route_from_return_view(return_view) == "/admin"
@@ -2896,8 +2868,8 @@ def test_invalid_or_absent_admin_return_view_defaults_to_canonical_workspace(ret
     [
         ("workspace", "members", "/admin?team_id={team_id}&team_tab=members"),
         ("restyled", "members", "/admin?team_id={team_id}&team_tab=members"),
-        ("legacy", "directory", "/legacy-admin?team_id={team_id}&tab=directory"),
-        ("admin2", "directory", "/admin2?team_id={team_id}&tab=directory"),
+        ("legacy", "directory", "/admin?team_id={team_id}&tab=directory"),
+        ("admin2", "directory", "/admin?team_id={team_id}&tab=directory"),
         ("unknown", "directory", "/admin?team_id={team_id}&tab=directory"),
     ],
 )
@@ -3308,13 +3280,6 @@ def test_admin_pages_can_configure_hallucination_checker(client, db_session, mak
     assert selection.llm_config_id == config.id
     assert selection.model_name_override == "gpt-4.1-mini"
 
-    admin2_page = client.get(f"/admin2?team_id={team.id}&tab=directory")
-    assert admin2_page.status_code == 200
-    assert "Hallucination checker" in admin2_page.text
-    assert "Clear hallucination checker" in admin2_page.text
-    assert 'data-checker-model-select' in admin2_page.text
-    assert 'data-selected-value="gpt-4.1-mini"' in admin2_page.text
-
     cleared = client.post(
         "/admin/hallucination-check-selection/clear",
         data={"team_id": str(team.id)},
@@ -3452,15 +3417,7 @@ def test_admin_stt_deepgram_draft_pages_show_model_dropdown_without_key_field(
     assert '<option value="nova-2"' in finalize_form
     assert 'name="bearer_token"' not in finalize_form
 
-    admin2_page = client.get(f"/admin2?team_id={team.id}&tab=stt&stt_config_id={saved.id}")
-    assert admin2_page.status_code == 200
-    admin2_form = admin2_page.text.split(f'action="/admin/stt-configs/{saved.id}/finalize"', 1)[1].split("</form>", 1)[0]
-    assert '<select class="select" name="provider_model">' in admin2_form
-    assert '<option value="nova-3"' in admin2_form
-    assert '<option value="nova-2"' in admin2_form
-    assert 'name="bearer_token"' not in admin2_form
     assert "dg-secret" not in page.text
-    assert "dg-secret" not in admin2_page.text
 
 
 def test_admin_llm_bad_key_stays_on_credential_step_without_ready_state(client, db_session, make_team, make_user, monkeypatch):
@@ -3512,17 +3469,6 @@ def test_admin_llm_manual_model_step_shows_discovery_warning(client, db_session,
     assert "Models could not be discovered. You can save this model manually, but generation may fail if the model name or endpoint is wrong." in page.text
 
 
-def test_admin2_llm_new_provider_uses_draft_button(client, make_team, make_user):
-    team = make_team(name="Clinic LLM Admin2 Draft")
-    make_user(email="admin2-llm-draft@example.com", password="password-1", is_system_admin=True)
-
-    client.post("/login", data={"email": "admin2-llm-draft@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin2?team_id={team.id}&tab=llm&llm_config_id=new")
-
-    assert page.status_code == 200
-    assert 'action="/admin/llm-configs/drafts"' in page.text
-    assert "Check API key and find models" in page.text
-
 
 def test_admin_restyled_stt_config_redirect_normalizes_to_canonical_workspace(client, db_session, make_team, make_user):
     team = make_team(name="Clinic Admin Restyled STT")
@@ -3554,16 +3500,16 @@ def test_admin_restyled_stt_config_redirect_normalizes_to_canonical_workspace(cl
     assert saved_config.label == "Admin STT"
 
 
-def test_admin2_stt_config_redirect_preserves_preview_route(client, db_session, make_team, make_user):
-    team = make_team(name="Clinic Admin2 STT")
-    make_user(email="admin2-stt@example.com", password="password-1", is_system_admin=True)
+def test_retired_admin2_stt_return_view_closes_to_canonical_admin(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Retired Admin2 STT")
+    make_user(email="retired-admin2-stt@example.com", password="password-1", is_system_admin=True)
 
-    client.post("/login", data={"email": "admin2-stt@example.com", "password": "password-1"}, follow_redirects=False)
+    client.post("/login", data={"email": "retired-admin2-stt@example.com", "password": "password-1"}, follow_redirects=False)
     save = client.post(
         "/admin/stt-configs",
         data={
             "team_id": str(team.id),
-            "label": "Admin2 STT",
+            "label": "Retired Admin2 STT",
             "adapter_kind": "openai_compatible_rest",
             "base_url": "http://127.0.0.1:7000",
             "bearer_token": "secret-token",
@@ -3578,26 +3524,24 @@ def test_admin2_stt_config_redirect_preserves_preview_route(client, db_session, 
     )
 
     assert save.status_code == 303
-    assert save.headers["location"] == f"/admin2?team_id={team.id}&tab=stt"
+    assert save.headers["location"] == f"/admin?team_id={team.id}&team_tab=stt"
     saved_config = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.team_id == team.id))
     assert saved_config is not None
-    assert saved_config.label == "Admin2 STT"
+    assert saved_config.label == "Retired Admin2 STT"
 
 
-def test_admin2_quick_action_redirect_preserves_quick_actions_tab(client, db_session, make_user, make_default_quick_action):
-    admin = make_user(email="admin2-quick-actions@example.com", password="password-1", is_system_admin=True)
-    quick_action = make_default_quick_action(actor=admin, name="Admin2 existing action")
+def test_retired_admin2_quick_action_return_view_closes_to_canonical_admin(
+    client, db_session, make_user, make_default_quick_action
+):
+    admin = make_user(email="retired-admin2-quick-actions@example.com", password="password-1", is_system_admin=True)
+    quick_action = make_default_quick_action(actor=admin, name="Retired Admin2 existing action")
 
     client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin2?tab=quick-actions&default_quick_action_id={quick_action.id}")
-    assert page.status_code == 200
-    assert 'name="return_tab" value="quick-actions"' in page.text
-
     saved = client.post(
         "/admin/default-quick-actions",
         data={
             "quick_action_id": str(quick_action.id),
-            "name": "Admin2 saved action",
+            "name": "Retired Admin2 saved action",
             "description": "Preserve tab",
             "prompt_text": "Write follow-up.",
             "is_active": "true",
@@ -3608,130 +3552,11 @@ def test_admin2_quick_action_redirect_preserves_quick_actions_tab(client, db_ses
     )
 
     assert saved.status_code == 303
-    assert saved.headers["location"] == "/admin2?tab=quick-actions"
+    assert saved.headers["location"] == "/admin?tab=quick-actions"
     db_session.refresh(quick_action)
-    assert quick_action.name == "Admin2 saved action"
+    assert quick_action.name == "Retired Admin2 saved action"
 
 
-def test_admin2_failures_tab_loads_failure_rows(client, db_session, make_team, make_user):
-    team = make_team(name="Clinic Admin2 Failures")
-    admin = make_user(email="admin2-failures@example.com", password="password-1", is_system_admin=True)
-    db_session.add(
-        ProviderUsageEvent(
-            team_id=team.id,
-            feature_type=ProviderFeatureType.llm_generation,
-            event_type=ProviderUsageEventType.failed,
-            error_code="llm_timeout",
-        )
-    )
-    db_session.commit()
-
-    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin2?team_id={team.id}&tab=failures")
-
-    assert page.status_code == 200
-    assert 'data-admin-tab-panel="failures"' in page.text
-    assert "LLM generation" in page.text
-    assert "llm_timeout" in page.text
-
-
-def test_admin2_audit_tab_shows_metadata_only_security_events(client, db_session, make_team, make_user):
-    team = make_team(name="Clinic Admin2 Audit")
-    admin = make_user(email="admin2-audit@example.com", password="password-1", is_system_admin=True)
-    actor = make_user(email="audit-actor@example.com", password="password-2", team=team)
-    for _ in range(5):
-        db_session.add(
-            SecurityAuditEvent(
-                action="login_failure",
-                actor_user_id=actor.id,
-                target_user_id=actor.id,
-                team_id=team.id,
-                request_ip="8.8.8.8",
-                user_agent="pytest-agent",
-                details_json={
-                    "category": "auth",
-                    "outcome": "failure",
-                    "reason_code": "bad_credentials",
-                    "route": "/api/v1/auth/login",
-                    "subject_hash": "hidden-subject-hash",
-                    "password": "never-render-this",
-                    "prompt": "never-render-prompt",
-                    "transcript_text": "never-render-transcript",
-                },
-            )
-        )
-    db_session.add(
-        SecurityAuditEvent(
-            action="password_reset_requested",
-            team_id=team.id,
-            request_ip="1.1.1.1",
-            user_agent="pytest-agent",
-            details_json={
-                "category": "auth",
-                "outcome": "accepted",
-                "flow": "password_reset",
-                "subject_hash": "hidden-reset-subject-hash",
-            },
-        )
-    )
-    for _ in range(5):
-        db_session.add(
-            SecurityAuditEvent(
-                action="mfa_challenge_failure",
-                team_id=team.id,
-                request_ip="192.168.1.234",
-                user_agent="pytest-agent",
-                details_json={
-                    "category": "auth",
-                    "outcome": "failure",
-                    "reason_code": "bad_totp",
-                },
-            )
-        )
-    db_session.commit()
-
-    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
-    page = client.get("/admin2?tab=audit&audit_since=24h")
-
-    assert page.status_code == 200
-    audit_section = page.text.split('data-admin-tab-panel="audit"', 1)[1].split("<!-- FAILURES -->", 1)[0]
-    assert 'data-admin-tab-panel="audit"' in page.text
-    assert "Security audit" in page.text
-    assert "login_failure" in page.text
-    assert "audit-actor@example.com" in audit_section
-    assert "Target: audit-actor@example.com" in audit_section
-    assert "Clinic Admin2 Audit" in audit_section
-    assert str(actor.id) not in audit_section
-    assert str(team.id) not in audit_section
-    assert "8.8.8.8" in page.text
-    assert "Private/internal IP masked" in page.text
-    assert "192.168.1.234" not in page.text
-    assert "bad_credentials" in page.text
-    assert "auth_failure_burst_by_subject" in page.text
-    assert "subject_hash_present" in page.text
-    assert '<option value="login_failure"' in page.text
-    assert '<option value="password_reset_requested"' in page.text
-    assert '<option value="auth"' in page.text
-    assert '<option value="accepted"' in page.text
-    assert '<option value="8.8.8.8"' in page.text
-    assert '<option value="192.168.1.234"' not in page.text
-    assert "never-render-this" not in page.text
-    assert "never-render-prompt" not in page.text
-    assert "never-render-transcript" not in page.text
-    assert "hidden-subject-hash" not in page.text
-    assert "hidden-reset-subject-hash" not in page.text
-
-    canonical_page = client.get("/admin?tab=audit&audit_since=24h")
-    assert canonical_page.status_code == 200
-    assert "audit-actor@example.com" in canonical_page.text
-    assert "Clinic Admin2 Audit" in canonical_page.text
-    assert "192.168.1.234" not in canonical_page.text
-
-    filtered = client.get("/admin2?tab=audit&audit_since=24h&audit_action=password_reset_requested&audit_category=auth&audit_outcome=accepted")
-    assert filtered.status_code == 200
-    assert "password_reset_requested" in filtered.text
-    assert "flow=password_reset" in filtered.text
-    assert "bad_credentials" not in filtered.text
 
 
 def test_non_admin_cannot_open_admin_audit_tab(client, make_team, make_user):
@@ -3739,7 +3564,7 @@ def test_non_admin_cannot_open_admin_audit_tab(client, make_team, make_user):
     make_user(email="audit-user@example.com", password="password-1", team=team)
 
     client.post("/login", data={"email": "audit-user@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/admin2?tab=audit")
+    page = client.get("/admin?tab=audit")
 
     assert page.status_code == 403
     assert "Security audit" not in page.text
@@ -3749,7 +3574,7 @@ def test_admin_audit_tab_clamps_overflowing_lookback(client, make_user):
     admin = make_user(email="audit-overflow-admin@example.com", password="password-1", is_system_admin=True)
     client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
 
-    page = client.get("/admin2?tab=audit&audit_since=999999999999h")
+    page = client.get("/admin?tab=audit&audit_since=999999999999h")
 
     assert page.status_code == 200
 
@@ -3997,170 +3822,6 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'src="/static/js/transcribe/app.js?v=20260720-concurrent-followup"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
-
-def test_transcriber_col_changes_renders_authenticated_consultation_column(client, make_team, make_user):
-    anonymous = client.get("/transcriber_col_changes", follow_redirects=False)
-    assert anonymous.status_code == 303
-    assert anonymous.headers["location"] == "/login"
-
-    team = make_team(name="Clinic Consultation Column")
-    member = make_user(
-        email="consultation-column@example.com",
-        password="password-3",
-        team=team,
-        team_role=TeamRole.user,
-    )
-    client.post("/login", data={"email": member.email, "password": "password-3"}, follow_redirects=False)
-    transcript_response = client.post(
-        "/api/v1/transcripts/start",
-        json={"title": "Column test consultation", "ingestion_mode": "whole_file"},
-    )
-    assert transcript_response.status_code == 201
-
-    page = client.get("/transcriber_col_changes")
-
-    assert page.status_code == 200
-    assert page.headers["Cache-Control"] == "no-store"
-    assert 'data-route-base="/transcriber_col_changes"' in page.text
-    assert 'data-session-panel-toggle' in page.text
-    assert 'data-primary-sidebar' in page.text
-    assert 'data-sidebar-resize' in page.text
-    assert 'data-lucide="panel-left-close"' in page.text
-    assert 'data-lucide="panel-left-open"' in page.text
-    assert 'data-lucide="list-checks"' in page.text
-    assert 'data-session-panel' in page.text
-    assert 'class="session-delete-button"' in page.text
-    assert 'data-lucide="trash-2"' in page.text
-    assert 'aria-label="Delete selected consultations"' in page.text
-    assert '>\n            Delete\n' not in page.text
-    session_panel_markup = page.text.split('id="session-panel"', 1)[1]
-    primary_sidebar_markup = page.text.split('id="session-panel"', 1)[0]
-    assert 'data-delete-selected' in session_panel_markup
-    assert 'data-delete-selected' not in primary_sidebar_markup
-    assert 'class="session-panel is-collapsed flex flex-col flex-shrink-0"' in page.text
-    assert 'data-session-panel aria-hidden="true" inert' in page.text
-    assert 'data-prototype-workspace-toolbar' in page.text
-    assert 'data-prototype-workspace-body' in page.text
-    assert 'data-prototype-main-workspace' in page.text
-    assert 'data-lucide="chevron-right"' in page.text
-    assert re.search(r"Recent consultations</span>\s*<i[^>]*data-lucide=\"chevron-right\"[^>]*data-toggle-icon", page.text)
-    assert 'class="session-date-divider"' in page.text
-    assert 'data-lucide="sunrise"' in page.text or 'data-lucide="sun"' in page.text
-    assert 'class="session-status-icon session-status-icon--' in page.text
-    assert 'data-sidebar-status=' in page.text
-    assert 'aria-label=' in page.text
-    assert re.search(r"Column test consultation.*\d{2}:\d{2}", page.text, re.DOTALL)
-    assert '/transcriber_col_changes/static/css/transcribe.css?v=20260718-sidebar-resize' in page.text
-    assert '/transcriber_col_changes/static/js/transcribe/app.js?v=20260718-consultation-status-icons' in page.text
-
-    toolbar_index = page.text.index('data-prototype-workspace-toolbar')
-    lower_body_index = page.text.index('data-prototype-workspace-body')
-    session_panel_index = page.text.index('id="session-panel"')
-    main_workspace_index = page.text.index('data-prototype-main-workspace')
-    assert toolbar_index < lower_body_index < session_panel_index < main_workspace_index
-    assert page.text.count('data-template-picker-button') == 1
-    assert page.text.count('data-copy-structured-lines') == 1
-    assert page.text.count('data-generate-output-form') == 1
-    assert page.text.count('data-note-options-menu') == 1
-
-    class PrototypeLayoutParser(HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self.stack = []
-            self.session_panel_in_lower_body = False
-            self.main_workspace_in_lower_body = False
-
-        def handle_starttag(self, tag, attrs):
-            attr_map = dict(attrs)
-            if attr_map.get("id") == "session-panel":
-                self.session_panel_in_lower_body = any("data-prototype-workspace-body" in frame[1] for frame in self.stack)
-            if "data-prototype-main-workspace" in attr_map:
-                self.main_workspace_in_lower_body = any("data-prototype-workspace-body" in frame[1] for frame in self.stack)
-            self.stack.append((tag, attr_map))
-
-        def handle_endtag(self, tag):
-            for index in range(len(self.stack) - 1, -1, -1):
-                if self.stack[index][0] == tag:
-                    del self.stack[index:]
-                    break
-
-    layout_parser = PrototypeLayoutParser()
-    layout_parser.feed(page.text)
-    assert layout_parser.session_panel_in_lower_body
-    assert layout_parser.main_workspace_in_lower_body
-
-    stylesheet = client.get("/transcriber_col_changes/static/css/transcribe.css")
-    assert stylesheet.status_code == 200
-    assert ".session-panel" in stylesheet.text
-    assert ".transcriber-prototype-lower-body" in stylesheet.text
-    assert ".session-panel.is-collapsed" in stylesheet.text
-    assert ".session-delete-button:disabled" in stylesheet.text
-    assert "background: rgba(197, 48, 48, 0.08);" in stylesheet.text
-    assert "color: var(--error);" in stylesheet.text
-    assert "color: var(--muted);" in stylesheet.text
-    assert ".session-status-icon--waiting" in stylesheet.text
-    assert "transform: translateY(0.5px);" in stylesheet.text
-    assert ".session-status-icon--transcribing" in stylesheet.text
-    assert ".session-status-icon--generating" in stylesheet.text
-    assert ".session-status-icon--complete" in stylesheet.text
-    assert ".session-status-icon--failed" in stylesheet.text
-    assert "transition: width 180ms ease, opacity 140ms ease;" in stylesheet.text
-    assert "stroke-width: 2.75;" in stylesheet.text
-    assert ".transcribe-sidebar-resize" in stylesheet.text
-    assert ".transcribe-sidebar-collapse-toggle" in stylesheet.text
-    assert ".transcribe-sidebar.is-collapsed" in stylesheet.text
-    assert ".transcribe-sidebar.is-resizing" in stylesheet.text
-    assert "@media (min-width: 768px)" in stylesheet.text
-    assert "@media (prefers-reduced-motion: reduce)" in stylesheet.text
-    assert 'class="flex-1 overflow-y-auto"' in page.text
-
-    prototype_js = client.get("/transcriber_col_changes/static/js/transcribe/app.js")
-    assert prototype_js.status_code == 200
-    assert "hourCycle: 'h23'" in prototype_js.text
-    assert "import { csrfFetch } from '/static/js/csrf.js';" in prototype_js.text
-    assert "createSidebarDateDivider" in prototype_js.text
-    assert "period === 'morning' ? 'sunrise' : 'sun'" in prototype_js.text
-    assert "period === 'morning' ? 'Morning' : 'Afternoon'" in prototype_js.text
-    assert "sessionList.replaceChildren(fragment)" in prototype_js.text
-    assert "String(item.ingestion_mode || '').replaceAll('_', ' ')" not in prototype_js.text
-    assert "scrollContainer?.addEventListener('scroll', loadWhenNearBottom, { passive: true })" in prototype_js.text
-    assert "if (!sessionRailPaginationStarted)" in prototype_js.text
-    assert "icon: 'audio-waveform'" in prototype_js.text
-    assert "icon: 'diamond'" in prototype_js.text
-    assert "icon: 'check'" in prototype_js.text
-    assert "icon: 'x'" in prototype_js.text
-    assert "icon: 'minus'" in prototype_js.text
-    assert "visibleStatus === 'ready'" in prototype_js.text
-    assert "hasTranscriptContent" in prototype_js.text
-    assert "accessibleLabel.className = 'sr-only'" in prototype_js.text
-    shell_extras = Path("transcriber_changes/workspace/templates/transcribe/_shell_extras.html").read_text()
-    assert "classList.add('is-collapsed')" in shell_extras
-    assert "classList.remove('is-collapsed')" in shell_extras
-    assert "setAttribute('inert', '')" in shell_extras
-    assert "removeAttribute('inert')" in shell_extras
-    assert "scrollContainer?.dispatchEvent(new Event('scroll'))" in shell_extras
-    assert "openscribe:transcribe:sidebar-width" in shell_extras
-    assert "sidebarResize.addEventListener('pointerdown'" in shell_extras
-    assert "sidebarResize.addEventListener('keydown'" in shell_extras
-    assert "primarySidebar.classList.add('is-resizing')" in shell_extras
-    assert "sidebarCollapseToggles.forEach" in shell_extras
-    sidebar_template = Path("transcriber_changes/workspace/templates/transcribe/_sidebar.html").read_text()
-    assert sidebar_template.count('data-sidebar-collapse-toggle') == 2
-    assert 'data-sidebar-collapsed-icon' in sidebar_template
-    assert 'aria-label="Recent consultations"' in sidebar_template
-    for module_name in ("actions.js", "media.js"):
-        module_text = Path(f"transcriber_changes/workspace/static/js/transcribe/{module_name}").read_text()
-        assert "from '/static/js/csrf.js'" in module_text
-        assert "from '../csrf.js'" not in module_text
-    session_panel_template = Path("transcriber_changes/workspace/templates/transcribe/_session_panel.html").read_text()
-    assert "transcript.ingestion_mode.value|replace('_', ' ')" not in session_panel_template
-    assert "status_icon = 'audio-waveform'" in session_panel_template
-    assert "status_icon = 'check'" in session_panel_template
-    assert "status_icon = 'x'" in session_panel_template
-    assert "sidebar_state == 'ready' and transcript.has_transcript_content" in session_panel_template
-    assert "status_icon = 'minus'" in session_panel_template
-    assert 'class="sr-only">{{ status_label }}</span>' in session_panel_template
-    assert "classList.add('hidden')" not in shell_extras
 
 
 def test_transcribe_page_does_not_block_on_uncached_stt_health(client, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
@@ -4548,11 +4209,11 @@ def test_user_transcribe_page_exposes_home_and_context_settings_controls(
     assert 'href="/workspace/preferences"' in page.text
     assert 'data-workspace-settings-link' in page.text
     assert 'justify-between border-b border-stone bg-white px-4 gap-3' in page.text
-    assert f'data-settings-url="/home/templates/editor?scope=personal&template_id=' in page.text
-    assert 'return_view=transcribe' in page.text
-    assert f'queued_transcript_id={transcript.id}' in page.text
-    assert 'transcribe_tab=output' in page.text
-    assert f'data-settings-url="/settings?tab=quick-actions&scope=personal&quick_action_id=' in page.text
+    assert f'data-settings-url="/workspace/library/templates?scope=personal&template_id=' in page.text
+    assert 'return_view=transcribe' not in page.text
+    assert 'queued_transcript_id=' not in page.text
+    assert 'transcribe_tab=output' not in page.text
+    assert f'data-settings-url="/workspace/library/quick-actions?scope=personal&quick_action_id=' in page.text
 
 
 def test_transcribe_template_editor_save_returns_to_transcribe(client, db_session, make_team, make_user):
@@ -4629,17 +4290,6 @@ def test_transcribe_quick_action_editor_save_returns_to_transcribe(client, db_se
     assert saved.status_code == 303
     assert saved.headers["location"] == f"/workspace?transcript_id={transcript.id}&tab=followups"
 
-
-def test_user_transcribe_claude_page_uses_alternate_template(client, make_team, make_user):
-    team = make_team(name="Clinic Claude UI")
-    make_user(email="member-claude@example.com", password="password-3", team=team, team_role=TeamRole.user)
-
-    client.post("/login", data={"email": "member-claude@example.com", "password": "password-3"}, follow_redirects=False)
-    page = client.get("/transcribe-claude")
-
-    assert page.status_code == 200
-    assert "OpenScribe" in page.text
-    assert "Follow Ups" in page.text
 
 
 def test_shared_csrf_fetch_limits_header_to_same_origin_api():
@@ -6732,7 +6382,6 @@ def test_active_templates_route_flash_messages_through_top_right_toasts():
     auth_css = (root / "app" / "static" / "css" / "auth.css").read_text(encoding="utf-8")
     transcribe_css = (root / "app" / "static" / "css" / "transcribe.css").read_text(encoding="utf-8")
     admin_html = (root / "app" / "templates" / "admin_mockup.html").read_text(encoding="utf-8")
-    admin_css = (root / "app" / "static" / "css" / "admin.css").read_text(encoding="utf-8")
     login_html = (root / "app" / "templates" / "login.html").read_text(encoding="utf-8")
     onboarding_html = (root / "app" / "templates" / "onboarding.html").read_text(encoding="utf-8")
     request_access_html = (root / "app" / "templates" / "request_access.html").read_text(encoding="utf-8")
@@ -6742,7 +6391,6 @@ def test_active_templates_route_flash_messages_through_top_right_toasts():
     assert "document.querySelectorAll('.flash').forEach((flash) => {" in home_html
     assert ".toast-container" not in transcribe_css
     assert "position: fixed;" in components_css and "data-toast-container" in admin_html
-    assert ".toast-container" not in admin_css
     assert "top: 24px;" in components_css and "data-toast-container" in login_html
     assert "data-toast-container" in onboarding_html
     assert "data-toast-container" in request_access_html
@@ -8316,7 +7964,12 @@ def test_admin_page_can_delete_selected_team_stt_config(client, db_session, make
     assert db_session.get(TeamSttConfig, config.id) is None
 
 
-def test_admin_page_can_inspect_team_stt_config_before_saving(client, make_team, make_user, monkeypatch):
+def test_legacy_admin_stt_inspect_return_renders_canonical_admin_without_secret(
+    client,
+    make_team,
+    make_user,
+    monkeypatch,
+):
     team = make_team(name="Clinic North")
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
     monkeypatch.setattr(
@@ -8340,17 +7993,11 @@ def test_admin_page_can_inspect_team_stt_config_before_saving(client, make_team,
 
     assert inspect.status_code == 200
     assert "STT endpoint inspected" in inspect.text
-    assert "openai_cloud" in inspect.text
-    assert "/v1/audio/transcriptions" in inspect.text
-    assert '<select name="provider_model">' in inspect.text
-    assert '>gpt-4o-mini-transcribe (fetched)<' in inspect.text
-    assert '>whisper-1 (fetched)<' in inspect.text
-    assert "Audio file upload." in inspect.text
-    assert "API key" in inspect.text
-    assert 'data-show-for="generic_rest" hidden' in inspect.text
+    assert "OpenScribe Admin — Team Workspace" in inspect.text
+    assert 'name="return_view" value="workspace"' in inspect.text
+    assert "admin-tabs" not in inspect.text
     assert 'name="preserved_bearer_token" value="secret-token"' not in inspect.text
-    assert 'name="model_field_name" value="model"' in inspect.text
-    assert 'name="language_field_name" value="language"' in inspect.text
+    assert "secret-token" not in inspect.text
 
 
 def test_admin_page_can_save_stt_config_after_inspect_with_retyped_token(client, db_session, make_team, make_user, monkeypatch):
@@ -8490,37 +8137,11 @@ def test_admin_optional_token_form_defaults_do_not_replace_blank_credentials():
 
 def test_active_admin_templates_sync_optional_provider_credential_actions():
     admin_html = Path("app/templates/admin_mockup.html").read_text()
-    admin2_html = Path("app/templates/admin2.html").read_text()
 
     assert 'name="preserved_bearer_token"' not in admin_html
     assert 'bearer_token: value("bearer_token") || null' in admin_html
     assert "vault_secret_ref" not in admin_html
-    assert 'const optionalToken = adapter === "generic_rest" || adapter === "openai_compatible_rest" || adapter === "ollama_chat";' in admin2_html
-    assert '<option value="keep" selected>keep</option><option value="replace">replace</option>' in admin2_html
 
-
-def test_admin2_llm_provider_dropdown_syncs_base_url_and_bedrock_region():
-    admin2_html = Path("app/templates/admin2.html").read_text()
-
-    assert "function syncAdmin2LlmProviderForm(form, forceProviderDefault = false)" in admin2_html
-    assert "knownDefaultBaseUrls" in admin2_html
-    assert "baseUrlInput.dataset.lastDefaultBaseUrl" in admin2_html
-    assert "baseUrlInput.readOnly = isBedrock;" in admin2_html
-    assert "baseUrlField.hidden = isBedrock;" in admin2_html
-    assert 'baseUrlField.classList.toggle("is-hidden", isBedrock);' in admin2_html
-    assert "forceProviderDefault || !baseUrlInput.value" in admin2_html
-    assert "syncAdmin2LlmProviderForm(form, true)" in admin2_html
-    assert "data-llm-inspect-form" in admin2_html
-    assert "data-llm-save-form" in admin2_html
-    assert "data-llm-base-url" in admin2_html
-    assert "Derived endpoint:" in admin2_html
-    assert "data-bedrock-derived-url" in admin2_html
-    assert "buildBedrockBaseUrl(region)" in admin2_html
-    assert "Change region to update the standard gateway URL." in admin2_html
-    assert 'data-llm-adapter-note' in admin2_html
-    assert "{% for region in llm_form.bedrock_regions %}" in admin2_html
-    assert "{% if ('bedrock-mantle.' ~ region ~ '.') in config.base_url %}selected{% endif %}" in admin2_html
-    assert '<option value="us-east-1">us-east-1</option><option value="us-west-2">us-west-2</option>' not in admin2_html
 
 
 def test_admin_page_renders_branded_llm_provider_defaults(client, make_team, make_user):
@@ -8802,25 +8423,25 @@ def test_admin_page_can_inspect_and_save_bedrock_provider_with_retyped_api_key(c
     assert saved_config.base_url == "https://bedrock-mantle.us-east-1.api.aws/v1"
 
 
-def test_admin2_bedrock_draft_ignores_stale_localhost_base_url(client, db_session, make_team, make_user, monkeypatch):
-    team = make_team(name="Clinic Admin2 Bedrock")
-    make_user(email="admin2-bedrock-stale@example.com", password="password-1", is_system_admin=True)
+def test_admin_bedrock_draft_ignores_stale_localhost_base_url(client, db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic Bedrock Stale URL")
+    make_user(email="admin-bedrock-stale@example.com", password="password-1", is_system_admin=True)
     monkeypatch.setattr(
         "app.services.llm._list_bedrock_chat_models",
         lambda **kwargs: ["amazon.nova-micro-v1:0"],
     )
 
-    client.post("/login", data={"email": "admin2-bedrock-stale@example.com", "password": "password-1"}, follow_redirects=False)
+    client.post("/login", data={"email": "admin-bedrock-stale@example.com", "password": "password-1"}, follow_redirects=False)
     draft = client.post(
         "/admin/llm-configs/drafts",
         data={
             "team_id": str(team.id),
-            "label": "Admin2 Bedrock",
+            "label": "Bedrock stale URL",
             "provider_preset": "bedrock_http_gateway",
             "base_url": "http://localhost:11434",
             "bedrock_region": "us-west-2",
             "bearer_token": "bedrock-api-key",
-            "return_view": "admin2",
+            "return_view": "workspace",
             "return_tab": "llm",
         },
         follow_redirects=False,
@@ -8876,7 +8497,7 @@ def test_admin_page_can_inspect_and_save_local_ollama_provider_without_api_key(c
     assert saved_config.vault_secret_ref == ""
 
 
-def test_completed_user_login_redirects_to_mfa_challenge_then_home(client, make_team, make_user):
+def test_completed_user_login_redirects_to_mfa_challenge_then_workspace(client, make_team, make_user):
     team = make_team(name="Clinic North")
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
     client.post("/login", data={"email": "admin@example.com", "password": "password-1"}, follow_redirects=False)
@@ -8935,7 +8556,7 @@ def test_completed_user_login_redirects_to_mfa_challenge_then_home(client, make_
         follow_redirects=False,
     )
     assert verify.status_code == 303
-    assert verify.headers["location"] == "/home"
+    assert verify.headers["location"] == "/workspace"
 
 
 def test_admin_page_lists_teams_users_and_account_requests(client, make_team, make_user, make_account_request):

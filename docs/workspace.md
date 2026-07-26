@@ -2,7 +2,7 @@
 
 OpenScribe exposes a server-rendered user workspace at `/workspace`. Scribe, Account, Preferences, Library, and leader-only Team pages render through one shared shell. System administration remains separate at `/admin`.
 
-The migration is not yet complete: successful normal-user login still lands on the separately rendered `/home` compatibility surface. New navigation, documentation, and successful workspace form redirects should use the canonical routes below while `/home` is retired deliberately.
+Successful full-session login for normal users and team leaders lands directly on this workspace. New navigation, documentation, and successful workspace form redirects use the canonical routes below.
 
 ## Canonical routes
 
@@ -44,12 +44,13 @@ Settings-derived sections are left-aligned and use the available workspace main 
 
 At mobile widths, including Scribe, the shared workspace header remains visible and opens the off-canvas navigation drawer. The closed drawer is inert until the user opens it.
 
-## Transitional compatibility
+## Compatibility redirects
 
 - `/transcribe` issues a temporary redirect to `/workspace` and preserves only `transcript_id`.
 - `/settings` issues a temporary redirect through a closed tab map to the corresponding workspace section. It preserves only validated, section-specific editor identifiers; arbitrary query parameters are dropped.
-- `/home` remains a functional, separately rendered compatibility surface and the current normal-user post-login target. It does not redirect to `/workspace` yet.
-- Preview routes such as `/transcribe-claude`, `/transcribe-glm-2`, and `/transcriber_col_changes` reuse owner-authorized workspace data but are not canonical navigation.
+- `GET /home` is a temporary compatibility redirect into the canonical workspace. Allowlisted legacy tab and selected-asset parameters map to their canonical sections; `/home` no longer renders a separate landing page.
+- Some established browser mutation handlers retain paths with the `/home` prefix while their forms, feedback, and success redirects live in canonical workspace sections. Those paths are implementation compatibility endpoints, not user navigation or content-sharing boundaries.
+- The former `/transcribe-claude`, `/transcribe-glm-2`, and `/transcriber_col_changes` prototype routes have been removed. They are not compatibility endpoints; use `/workspace`.
 - Browser POST success redirects and workspace form return metadata should use canonical workspace routes.
 
-Template and quick-action validation-error branches still use their legacy server-rendered error wrapper. They preserve entered values and errors but should move into the permanent shell when a shared section-error renderer is extracted.
+Template and quick-action validation-error branches reuse the established server-rendered section context inside the permanent workspace shell, preserving entered values and errors without returning users to `/home`.

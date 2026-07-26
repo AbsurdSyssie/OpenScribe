@@ -1143,30 +1143,20 @@ def render_admin(
         **usage_context,
         **audit_context,
     }
-    resolved_template_name = template_name or ("admin.html" if admin_return_view == "legacy" else "admin_mockup.html")
+    resolved_template_name = template_name or "admin_mockup.html"
     return templates.TemplateResponse(request, resolved_template_name, context, status_code=status_code)
 
 
 def admin_page_route_from_return_view(return_view: str | None) -> str:
-    if return_view == "legacy":
-        return "/legacy-admin"
-    if return_view == "admin2":
-        return "/admin2"
     return "/admin"
 
 
 def admin_return_view_value(return_view: str | None) -> str:
-    if return_view == "legacy":
-        return "legacy"
-    if return_view == "admin2":
-        return "admin2"
     return "workspace"
 
 
 def default_template_return_tab(return_view: str | None, return_tab: str | None) -> str:
     """Resolve supported return tabs for default-template editing."""
-    if admin_return_view_value(return_view) == "legacy":
-        return "defaults"
     return "global-defaults"
 
 
@@ -1407,7 +1397,9 @@ def render_home(
 
 
 def home_template_name_from_return_view(return_view: str | None) -> str:
-    return "settings.html" if return_view == "settings" else "home.html"
+    if return_view in {"home2", "restyled", "transcribe"}:
+        return "home.html"
+    return "settings.html"
 
 
 def home_page_route_from_return_view(return_view: str | None) -> str:
@@ -1417,7 +1409,7 @@ def home_page_route_from_return_view(return_view: str | None) -> str:
         return "/settings"
     if return_view == "workspace":
         return "/workspace/preferences"
-    return "/home-restyled" if return_view == "restyled" else "/home"
+    return "/home-restyled" if return_view == "restyled" else "/workspace/preferences"
 
 
 def home_template_editor_url(
@@ -1451,7 +1443,7 @@ def home_return_view_value(return_view: str | None) -> str:
         return "settings"
     if return_view == "workspace":
         return "workspace"
-    return ""
+    return "workspace"
 
 
 def home_redirect_url(
@@ -1467,8 +1459,10 @@ def home_redirect_url(
             params["transcript_id"] = queued_transcript_id
         params["tab"] = transcribe_tab or ("followups" if return_tab == "quick-actions" else "output")
         return f"/workspace?{urlencode(params)}" if params else "/workspace"
-    if return_view == "workspace":
+    if home_return_view_value(return_view) == "workspace":
         workspace_paths = {
+            "scribe": "/workspace",
+            "overview": "/workspace",
             "account": "/workspace/account",
             "preferences": "/workspace/preferences",
             "templates": "/workspace/library/templates",
@@ -1484,13 +1478,6 @@ def home_redirect_url(
     if return_tab:
         return f"{base}?tab={return_tab}"
     return base
-
-
-def home_redirect(*, message: str, message_kind: str, queued_transcript_id=None) -> str:
-    params: dict[str, str] = {"message": message, "message_kind": message_kind}
-    if queued_transcript_id is not None:
-        params["queued_transcript_id"] = str(queued_transcript_id)
-    return f"/home?{urlencode(params)}"
 
 
 def transcribe_redirect(*, message: str, message_kind: str, queued_transcript_id=None) -> str:

@@ -243,7 +243,7 @@ Ready to upload a recording or capture one from your microphone.
 <button type="button" class="main-tab" data-tab-trigger="history">Transcript</button>
 </div>
 <a
-href="/home?tab=templates&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output"
+href="/workspace/library/templates"
 class="inline-flex items-center justify-center flex-shrink-0 w-10 h-10 rounded-lg border border-stone bg-white text-slate hover:text-ink hover:border-teal-muted transition"
 data-workspace-settings-link
 aria-label="Open related settings"
@@ -354,7 +354,7 @@ Detail
 </div>
 </details>
 <a
-href="/home?tab=templates&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output"
+href="/workspace/library/templates"
 class="btn-icon"
 data-workspace-settings-link
 aria-label="Open templates"
@@ -379,7 +379,7 @@ value="{{ template.id }}"
 data-template-name="{{ template.name }}"
 data-template-mode="{{ latest_version.mode.value }}"
 {% if latest_version.mode.value == "structured" and template_sections %}data-template-sections='{{ template_sections | tojson | forceescape }}'{% endif %}
-data-settings-url="/home/templates/editor?scope={% if template.scope.value == 'team' %}team{% else %}personal{% endif %}&template_id={{ template.id }}&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output"{% if latest_template and template.id == latest_template.id %} selected{% endif %}>
+data-settings-url="/workspace/library/templates?scope={% if template.scope.value == 'team' %}team{% else %}personal{% endif %}&template_id={{ template.id }}"{% if latest_template and template.id == latest_template.id %} selected{% endif %}>
 {{ template.name }} ({{ latest_version.mode.value }})
 </option>
 {% endfor %}
@@ -479,7 +479,7 @@ data-template-picker-option
 data-template-id="{{ template.id }}"
 data-template-name="{{ template.name }}"
 data-template-mode="{{ latest_version.mode.value }}"
-data-settings-url="/home/templates/editor?scope={% if template.scope.value == 'team' %}team{% else %}personal{% endif %}&template_id={{ template.id }}&return_view=transcribe&queued_transcript_id={{ active_transcript.id if active_transcript else '' }}&transcribe_tab=output">
+data-settings-url="/workspace/library/templates?scope={% if template.scope.value == 'team' %}team{% else %}personal{% endif %}&template_id={{ template.id }}">
 <span class="template-picker-option__title">{{ template.name }}</span>
 <span class="template-picker-option__meta">{{ 'Sectioned note' if latest_version.mode.value == 'structured' else 'Free text note' }}{% if template.scope.value == 'team' %} · Team{% else %} · Personal{% endif %}</span>
 </button>
@@ -666,7 +666,7 @@ class="sr-only"
 {% for quick_action in available_quick_actions %}
 <option
 value="{{ quick_action.id }}"
-data-settings-url="/settings?tab=quick-actions&scope={% if quick_action.scope.value == 'team' %}team{% else %}personal{% endif %}&quick_action_id={{ quick_action.id }}">
+data-settings-url="/workspace/library/quick-actions?scope={% if quick_action.scope.value == 'team' %}team{% else %}personal{% endif %}&quick_action_id={{ quick_action.id }}">
 {{ quick_action.name }}
 </option>
 {% endfor %}

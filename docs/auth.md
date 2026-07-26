@@ -18,8 +18,8 @@ This document describes the implemented authentication, onboarding, account reco
 - `/` is the public splash page. Signed-in users are redirected using their current auth state.
 - Partial sessions go to `/onboarding` or `/mfa/challenge`.
 - System administrators go to `/admin`.
-- Normal users currently land on `/home` after login.
-- `/workspace` is the canonical permanent user workspace, but the `/home` post-login migration is not complete. See [workspace.md](workspace.md).
+- Full normal-user and team-leader sessions go directly to `/workspace`.
+- Legacy `GET /home` links redirect into the canonical workspace; `/home` is no longer a separately rendered landing page. See [workspace.md](workspace.md).
 
 ## Account requests and managed creation
 

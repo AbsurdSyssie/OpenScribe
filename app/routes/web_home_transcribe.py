@@ -50,6 +50,34 @@ def _is_settings_return(return_view: str) -> bool:
     return _home_return_view_value(return_view) in {"settings", "workspace"}
 
 
+def _render_home_feedback(request: Request, db: Session, **kwargs):
+    """Keep explicit previews intact; wrap canonical feedback in workspace shell."""
+    response = render_home(request, db, **kwargs)
+    if kwargs.get("home_return_view") != "workspace":
+        return response
+    active_tab = kwargs.get("active_home_tab")
+    sections = {
+        "overview": WORKSPACE_PREFERENCES,
+        "preferences": WORKSPACE_PREFERENCES,
+        "templates": WORKSPACE_TEMPLATES,
+        "quick-actions": WORKSPACE_QUICK_ACTIONS,
+        "smart-phrases": WORKSPACE_SMART_PHRASES,
+        "ai-services": WORKSPACE_AI_SERVICES,
+        "team-management": WORKSPACE_TEAM_MEMBERS,
+        "team-members": WORKSPACE_TEAM_MEMBERS,
+        "account-requests": WORKSPACE_ACCOUNT_REQUESTS,
+    }
+    active_section = sections.get(active_tab, WORKSPACE_PREFERENCES)
+    return render_workspace(
+        request,
+        db,
+        current_user=kwargs["current_user"],
+        active_section=active_section,
+        section_context=dict(response.context),
+        status_code=response.status_code,
+    )
+
+
 def _render_home_page(
     request: Request,
     db: Session,
@@ -128,37 +156,33 @@ def home_page(
         return response
     if context.user.is_system_admin:
         return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
-    if modal in {"personal-template", "team-template"}:
-        scope = "team" if modal == "team-template" else "personal"
-        selected_template_id = team_template_id if scope == "team" else personal_template_id
-        return RedirectResponse(
-            url=_home_template_editor_url(
-                scope=scope,
-                template_id=selected_template_id,
-                return_view=return_view,
-                queued_transcript_id=queued_transcript_id,
-                transcribe_tab=transcribe_tab,
-            ),
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-    safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
-    return render_home(
-        request,
-        db,
-        current_user=context.user,
-        selected_team_template_id=team_template_id,
-        selected_personal_template_id=personal_template_id,
-        selected_team_quick_action_id=team_quick_action_id,
-        selected_personal_quick_action_id=personal_quick_action_id,
-        message=message,
-        message_kind=safe_message_kind,
-        queued_transcript_id=queued_transcript_id,
-        active_home_tab=tab,
-        active_home_modal=modal,
-        home_page_route="/home",
-        home_return_view=_home_return_view_value(return_view),
-        transcribe_return_tab=transcribe_tab,
-    )
+    legacy_tab = tab or "scribe"
+    destination = _home_redirect_url(return_view="workspace", return_tab=legacy_tab)
+    params: dict[str, str] = {}
+    if legacy_tab == "templates":
+        if team_template_id:
+            params = {"scope": "team", "template_id": team_template_id}
+        elif personal_template_id:
+            params = {"scope": "personal", "template_id": personal_template_id}
+        elif modal == "team-template":
+            params = {"scope": "team", "template_id": "new"}
+        elif modal == "personal-template":
+            params = {"scope": "personal", "template_id": "new"}
+    elif legacy_tab == "quick-actions":
+        if team_quick_action_id:
+            params = {"scope": "team", "quick_action_id": team_quick_action_id}
+        elif personal_quick_action_id:
+            params = {"scope": "personal", "quick_action_id": personal_quick_action_id}
+        elif modal == "team-quick-action":
+            params = {"scope": "team", "quick_action_id": "new"}
+        elif modal == "personal-quick-action":
+            params = {"scope": "personal", "quick_action_id": "new"}
+    if message:
+        params["message"] = message
+        params["message_kind"] = message_kind if message_kind in {"success", "error"} else "success"
+    if params:
+        destination = f"{destination}?{urlencode(params)}"
+    return RedirectResponse(url=destination, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -252,8 +276,8 @@ def _workspace_section_page(
     legacy_response = _render_home_page(
         request,
         db,
-        message=None,
-        message_kind="success",
+        message=message,
+        message_kind=message_kind,
         queued_transcript_id=None,
         transcribe_tab=None,
         tab=section,
@@ -293,8 +317,15 @@ def workspace_account_page(
 
 
 @app.get("/workspace/preferences", response_class=HTMLResponse)
-def workspace_preferences_page(request: Request, db: Session = Depends(get_db)):
-    return _workspace_section_page(request, db, section=WORKSPACE_PREFERENCES)
+def workspace_preferences_page(
+    request: Request,
+    message: str | None = None,
+    message_kind: str = "success",
+    db: Session = Depends(get_db),
+):
+    return _workspace_section_page(
+        request, db, section=WORKSPACE_PREFERENCES, message=message, message_kind=message_kind
+    )
 
 
 @app.get("/workspace/library/templates", response_class=HTMLResponse)
@@ -302,10 +333,13 @@ def workspace_templates_page(
     request: Request,
     scope: str | None = None,
     template_id: str | None = None,
+    message: str | None = None,
+    message_kind: str = "success",
     db: Session = Depends(get_db),
 ):
     return _workspace_section_page(
-        request, db, section=WORKSPACE_TEMPLATES, scope=scope, template_id=template_id
+        request, db, section=WORKSPACE_TEMPLATES, scope=scope, template_id=template_id,
+        message=message, message_kind=message_kind
     )
 
 
@@ -314,31 +348,54 @@ def workspace_quick_actions_page(
     request: Request,
     scope: str | None = None,
     quick_action_id: str | None = None,
+    message: str | None = None,
+    message_kind: str = "success",
     db: Session = Depends(get_db),
 ):
     return _workspace_section_page(
-        request, db, section=WORKSPACE_QUICK_ACTIONS, scope=scope, quick_action_id=quick_action_id
+        request, db, section=WORKSPACE_QUICK_ACTIONS, scope=scope, quick_action_id=quick_action_id,
+        message=message, message_kind=message_kind
     )
 
 
 @app.get("/workspace/library/smart-phrases", response_class=HTMLResponse)
-def workspace_smart_phrases_page(request: Request, db: Session = Depends(get_db)):
-    return _workspace_section_page(request, db, section=WORKSPACE_SMART_PHRASES)
+def workspace_smart_phrases_page(
+    request: Request, message: str | None = None, message_kind: str = "success",
+    db: Session = Depends(get_db)
+):
+    return _workspace_section_page(
+        request, db, section=WORKSPACE_SMART_PHRASES, message=message, message_kind=message_kind
+    )
 
 
 @app.get("/workspace/team/ai-services", response_class=HTMLResponse)
-def workspace_ai_services_page(request: Request, db: Session = Depends(get_db)):
-    return _workspace_section_page(request, db, section=WORKSPACE_AI_SERVICES)
+def workspace_ai_services_page(
+    request: Request, message: str | None = None, message_kind: str = "success",
+    db: Session = Depends(get_db)
+):
+    return _workspace_section_page(
+        request, db, section=WORKSPACE_AI_SERVICES, message=message, message_kind=message_kind
+    )
 
 
 @app.get("/workspace/team/members", response_class=HTMLResponse)
-def workspace_team_members_page(request: Request, db: Session = Depends(get_db)):
-    return _workspace_section_page(request, db, section=WORKSPACE_TEAM_MEMBERS)
+def workspace_team_members_page(
+    request: Request, message: str | None = None, message_kind: str = "success",
+    db: Session = Depends(get_db)
+):
+    return _workspace_section_page(
+        request, db, section=WORKSPACE_TEAM_MEMBERS, message=message, message_kind=message_kind
+    )
 
 
 @app.get("/workspace/team/account-requests", response_class=HTMLResponse)
-def workspace_account_requests_page(request: Request, db: Session = Depends(get_db)):
-    return _workspace_section_page(request, db, section=WORKSPACE_ACCOUNT_REQUESTS)
+def workspace_account_requests_page(
+    request: Request, message: str | None = None, message_kind: str = "success",
+    db: Session = Depends(get_db)
+):
+    return _workspace_section_page(
+        request, db, section=WORKSPACE_ACCOUNT_REQUESTS, message=message, message_kind=message_kind
+    )
 
 
 def _render_account_error(request: Request, db: Session, context, exc: AppError):
@@ -656,21 +713,21 @@ def home_set_llm_selection(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid LLM selection"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
             message=detail,
             message_kind="error",
             status_code=status_code,
-            active_home_tab=return_tab or "team-management",
+            active_home_tab=return_tab or "ai-services",
             active_home_modal="llm-settings",
             template_name=_home_template_name_from_return_view(return_view),
             home_page_route=_home_page_route_from_return_view(return_view),
             home_return_view=_home_return_view_value(return_view),
         )
     return RedirectResponse(
-        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "team-management"),
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "ai-services"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -689,21 +746,21 @@ def home_clear_llm_selection(
     try:
         clear_team_llm_selection_service(db, context.user)
     except AppError as exc:
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
             message=exc.message,
             message_kind="error",
             status_code=exc.status_code,
-            active_home_tab=return_tab or "team-management",
+            active_home_tab=return_tab or "ai-services",
             active_home_modal="llm-settings",
             template_name=_home_template_name_from_return_view(return_view),
             home_page_route=_home_page_route_from_return_view(return_view),
             home_return_view=_home_return_view_value(return_view),
         )
     return RedirectResponse(
-        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "team-management"),
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "ai-services"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -729,7 +786,7 @@ def home_set_deidentification_selection(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid de-identification selection"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -762,7 +819,7 @@ def home_clear_deidentification_selection(
     try:
         clear_team_deidentification_selection_service(db, context.user)
     except AppError as exc:
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -802,7 +859,7 @@ def home_set_clinical_nlp_selection(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid clinical NLP selection"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -835,7 +892,7 @@ def home_clear_clinical_nlp_selection(
     try:
         clear_team_clinical_nlp_selection_service(db, context.user)
     except AppError as exc:
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -894,20 +951,20 @@ def home_set_llm_preference(
     except (ValueError, ValidationError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid LLM preference"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
             message=detail,
             message_kind="error",
             status_code=status_code,
-            active_home_tab=return_tab or "overview",
+            active_home_tab=return_tab or "preferences",
             template_name=_home_template_name_from_return_view(return_view),
             home_page_route=_home_page_route_from_return_view(return_view),
             home_return_view=_home_return_view_value(return_view),
         )
     return RedirectResponse(
-        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "overview"),
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "preferences"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -926,20 +983,20 @@ def home_clear_llm_preference(
     try:
         clear_user_llm_preference_service(db, context.user)
     except AppError as exc:
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
             message=exc.message,
             message_kind="error",
             status_code=exc.status_code,
-            active_home_tab=return_tab or "overview",
+            active_home_tab=return_tab or "preferences",
             template_name=_home_template_name_from_return_view(return_view),
             home_page_route=_home_page_route_from_return_view(return_view),
             home_return_view=_home_return_view_value(return_view),
         )
     return RedirectResponse(
-        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "overview"),
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "preferences"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -1003,7 +1060,7 @@ def home_upsert_team_template(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid team template"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -1069,7 +1126,7 @@ def home_delete_team_template(
     try:
         delete_team_template_service(db, context.user, template_id=template_id)
     except AppError as exc:
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -1111,7 +1168,7 @@ def home_duplicate_team_template(
     try:
         duplicated = duplicate_team_template_service(db, context.user, template_id=template_id)
     except AppError as exc:
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -1161,7 +1218,7 @@ def home_fork_team_template(
     try:
         forked = fork_team_template_to_personal_service(db, context.user, template_id=template_id)
     except AppError as exc:
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -1252,7 +1309,7 @@ def home_upsert_personal_template(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid personal template"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -1318,7 +1375,7 @@ def home_duplicate_personal_template(
     try:
         duplicated = duplicate_personal_template_service(db, context.user, template_id=template_id)
     except AppError as exc:
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -1368,7 +1425,7 @@ def home_delete_personal_template(
     try:
         delete_personal_template_service(db, context.user, template_id=template_id)
     except AppError as exc:
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -1428,7 +1485,7 @@ def home_upsert_team_quick_action(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid team quick action"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -1483,7 +1540,7 @@ def home_delete_team_quick_action(
     try:
         delete_team_quick_action_service(db, context.user, quick_action_id=quick_action_id)
     except AppError as exc:
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -1528,7 +1585,7 @@ def home_duplicate_team_quick_action(
     try:
         duplicated = duplicate_team_quick_action_service(db, context.user, quick_action_id=quick_action_id)
     except AppError as exc:
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -1577,7 +1634,7 @@ def home_fork_team_quick_action(
     try:
         forked = fork_team_quick_action_to_personal_service(db, context.user, quick_action_id=quick_action_id)
     except AppError as exc:
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -1643,7 +1700,7 @@ def home_upsert_personal_quick_action(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid personal quick action"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -1698,7 +1755,7 @@ def home_duplicate_personal_quick_action(
     try:
         duplicated = duplicate_personal_quick_action_service(db, context.user, quick_action_id=quick_action_id)
     except AppError as exc:
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -1747,7 +1804,7 @@ def home_delete_personal_quick_action(
     try:
         delete_personal_quick_action_service(db, context.user, quick_action_id=quick_action_id)
     except AppError as exc:
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
@@ -1804,21 +1861,21 @@ def home_set_stt_selection(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid STT selection"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
             message=detail,
             message_kind="error",
             status_code=status_code,
-            active_home_tab=return_tab or "team-management",
+            active_home_tab=return_tab or "ai-services",
             active_home_modal="stt-settings",
             template_name=_home_template_name_from_return_view(return_view),
             home_page_route=_home_page_route_from_return_view(return_view),
             home_return_view=_home_return_view_value(return_view),
         )
     return RedirectResponse(
-        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "team-management"),
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "ai-services"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -1838,20 +1895,20 @@ def home_clear_stt_selection(
     try:
         clear_team_stt_selection_service(db, context.user, purpose=SttSelectionPurpose(purpose))
     except AppError as exc:
-        return render_home(
+        return _render_home_feedback(
             request,
             db,
             current_user=context.user,
             message=exc.message,
             message_kind="error",
             status_code=exc.status_code,
-            active_home_tab=return_tab or "team-management",
+            active_home_tab=return_tab or "ai-services",
             active_home_modal="stt-settings",
             template_name=_home_template_name_from_return_view(return_view),
             home_page_route=_home_page_route_from_return_view(return_view),
             home_return_view=_home_return_view_value(return_view),
         )
     return RedirectResponse(
-        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "team-management"),
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "ai-services"),
         status_code=status.HTTP_303_SEE_OTHER,
     )

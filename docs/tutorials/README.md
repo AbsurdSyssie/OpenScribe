@@ -12,6 +12,6 @@ Recommended order:
 
 User guidance also applies to team leaders when they use OpenScribe as clinicians. The team leader tutorial covers only additional own-team management authority. The admin guides cover metadata/configuration operations and do not grant owner-content visibility.
 
-The workspace migration is transitional: `/workspace` is canonical for Scribe, Account, Preferences, Library, and leader Team sections, while normal-user login currently still lands on `/home`. Tutorials should direct ongoing work to canonical workspace routes and identify `/home` only as the compatibility landing.
+`/workspace` is canonical for Scribe, Account, Preferences, Library, and leader Team sections, and full normal-user/team-leader login lands there directly. Legacy `GET /home`, `/transcribe`, and `/settings` links redirect into canonical workspace routes.
 
 Tutorial content is product guidance. Never add real transcript or note text, prompts containing patient content, provider secrets, setup/reset tokens, TOTP values, recovery codes, or plaintext session identifiers.

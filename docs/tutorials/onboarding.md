@@ -54,7 +54,7 @@ After the final onboarding step, sign in normally:
 2. complete the authenticator challenge when requested;
 3. verify the correct destination:
    - system administrator: `/admin`;
-   - normal user or team leader: current login redirects to `/home`, from which ongoing user work should open the canonical `/workspace` shell.
+   - normal user or team leader: `/workspace`.
 
 The permanent workspace contains Scribe, Account, Preferences, Library, and leader-only Team sections. See [user.md](user.md) and [team-leader.md](team-leader.md).
 

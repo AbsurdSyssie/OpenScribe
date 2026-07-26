@@ -80,7 +80,7 @@ def test_browser_transcribe_start_sends_csrf_header(live_server, make_team, make
         page.locator('form[action="/login"] input[name="email"]').fill("browser-csrf@example.com")
         page.locator('form[action="/login"] input[name="password"]').fill("password-1")
         page.get_by_role("button", name="Sign in").click()
-        page.wait_for_url("**/home")
+        page.wait_for_url("**/workspace")
 
         page.goto("/transcribe")
         csrf_cookie_before = next(
@@ -109,7 +109,7 @@ def test_browser_transcribe_start_sends_csrf_header(live_server, make_team, make
         playwright.stop()
 
 
-def test_home_styles_apply_under_strict_style_attribute_csp(live_server, make_team, make_user):
+def test_workspace_styles_apply_under_strict_style_attribute_csp(live_server, make_team, make_user):
     team = make_team(name="Browser CSP Clinic")
     make_user(
         email="browser-csp@example.com",
@@ -141,13 +141,14 @@ def test_home_styles_apply_under_strict_style_attribute_csp(live_server, make_te
         page.locator('form[action="/login"] input[name="email"]').fill("browser-csp@example.com")
         page.locator('form[action="/login"] input[name="password"]').fill("password-1")
         page.get_by_role("button", name="Sign in").click()
-        page.wait_for_url("**/home")
+        page.wait_for_url("**/workspace")
 
-        response = page.goto("/home")
+        response = page.goto("/workspace")
         assert response is not None
         assert "style-src-attr 'none'" in response.headers["content-security-policy"]
-        assert page.locator(".overview-copy").first.evaluate("element => getComputedStyle(element).marginTop") == "8px"
-        assert page.locator(".overview-primary-action").evaluate("element => getComputedStyle(element).marginTop") == "18px"
+        assert page.locator("[data-workspace-scribe-main]").evaluate(
+            "element => getComputedStyle(element).display"
+        ) == "flex"
         assert csp_errors == []
     finally:
         browser.close()
@@ -193,7 +194,7 @@ def test_dynamic_cssom_mutations_work_under_strict_style_attribute_csp(live_serv
         page.locator('form[action="/login"] input[name="email"]').fill("browser-dynamic-csp@example.com")
         page.locator('form[action="/login"] input[name="password"]').fill("password-1")
         page.get_by_role("button", name="Sign in").click()
-        page.wait_for_url("**/home")
+        page.wait_for_url("**/workspace")
         transcribe_response = page.goto("/transcribe")
 
         assert transcribe_response is not None

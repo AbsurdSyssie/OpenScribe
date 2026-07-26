@@ -96,6 +96,8 @@ Public account requests are deduplicated by normalized email plus normalized req
 
 Pending-MFA sessions can use the TOTP/current-user/logout/trusted-device subset. Trusted devices never authenticate independently; they only allow a correct password login to skip TOTP while the server-side record remains valid and within the 24-hour MFA freshness window.
 
+Authentication responses expose the next browser destination in `redirect_to`: onboarding sessions use `/onboarding`, pending-MFA sessions use `/mfa/challenge`, full system-administrator sessions use `/admin`, and full normal-user/team-leader sessions use `/workspace`.
+
 ### Onboarding routes
 
 - `POST /api/v1/onboarding/password`

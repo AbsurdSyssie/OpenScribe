@@ -39,6 +39,7 @@ def test_workspace_sidebar_has_required_order_roles_and_recording_markers():
     assert "{% if is_manager %}" in sidebar
     assert "not current_user.is_system_admin and current_user.team_id" in sidebar
     assert 'href="/home"' not in sidebar
+    assert "data-start-guide" in sidebar
     assert "data-recording-navigation" in sidebar
     assert 'action="/logout"' in sidebar
 
@@ -84,6 +85,17 @@ def test_workspace_library_partials_use_canonical_urls_and_return_view():
         assert 'name="return_view" value="settings"' not in markup
     assert "'return_view': 'workspace'" in templates
     assert 'name="return_view" value="workspace"' in quick_actions
+
+
+def test_scribe_template_navigation_does_not_reintroduce_home_landing():
+    workspace = read("app/templates/transcribe/_workspace.html")
+    layout = read("app/static/js/transcribe/layout.js")
+    assert 'href="/workspace/library/templates"' in workspace
+    assert 'data-settings-url="/workspace/library/templates?scope=' in workspace
+    assert "/home?tab=templates" not in layout
+    assert "/settings?tab=quick-actions" not in layout
+    assert "/workspace/library/templates" in layout
+    assert "/workspace/library/quick-actions" in layout
 
 
 def test_settings_partial_post_return_metadata_is_canonical():

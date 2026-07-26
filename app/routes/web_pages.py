@@ -389,7 +389,7 @@ def mfa_challenge_submit(
         record_security_event(db, action="mfa_challenge_failure", actor=context.user, target=context.user, request=request, details={"category": "mfa", "outcome": "failure", "reason_code": exc.code, "status_code": exc.status_code})
         return render_mfa_challenge(request, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
     record_security_event(db, action="mfa_challenge_success", actor=user, target=user, request=request, details={"category": "mfa", "outcome": "success", "trusted_device_created": bool(trusted_device_token)})
-    response = RedirectResponse(url="/admin" if user.is_system_admin else "/home", status_code=status.HTTP_303_SEE_OTHER)
+    response = RedirectResponse(url="/admin" if user.is_system_admin else "/workspace", status_code=status.HTTP_303_SEE_OTHER)
     _set_session_cookie(request, response, token)
     if trusted_device_token:
         _set_trusted_device_cookie(request, response, trusted_device_token)
@@ -503,6 +503,6 @@ def onboarding_skip_recovery_codes_submit(request: Request, csrf_protected: Brow
     except AppError as exc:
         return render_onboarding(request, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
     record_security_event(db, action="recovery_codes_skipped", actor=user, target=user, request=request, details={"category": "mfa", "outcome": "success"})
-    response = RedirectResponse(url="/admin" if user.is_system_admin else "/home", status_code=status.HTTP_303_SEE_OTHER)
+    response = RedirectResponse(url="/admin" if user.is_system_admin else "/workspace", status_code=status.HTTP_303_SEE_OTHER)
     _set_session_cookie(request, response, token)
     return response

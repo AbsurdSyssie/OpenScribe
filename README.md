@@ -33,7 +33,7 @@ Primary references:
 - Leader AI services: `http://127.0.0.1:8080/workspace/team/ai-services`
 - Admin UI: `http://127.0.0.1:8080/admin`
 
-The workspace migration is transitional. `/transcribe` and `/settings` redirect to canonical `/workspace` routes, while successful normal-user login currently still lands on the separately rendered `/home` compatibility surface. Preview routes such as `/transcribe-claude`, `/transcribe-glm-2`, and `/transcriber_col_changes` are development surfaces rather than primary navigation.
+Successful normal-user and team-leader login lands directly on `/workspace`. Legacy `GET /home`, `/transcribe`, and `/settings` links redirect into canonical `/workspace` routes; `/home` is no longer a separately rendered landing page. The former `/transcribe-claude`, `/transcribe-glm-2`, and `/transcriber_col_changes` prototype routes have been removed. `/workspace` is the only Scribe product surface.
 
 ## Quick start
 

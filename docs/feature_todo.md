@@ -6,37 +6,6 @@ This file contains only confirmed remaining product/engineering work. Completed 
 
 Use issues/focused plans for implementation detail. Do not use this file as a substitute for migrations/services/tests/security review.
 
-## Highest-priority product transitions
-
-### Retire the `/home` compatibility landing
-
-Current state:
-
-- normal-user/team-leader login still lands on `/home`;
-- `/workspace` is the canonical Scribe/Account/Preferences/Library/Team shell;
-- `/transcribe` and `/settings` redirect to canonical workspace routes.
-
-Remaining:
-
-- redirect full normal-user/team-leader login directly to `/workspace`;
-- ensure every `/home` feedback/action has a canonical equivalent;
-- update browser/auth tests and remove stale return paths;
-- retire `/home` only after explicit regression validation.
-
-References: [home_brief.md](home_brief.md), [workspace.md](workspace.md), [auth.md](auth.md).
-
-### Remove or decide compatibility/prototype routes
-
-Review and explicitly retain, promote, or remove:
-
-- `/legacy-admin`;
-- `/admin2`;
-- `/transcribe-glm-2`;
-- `/transcribe-claude`;
-- `/transcriber_col_changes`.
-
-Do not let preview routes become accidental product contracts. Any promotion must include route/auth/cache/CSP/browser coverage and documentation updates.
-
 ## Capture quality and resilience
 
 ### Controlled microphone/VAD tuning

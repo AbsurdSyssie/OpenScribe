@@ -6,10 +6,7 @@ This document maps the implemented canonical system-administrator workspace. It 
 
 Canonical route: `/admin`
 
-Compatibility/development routes:
-
-- `/legacy-admin`: deprecated earlier admin template; not the canonical product surface;
-- `/admin2`: alternate development/reference surface; not the operational source of truth.
+The former `/legacy-admin` and `/admin2` compatibility/development routes have been removed. They are not alternate admin entry points; use `/admin`.
 
 Access is system-admin-only and metadata-only on every admin surface.
 
@@ -232,8 +229,6 @@ Use actual collected file names where tests have been split/renamed. The reposit
 
 Potential follow-up work:
 
-- remove deprecated `/legacy-admin` after explicit verification/migration;
-- decide whether `/admin2` should be removed or promoted through a separate design;
 - broader admin Playwright coverage;
 - stale abandoned provider-draft cleanup/visibility improvements;
 - team directory search/pagination only when expected deployment scale justifies it;

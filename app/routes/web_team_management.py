@@ -8,6 +8,35 @@ from ..main import (
     _home_template_name_from_return_view,
     _page_context_or_redirect,
 )
+from ..web.workspace import (
+    WORKSPACE_ACCOUNT_REQUESTS,
+    WORKSPACE_TEAM_MEMBERS,
+    render_workspace,
+)
+
+
+_legacy_render_home = render_home
+
+
+def _render_team_workspace_page(request: Request, db: Session, **kwargs):
+    """Wrap canonical responses in workspace shell; preserve explicit previews."""
+    response = _legacy_render_home(request, db, **kwargs)
+    if kwargs.get("home_return_view") != "workspace":
+        return response
+    active_tab = kwargs.get("active_home_tab")
+    active_section = (
+        WORKSPACE_ACCOUNT_REQUESTS
+        if active_tab == "account-requests"
+        else WORKSPACE_TEAM_MEMBERS
+    )
+    return render_workspace(
+        request,
+        db,
+        current_user=kwargs["current_user"],
+        active_section=active_section,
+        section_context=dict(response.context),
+        status_code=response.status_code,
+    )
 
 
 def _web_break_glass_allowed() -> bool:
@@ -17,7 +46,7 @@ def _web_break_glass_allowed() -> bool:
 
 
 def _render_home_recovery_error(request: Request, db: Session, context, exc: AppError, *, return_view: str, return_tab: str):
-    return render_home(
+    return _render_team_workspace_page(
         request,
         db,
         current_user=context.user,
@@ -66,7 +95,7 @@ def home_create_user(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid user form submission"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_home(
+        return _render_team_workspace_page(
             request,
             db,
             current_user=context.user,
@@ -99,7 +128,7 @@ def home_suspend_user(
     try:
         suspend_user_service(db, context.user, user_id)
     except AppError as exc:
-        return render_home(
+        return _render_team_workspace_page(
             request,
             db,
             current_user=context.user,
@@ -132,7 +161,7 @@ def home_reactivate_user(
     try:
         reactivate_user_service(db, context.user, user_id)
     except AppError as exc:
-        return render_home(
+        return _render_team_workspace_page(
             request,
             db,
             current_user=context.user,
@@ -166,7 +195,7 @@ def home_send_activation(
         user = get_manageable_user_for_recovery_service(db, context.user, user_id)
         send_account_activation_email_service(db, user, created_by=context.user)
     except AppError as exc:
-        return render_home(
+        return _render_team_workspace_page(
             request,
             db,
             current_user=context.user,
@@ -196,7 +225,7 @@ def home_recover_password_deprecated(
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
-    return render_home(
+    return _render_team_workspace_page(
         request,
         db,
         current_user=context.user,
@@ -261,7 +290,7 @@ def home_break_glass_password_reset(
         record_security_event(db, action="break_glass_password_reset_generated", actor=context.user, target=user, request=request, details={"reason": reason, "expires_at": expires_at.isoformat()})
     except AppError as exc:
         return _render_home_recovery_error(request, db, context, exc, return_view=return_view, return_tab=return_tab)
-    return render_home(
+    return _render_team_workspace_page(
         request,
         db,
         current_user=context.user,
@@ -291,7 +320,7 @@ def home_reset_mfa(
         user = get_manageable_user_for_recovery_service(db, context.user, user_id)
         reset_user_mfa_for_reenrollment_service(db, user=user)
     except AppError as exc:
-        return render_home(
+        return _render_team_workspace_page(
             request,
             db,
             current_user=context.user,
@@ -321,7 +350,7 @@ def home_recover_account_deprecated(
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
         return response
-    return render_home(
+    return _render_team_workspace_page(
         request,
         db,
         current_user=context.user,
@@ -386,7 +415,7 @@ def home_break_glass_account_recovery(
         record_security_event(db, action="break_glass_account_recovery_generated", actor=context.user, target=user, request=request, details={"reason": reason, "expires_at": expires_at.isoformat()})
     except AppError as exc:
         return _render_home_recovery_error(request, db, context, exc, return_view=return_view, return_tab=return_tab)
-    return render_home(
+    return _render_team_workspace_page(
         request,
         db,
         current_user=context.user,
@@ -415,7 +444,7 @@ def home_delete_user(
     try:
         delete_user_service(db, context.user, user_id)
     except AppError as exc:
-        return render_home(
+        return _render_team_workspace_page(
             request,
             db,
             current_user=context.user,
@@ -462,7 +491,7 @@ def home_approve_account_request(
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid account-request approval"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
-        return render_home(
+        return _render_team_workspace_page(
             request,
             db,
             current_user=context.user,
@@ -496,7 +525,7 @@ def home_reject_account_request(
     try:
         reject_account_request_service(db, context.user, request_id, AccountRequestReject(review_notes=review_notes))
     except AppError as exc:
-        return render_home(
+        return _render_team_workspace_page(
             request,
             db,
             current_user=context.user,

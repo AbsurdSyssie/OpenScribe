@@ -319,7 +319,7 @@ def run_probe(args: argparse.Namespace) -> ProbeSummary:
                 summary.add_cleanup(f"delete_{role}_user", False, f"cleanup failed: {exc}")
         if team_id:
             try:
-                response = admin.request("POST", f"/admin/teams/{team_id}/delete", data={"return_view": "admin2", "return_tab": "directory"})
+                response = admin.request("POST", f"/admin/teams/{team_id}/delete", data={"return_view": "workspace", "return_tab": "teams"})
                 summary.add_cleanup("delete_synthetic_team", response.status_code in {200, 303, 404}, "Synthetic team delete attempted.", response.status_code)
             except Exception as exc:  # noqa: BLE001
                 summary.add_cleanup("delete_synthetic_team", False, f"cleanup failed: {exc}")

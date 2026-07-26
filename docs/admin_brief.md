@@ -8,12 +8,7 @@ Canonical route:
 
 - `/admin`
 
-Compatibility/development surfaces:
-
-- `/legacy-admin`: deprecated earlier template;
-- `/admin2`: alternate development/reference UI.
-
-Neither compatibility route overrides the canonical `/admin` behavior.
+The former `/legacy-admin` and `/admin2` compatibility/development surfaces have been removed. `/admin` is the only system-administrator browser workspace.
 
 ## Role boundary
 

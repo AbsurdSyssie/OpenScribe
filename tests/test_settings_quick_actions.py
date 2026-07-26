@@ -212,7 +212,7 @@ def test_quick_action_settings_partial_uses_master_detail_contract():
     assert 'action="/home/team-quick-actions/{{ quick_action.id }}/fork"' in source
     assert "Back to quick actions" in source
     assert 'include "settings/_quick_action_editor.html"' in source
-    assert 'data-settings-url="/settings?tab=quick-actions&scope=' in transcribe_source
+    assert 'data-settings-url="/workspace/library/quick-actions?scope=' in transcribe_source
     assert "&quick_action_id={{ quick_action.id }}" in transcribe_source
 
 

@@ -19,7 +19,7 @@ Use the permanent workspace:
 - Quick Actions: `/workspace/library/quick-actions`
 - Smart Phrases: `/workspace/library/smart-phrases`
 
-Normal login currently lands on `/home`; use the workspace link for ongoing management. `/settings` redirects to canonical workspace sections.
+Full login lands on `/workspace`. Legacy `/settings` links redirect to canonical workspace sections.
 
 ## What leaders can do
 

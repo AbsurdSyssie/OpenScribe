@@ -262,40 +262,6 @@ def admin_revoke_user_quota_grant(
     return RedirectResponse(_quota_panel_url(target, "grant_revoked"), status_code=status.HTTP_303_SEE_OTHER)
 
 
-@app.get("/legacy-admin", response_class=HTMLResponse)
-def legacy_admin_page(
-    request: Request,
-    team_id: str | None = None,
-    stt_config_id: str | None = None,
-    llm_config_id: str | None = None,
-    deidentification_provider_id: str | None = None,
-    default_template_id: str | None = None,
-    default_quick_action_id: str | None = None,
-    tab: str | None = None,
-    db: Session = Depends(get_db),
-):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
-    if response is not None:
-        return response
-    if not context.user.is_system_admin:
-        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
-    return render_admin(
-        request,
-        db,
-        current_user=context.user,
-        selected_team_id=team_id,
-        selected_stt_config_id=stt_config_id,
-        selected_llm_config_id=llm_config_id,
-        selected_deidentification_provider_id=deidentification_provider_id,
-        selected_default_template_id=default_template_id,
-        selected_default_quick_action_id=default_quick_action_id,
-        active_admin_tab=tab,
-        admin_page_route="/legacy-admin",
-        admin_return_view="legacy",
-        template_name="admin.html",
-    )
-
-
 @app.get("/admin-restyled", response_class=HTMLResponse)
 def admin_restyled_page(
     request: Request,
@@ -338,54 +304,6 @@ def admin_restyled_page(
     if params:
         location = f"{location}?{urlencode(params)}"
     return RedirectResponse(url=location, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
-
-
-@app.get("/admin2", response_class=HTMLResponse)
-def admin2_page(
-    request: Request,
-    team_id: str | None = None,
-    stt_config_id: str | None = None,
-    llm_config_id: str | None = None,
-    deidentification_provider_id: str | None = None,
-    default_template_id: str | None = None,
-    default_quick_action_id: str | None = None,
-    tab: str | None = None,
-    db: Session = Depends(get_db),
-):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
-    if response is not None:
-        return response
-    if not context.user.is_system_admin:
-        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
-    provider_tabs = {"stt", "llm", "deidentification"}
-    active_provider_tab = tab if tab in provider_tabs else None
-    return render_admin(
-        request,
-        db,
-        current_user=context.user,
-        selected_team_id=team_id,
-        selected_stt_config_id=stt_config_id,
-        selected_llm_config_id=llm_config_id,
-        selected_deidentification_provider_id=deidentification_provider_id,
-        selected_default_template_id=default_template_id,
-        selected_default_quick_action_id=default_quick_action_id,
-        active_admin_tab=tab,
-        active_provider_tab=active_provider_tab,
-        admin_page_route="/admin2",
-        admin_return_view="admin2",
-        template_name="admin2.html",
-        extra_admin_tabs={
-            "deidentification",
-            "failures",
-            "clinical-nlp",
-            "llm",
-            "people",
-            "preferences",
-            "quick-actions",
-            "stt",
-            "templates",
-        },
-    )
 
 
 @app.post("/admin/teams", response_class=HTMLResponse)
@@ -1189,7 +1107,7 @@ def admin_create_stt_config_draft(
             db,
             current_user=context.user,
             selected_team_id=team_id,
-            selected_stt_config_id="new" if _admin_return_view_value(return_view) == "admin2" else None,
+            selected_stt_config_id=None,
             stt_form_override=stt_form,
             message=detail,
             message_kind="error",
@@ -1585,7 +1503,7 @@ def admin_create_llm_config_draft(
             db,
             current_user=context.user,
             selected_team_id=team_id,
-            selected_llm_config_id="new" if _admin_return_view_value(return_view) == "admin2" else None,
+            selected_llm_config_id=None,
             llm_form_override=llm_form,
             message=detail,
             message_kind="error",

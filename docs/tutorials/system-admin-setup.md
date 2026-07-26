@@ -1,99 +1,189 @@
-# System Admin Setup Tutorial
+# System Administrator Setup Tutorial
 
 ## Audience
 
-This tutorial is for the person setting up OpenScribe for the first time or maintaining system-level configuration.
+This guide is for the operator establishing a new OpenScribe instance and creating its first system-administrator account. Day-to-day browser administration is covered in [admin.md](admin.md).
 
-After initial setup, read [Admin tutorial](admin.md) for daily admin workspace tasks.
+## Choose a runtime
 
-## Local or Deployment Setup
+For host-based development, use [../setup.md](../setup.md).
 
-Follow `docs/setup.md` for environment and startup details.
+For the persistent single-host container runtime, use [../docker.md](../docker.md):
 
-Before creating users or processing clinical content, confirm:
+```bash
+cp .env.example .env
+docker compose --profile runtime up -d --build
+docker compose --profile runtime ps
+curl --fail http://127.0.0.1:8080/health
+```
 
-- database migrations are current
-- Vault or the configured KEK layer is available
-- app secrets are configured
-- cookie/security settings match the deployment environment
-- external exposure is intentional and protected
-- logs do not include confidential content
+The persistent profile starts PostgreSQL, Redis, Vault, FastAPI, a Celery worker, and Celery Beat. It is a restartable local/small-host baseline, not a complete production architecture.
 
-## First System Admin Bootstrap
+Before exposing OpenScribe or processing real clinical content, read:
 
-When the system is brand new, the login page may allow creation of the first system admin.
+- [../environment.md](../environment.md)
+- [../security.md](../security.md)
+- [../auth.md](../auth.md)
 
-After bootstrap:
+## Configure the environment
 
-1. Complete onboarding.
-2. Set up TOTP MFA.
-3. Store recovery codes according to local policy.
-4. Confirm the account redirects to Admin.
+Local sample settings are intentionally development-oriented. Production must explicitly configure:
 
-Bootstrap should not remain an open path after the first system admin exists.
+- `APP_ENV=production`;
+- `COOKIE_SECURE_MODE=always`;
+- a stable explicit or Vault-backed CSRF secret;
+- the public HTTPS `APP_PUBLIC_URL`;
+- one intentional HSTS owner through `HSTS_SOURCE`;
+- trusted reverse-proxy addresses through `FORWARDED_ALLOW_IPS`;
+- forwarded-origin/audit header trust only when the proxy sanitizes those headers and direct origin access is blocked;
+- production database, Redis, Vault, mail, and provider identities/secrets;
+- backup, restore, monitoring, and incident procedures.
 
-## Create Teams
+Do not reuse the local Compose PostgreSQL password, local Vault root token/unseal material, seeded test accounts, or development fallback secrets in production.
 
-Create teams before adding normal users. Each normal user belongs to exactly one team.
+## Verify infrastructure
 
-Avoid linking system-admin accounts to teams unless there is a clear operational reason. A team hard-delete must block if any system-admin account remains linked to that team.
+Before bootstrap:
 
-## Provision Providers
+1. confirm migrations completed successfully;
+2. confirm `/health` returns success;
+3. confirm PostgreSQL, Redis, and Vault are healthy;
+4. confirm the Celery worker consumes `control`, `generation`, `ingestion`, and default queues;
+5. confirm Celery Beat is running;
+6. confirm Vault KV-v2 and Transit mounts/key are available;
+7. confirm the application can resolve a stable CSRF signing key;
+8. confirm logs contain operational metadata only;
+9. confirm database and Vault data can be backed up and restored together.
 
-Provision provider credentials per team.
+PostgreSQL and Vault form one encrypted-content recovery set. A database restore without the matching Vault key/material can make content unreadable.
 
-For each provider:
+## Bootstrap the first system administrator
 
-1. Choose team scope.
-2. Enter provider metadata.
-3. Enter credential once.
-4. Inspect or test where supported.
-5. Save only Vault-backed credential references.
-6. Assign provider availability to the team.
+When the database contains zero users, `/login` exposes the first-admin bootstrap form.
 
-Provider credential cleanup must not delete Vault secrets before the database commit that removes corresponding references unless compensation or retry cleanup exists.
+1. Open `/login`.
+2. Create the first system administrator.
+3. Set the permanent password required by onboarding.
+4. Enroll TOTP MFA.
+5. Store optional recovery codes according to local policy.
+6. Confirm the account is redirected to `/admin`.
 
-## STT MVP Setup
+Bootstrap closes after the first user exists. Do not seed local development accounts on a shared/production instance.
 
-For speech-to-text:
+## Create teams
 
-- system admins provision available endpoints and credentials
-- team leaders choose active admin-provisioned service/model where allowed
-- users do not see or recover raw provider secrets
+Normal users and team leaders belong to exactly one team. System administrators can remain teamless.
 
-If no speech service is active, users may be blocked from recording or upload workflows.
+For each team:
 
-## LLM Setup
+- use the correct display name and retention policy;
+- keep the default retention within the configured `MAX_RETENTION_DAYS`;
+- understand that a transcript snapshots the team retention at creation/start;
+- avoid attaching system-administrator accounts unless operationally necessary, because team deletion blocks while a system administrator remains linked;
+- identify the initial team leader before inviting clinical users.
 
-For writing assistants:
+## Configure transactional email
 
-- system admins provision allowed LLM providers/models per team
-- team defaults may be configured
-- users choose one active LLM for their actions until changed
-- invalid user selection falls back to team default
+Email enables activation/setup, self-service password reset, and manager-assisted recovery links.
 
-Do not expose prompts containing patient data or raw model responses in admin logs or setup screens.
+Supported transports:
 
-## De-Identification Setup
+- `disabled`;
+- `stdout` for local/test only;
+- `resend`.
 
-De-identification providers are system-admin provisioned. Team leaders may select an assigned provider for their own team.
+For production Resend configuration, set the verified sender/public URL and inject the API key through a deployment secret or a provisioned `RESEND_API_KEY_VAULT_REF`. Test with:
 
-Remote de-identification endpoints must use HTTPS unless the endpoint is localhost, LAN/private, or link-local.
+```bash
+python scripts/send_test_email.py --to you@example.com
+```
 
-If no valid team de-identification selection exists, OpenScribe uses the built-in native Presidio provider.
+When mail is disabled, public self-service reset is unavailable and managers must use approved out-of-band or break-glass procedures.
 
-## Security Validation Before Clinical Use
+## Provision speech-to-text
 
-Before live clinical use, confirm:
+Open the selected team's STT setup in `/admin`.
 
-- users complete onboarding and MFA
-- team provider selections are clinically validated
-- default templates and quick actions are reviewed
-- tutorial and local SOP material are available
-- backup and recovery process is documented
-- deletion and account recovery paths are understood
+1. Choose a supported provider preset.
+2. Enter endpoint/identity metadata and the credential once.
+3. Inspect/discover the contract and models.
+4. Finalize a ready configuration.
+5. Run the saved diagnostic with the bundled synthetic audio fixture.
+6. Activate the config.
+7. Have the team leader select it for the intended purpose.
+8. Test owner whole-file and live capture with synthetic/approved material.
 
-## Operational Rule
+Consultation and post-consultation dictation selections can be purpose-specific. Verify both when the team uses both workflows.
 
-Do not silently redesign privacy, ownership, deletion, encryption, provider resolution, or structured-note contracts during setup work. Escalate for architecture direction first.
+Credentials are stored in Vault and represented in PostgreSQL by metadata/reference/fingerprint only. See [../stt-config.md](../stt-config.md).
 
+## Provision writing assistants
+
+Open the selected team's LLM setup in `/admin`.
+
+- Choose the provider preset/adapter and team.
+- Supply the required credential or workload identity.
+- Inspect or enter a supported model.
+- Finalize/activate the configuration.
+- Configure the team default/allowed selection policy.
+- Test generation using synthetic transcript/working-note material.
+
+Gemini Enterprise uses Google workload identity/ADC rather than a stored bearer token. Its setup can be hidden/rejected for new configs with `ENABLE_GEMINI_ENTERPRISE_PROVIDER=false`; existing persisted configs remain usable by authorized runtime paths. See [../llm-providers.md](../llm-providers.md) and [../gemini-enterprise-setup.md](../gemini-enterprise-setup.md).
+
+## Configure de-identification and clinical NLP
+
+System administrators provision/assign remote providers. Team leaders choose from assigned selectable options for their own team.
+
+- Remote production endpoints require HTTPS.
+- Local/private HTTP exceptions are development-only.
+- When no valid remote de-identification selection exists, the runtime can use the built-in native Presidio path.
+- Validate redaction/reidentification behavior with synthetic identifiable text before clinical rollout.
+
+Provider connectivity alone does not establish privacy/regulatory suitability.
+
+## Create initial users and shared assets
+
+Use account requests, activation links, or managed creation.
+
+- Give the team-leader role only with approved management responsibility.
+- Never promote a normal user to system administrator through a leader flow.
+- Require permanent password change and TOTP onboarding.
+- Create/review default and Team Templates/Quick Actions with synthetic content only.
+- Validate structured EMIS section keys and prompt instructions.
+- Train users to treat all transcripts/generated text as drafts requiring review.
+
+## Validate security and lifecycle behavior
+
+Before real use, perform controlled checks for:
+
+- anonymous/onboarding/pending-MFA/full/leader/system-admin route boundaries;
+- owner-only transcript/generated-content access;
+- account suspension/reactivation/recovery/deletion;
+- CSRF, same-origin, cookie, CSP, cache, and HSTS behavior behind the actual proxy;
+- provider credential replacement/removal and cleanup;
+- temporary source-audio cleanup;
+- retention expiry/deletion;
+- durable outbox behavior when Redis publication is temporarily unavailable;
+- quota/usage metadata without content leakage;
+- backup and full restore of PostgreSQL plus Vault.
+
+Use [../testing.md](../testing.md) and [../dbtesting.md](../dbtesting.md). Dated compliance evidence is a point-in-time record and must be rerun for the deployed build rather than treated as evergreen proof.
+
+## Production readiness checklist
+
+Do not begin clinical use until the deployment owner has documented:
+
+- controller/processor responsibilities and subprocessor contracts;
+- provider data residency, retention, training/use, and deletion terms;
+- recording consent and clinical safety procedures;
+- access review and account recovery processes;
+- backup/restore and key-loss response;
+- monitoring for web/worker/Beat/Vault/database/Redis health;
+- retention, source-audio, and provider-secret cleanup monitoring;
+- audit review and incident escalation;
+- tested destructive user/team/transcript deletion procedures;
+- clinician training and review requirements.
+
+## Architecture rule
+
+Setup work must not silently change owner-only access, system-admin content ownership, hard-delete/retention roots, DEK/KEK behavior, provider-secret versioning/cleanup, quota/outbox semantics, or structured-note contracts. Such changes require an explicit design, code/migrations/tests, and updates to the operational documentation and repository README.

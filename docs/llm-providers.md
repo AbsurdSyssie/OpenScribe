@@ -6,7 +6,7 @@ OpenScribe LLM provisioning is system-admin-only. Team leaders and users can sel
 
 LLM provider setup is stateful:
 
-- `pending_model_selection` means the system admin has checked the provider key/endpoint, and any supplied key is saved in Vault, but no default model has been chosen yet.
+- `pending_model_selection` means the system admin has checked the provider key/endpoint or runtime identity, and any supplied secret is saved in Vault, but no default model has been chosen yet.
 - `ready` means the provider has a label, default model, setup-complete status, and may be made available for team selection.
 
 Pending providers are visible only to system admins as `Setup incomplete`. Team leaders and users never receive pending providers from selection-option routes and cannot select a pending provider by ID. Selectable providers must be `ready`, `is_active=true`, and have a non-empty `model_name`.
@@ -26,6 +26,7 @@ The admin UI exposes branded presets:
 - Together AI
 - Ollama
 - Bedrock HTTP gateway
+- Gemini Enterprise
 - Custom OpenAI-compatible - advanced
 
 `provider_preset` records the admin-facing brand or custom classification. `adapter_kind` remains the runtime protocol implementation:
@@ -33,6 +34,7 @@ The admin UI exposes branded presets:
 - OpenAI-compatible presets use `openai_chat`
 - Ollama uses `ollama_chat`
 - Bedrock HTTP gateway uses `bedrock_chat`
+- Gemini Enterprise uses `gemini_enterprise`
 
 `openai_chat` currently means the OpenAI-compatible chat protocol adapter, not only first-party OpenAI. A future migration may rename the enum, but this slice keeps the existing value for compatibility.
 
@@ -61,6 +63,8 @@ Model lists come from live discovery. OpenScribe no longer supplies built-in LLM
 - Saved-provider re-inspection persists the latest discovery metadata even when discovery fails, without overwriting the previous selectable model list unless new models are returned.
 - Editing a saved provider without replacing its credential still validates the submitted default model against any non-empty saved provider model list. Manual entry remains allowed only when live discovery requires manual fallback and no provider models are available.
 
+Gemini discovery/finalization differs from API-key providers and is described below.
+
 ## Secrets
 
 Bearer tokens remain Vault-backed. API responses expose `has_secret` only and never return `vault_secret_ref` or raw secret material.
@@ -77,13 +81,7 @@ Replacing a saved key reruns discovery, marks the config `pending_model_selectio
 
 Queued or processing generated documents block normal provider edits and provider deletion so runtime snapshots stay stable. Credential correction is the exception: a system admin may replace the Vault-backed key for the same provider endpoint while generated documents are queued or processing, because an invalid key can otherwise leave failed or stuck generation work blocking the fix. During in-flight work, the replacement is rejected unless live inspection confirms that the corrected credential exposes the saved default model used by those queued documents. This prevents swapping to a different account/provider that cannot run the snapshotted model. If the corrected key still exposes the saved default model, the provider remains `ready` and keeps its current availability instead of being moved back to incomplete setup. If the full edit form submits incidental label/model/availability changes during this correction, OpenScribe keeps those existing provider fields unchanged and updates only the credential/discovery metadata. A provider already left in `pending_model_selection` by an earlier credential correction may be finalized while generated documents remain queued or processing. A ready provider may also be toggled between available/unavailable during queued or processing generations when label, endpoint, and model stay unchanged.
 
-Queued generation resolves its Vault-backed credential before the provider
-attempt is marked submitted. A definite credential-read failure therefore
-fails the generated document and cancels its reservation without quota usage;
-only work that reaches the provider-dispatch boundary may consume quota. If
-duplicate workers both observe queued work, a preflight failure from the worker
-that loses the atomic dispatch claim cannot fail or settle the winner's already
-submitted attempt.
+Queued generation resolves its Vault-backed credential before the provider attempt is marked submitted. A definite credential-read failure therefore fails the generated document and cancels its reservation without quota usage; only work that reaches the provider-dispatch boundary may consume quota. If duplicate workers both observe queued work, a preflight failure from the worker that loses the atomic dispatch claim cannot fail or settle the winner's already submitted attempt.
 
 ## Generated Document Request Payloads
 
@@ -117,8 +115,6 @@ Gemini Enterprise is a native `gemini_enterprise` adapter using the stable `v1` 
 
 Workload Identity Federation belongs in deployment configuration and is consumed through ADC; the provider API rejects uploaded `external_account` configuration. Global locations may process data globally, so deployments with residency requirements must select an appropriate jurisdictional or regional location.
 
-Capacity mode maps to Google's request routing: `auto` sends no override header, `shared` forces pay-as-you-go, and `dedicated` forces Provisioned Throughput without spillover. Model availability, processing boundary, and consumption support are separate checks. In particular, a model can exist at `europe-west2` without Standard PayGo being offered there; consult the current model page and capacity contract before choosing `shared` or assuming `auto` can use on-demand capacity.
-
 Model discovery uses Google's `v1beta1` publisher-model catalog and filters it to Gemini text-generation model IDs. Because regional catalogs can lag jurisdictional catalogs, `europe-*` results are merged with `eu`, and US/North America regional results with `us`. PublisherModel action metadata is not used because `google-genai` does not expose it consistently. Empty or transiently unavailable discovery permits manual model entry, which is checked with a fixed synthetic stable-`v1` `count_tokens` request before finalization. Definitive credential, IAM, disabled-API, and location failures create neither draft nor secret.
 
 Queued jobs snapshot project, location, API version, and capacity mode. Credentials, Vault references, private-key identifiers, and access tokens are excluded. Gemini request snapshots use `contents` plus `system_instruction`; JSON-producing requests use the canonical `response_json_schema` config key. Snapshot replay still accepts the earlier `response_schema` key for compatibility. Token usage maps into existing accounting fields. Template notes, structured notes, follow-ups, quick actions, and hallucination checks share this path.
@@ -127,4 +123,4 @@ Gemini note generation applies a model-aware low-thinking policy. Every Gemini g
 
 Set `ENABLE_GEMINI_ENTERPRISE_PROVIDER=false` to hide and reject new Gemini Enterprise setup during rollout. Default is enabled. Existing persisted Gemini configs remain visible to authorized admins, usable by existing team selections, and re-inspectable with their saved Vault-backed credential; disabling creation must not make persisted provider rows unreadable or return server errors.
 
-See [Gemini Enterprise setup](gemini-enterprise-setup.md) for comprehensive bare-metal and Docker deployment instructions. Publisher-model discovery uses Google's `v1beta1` Model Garden catalog; token counting and generation use stable `v1`. Discovery failure still permits manual selection, with `count_tokens` providing the authoritative access check during finalization.
+See [Gemini Enterprise setup](gemini-enterprise-setup.md) for bare-metal and Docker deployment instructions. Publisher-model discovery uses Google's `v1beta1` Model Garden catalog; token counting and generation use stable `v1`. Discovery failure still permits manual selection, with `count_tokens` providing the authoritative access check during finalization.

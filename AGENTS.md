@@ -4,176 +4,199 @@
 
 OpenScribe is privacy-sensitive and architecture-sensitive.
 
-Preserve established ownership, content-access, deletion, retention, encryption, provider, authentication, and structured-output contracts. Do not silently redesign them.
+Preserve established ownership, content-access, deletion, retention, encryption, provider, authentication, quota/outbox, and structured-output contracts. Do not silently redesign them.
 
 ## Sources of truth
 
-Read only the documentation relevant to the change.
+Not every Markdown file describes current behavior. Files named `plan`, `brief`, `roadmap`, `todo`, `design`, or similar can be historical or partially implemented.
 
-Not every Markdown file describes current behaviour. Files named `plan`, `brief`, `refactor`, or similar may be historical or superseded.
+Use evidence in this order:
 
-Use these as evidence of current behaviour, in this order:
-
-1. database migrations and constraints
-2. implemented service and route behaviour
-3. focused passing tests
-4. current runtime configuration
-5. documentation explicitly describing current behaviour
+1. database migrations and constraints;
+2. implemented service/model/route/dependency behavior;
+3. focused passing tests and route-audit manifest;
+4. current runtime configuration;
+5. documentation explicitly listed as operational in `docs/README.md`;
+6. historical plans/briefs/roadmaps.
 
 When these disagree:
 
-* do not choose silently
-* preserve the stricter privacy and security boundary
-* identify the conflict
-* establish the implemented behaviour from code, migrations, and tests
-* update or retire stale documentation
-* escalate if an architectural invariant is affected
+- do not choose silently;
+- preserve the stricter privacy/security boundary;
+- identify the conflict;
+- establish implemented behavior from code, migrations, tests, and configuration;
+- update or retire stale documentation;
+- escalate when an architectural invariant is affected.
 
-Relevant references include:
+Primary references:
 
-* `docs/security.md`
-* `docs/auth.md`
-* `docs/api.md`
-* `docs/setup.md`
-* `docs/testing.md`
-* `docs/DatabasePlan.md`
-* `docs/transcript-capture.md`
-* `docs/stt-config.md`
-* `docs/llm-providers.md`
+- `docs/README.md`
+- `docs/security.md`
+- `docs/auth.md`
+- `docs/api.md`
+- `docs/environment.md`
+- `docs/setup.md`
+- `docs/docker.md`
+- `docs/testing.md`
+- `docs/dbtesting.md`
+- `docs/DatabasePlan.md`
+- `docs/transcript-capture.md`
+- `docs/stt-config.md`
+- `docs/llm-providers.md`
 
 ## Architecture invariants
 
 ### Privacy and ownership
 
-* Transcript-derived content belongs only to its owning user.
-* Transcript-derived content is not team-shareable.
-* Administrative or team-leader authority does not grant access to transcripts, audio, dictation, working notes, generated notes, prompts, or redaction originals.
-* Metadata access is not content access.
-* System-administrator accounts must not own transcript-derived content.
-* Each normal user belongs to one team.
-* Team leaders may act only within their own team.
+- Transcript-derived content belongs only to its owning user.
+- Transcript-derived content is not team-shareable.
+- Administrative or team-leader authority does not grant access to transcripts, audio, dictation, Working notes, generated notes, prompts, redaction originals, or PII values.
+- Metadata access is not content access.
+- System-administrator accounts must not own transcript-derived content.
+- Each normal user belongs to one team.
+- Team leaders may act only within their own team.
 
 ### Transcript lifecycle
 
-* Create the transcript root before ingesting transcript-derived content.
-* The transcript root is the retention and deletion root.
-* Persist draft and committed transcript content through the established encrypted fields and version boundaries.
-* Retention expiry is fixed when assigned and must not be extended by later edits.
-* Transcript deletion must remove all transcript-derived children through established cascades and cleanup paths.
-* Working notes and post-consultation dictation remain separate transcript-owned sources.
+- Create the transcript root before ingesting transcript-derived content.
+- The transcript root is the retention and deletion root.
+- Persist draft/committed/derived owner content through established encrypted fields and version boundaries.
+- Team retention is snapshotted server-side and must not be extended by later edits/user payload.
+- Expired roots are unavailable before asynchronous physical cleanup.
+- Transcript deletion removes all transcript-derived children through established cascades and durable cleanup.
+- Working note and post-consultation dictation remain separate transcript-owned generation sources.
+- Persisted ingestion modes remain `whole_file` and `live_chunked` unless explicitly extended through schema/service/API changes.
 
 ### Redaction and generation
 
-* Run redaction only at defined workflow boundaries.
-* Capture finalisation or ingestion reconciliation may create or reuse a redaction preview.
-* Provider-bound workflows must use the appropriate source snapshot and redaction boundary.
-* Fail closed when required redaction fails.
-* Generated-document edits must not mutate transcripts, working notes, dictation, templates, or other source material.
-* Preserve generated-document provenance when source assets are deleted.
+- Run redaction only at defined workflow boundaries.
+- Capture finalization or ingestion reconciliation can create/reuse a redaction preview.
+- Provider-bound workflows use the appropriate saved source snapshot and redaction boundary.
+- Fail closed when required redaction fails.
+- Generated-document edits do not mutate transcripts, Working notes, dictation, Templates, Quick Actions, or other source material.
+- Preserve generated-document provenance/snapshots when originating reusable assets are deleted.
+- Every generated result remains a draft requiring clinician review.
 
 ### Structured output
 
-* Treat `app/schemas/templates.py` and `app/schemas/transcripts.py` as the structured-output contracts.
-* Validate provider output before persistence or display.
-* Do not add profiles, section keys, or incompatible response shapes without architectural approval.
-* Do not weaken validation to accept malformed model output.
+- Treat `app/schemas/templates.py` and `app/schemas/transcripts.py` as structured-output contracts.
+- Validate provider output before persistence/display.
+- Do not add profiles, section keys, or incompatible response shapes without explicit design approval.
+- Do not weaken validation to accept malformed model output.
+- The current EMIS keys are `problem`, `history`, `family_history`, `social_history`, `examination`, `comment`, `tasks`, and `investigations`.
 
-### Shared assets
+### Reusable assets
 
-* Team assets remain team-scoped.
-* Watching is a live reference; forking creates ownership.
-* Customising a shared asset requires a fork.
-* Deleting an original removes watcher access; existing forks survive.
-* Never convert a reference into ownership implicitly.
+- Platform/team/personal Template and Quick Action scope is explicit.
+- Smart Phrases are personal only.
+- Team assets remain team-scoped and are available according to current authorization; they are not transcript-derived sharing.
+- Copy/duplicate/import creates an independent root/version where the current service defines it.
+- Import/export transfers portable content only, never ownership/team/creator/version/active/usage authority.
+- Reusable configuration must not contain patient/transcript content.
+- The historical watcher/fork-reference model is not the current schema/API contract; do not introduce it implicitly.
 
 ### Account lifecycle and deletion
 
-* Suspension is reversible; deletion is immediate and destructive.
-* Suspension, locking, or disabling must revoke sessions and trusted-device authority as required by the existing lifecycle.
-* Team leaders may suspend, reactivate, and hard-delete non-system-administrator users in their own team.
-* System administrators may perform those actions across teams, subject to protected-account safeguards.
-* Managers may not suspend or delete themselves through manager routes.
-* Do not remove the final active system-administrator account.
-* User and team deletion must use the established deletion services.
-* Block deletion rather than silently skipping unresolved cleanup.
+- Suspension is reversible; deletion is immediate/destructive.
+- Suspension, locking, or disabling revokes sessions/trusted-device authority according to the current lifecycle.
+- Team leaders may suspend, reactivate, and hard-delete eligible non-system-administrator users in their own team.
+- System administrators may perform those actions across teams subject to protected-account safeguards.
+- Managers may not suspend/reactivate/delete themselves through manager routes.
+- Do not remove the final active system administrator.
+- Reactivation currently forces password-change onboarding and clears previous MFA trust.
+- User/team deletion must use established deletion services.
+- Block deletion rather than silently skipping unresolved cleanup.
 
 ### Encryption and provider secrets
 
-* Vault is the KEK and provider-secret layer.
-* Encrypt confidential user-owned content with the owning user’s DEK.
-* Store provider credentials in Vault; store only references and non-secret metadata in the database.
-* Never expose raw credentials or Vault references through normal responses.
-* Never delete a live Vault secret before the database transaction removing or replacing its reference commits.
-* Record retired-reference cleanup durably with the database change.
-* Cleanup must retry failures and verify that a reference is no longer live.
-* Use existing encryption, Vault, and cleanup services.
+- Vault is the KEK and provider-secret layer.
+- Encrypt confidential user-owned/authentication content with the owning user's DEK.
+- Store provider credentials in Vault/deployment identity; store only references/non-secret metadata in PostgreSQL.
+- Never expose raw credentials or unrestricted Vault references through normal responses.
+- Provider drafts/revisions that inherit a required credential copy it to a draft-owned unique versioned Vault path; they do not alias the active root reference.
+- Never delete a live Vault secret before the database change removing/replacing its reference commits.
+- Record retired-reference cleanup durably with the database change.
+- Cleanup retries failures and verifies a reference is no longer live.
+- Use existing encryption, Vault, and cleanup services.
+- Do not couple password recovery to content-key rotation/deletion.
 
 ### Provider policy
 
-* System administrators provision providers and credentials.
-* Team leaders select only providers assigned to their team.
-* STT selection is purpose-specific, including conversation transcription and post-consultation dictation.
-* Provider configuration never grants access to transcript-derived content.
-* Preserve team LLM policy, user preference fallback, provider setup state, credential status, and selection rules.
-* PII-redaction and clinical-NLP selections remain separate.
-* Use the established native de-identification fallback when no valid team selection exists.
+- System administrators provision providers and credentials.
+- Team leaders select only eligible providers/options for their own team.
+- STT selection is purpose-specific, including consultation transcription and post-consultation dictation.
+- Provider configuration never grants access to transcript-derived content.
+- Preserve team LLM policy, user preference fallback, setup/credential state, and selection rules.
+- PII-redaction and clinical-NLP selections remain separate.
+- Use the established native de-identification fallback when no valid remote team selection exists.
+- Queued work snapshots provider execution metadata so later policy edits do not retarget existing work.
+
+### Asynchronous work and quotas
+
+- Business rows and deterministic task-dispatch outbox rows are committed transactionally.
+- Immediate broker publish is attempted; Beat retries pending outbox rows every second.
+- Retention, transcript-audio cleanup, provider-secret cleanup, and quota lifecycle processing run every 10 seconds.
+- Resolve credentials before marking a provider attempt submitted.
+- Definite pre-dispatch credential failure must not consume provider quota.
+- Duplicate delivery uses database claims/idempotency; a losing worker cannot fail/settle winning work.
+- Task/outbox/attempt/quota/usage rows contain metadata only.
 
 ## Security
 
-* Never interpolate user-controlled values into raw SQL.
-* Use SQLAlchemy expressions or parameterised statements.
-* Allowlist identifiers, sort fields, operators, and query fragments.
-* Reuse maintained libraries and existing project security services.
-* Do not hand-roll cryptography, authentication, authorisation, CSRF, hashing, secret storage, or rate limiting.
-* Use synthetic data for tests and provider inspection.
-* Never weaken a constraint or test merely to make it pass.
+- Never interpolate user-controlled values into raw SQL.
+- Use SQLAlchemy expressions or parameterized statements.
+- Allowlist identifiers, sort fields, operators, and query fragments.
+- Reuse maintained libraries and existing project security services.
+- Do not hand-roll cryptography, authentication, authorization, CSRF, hashing, secret storage, or rate limiting.
+- Use synthetic data for tests/provider inspection.
+- Never weaken a constraint/test merely to make it pass.
 
 Do not log:
 
-* transcript-derived content
-* prompts or provider responses containing user data
-* audio content
-* redaction originals or manual PII
-* passwords, cookies, sessions, tokens, or credentials
-* sensitive request or response bodies
+- transcript-derived content;
+- prompts/provider responses containing user data;
+- audio content;
+- redaction originals/manual PII;
+- passwords, cookies, sessions, tokens, or credentials;
+- sensitive request/response bodies.
 
 ## Workflow
 
 Before coding, identify:
 
-* intended behaviour
-* affected modules, routes, schemas, migrations, workers, and configuration
-* relevant tests and current documentation
-* privacy, ownership, lifecycle, encryption, and provider risks
-* existing code that can be reused
-* documentation conflicts
-* In Code Mode, within each bounded stage, run independent, functions.exec-available tool calls concurrently in one functions.exec call. Use await Promise.allSettled([...]) when partial results are useful, and inspect every result; use await Promise.all([...]) only when any failure should abort the batch. Keep dependencies, waits/resumes, approvals, conflicting or interdependent mutations, and adaptive investigations where each result may change the next step sequential. Do not split otherwise batchable inspections across outer tool calls.
-
+- intended/current behavior;
+- affected modules, routes, schemas, migrations, workers, and configuration;
+- relevant tests/current documentation;
+- privacy, ownership, lifecycle, encryption, provider, quota/outbox, and audit risks;
+- existing code that can be reused;
+- documentation conflicts.
 
 During implementation, check:
 
-* schema and migration safety
-* authentication and authorisation
-* owner and team scope
-* deletion and retention
-* encryption and Vault lifecycle
-* provider selection and fallback
-* asynchronous idempotency and retries
-* logging and audit safety
-* structured-output validation
+- schema/migration safety;
+- authentication/authorization;
+- owner/team scope;
+- deletion/retention;
+- encryption/Vault lifecycle;
+- provider selection/fallback;
+- asynchronous idempotency/retries;
+- quota submission/settlement;
+- logging/audit safety;
+- structured-output validation.
 
 Prefer small vertical changes over broad refactors.
 
 After implementation:
 
-* add or update focused tests
-* run focused checks first
-* run broader checks when risk warrants them
-* update tracked documentation
-* retire or mark superseded documentation
-* report unverified behaviour and remaining risks
+- add/update focused tests;
+- run focused checks first;
+- run broader checks when risk warrants them;
+- update tracked operational documentation;
+- update root README/index for user-facing/setup changes;
+- retire/mark superseded documentation;
+- report unverified behavior and remaining risks.
 
-Do not change a failing test until determining whether the implementation, expectation, fixture, environment, or documentation is wrong.
+Do not change a failing test until determining whether implementation, expectation, fixture, environment, or documentation is wrong.
 
 ## Testing
 
@@ -185,75 +208,69 @@ Run tests through the project virtual environment:
 
 Add targeted tests for changes affecting:
 
-* authentication, MFA, onboarding, or recovery
-* ownership or team filtering
-* manager or administrator authority
-* deletion, retention, or cascades
-* migrations and constraints
-* encryption or Vault cleanup
-* provider policy and fallback
-* redaction or structured output
-* asynchronous dispatch, retries, or idempotency
-* logging and audit sanitisation
+- authentication, MFA, onboarding, or recovery;
+- ownership/team filtering;
+- manager/administrator authority;
+- deletion, retention, or cascades;
+- migrations/constraints;
+- encryption/Vault cleanup;
+- provider policy/fallback;
+- redaction/structured output;
+- asynchronous dispatch/retries/idempotency;
+- quota attempts/settlement;
+- logging/audit sanitization;
+- browser route/CSRF/CSP behavior.
 
-Follow `docs/testing.md` for shared infrastructure and environment requirements.
+Follow `docs/testing.md` and `docs/dbtesting.md`. Update `app/api_route_audit.py` for every `/api/v1` route change.
 
 ## Documentation
 
-Update tracked documentation when behaviour, API, schema, setup, operations, security, or lifecycle contracts change.
+Update tracked documentation when behavior, API, schema, setup, operations, security, lifecycle, or configuration changes.
 
-Local files under `docs/progress/` are scratch notes and must not be staged. They do not replace tracked documentation.
+- Use repository-relative links.
+- Keep operational references aligned with code/tests/configuration.
+- Mark plans/briefs/roadmaps as current, historical, or remaining work explicitly.
+- Preserve dated compliance/security evidence as point-in-time records; add new evidence rather than rewriting old results.
+- Local files under `docs/progress/` are scratch notes and must not be staged; they do not replace tracked documentation.
+
+Run:
+
+```bash
+python .github/scripts/check-operational-docs.py
+```
+
+for maintained-document link/path validation.
 
 ## Subagents
 
-Delegate only bounded work where isolated context or parallel execution helps.
-
-Every delegation must define the objective, permitted scope, constraints, required evidence, tests, and escalation condition.
-
-* **Luna:** Narrow, low-risk, mechanically verifiable work. Prefer read-only searches, inventories, extraction, triage, formatting, and source-grounded documentation. Never assign architecture-sensitive decisions.
-* **Terra:** Default for bounded implementation, fixes, tests, refactors, and documentation when behaviour and acceptance criteria are defined. Escalate ambiguity or architectural consequences.
-* **Sol:** Ambiguous, cross-cutting, or high-consequence work; architecture, privacy, security, deletion, encryption, provider-secret lifecycle, migrations, complex debugging, and final sensitive review.
-
-Prefer parallel read-heavy tasks. Avoid overlapping writes unless isolated workspaces and an integration plan are used.
-
-The parent remains responsible for correctness. Review delegated changes, verify claims, resolve conflicts, and run relevant tests.
-
-Require subagents to report:
-
-* files reviewed or changed
-* commands and tests with results
-* assumptions and decisions
-* limitations, risks, and blockers
-
-Subagents must not delegate further unless explicitly authorised.
+Delegate only bounded work where isolated context/parallel execution helps. Define objective, scope, constraints, required evidence/tests, and escalation condition. The parent remains responsible for correctness and must review/verify every delegated change.
 
 ## Escalation
 
 Do not silently alter:
 
-* ownership or content visibility
-* transcript shareability
-* deletion or retention
-* encryption or key management
-* Vault credential lifecycle
-* provider selection or fallback
-* redaction boundaries
-* structured-output contracts
-* account-lifecycle authority
-* quota-accounting semantics
+- ownership/content visibility or transcript shareability;
+- deletion/retention roots;
+- encryption/key management;
+- Vault credential lifecycle;
+- provider selection/fallback;
+- redaction boundaries;
+- structured-output contracts;
+- account-lifecycle authority;
+- quota-accounting/outbox semantics.
 
-Implement only a safe independent portion when possible, preserve the existing boundary, identify the blocker, and request architectural direction.
+Implement only a safe independent portion where possible, preserve the existing boundary, identify the blocker, and request architectural direction.
 
 ## Final report
 
 Report:
 
-1. behaviour implemented
-2. files changed
-3. migrations or configuration changes
-4. tests run and results
-5. documentation updated or retired
-6. architecture and security impact
-7. risks, assumptions, blockers, and remaining work
+1. behavior implemented;
+2. files changed;
+3. migrations/configuration changes;
+4. tests/checks run and results;
+5. documentation updated/retired;
+6. architecture/security impact;
+7. risks, assumptions, blockers, and remaining work.
 
-Do not claim anything was verified unless it was actually checked.
+Do not claim verification that was not actually performed.

@@ -1,143 +1,144 @@
 # Environment variables
 
-OpenScribe reads configuration from process environment variables. For local use,
-copy `.env.example` to `.env`. The host-based development script sources that
-file directly; Docker Compose reads it for variable interpolation.
+OpenScribe reads configuration from process environment variables. For local use, copy `.env.example` to `.env`. `start-dev.sh` sources that file directly; Docker Compose reads it for interpolation and explicitly maps supported runtime values into the application container.
 
-The persistent Compose runtime overrides only the addresses that must use Docker
-service DNS (`postgres`, `redis`, and `vault`) plus the container's internal web
-bind. Other mapped runtime values use `.env` when present and documented defaults
-when it is absent.
+The persistent Compose runtime replaces only addresses that must use Docker service DNS (`postgres`, `redis`, and `vault`) and the container's internal web bind. Other mapped values use `.env` when present and the defaults documented below when absent.
 
 ## Configuration rules
 
-- Never commit `.env` or put real credentials in `.env.example`.
-- Treat blank values as intentionally unset. Defaults are documented below.
-- Prefer `CSRF_SECRET`; `SECRET_KEY` is retained only as a compatibility alias.
-- `APP_SECRET_KEY` is not a runtime setting and should not be used.
-- Production must not use the local Compose database password, Vault root token,
-  seeded test accounts, or development-only CSRF fallback.
-- Settings are loaded when a process starts. Restart the web process, Celery
-  worker, and Celery Beat after changing runtime configuration.
+- Never commit `.env` or place real credentials in `.env.example`.
+- Blank values mean intentionally unset unless a row says otherwise.
+- Restart the web process, Celery worker, and Celery Beat after changing runtime settings.
+- Prefer `APP_ENV`; `ENVIRONMENT` and `ENV` are compatibility fallbacks.
+- Prefer `CSRF_SECRET`; `SECRET_KEY` is a compatibility alias. `APP_SECRET_KEY` is not used.
+- Production must not use local Compose credentials, local Vault root tokens, seeded test accounts, or development fallback secrets.
+- Proxy trust settings are independent: Uvicorn forwarded-header trust, CSRF origin reconstruction, and audit client-IP trust must each be configured deliberately.
 
 ## Application and HTTP
 
-| Variable | Default/example | Purpose |
+| Variable | Code default / example | Purpose |
 | --- | --- | --- |
-| `APP_ENV` | `local` | Runtime mode. Use `production` only with production cookie, secret, proxy, database, Redis, and Vault configuration. |
-| `APP_HOST` | `127.0.0.1` | Host bind used by `start-dev.sh`. The container binds internally to `0.0.0.0`. |
-| `APP_PORT` | `8080` | Host dev port and Docker-published port. The container's internal port remains `8080`. |
-| `APP_PUBLIC_URL` | `http://127.0.0.1:8080` | Canonical browser URL used in generated links and transactional email. |
-| `CSRF_SECRET` | unset | Preferred explicit CSRF signing secret. Required in production unless Vault secret bootstrap is available. |
-| `SECRET_KEY` | unset | Compatibility alias for `CSRF_SECRET`. Do not set both to different values. |
-| `CSRF_SECRET_VAULT_REF` | unset | Optional Vault KV reference for the platform CSRF secret. When production has no explicit secret, OpenScribe uses Vault bootstrap. |
-| `COOKIE_SECURE_MODE` | `auto` | `auto`, `always`, or `never`. Production requires `always`. |
-| `HSTS_SOURCE` | `app` | `app`, `proxy`, or `proxy_static_fallback`; selects the single owner of HSTS headers. |
-| `PUBLIC_API_DOCS` | unset | Unset means public outside production and system-admin-only in production. Explicitly set `true` or `false` to override. |
-| `AUDIT_TRUST_X_FORWARDED_FOR` | `false` | Trust sanitized `X-Forwarded-For` values for audit IP capture. Enable only when direct origin access is blocked. |
-| `AUDIT_TRUST_CLOUDFLARE` | `false` | Trust sanitized Cloudflare client-IP headers. Enable only behind the configured Cloudflare path. |
+| `APP_ENV` | `production` when all environment selectors are unset; `.env.example` sets `local` | Runtime mode. Use `local` for local development and set `production` explicitly for deployment. |
+| `ENVIRONMENT`, `ENV` | unset | Compatibility fallbacks used only when `APP_ENV` is unset. |
+| `APP_HOST` | `127.0.0.1` in host tooling | Host bind used by `start-dev.sh`. Compose binds the container internally to `0.0.0.0`. |
+| `APP_PORT` | `8080` | Host development port and Docker-published port. The application container listens on internal port `8080`. |
+| `APP_PUBLIC_URL` | `http://127.0.0.1:8080` in local configuration | Canonical browser URL used in generated links and transactional email. |
+| `CSRF_SECRET` | unset | Preferred explicit CSRF signing secret. Required in production unless stable Vault bootstrap is available. |
+| `SECRET_KEY` | unset | Compatibility alias used by CSRF, audit hashing, and provider fingerprint fallback chains. Do not set it differently from `CSRF_SECRET`. |
+| `CSRF_SECRET_VAULT_REF` | unset | Optional Vault KV reference for the platform CSRF secret. The default logical reference is `secret:openscribe/platform/csrf`. |
+| `COOKIE_SECURE_MODE` | `auto` | `auto`, `always`, or `never`. Production startup requires `always`. |
+| `HSTS_SOURCE` | `app` | `app`, `proxy`, or `proxy_static_fallback`; selects the single HSTS owner. |
+| `PUBLIC_API_DOCS` | unset | Unset means public outside production and system-admin-only in production. Explicit `true` or `false` overrides this. |
+| `TRUST_FORWARDED_ORIGIN_HEADERS` | `false` | Allows CSRF origin checks to reconstruct the expected origin from sanitized `X-Forwarded-Proto` and `X-Forwarded-Host`. Enable only when a trusted proxy is the sole route to the origin. |
+| `AUDIT_TRUST_X_FORWARDED_FOR` | `false` | Trust the first sanitized `X-Forwarded-For` address for audit metadata. |
+| `AUDIT_TRUST_CLOUDFLARE` | `false` | Trust Cloudflare's client-IP header for audit metadata. |
+| `AUDIT_SUBJECT_HASH_SECRET` | unset | Dedicated HMAC key for hashing login/reset subjects in audit events. When unset, code falls back to `SECRET_KEY`, `CSRF_SECRET`, or the stable Vault-backed CSRF secret. A dedicated production value reduces key reuse. |
 
-`ENVIRONMENT` and `ENV` are accepted as fallbacks when `APP_ENV` is unset, but
-new deployments should use `APP_ENV` consistently.
+`FORWARDED_ALLOW_IPS`, documented under Docker, controls which proxy addresses Uvicorn trusts. It does not by itself enable the CSRF or audit trust switches above.
 
-## Database, Redis, and Celery
+## Database, Redis, Celery, and durable dispatch
 
 | Variable | Local default | Purpose |
 | --- | --- | --- |
-| `DATABASE_URL` | `postgresql+psycopg://ambient:ambient@localhost:5432/ambient_scribe` | Primary SQLAlchemy database URL. Compose overrides the host to `postgres`. |
-| `TEST_DATABASE_URL` | `postgresql+psycopg://ambient:ambient@localhost:5432/ambient_scribe_test` | Test database URL. Never point this at the live application database. |
-| `RATE_LIMIT_STORAGE_URL` | `redis://localhost:6379/0` | Redis database used for application rate limiting. Compose overrides the host to `redis`. |
-| `TEST_RATE_LIMIT_STORAGE_URL` | `redis://localhost:6379/15` | Isolated test rate-limit storage. |
-| `CELERY_BROKER_URL` | `redis://localhost:6379/2` | Celery broker. Compose overrides the host to `redis`. |
+| `DATABASE_URL` | `postgresql+psycopg://ambient:ambient@localhost:5432/ambient_scribe` | Primary SQLAlchemy database URL. Compose uses service host `postgres`. |
+| `TEST_DATABASE_URL` | `postgresql+psycopg://ambient:ambient@localhost:5432/ambient_scribe_test` | Test database URL. It must never resolve to the application database. |
+| `RATE_LIMIT_STORAGE_URL` | `redis://localhost:6379/0` | Redis store used by SlowAPI. Compose uses service host `redis`. |
+| `TEST_RATE_LIMIT_STORAGE_URL` | `redis://localhost:6379/15` | Test rate-limit store. |
+| `RATE_LIMIT_KEY_PREFIX` | empty | Optional SlowAPI key namespace. The test harness sets per-worker prefixes; separate deployments sharing Redis should use distinct values. |
+| `CELERY_BROKER_URL` | `redis://localhost:6379/2` | Celery broker. Compose uses service host `redis`. |
 | `CELERY_RESULT_BACKEND` | broker URL | Celery result backend. |
 | `CELERY_LOG_LEVEL` | `INFO` | Worker and Beat log level. |
-| `CELERY_TASK_ALWAYS_EAGER` | `false` | Test-only synchronous execution switch. The persistent Compose runtime forces this to `false`. |
+| `CELERY_TASK_ALWAYS_EAGER` | `false` | Test-only synchronous execution switch. Compose forces `false`. |
+| `TASK_OUTBOX_MAX_ATTEMPTS` | `10` | Maximum broker-publication attempts before a durable task-dispatch row becomes failed. Retry delay starts at 10 seconds and is capped at one hour. |
 
-The local Compose stack enables Redis append-only persistence. PostgreSQL remains
-the authoritative application store; Redis persistence protects queued work and
-rate-limit state across normal restarts but is not a substitute for database
-backups.
+Celery Beat publishes pending task-dispatch outbox rows every second. Retention cleanup, transcript-audio cleanup, provider-secret cleanup, and quota lifecycle processing run every 10 seconds. These schedules are code constants, not environment settings.
 
-## Vault
+Redis append-only persistence protects queued work, result data, and rate-limit state across normal restarts. PostgreSQL remains authoritative and Redis is not a substitute for database backups.
+
+## Vault and application cryptography
 
 | Variable | Local default | Purpose |
 | --- | --- | --- |
-| `VAULT_ADDR` | `http://127.0.0.1:8200` | Vault API address. Compose overrides it to `http://vault:8200`. |
-| `VAULT_TOKEN` | unset | Direct Vault token. Prefer a mounted token file or deployment secret injection. |
-| `VAULT_TOKEN_FILE` | `.local/vault/root-token` | File containing the Vault token. Compose mounts persistent bootstrap material at `/app/.local/vault/root-token`. |
-| `VAULT_KV_MOUNT` | `secret` | KV-v2 mount used for provider and platform secrets. |
-| `VAULT_TRANSIT_MOUNT` | `transit` | Transit mount used to wrap and unwrap user content DEKs. |
+| `VAULT_ADDR` | `http://127.0.0.1:8200` | Vault API address. Compose uses `http://vault:8200`. |
+| `VAULT_TOKEN` | code fallback `root`; `.env.example` leaves it blank | Direct Vault token. Do not rely on the code fallback outside the local development server. |
+| `VAULT_TOKEN_FILE` | local bootstrap file when available | File containing the Vault token. Compose uses `/app/.local/vault/root-token`. |
+| `VAULT_KV_MOUNT` | `secret` | KV-v2 mount for provider and platform secrets. |
+| `VAULT_TRANSIT_MOUNT` | `transit` | Transit mount used to wrap and unwrap user-content DEKs. |
 | `VAULT_USER_CONTENT_KEK_KEY_NAME` | `openscribe-user-content-kek` | Transit key used for user-content DEKs. |
-| `LOCAL_VAULT_WAIT_TIMEOUT_SECONDS` | `90` | Maximum bootstrap wait for local Vault. |
+| `LOCAL_VAULT_WAIT_TIMEOUT_SECONDS` | `90` | Maximum local bootstrap wait for Vault. |
 | `LOCAL_VAULT_WAIT_RETRY_INTERVAL_SECONDS` | `1` | Local Vault bootstrap retry interval. |
+| `PROVIDER_CREDENTIAL_FINGERPRINT_SECRET` | development fallback when unset | HMAC key used only for non-reversible STT duplicate-credential fingerprints. Set a stable secret in production so fingerprints do not depend on compatibility keys or the development fallback. |
 
-The local bootstrap stores a root token and unseal key. This is suitable only for
-a controlled local or single-host development environment. Production should
-pre-provision Vault mounts and keys and provide least-privilege runtime tokens.
-Vault storage and the PostgreSQL data that references wrapped keys must be backed
-up and restored as a consistent deployment set.
+The local bootstrap stores a root token and unseal key and is suitable only for a controlled local or single-host development environment. Production should pre-provision Vault mounts and keys and inject least-privilege runtime credentials. PostgreSQL, Vault storage, and Vault bootstrap material form one recoverable encrypted-content set and must be backed up consistently.
 
 ## Transactional email
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MAIL_TRANSPORT` | `disabled` | `disabled`, `stdout`, or `resend`. `stdout` is restricted to local/test modes. |
-| `MAIL_FROM_ADDRESS` | `no-reply@example.com` | Sender address; required when mail is enabled. |
+| `MAIL_TRANSPORT` | `disabled` | `disabled`, `stdout`, or `resend`. `stdout` is restricted to local/test environments. |
+| `MAIL_FROM_ADDRESS` | `no-reply@example.com` in sample/Compose | Sender address; required when mail is enabled. |
 | `MAIL_FROM_NAME` | `OpenScribe` | Sender display name. |
 | `MAIL_REPLY_TO` | unset | Optional reply-to address. |
-| `RESEND_API_KEY` | unset | Plaintext Resend key, acceptable only for controlled local development. |
-| `RESEND_API_KEY_VAULT_REF` | unset | Vault reference for the Resend key. Prefer this or deployment secret injection outside local development. |
+| `RESEND_API_KEY` | unset | Plaintext Resend key; use only in controlled local development or inject it as a deployment secret. |
+| `RESEND_API_KEY_VAULT_REF` | unset | Vault reference for a Resend key. |
 
-`APP_PUBLIC_URL` is also required when mail is enabled so account and recovery
-links point to the correct instance.
+`APP_PUBLIC_URL` is also required when mail is enabled so setup and recovery links point at the correct instance.
 
-## Provider safeguards and audio limits
+## Request rate limits, quotas, and retention
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `LIVE_CHUNK_UPLOAD_RATE_LIMIT` | `1/second` | Live audio chunk request rate limit. |
-| `WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT` | `1/5 seconds` | Whole-file burst rate limit. |
+| `WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT` | `1/5 seconds` | Whole-file burst request limit. |
 | `WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT` | `100/day` | Whole-file daily request limit. |
 | `LLM_GENERATION_BURST_RATE_LIMIT` | `20/3 minutes` | LLM generation burst limit. |
 | `LLM_GENERATION_DAILY_RATE_LIMIT` | `200/day` | LLM generation daily limit. |
 | `LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS` | `3600` | Hourly live-audio duration safeguard. |
 | `WHOLE_FILE_HOURLY_UPLOAD_BYTES` | `209715200` | Hourly whole-file byte safeguard (200 MiB). |
 | `WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS` | `14400` | Hourly whole-file duration safeguard (4 hours). |
-| `WHOLE_FILE_MAX_UPLOAD_BYTES` | `209715200` | Maximum accepted individual upload size (200 MiB). |
-| `WHOLE_FILE_MAX_DURATION_SECONDS` | `14400` | Maximum accepted individual audio duration (4 hours). |
-| `AUDIO_FFPROBE_TIMEOUT_SECONDS` | `15` | Duration-probe timeout. |
-| `AUDIO_FFMPEG_TIMEOUT_SECONDS` | `1800` | Audio-normalization timeout. |
+| `MAX_RETENTION_DAYS` | `90` | Maximum team default retention accepted by management services. Minimum is fixed at one day. |
 
-The Docker image installs `ffmpeg` and `ffprobe`; both are required for whole-file
-audio inspection and normalization.
+Authentication limits are fixed in code: login `5/5 minutes`, MFA `10/10 minutes`, account-security changes `5/5 minutes`, and public account requests `3/hour`.
+
+## Audio ingestion and generation deadlines
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WHOLE_FILE_MAX_UPLOAD_BYTES` | `209715200` | Maximum individual upload size (200 MiB). |
+| `WHOLE_FILE_MAX_DURATION_SECONDS` | `14400` | Maximum normalized individual duration (4 hours). |
+| `AUDIO_FFPROBE_TIMEOUT_SECONDS` | `15` | Audio duration probe timeout. |
+| `AUDIO_FFMPEG_TIMEOUT_SECONDS` | `1800` | Audio normalization timeout. |
+| `STT_TRANSCRIPTION_TIMEOUT_SECONDS` | `14400` | Timeout for a synchronous provider transcription call. |
+| `LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS` | `600` | Age after which a processing live-chunk job may be reconciled as stale. |
+| `INGESTION_RESERVATION_VALIDITY_SECONDS` | `900` | Initial provider quota reservation validity for ingestion. |
+| `INGESTION_PROVIDER_DEADLINE_SECONDS` | at least `STT_TRANSCRIPTION_TIMEOUT_SECONDS + 300`; default `14700` | Hard provider-attempt deadline. Values below the STT timeout plus five minutes are raised to that minimum. |
+| `GENERATION_WAIT_FOR_TRANSCRIPT_TIMEOUT_SECONDS` | `120` | Maximum period a queued generation waits for transcript ingestion before failing. |
+
+The Docker image installs `ffmpeg` and `ffprobe`; both are required for whole-file inspection and normalization.
+
+## Provider rollout controls
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ENABLE_GEMINI_ENTERPRISE_PROVIDER` | `true` | When false, hides and rejects new Gemini Enterprise setup. Existing persisted Gemini configs remain available to authorized runtime paths. |
+
+Google SDK identity is configured through standard Google variables rather than OpenScribe secrets. Do not place credential JSON in `.env`. For the optional Docker ADC override, set `GOOGLE_ADC_HOST_FILE` in the host shell and include `docker-compose.adc.yml`; it mounts one file read-only and sets `GOOGLE_APPLICATION_CREDENTIALS` inside the container. See [docker.md](docker.md) and [gemini-enterprise-setup.md](gemini-enterprise-setup.md).
 
 ## Persistent Docker runtime
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `DOCKER_APP_BIND` | `127.0.0.1` | Host interface on which Compose publishes the web port. |
-| `DOCKER_SEED_TEST_ACCOUNTS` | `false` | Seed reusable local test accounts during container startup. Keep disabled on persistent or shared instances. |
+| `DOCKER_SEED_TEST_ACCOUNTS` | `false` | Seed reusable local accounts during application-container startup. Keep disabled on persistent or shared instances. |
 | `CELERY_WORKER_CONCURRENCY` | `1` | Concurrency for the single local runtime worker consuming all queues. |
 | `CONTAINER_STARTUP_TIMEOUT_SECONDS` | `90` | Wait for PostgreSQL and Redis before bootstrap. |
-| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxy IPs whose forwarded headers Uvicorn trusts. Do not use `*` unless direct origin access is blocked. |
+| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxy IPs whose forwarded headers Uvicorn accepts. Do not use `*` unless direct origin access is blocked. |
 
-See [docker.md](docker.md) for startup, upgrade, persistence, and reverse-proxy
-instructions.
-
-## External runtime identity
-
-`GOOGLE_APPLICATION_CREDENTIALS` is a standard Google SDK setting rather than an
-OpenScribe secret. Do not put credential JSON in `.env`. For the optional local
-Docker ADC override, set `GOOGLE_ADC_HOST_FILE` in the host shell to the path of a
-single ADC JSON file and start Compose with `docker-compose.adc.yml`. The override
-mounts that file read-only and sets the in-container
-`GOOGLE_APPLICATION_CREDENTIALS` path. See [docker.md](docker.md) and
-[gemini-enterprise-setup.md](gemini-enterprise-setup.md).
+See [docker.md](docker.md) for migration, startup, persistence, backup, and reverse-proxy instructions.
 
 ## Host development only
 
-These variables affect `start-dev.sh` and are ignored by the persistent container
-entrypoint:
+These variables are consumed by `start-dev.sh` and are not application runtime policy:
 
 - `DEV_START_CELERY`
 - `DEV_START_BRAVE`
@@ -152,6 +153,4 @@ entrypoint:
 - `DEV_TEST_LEADER_EMAIL`, `DEV_TEST_LEADER_PASSWORD`
 - `DEV_TEST_USER_EMAIL`, `DEV_TEST_USER_PASSWORD`
 
-The `OWASP_LIFECYCLE_*` and `HALLUCINATION_CHECK_DEBUG_UI` settings are security
-or development test helpers. Leave them blank or disabled during normal runtime
-use.
+`OWASP_LIFECYCLE_*` and `HALLUCINATION_CHECK_DEBUG_UI` are security/testing helpers. Leave them blank or disabled during normal runtime use.

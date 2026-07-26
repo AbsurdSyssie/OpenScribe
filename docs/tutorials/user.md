@@ -1,174 +1,161 @@
 # User Tutorial
 
-## What OpenScribe Is
+## What OpenScribe does
 
-OpenScribe helps turn a consultation into draft clinical writing.
+OpenScribe helps turn consultation audio and clinician-authored context into draft clinical writing.
 
-It does three main things:
+A typical workflow:
 
-1. Records or receives consultation audio.
-2. Turns that audio into a draft transcript.
-3. Uses the transcript to help draft notes, follow-ups, or other text.
+1. record or upload consultation audio;
+2. review the resulting draft transcript;
+3. optionally add a working note or post-consultation dictation;
+4. create a draft note from an approved template;
+5. review and edit every result;
+6. copy only verified text into the EPR.
 
-OpenScribe does not replace clinical judgement. It is a drafting tool. You must read, check, edit, and approve anything before it goes into the clinical record or goes to a patient.
+OpenScribe does not replace clinical judgement. Transcripts and generated documents can be incomplete, incorrect, overconfident, or placed in the wrong section. You are responsible for checking the final clinical record.
 
-## Who This Is For
+## Before clinical use
 
-This tutorial is for normal users and team leaders using OpenScribe as clinicians.
+Confirm:
 
-If you are a team leader, read this page first. The team leader tutorial only explains the extra team-management tasks.
+- sign-in and TOTP work;
+- your team has the required consultation/dictation speech services;
+- an approved writing-assistant configuration and templates are available;
+- microphone/recording consent and local policy are understood;
+- you have practised with synthetic or approved training material;
+- you know how to report a privacy, safety, or access-control concern.
 
-## Important Words
+Do not use real patient content until local validation/training is complete.
 
-`Consultation` means one patient encounter or one work session.
+## Open the workspace
 
-`Transcript` means the text OpenScribe creates from audio.
+Normal-user login currently lands on the `/home` compatibility page. Open the consultation/Scribe link to enter the canonical `/workspace` shell.
 
-`Template` means the set of instructions OpenScribe uses when drafting a note.
+The workspace contains:
 
-`Generated note` means draft text created by OpenScribe.
+- Scribe;
+- Account;
+- Preferences;
+- My Library;
+- Team sections for leaders.
 
-`Quick action` means a saved task, such as drafting a referral summary or follow-up message.
+The Scribe area contains consultation history, recording/upload controls, transcript/history views, working note, generated notes, follow-ups, and quick actions.
 
-`EPR` means the external electronic patient record where you paste final reviewed text.
+## Create or select the correct consultation
 
-## Before You Use It With Real Patients
+Before adding audio or notes:
 
-Check these things first:
+1. check the visible consultation title/session;
+2. create a new consultation for a new encounter;
+3. use an existing consultation only when continuing the same encounter/work session;
+4. stop if audio was attached to the wrong consultation—do not continue adding content to it.
 
-1. You can sign in.
-2. You can complete the authenticator code step if asked.
-3. Your team has a speech service available.
-4. Your team has a writing assistant available.
-5. You know your local rule for using AI draft notes.
-6. You have tried the workflow with test or training material.
+The browser remembers only an untrusted transcript UUID for navigation. The server still checks ownership and retention on every request.
 
-If one of these is missing, stop and ask your team leader or system admin before using OpenScribe clinically.
+## Capture consultation audio
 
-## Basic Workflow
+### Live microphone
 
-Every normal session follows this shape:
+Use live recording when capturing through the browser microphone. During active recording, OpenScribe disables marked workspace navigation and warns before leaving the page.
 
-1. Sign in.
-2. Open the consultation workspace.
-3. Start a new consultation or select the correct existing one.
-4. Record or upload audio.
-5. Wait for the transcript.
-6. Generate a draft note.
-7. Read and edit the note.
-8. Copy reviewed text into the EPR.
-9. Check the EPR before saving.
+The browser sends speech chunks while recording. After stop, transcription can continue in the background; you may open another consultation while the prior one finishes.
 
-Do not skip the review steps.
+### Microphone batch
 
-## Step 1: Sign In
+Depending on the selected mode, the browser may record locally and submit one or more whole-file parts. It automatically rolls over before a recording approaches server size/duration limits.
 
-Go to the OpenScribe sign-in page.
+### File upload
 
-Enter your email and password. If OpenScribe asks for an authenticator code, open your authenticator app and enter the current code.
+Use upload only for an approved audio file belonging to the current consultation. Whole-file limits include individual and hourly byte/duration safeguards; the UI/API reports controlled errors when a limit is reached.
 
-If sign-in fails, do not create a new account yourself. Ask your team leader or system admin for help.
+For all modes:
 
-## Step 2: Open the Consultation Workspace
+- confirm local recording consent/policy before starting;
+- verify the browser microphone/file selection;
+- avoid refreshing or closing while active recording controls show `Stop`;
+- do not submit real content as a support/test fixture.
 
-After sign-in, open the consultation workspace. This is where recording, transcripts, notes, follow-ups, and quick actions live.
+## Review the transcript
 
-If you land on Home first, use the consultation or transcribe link to enter the workspace.
+The transcript is draft source material. Check especially:
 
-## Step 3: Create or Select the Right Consultation
+- patient/person identity and dates;
+- medicines, doses, allergies, diagnoses;
+- important positives and negatives;
+- examination/investigation details;
+- safety-netting and follow-up plans;
+- who said what when speaker information matters.
 
-Before recording or uploading, make sure you are in the correct consultation.
+If the transcript is materially wrong, correct the source/draft where supported and apply extra caution before generation.
 
-Use a new consultation for a new patient encounter. Use an existing consultation only when you are continuing the same work session.
+## Working note
 
-Check the title or session details before adding audio. If you are in the wrong consultation, switch or create the correct one first.
+Working note is clinician-authored source content separate from the transcript and generated output.
 
-## Step 4: Record or Upload Audio
+- Choose either freeform or structured mode.
+- The mode locks after the first non-empty save.
+- Clearing the working note removes its content and unlocks the mode.
+- Editing a generated note never changes the working note.
+- Generation snapshots the working note used for that request.
 
-Use live recording when you are capturing a consultation through the browser microphone.
+Do not use working note as an unreviewed dumping ground. It becomes generation source after redaction and should contain only relevant approved clinical context.
 
-Use upload when you already have an approved audio file for this consultation.
+## Post-consultation dictation
 
-Before starting:
+Use post-consultation dictation for a clinician summary/assessment/plan source separate from the consultation transcript.
 
-1. Confirm you are in the right consultation.
-2. Confirm the microphone or upload file is correct.
-3. Confirm recording is allowed under local policy.
-4. Start recording or upload the file.
+- Opening the modal does not start recording automatically.
+- Record/upload preview returns editable text without saving a dictation row.
+- Save explicitly after reviewing the preview.
+- Cancel discards unsaved audio/text.
+- Later saved segments contribute to one transcript-owned dictation aggregate.
+- You can edit the combined text; generation then uses that edited version exactly.
+- Clearing edited combined text intentionally removes dictation influence.
 
-If you accidentally record or upload under the wrong consultation, stop. Do not continue adding more content to that consultation.
+Quick-action context recording is transient: it inserts transcription into the existing additional-context field and is redacted before the LLM request.
 
-## Step 5: Wait for the Transcript
+## Choose note options and a template
 
-OpenScribe turns audio into transcript text. This may take time.
+Templates define document shape and instructions. Select one approved for the intended destination.
 
-The transcript is not perfect. It is draft source material. It can mishear words, miss words, or misunderstand clinical terms.
+Note options can include:
 
-Check especially:
+- writing assistant/model from the active team policy;
+- approximate length (`short`, `normal`, `long`);
+- detail level.
 
-- names
-- dates
-- medication names
-- doses
-- allergies
-- diagnoses
-- negatives, such as "no chest pain"
-- safety-netting advice
-- follow-up plans
+OpenAI-compatible/Ollama adapters map length to bounded output caps. Gemini currently saves/snapshots the preference but uses its fixed provider ceiling; length is not a guarantee of exact output size.
 
-If the transcript is clearly wrong, be extra careful when using it to generate a note.
+Settings save for future note requests. If a save fails, OpenScribe warns and the next request may use the previous preference.
 
-## Step 6: Choose a Template
+## Generate and monitor a note
 
-A template tells OpenScribe what kind of note to draft.
+1. confirm the correct consultation and source content;
+2. choose the intended template/options;
+3. create the note;
+4. wait for queued/processing status to finish;
+5. open the generated document;
+6. review any controlled failure/truncation message rather than repeatedly resubmitting blindly.
 
-Examples:
+A generation may wait briefly for transcript ingestion to finish. Provider failure messages are intentionally sanitized; when requesting support, provide safe metadata such as time, consultation UUID, provider label, status, and error code—not patient content.
 
-- structured EMIS note
-- freeform consultation summary
-- referral-style summary
+## Review and edit
 
-Choose the template that matches the document you want. If you choose the wrong template, the output may be in the wrong format or may emphasise the wrong things.
+Read the complete output. Check:
 
-Use `Note options` beside `Create` to choose the writing model, approximate maximum length, and detail level for future generated notes. These settings save immediately. If saving fails, OpenScribe warns you; you can still create the note, but it may use the previous saved settings.
+- correct consultation/patient;
+- symptoms, important negatives, diagnoses, medicines/doses/allergies;
+- examination and investigation facts;
+- tasks, follow-up and safety-netting;
+- invented, omitted, duplicated, or overly certain statements;
+- correct section placement and appropriate tone.
 
-The same model, length, and detail preferences are available on Home in the `Your writing assistant preference` card.
+Edit inside OpenScribe until the text matches your judgement. Generated content remains draft even when a hallucination checker reports no issue.
 
-## Step 7: Generate the Draft Note
+## Structured notes
 
-After audio and transcript are available:
-
-1. Select the intended template.
-2. Press the generate action.
-3. Wait for the note to finish.
-4. Open the generated note.
-
-The generated note is a draft. It may be incomplete, wrong, too confident, or include irrelevant text.
-
-## Step 8: Review and Edit the Note
-
-Read the whole note before copying anything.
-
-Check:
-
-- Does this belong to the right patient and consultation?
-- Are key symptoms correct?
-- Are important negatives included correctly?
-- Are medicines and doses correct?
-- Are allergies correct?
-- Are examination findings correct?
-- Are investigations and tasks correct?
-- Is the plan clear?
-- Is anything invented or over-stated?
-- Is anything important missing?
-
-Edit the note inside OpenScribe until it matches your clinical judgement.
-
-## Structured Notes
-
-Some templates create a structured note. Structured notes are split into sections.
-
-Allowed EMIS section keys are:
+Structured EMIS templates use these section keys:
 
 - `problem`
 - `history`
@@ -179,105 +166,90 @@ Allowed EMIS section keys are:
 - `tasks`
 - `investigations`
 
-Empty sections may be missing. That is normal.
+Empty sections may be omitted. Do not fill a section merely to make it non-empty. Move, edit, or remove misplaced/uncertain content before copying.
 
-Do not put uncertain information into a section just to fill it. If OpenScribe puts something in the wrong section, move it, edit it, or remove it before copying.
+## Follow-ups and quick actions
 
-## Freeform Notes
+Follow-ups and Quick Actions create additional draft text from the authorized consultation source.
 
-Some templates create normal text without EMIS sections.
+Possible uses:
 
-Read the full text before copying. Make sure it is suitable for the place you plan to paste it.
+- referral wording;
+- follow-up instructions;
+- task/admin summaries;
+- patient-facing drafts where local policy permits.
 
-## Follow-Ups and Quick Actions
+Always review patient-facing text for advice accuracy, safety-netting, uncertainty, and local policy. OpenScribe does not send the output automatically.
 
-Follow-ups and quick actions create more draft text from the consultation.
+## Copy into the EPR
 
-Use them for tasks such as:
+Before saving in the EPR:
 
-- draft follow-up instructions
-- draft referral wording
-- draft admin summaries
-- draft patient-facing text when local policy allows it
+1. read the entire text/section;
+2. confirm patient and consultation;
+3. correct errors and omissions;
+4. copy into the correct EPR field;
+5. read the pasted EPR entry again;
+6. save only when correct.
 
-Always review the result. Patient-facing text needs special care because wrong advice can cause harm.
+Section copy buttons do not verify the destination field.
 
-Check for:
+## Privacy and PII
 
-- incorrect advice
-- missing safety-netting
-- wording that sounds too certain
-- local policy requirements
-- text that should not be sent automatically
+Transcript-derived content is visible only to its owning user through normal content routes. Team leaders/system administrators can manage metadata, accounts, providers, and shared assets but do not gain content access from their role.
 
-## Copying Text Into the EPR
+OpenScribe redacts detected/manual PII before LLM dispatch and reidentifies authorized generated output. The PII table minimizes original-value display; revealing an original is an explicit owner-only protected action.
 
-Copying is the moment where draft text may become part of the clinical record. Slow down here.
+Report suspected cross-user visibility immediately and stop using the affected workflow.
 
-Before copying:
+## Delete a consultation
 
-1. Read the text fully.
-2. Confirm it belongs to the current patient.
-3. Confirm it belongs to the current consultation.
-4. Confirm you have edited errors.
-5. Copy the right section into the right EPR field.
-6. Read the EPR entry after pasting.
-7. Save only when the EPR text is correct.
+Deletion is immediate after confirmation and has no undo period. It removes the transcript root and implemented transcript-derived children, including working note, dictation, generated documents, versions, redaction/PII data, and jobs according to current lifecycle rules.
 
-For structured notes, section copy buttons can help you copy one section at a time. They do not guarantee you pasted into the right EPR field. You still need to check.
+Delete only when you have selected the correct consultation and local retention policy permits it.
 
-## Deleting a Consultation
+## Account and preferences
 
-Deleting a consultation is serious.
+Use:
 
-In the MVP, deletion is immediate after confirmation. There is no undo period.
+- `/workspace/account` for name/email/password changes;
+- `/workspace/preferences` for recording/writing preferences;
+- `/workspace/library/*` for personal/team-visible templates, Quick Actions, and Smart Phrases according to your role.
 
-Deleting the consultation deletes the transcript root and transcript-derived children, including generated documents linked to it.
+Sensitive email/password changes require strong reauthentication and revoke other sessions/trusted devices after success.
 
-Only delete when you are sure local policy allows it and the content is no longer needed.
+## Common problems
 
-## Privacy
+### Cannot sign in or complete MFA
 
-Your transcript-derived content is private to you as the owning user.
+Use a recovery code when available or ask a leader/system administrator for the approved email/manager recovery flow. Do not share password, TOTP seed, or current codes.
 
-Team leaders and system admins can manage accounts, providers, templates, and metadata. They do not get to read your transcript or generated note content just because of their role.
+### Recording unavailable
 
-If you think another person can see content they should not see, stop using the system and report it.
+Check browser microphone permission and the selected recording mode. If team STT is missing/unavailable, ask the leader/system administrator.
 
-## Common Problems
+### Upload rejected
 
-### I cannot sign in
+Check file, size/duration, request rate, and hourly limits. Repeated provider failure should be escalated with safe metadata only.
 
-Ask your team leader or system admin. You may need account recovery or a new setup link.
+### Transcript or note looks wrong
 
-### Recording is unavailable
+Do not treat it as authoritative. Correct/review manually and report repeatable provider/template quality issues using synthetic examples where possible.
 
-Check that your browser has microphone permission. If the team speech service is missing, ask your team leader.
+### Generation repeatedly fails
 
-### Upload is unavailable
+Avoid rapid repeated requests because they can consume limits/quota. Report timestamp, consultation UUID, document status/error code, provider label/model, and action type—never transcript/note text in a general support ticket.
 
-Check the file type and size. If the team speech service is missing, ask your team leader.
+### Wrong provider/model shown
 
-### The transcript looks wrong
+Stop the clinical workflow and ask the team leader/system administrator to verify team policy.
 
-Do not trust generated notes blindly. Review the transcript and edit the note carefully.
+## Ask for help when
 
-### Note generation fails
-
-Try again once. If it repeatedly fails, ask your team leader or system admin and include the consultation/session metadata, not patient content.
-
-### The provider or model name looks wrong
-
-Stop and ask your team leader. Provider/model changes can affect transcript or note quality.
-
-## When to Ask for Help
-
-Ask for help when:
-
-- sign-in or MFA does not work
-- speech or writing services are unavailable
-- provider/model names look wrong
-- note generation repeatedly fails
-- you think content is visible to the wrong person
-- you need account recovery
-- you are unsure whether deletion is appropriate
+- authentication/recovery fails;
+- speech/writing/de-identification policy is missing or unexpected;
+- provider/model quality changes unexpectedly;
+- capture/generation remains stuck or repeatedly fails;
+- content appears visible to the wrong person;
+- deletion/retention expectations are unclear;
+- local policy does not clearly permit a workflow.

@@ -1,257 +1,172 @@
-# Live STT Concept
+# Live STT
 
-This document defines the browser and backend concept for OpenScribe live chunked transcription.
+This document describes the implemented browser and backend behavior for `live_chunked` transcription. General ingestion, retention, encryption, and queue contracts are in [transcript-capture.md](transcript-capture.md).
 
-The goal is to make live transcription feel responsive without weakening the current privacy, ownership, and transcript-root rules.
+## Implemented behavior
 
-## Target behavior
+While live recording is active:
 
-For a `live_chunked` session:
+- the browser captures microphone audio through the pinned, same-origin `@ricky0123/vad-web` runtime;
+- Silero VAD model `v5` detects speech boundaries;
+- `preSpeechPadMs=800` retains speech onset;
+- `redemptionMs=2000` waits through short pauses before ending a segment;
+- OpenScribe trims approximately the final `1000ms` of a normal pause-ended segment before upload;
+- `submitUserSpeechOnPause=true` flushes current speech when recording stops/pauses;
+- continuous speech is force-flushed around 30 seconds;
+- a forced flush uploads at most the latest 30 seconds and carries approximately 0.8 seconds of overlap into the next segment;
+- every upload uses a strictly increasing `chunk_sequence_no` and declared duration;
+- chunks are converted to mono 16 kHz PCM WAV and sent to the owner-only audio-chunk route;
+- the workspace polls while capture/processing is active so applied text appears without a manual refresh.
 
-- the browser captures microphone audio continuously while live recording is active
-- client-side voice activity detection decides chunk boundaries using `@ricky0123/vad-web`
-- the browser waits for `2.0s` of silence before ending a speech chunk
-- the browser trims the final `1.0s` of silence from a normal speech-ended chunk before upload
-- the browser keeps `0.8s` of pre-roll before detected speech so the beginning of utterances is not clipped
-- if speech continues without a long enough silence, the browser forces a chunk flush at `30s`
-- after a forced `30s` flush, the browser uploads the latest `30s` of buffered speech and carries a `0.8s` overlap into the next segment
-- each uploaded chunk gets a strictly increasing `chunk_sequence_no`
+The exact boundaries are a practical VAD approximation, not a lossless continuous streaming protocol.
 
-This produces a practical approximation of:
+## Browser states
 
-- `2s` silence endpointing
-- `1s` post-roll after speech ends
-- `0.8s` pre-roll before speech restarts
-- `30s` maximum continuous chunk length
+The controller moves through these conceptual states:
 
-## Why this design
+1. `idle`: no microphone capture;
+2. `arming`: permission, local VAD assets, and `MicVAD` initialize;
+3. `listening`: microphone/VAD active, no current speech segment;
+4. `speech_active`: VAD buffers the current segment and the forced-flush timer runs;
+5. `speech_tail`: the VAD waits through the configured silence/redemption window;
+6. `flushing`: audio is normalized in-browser to the expected WAV shape and queued for upload;
+7. `stopped`: local capture ends and the backend is finalized/reconciled.
 
-The design balances four competing needs:
+The current constants include:
 
-- responsiveness: chunks should appear quickly enough to feel live
-- STT quality: chunk starts and stops should not clip words
-- bandwidth: silence should not dominate uploads
-- sequencing safety: the backend must still apply chunks in order
+- pre-roll: 800 ms;
+- silence/redemption window: 2,000 ms;
+- normal trailing-silence trim: 1,000 ms;
+- forced continuous-speech flush: 30,000 ms;
+- minimum speech before upload: 400 ms;
+- minimum spacing between live upload attempts: 1,100 ms;
+- route-level rate-limit retry fallback: 1,200 ms, preferring server `Retry-After`.
 
-## Non-goals
+These browser constants are implementation details and should be changed only with focused browser/audio/provider testing.
 
-This slice does not try to:
+## Vendored runtime assets
 
-- do diarisation in the browser
-- stream token-by-token STT results from the provider
-- redesign transcript ownership or admin visibility
-- persist raw live audio after successful chunk application
-- provide a perfect acoustic VAD under all room-noise conditions
+OpenScribe serves the pinned VAD/ONNX runtime from the application origin:
 
-## Browser state machine
+- `onnxruntime-web@1.22.0`;
+- `@ricky0123/vad-web@0.0.29`;
+- `ort.wasm.min.js`;
+- matching threaded SIMD/JSEP WASM and module-loader files.
 
-The browser should treat live recording as a state machine:
+The files must remain version-matched and complete. Production must not switch them to public-CDN runtime loading because the application CSP and dependency policy require same-origin assets.
 
-1. `idle`
-   - no active microphone capture
-   - no active speech segment
+## Forced-flush behavior
 
-2. `arming`
-   - microphone permission granted
-   - the Silero browser VAD runtime is initialized
-   - the microphone stream is claimed by `MicVAD`
+`MicVAD` does not natively expose OpenScribe's exact forced mid-speech split. OpenScribe wraps it with a timer:
 
-3. `listening`
-   - `MicVAD` listens for speech onset
-   - no chunk upload is attempted yet
+- pause the current VAD instance at the boundary;
+- obtain/limit/upload the current buffered segment;
+- preserve the configured overlap;
+- reinitialize/resume VAD without dropping the overall recording UI to idle.
 
-4. `speech_active`
-   - once speech is detected, `MicVAD` starts buffering a speech segment
-   - `preSpeechPadMs=800` keeps the start of the utterance intact
-   - the browser arms a `30s` forced-flush timer
+A hard boundary can still cut awkwardly or duplicate a small overlap. Provider/transcript review remains required.
 
-5. `speech_tail`
-   - after speech stops, `MicVAD` waits for `redemptionMs=2000`
-   - when the callback fires, OpenScribe trims the last `1000ms` before upload so the chunk does not carry a full `2s` silence tail
-   - if speech resumes before the silence threshold completes, the chunk remains open
+## Sequencing and refresh safety
 
-6. `flushing`
-   - the browser converts the `Float32Array` speech segment returned by `MicVAD` into mono `16kHz` PCM WAV
-   - if the forced-flush segment runs slightly beyond `30s`, OpenScribe caps the upload to the latest `30s` so the API contract is still valid
-   - OpenScribe keeps the final `0.8s` of that forced-flush segment and prepends it to the next live segment as overlap
-   - it uploads to `/api/v1/transcripts/{transcript_id}/audio-chunks`
-   - it includes:
-     - `chunk_sequence_no`
-     - `declared_duration_seconds`
-     - the chunk audio file
+The backend is sequence-aware. Transcript workspace data exposes `next_live_chunk_sequence_no_upload`; the browser treats it as authoritative after hydration/refresh rather than relying only on local counters.
 
-7. `stopped`
-   - live capture ends cleanly
-   - `submitUserSpeechOnPause=true` flushes the current speech segment when the user presses stop
+This supports:
 
-## Timing and buffering
+- ordered append after refresh;
+- safe continuation when the page reloads and the backend has accepted earlier chunks;
+- duplicate-sequence rejection;
+- owner/mode validation at every upload.
 
-Recommended initial constants:
+The sequence contract belongs to the transcript root. A chunk cannot be redirected to a new consultation merely because the UI selection changes later.
 
-- `MicVAD` model: `v5`
-- speech pre-roll: `800ms`
-- silence threshold to end chunk: `2000ms`
-- trailing silence trimmed after a normal pause: `1000ms`
-- forced chunk flush: `30000ms`
-- minimum speech duration before sending: `400ms`
-- minimum spacing between live chunk upload attempts: `1100ms`
-- fallback retry delay after a live chunk route-level `429 rate_limited`: `1200ms`; prefer server `Retry-After` when present
+## Routes and backend lifecycle
 
-These values are intentionally conservative and easy to adjust after real clinical testing.
+The browser uses owner-authorized routes including:
 
-## VAD approach
+- `POST /api/v1/transcripts/start`;
+- transcript update/workspace hydration routes;
+- `POST /api/v1/transcripts/{transcript_id}/audio-chunks`;
+- live-capture finalization;
+- owner workspace polling/status routes.
 
-The browser implementation should use:
+Each accepted chunk creates durable ingestion metadata and queued work. The provider worker resolves the snapshotted STT configuration/credential, processes audio, and applies encrypted result text in sequence.
 
-- `@ricky0123/vad-web`
-- `MicVAD.new(...)`
-- `preSpeechPadMs=800`
-- `redemptionMs=2000`
-- `submitUserSpeechOnPause=true`
-- the vendor's Silero `v5` model
+Finalization moves the transcript out of active recording. It remains transcribing while queued/processing chunks exist and reconciles to ready when work completes. Already uploaded chunks can continue processing after the user opens another consultation.
 
-Current asset loading is the pinned browser quick-start path from the official docs:
+## Rate limits and quotas
 
-- `onnxruntime-web@1.22.0`
-- `@ricky0123/vad-web@0.0.29`
+Defaults:
 
-This keeps the page server-rendered while still moving VAD quality above the hand-rolled RMS implementation.
+- route rate limit: `LIVE_CHUNK_UPLOAD_RATE_LIMIT=1/second`;
+- rolling hourly duration safeguard: `LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS=3600`.
 
-The pinned self-hosted `onnxruntime-web` asset set must include both threaded WASM binaries and matching threaded module loaders so `MicVAD.new(...)` can initialize across browser worker/thread paths:
+The browser spaces upload starts by at least about 1.1 seconds. It retries only a structured route-level `rate_limited` response, uses the same sequence number, and honors `Retry-After` where present.
 
-- `ort.wasm.min.js`
-- `ort-wasm-simd-threaded.wasm`
-- `ort-wasm-simd-threaded.jsep.wasm`
-- `ort-wasm-simd-threaded.mjs`
-- `ort-wasm-simd-threaded.jsep.mjs`
+Quota decisions are authoritative and separate from the route limiter. Public quota failures use a bounded `quota_exceeded` response without exposing allowance/usage internals. They are not retried automatically.
 
-Known weakness:
+Each job records bounded source byte/duration metadata for usage accounting. It does not persist raw audio in accounting/audit rows.
 
-- `MicVAD` does not natively provide the exact OpenScribe `30s` forced mid-speech split behavior
+## Workspace behavior
 
-Mitigation:
+The Scribe workspace provides:
 
-- OpenScribe wraps `MicVAD` with a `30s` timer
-- when the timer trips, the page pauses the current `MicVAD` instance, uploads the current segment, then reinitializes `MicVAD` and resumes listening
-- the restart path keeps live capture active instead of dropping back to idle/stop mode
-- this is a practical approximation, but it can still cut awkwardly at the forced boundary
+- new consultation/live-session entry points;
+- mode-aware Record/Stop controls;
+- a microphone activity visualizer driven by current VAD frames;
+- speech-state visual indication;
+- live-specific status messages;
+- polling while capture/processing is active;
+- recording navigation lock and unload warning;
+- a non-blocking inactivity prompt after prolonged VAD silence;
+- a prompt to choose the current or a new consultation when recording into an older ready consultation with existing content.
 
-## Chunk sequencing and resume safety
+When the document is backgrounded, OpenScribe pauses/flushes local VAD before browser timer throttling can delay chunking. On unload, it stops local microphone state and sends a best-effort keepalive finalize request. This improves reconciliation but is not a guarantee against abrupt browser/process/network loss.
 
-The backend is already sequence-aware for `live_chunked` jobs.
+The inactivity prompt does not upload/finalize/stop capture. Dismissal suppresses only the current silent interval; later detected speech re-arms the timer.
 
-The browser therefore needs the current next upload sequence number when a workspace hydrates or refreshes. The active transcript detail now exposes:
+## Whole-file microphone batch
 
-- `next_live_chunk_sequence_no_upload`
+The whole-file recording mode also uses local VAD gating, but it collects voiced segments into a local WAV batch and uploads through the whole-file path on stop/rollover. It does not use live chunk sequence numbers.
 
-The browser uses that value as the authoritative next `chunk_sequence_no` instead of guessing from local state.
-
-This preserves:
-
-- ordered application after refresh
-- safe continuation after page reload
-- duplicate rejection when the client misbehaves
-
-## Backend interaction
-
-The live browser path uses existing owner-only routes:
-
-- `POST /api/v1/transcripts/start`
-- `PATCH /api/v1/transcripts/{transcript_id}`
-- `POST /api/v1/transcripts/{transcript_id}/audio-chunks`
-- `GET /api/v1/transcribe/workspace`
-
-The live chunk upload route is rate-limited to `1 request/second` by default per authenticated user/session bucket via `LIVE_CHUNK_UPLOAD_RATE_LIMIT`.
-The rolling hourly duration budget remains enabled at `LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS=3600` by default, protecting users whose system-admin quota is unlimited while quota accounting remains authoritative when finite.
-Each queued live chunk now persists `source_audio_size_bytes` and `declared_duration_seconds` for later usage reporting.
-The browser paces live uploads so request starts are at least `1100ms` apart. It retries only structured `rate_limited` responses, honoring `Retry-After` and reusing the same `chunk_sequence_no`. Internal `quota_exceeded` and `quota_disabled` decisions are returned publicly as `quota_exceeded` with safe contact-your-administrator copy; they fail without retry and expose no quota usage/allowance details in normal UI.
-
-No new transcript-content visibility is introduced.
-
-## UI behavior
-
-The transcribe workspace should expose:
-
-- `New Consultation`
-- `New Live Session`
-- `Record` / `Stop` control that changes behavior based on ingestion mode
-
-For `whole_file` sessions:
-
-- file upload remains available
-- microphone batch capture now uses local `MicVAD` gating so browser keeps voiced segments with short pre/post buffer, then uploads one WAV batch on stop
-
-For `live_chunked` sessions:
-
-- the same primary record control becomes live capture
-- mic activity visualizer beside record control uses current `MicVAD` frame stream for bar motion and flips red/green from current VAD speech state
-- the workspace keeps polling while live capture is active so newly applied transcript text appears without a manual refresh
-- when the tab is backgrounded, the browser pauses `MicVAD` to flush live capture before background timer throttling can delay chunking
-- when the tab is unloaded, the browser stops local mic state and sends a best-effort keepalive finalize request so already uploaded chunks are reconciled instead of leaving the transcript stuck in `recording`
-- while microphone recording is active, 30 seconds without VAD-detected speech shows a local, non-blocking `Are you still there?` prompt
-- the inactivity prompt is browser UI only; it does not stop capture, upload audio, finalize capture, or change transcript ownership/state
-- dismissing the inactivity prompt suppresses only the current silent interval; later VAD speech followed by silence re-arms it, and stop/page-unload reset clears any pending prompt timer
-- when the user presses the main microphone record control on a ready consultation that already has transcript content and whose latest successful ingestion completed more than 30 seconds ago, the browser asks whether to record into the current consultation or create a fresh consultation
-- choosing the fresh-consultation option creates a new transcript root in the currently selected recording mode, switches the workspace there, shows a toast, and then starts recording
-- status copy changes to live-specific text:
-  - `Listening for speech...`
-  - `Speech detected. Building live chunk...`
-  - `Sending live chunk 3...`
-  - `Thirty seconds of speech reached. Sending the current live chunk...`
-  - `Thirty second speech window reached. Sending the latest 30 seconds and keeping a 0.8 second overlap for the next live chunk...`
-  - `Background transcription is in progress.`
+Do not conflate whole-file microphone batch with `live_chunked`; they have different queue, retry, and rate-limit behavior.
 
 ## Failure handling
 
-If a live chunk upload fails:
+On live upload failure:
 
-- transient route-level `429 rate_limited` responses are retried briefly with the same sequence number after `Retry-After`
-- public `quota_exceeded` responses are not retried; users see that quota is used up and should contact their administrator while quota policy and usage remain system-admin-only
-- the browser should stop active capture
-- the UI should surface the error clearly
-- the transcript remains owner-only and in its existing backend state
+- route-level `rate_limited` can be retried briefly with the same sequence number;
+- quota, authorization, mode, duplicate, validation, and other non-retryable failures stop automatic capture/retry and show a controlled error;
+- the transcript retains its durable backend state;
+- the user may restart capture after understanding/correcting the failure.
 
-This slice does not add per-chunk retry persistence like whole-file upload retry. For live mode, the practical fallback is:
+Live mode does not currently persist a browser-side/per-chunk retry queue equivalent to whole-file source-audio retry. A failed, unaccepted local chunk can therefore require user restart and may create a gap. The UI must not imply guaranteed lossless capture.
 
-- show the failure
-- let the user restart live capture
+## Privacy and security
 
-The backend already protects against:
+- Only the transcript owner can submit/view live chunks/results.
+- Team leader/system-admin metadata authority does not grant content access.
+- Provider credentials remain Vault-backed and never enter browser payloads.
+- Provider/task/audit metadata excludes transcript text and raw audio.
+- Result text is encrypted before persistence under the owner's content key.
+- Transcript-root retention/deletion owns the chunk jobs and derived content.
+- Runtime assets remain pinned and same-origin under CSP.
 
-- duplicate sequence numbers
-- wrong ingestion mode
-- non-owner access
+## Tradeoffs and remaining improvements
 
-## Privacy and security requirements
+Known tradeoffs:
 
-Must remain true:
+- a two-second silence window can feel slow in rapid conversation;
+- forced 30-second boundaries can cut a sentence and introduce overlap duplication;
+- VAD accuracy depends on microphone/environment/model behavior;
+- background/unload finalization is best-effort;
+- no durable browser-side per-chunk retry queue exists.
 
-- only the owning user may upload live chunks for the transcript
-- team leaders and system admins do not gain transcript readability from live STT
-- provider secrets remain Vault-backed and are never exposed to the browser
-- transcript-root deletion still deletes transcript-derived children
-- no transcript text or provider secret may be logged
+Potential follow-up work:
 
-## Criticisms and tradeoffs
+- tune timing/overlap with controlled clinical-environment testing;
+- select lower-energy cut points near the forced boundary;
+- add durable bounded per-chunk retry/recovery semantics;
+- improve reconnect/multi-device session handling;
+- expose safer diagnostics for missing sequence/gap conditions without logging content.
 
-This exact design is reasonable, but there are caveats:
-
-- `2s` silence can feel a bit slow for quick back-and-forth speech
-- a hard `30s` flush can cut mid-sentence
-- the current implementation depends on pinned vendored browser assets staying complete and version-matched
-
-Why still use it:
-
-- it is predictable
-- it is implementable in a server-rendered app without a frontend bundler migration
-- it replaces the weaker custom RMS loop with a maintained browser VAD package
-- it matches the existing sequence-aware ingestion backend
-
-## Future improvements
-
-Potential follow-ups after this first live slice:
-
-- continue tuning the forced-flush overlap window against real microphone and STT behavior
-- smarter low-energy cut-point search near the `30s` cap
-- visual live waveform / speech activity indicator
-- per-chunk retry queue if live reliability becomes a problem
+The activity visualizer is implemented and is not future work.

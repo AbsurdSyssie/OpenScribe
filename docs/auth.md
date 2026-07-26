@@ -1,233 +1,117 @@
-# Authentication
+# Authentication and access control
 
-This document describes the implemented MVP auth and onboarding flow, including post-onboarding TOTP challenges and the bounded trusted-device freshness window.
+This document describes the implemented authentication, onboarding, account recovery, and management boundaries. Frontend migration direction is tracked separately in [frontend-roadmap.md](frontend-roadmap.md).
 
-Frontend direction and longer-term migration planning remain in [frontend-roadmap.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/frontend-roadmap.md).
+## Current model
 
-## Current auth model
+- Browser authentication uses an opaque `openscribe_session` cookie.
+- The browser never receives serialized user or permission state in that cookie.
+- PostgreSQL stores only the hashed session token plus explicit auth level, status, and expiry metadata.
+- Login uses email and password.
+- Completed MFA-enabled accounts normally require a TOTP challenge after password verification.
+- A fresh trusted-device record can skip the TOTP challenge only after a successful password login.
+- The first system administrator can be created only while the database contains zero users.
+- Normal managed accounts are created by a leader/system administrator or from an approved account request.
 
-- authentication uses an opaque cookie-backed session token
-- session state is stored in the database, not in readable signed cookie payloads
-- login is email + password
-- completed MFA-enabled accounts do not receive full access immediately on password success
-- system admins can bootstrap the first account only while the database has zero users
-- account-request onboarding replaces invite acceptance for MVP
+## Browser destinations
 
-## Public landing route
+- `/` is the public splash page. Signed-in users are redirected using their current auth state.
+- Partial sessions go to `/onboarding` or `/mfa/challenge`.
+- System administrators go to `/admin`.
+- Normal users currently land on `/home` after login.
+- `/workspace` is the canonical permanent user workspace, but the `/home` post-login migration is not complete. See [workspace.md](workspace.md).
 
-- `/` renders the public OpenScribe splash page for anonymous browser users
-- signed-in users visiting `/` are redirected through the existing post-login destination logic
-- normal users land on `/home`, system administrators land on `/admin`, and partial sessions remain routed to onboarding or MFA challenge pages
-- splash page calls to action link only to implemented browser routes: `/login` and `/request-access`
+## Account requests and managed creation
 
-## End-to-end onboarding flow
+Anonymous users can submit `/request-access` with name, email, requested team, and optional details. Pending requests are deduplicated by normalized email and normalized requested team name, and an existing user blocks a new request for that email.
 
-### Public request flow
+Management scope:
 
-- prospective users open `/request-access`
-- they submit:
-  - name
-  - email
-  - team name
-  - optional details
-- the system creates a pending account request unless:
-  - a matching pending request already exists for the same normalized email + team
-  - a real user already exists for that normalized email
+- system administrators can review all requests and create users across teams;
+- team leaders can review matching requests and create non-system-admin users only in their own team;
+- leaders cannot create or promote system administrators.
 
-### Manager review flow
+A manager-created account starts active but with a temporary password, `must_change_password=true`, and password-change onboarding. The creator shares the temporary password out of band unless transactional email is used for an activation/setup link.
 
-- system admins may review all account requests
-- team leaders may review only requests for their own team
-- leaders/admins may:
-  - approve a request and create the real user account
-  - reject a request with notes
-  - create a user directly without any prior request
+## Onboarding
 
-### Managed account creation
+A temporary-password or activation account receives an onboarding-only session. The user must:
 
-Managed accounts are created by a leader or system admin with:
+1. set a permanent password;
+2. enroll a TOTP authenticator;
+3. optionally generate recovery codes;
+4. complete onboarding before receiving full application access.
 
-- email
-- optional full name
-- team / team role
-- temporary password
-- active status
+Permanent passwords used by onboarding, activation, reset, and self-service password changes must be at least 12 characters and include uppercase, lowercase, and numeric characters. Password hashes use Argon2id.
 
-The temporary password is shared out-of-band by the creator.
+New and re-enrolled TOTP seeds are stored as AES-GCM envelopes under the owning user's DEK. Associated data binds the envelope to the user and MFA-method row. Encrypted methods fail closed when Vault/key material is unavailable. Legacy plaintext Base32 seeds remain read-compatible only; see [mfa-secret-encryption.md](mfa-secret-encryption.md).
 
-Leader and system-admin managed-account forms can generate a 12-character temporary password in place. Generated values always include uppercase, lowercase, numeric, and special characters, use browser cryptographic randomness, avoid ambiguous characters, and are copied to the clipboard when browser permission allows. Compact generate, copy, and show/hide controls sit inside the password field; copy appears after generation and remains available until the value is manually edited. The field remains populated with a warning toast when clipboard access is unavailable. Existing manually entered values require confirmation before replacement without changing server-side password policy.
+Recovery codes are stored as one-way hashes and cannot be recovered from database state.
 
-### First login and restricted onboarding
+## Login and MFA
 
-If the account was created with a temporary password:
+For an onboarded account:
 
-1. the user logs in with email + temporary password
-2. the system creates an onboarding-only session
-3. the user is forced to `/onboarding`
-4. the user must change their password
-5. the user must enroll TOTP
-   - the app shows the shared secret
-   - the app shows the provisioning URI
-   - the app renders a Segno-generated QR code for authenticator apps
-6. the user may optionally generate recovery codes
-7. only then does the session become a full-access session
+1. password verification succeeds;
+2. OpenScribe checks for a non-revoked trusted-device record for the same user;
+3. without fresh trust, it creates a `pending_mfa` session and redirects to `/mfa/challenge`;
+4. successful TOTP verification rotates that session to `full`;
+5. when the user chooses to remember the browser, OpenScribe issues a separate opaque trusted-device cookie.
 
-While onboarding is incomplete, the user cannot access normal app features.
+Trusted-device behavior:
 
-## Login flow after onboarding completes
+- the trusted-device cookie cannot authenticate by itself;
+- the current freshness window is 24 hours from the most recent real MFA verification;
+- password login through a trusted device does not extend that window;
+- the database stores only the hashed trusted-device token;
+- password reset, sensitive account recovery, suspension/disable, and relevant account changes revoke trust.
 
-### Password step
+## Session and cookie rules
 
-For users whose onboarding is already complete:
+Session auth levels:
 
-1. the user submits email + password
-2. the system checks for a valid trusted-device cookie for that same user
-3. if MFA is required and no fresh trusted device exists:
-   - the system creates a `pending_mfa` session
-   - the user is redirected to `/mfa/challenge`
-4. if a fresh trusted device exists:
-   - the system creates a normal `full` session immediately
+- `onboarding`
+- `pending_mfa`
+- `full`
 
-### TOTP challenge step
+Session lifecycle states:
 
-- `/mfa/challenge` is the browser challenge page
-- the browser page pairs a phone-and-timer illustration with plain-language authenticator-app guidance
-- the code field remains one accessible input with numeric keyboard and one-time-code autofill hints, presented as six visual digit slots when JavaScript is available
-- typing, paste, and autofill are normalised to a maximum of six ASCII digits while preserving leading zeroes
-- static guidance explains the approximate 30-second TOTP refresh period; the page does not show a browser-side countdown because device clocks may differ
-- digit-fill motion respects the browser's reduced-motion preference
-- verify and sign-out actions share one visual row with clear spacing from the remembered-browser control, but remain separate forms so code validation cannot block sign-out
-- `POST /api/v1/auth/mfa/totp` is the JSON challenge endpoint
-- successful TOTP verification rotates the `pending_mfa` session into a normal `full` session
-- if the user opts in to remembering the browser, the app also issues a trusted-device cookie
+- `active`
+- `revoked`
+- `expired`
 
-### TOTP seed storage and availability
+Session, trusted-device, CSRF, and anonymous-CSRF-nonce cookies are `HttpOnly`, `SameSite=Lax`, and use `Secure` according to `COOKIE_SECURE_MODE`. Production startup requires `COOKIE_SECURE_MODE=always`.
 
-- new and re-enrolled TOTP seeds are stored as AES-GCM envelopes under the owning user's existing per-user DEK, with associated data bound to `user_mfa_methods`, `secret`, the user UUID, and the MFA-method UUID
-- enrollment exposes the plaintext seed, provisioning URI, and QR code only to the authenticated onboarding user; browser and API enrollment responses are `no-store`
-- an encrypted method fails closed when Vault/key access is unavailable (`503 mfa_service_unavailable`), rather than being reported as an invalid code; unreadable or malformed stored secret material is a controlled unreadable-secret failure
-- compatibility-only legacy plaintext Base32 seeds remain readable without rewrite, migration, or DEK creation on read; this keeps current development accounts usable while production backfill/removal is deferred
-- recovery codes remain hash-only and are never recoverable from database state
-- per-user DEKs are provisioned for all newly created local users, including teamless system administrators, to support encrypted authentication material; this does not change transcript ownership or owner-only transcript authorization
+The normal session lifetime is 12 hours. Trusted-device cookies can remain present for 30 days, but TOTP bypass still uses the shorter 24-hour MFA freshness window.
 
-See [mfa-secret-encryption.md](mfa-secret-encryption.md) for compatibility, recovery, and production follow-up details.
+## CSRF and same-origin enforcement
 
-### Trusted-device freshness
+Browser state-changing routes require a valid CSRF token in addition to any cookie authority.
 
-- trusted devices do not authenticate by themselves
-- they only allow a successful password login to skip the TOTP step
-- the skip window is currently 24 hours from the last real MFA verification
-- using a trusted device without performing MFA does not extend that 24-hour window
-- once the freshness window expires, the same browser must complete TOTP again
+- Before login, the token is HMAC-bound to an anonymous nonce.
+- After login, it is HMAC-bound to the opaque session token.
+- Session rotation invalidates the previous authenticated token.
+- Server-rendered forms submit `_csrf_token`.
+- Same-origin browser JavaScript sends `X-CSRF-Token` from server-rendered page state; the CSRF cookie is not JavaScript-readable.
+- Unsafe `/api/v1` requests carrying session or trusted-device cookies require a matching `Origin` or `Referer` and the session-bound header token.
+- Unsafe API requests without cookie-backed authority are not treated as browser-cookie requests by the CSRF dependency.
 
-## Session rules
+Behind a reverse proxy, `TRUST_FORWARDED_ORIGIN_HEADERS=true` permits CSRF expected-origin reconstruction from sanitized forwarded host/protocol headers. Enable it only when direct origin access is blocked. See [environment.md](environment.md) and [security.md](security.md).
 
-- the cookie stores only an opaque session token
-- the database stores only the hashed session token
-- each session has an auth level:
-  - `onboarding`
-  - `pending_mfa`
-  - `full`
-- each session has a lifecycle status:
-  - `active`
-  - `revoked`
-  - `expired`
-- locking or disabling a user revokes all active sessions immediately on the next auth check
+## Implemented auth and onboarding API routes
 
-## Trusted-device rules
-
-- the browser gets a separate `openscribe_trusted_device` cookie
-- the cookie stores only an opaque random token
-- the database stores only the hashed trusted-device token
-- trusted-device records track:
-  - expiry
-  - last seen time
-  - last MFA verification time
-  - revocation time and reason
-- locking or disabling a user revokes trusted-device records as well as active sessions
-
-## Implemented auth endpoints
-
-### Auth
+Auth:
 
 - `POST /api/v1/auth/login`
 - `POST /api/v1/auth/mfa/totp`
 - `POST /api/v1/auth/logout`
+- `GET /api/v1/auth/me`
+- `GET /api/v1/auth/trusted-device`
 - `POST /api/v1/auth/password-reset/request`
 - `POST /api/v1/auth/password-reset/confirm`
 - `POST /api/v1/auth/account-activation/confirm`
-- `GET /api/v1/auth/me`
-- `GET /api/v1/auth/trusted-device`
 
-### Account activation and recovery
-
-- activation and password-reset links are backed by `auth_email_tokens`
-- token plaintext is emailed only and is not stored in the database
-- public password-reset request returns generic success for existing and missing accounts
-- when outbound mail is disabled, self-service password reset is hidden in the browser and the reset request endpoint returns `503 mail_transport_disabled`; users must ask a team leader or system administrator for recovery
-- password reset changes password auth material only; it does not rotate or delete the user DEK
-- password reset revokes sessions and trusted devices
-- password-only reset preserves TOTP methods and recovery-code state; explicit MFA reset and account-recovery flows clear both and require reenrollment
-- password reset/setup confirmation validates the token before running Argon2id password hashing
-- user-chosen permanent passwords for onboarding, activation, and reset must be at least 12 characters and include uppercase, lowercase, and number characters
-- password hashes use Argon2id with OWASP baseline parameters; non-Argon2id local dev hashes can be rotated with `scripts/force_argon2id_password_rotation.py`
-- activation/setup links are only valid before first password setup; they set the user's first real password and then force TOTP onboarding before full access
-- manager recovery actions are metadata-only and never expose transcript-derived content:
-  - `POST /api/v1/users/{user_id}/send-activation`
-  - `POST /api/v1/users/{user_id}/send-password-reset` sends a manager-created email reset token when mail is enabled
-  - `POST /api/v1/users/{user_id}/send-account-recovery` sends a manager-created email recovery token that resets password and MFA on confirmation
-  - `POST /api/v1/users/{user_id}/break-glass-password-reset` is available only when break-glass policy allows it, requires the manager's current TOTP code, reason, and confirmation that email is unavailable, then generates an expiring temporary password, stores only its hash, revokes sessions/trusted devices, forces `pending_password_change`, preserves existing TOTP/recovery-code state, and records a security audit event
-  - `POST /api/v1/users/{user_id}/reset-mfa` clears TOTP/recovery-code state, revokes sessions/trusted devices, and forces TOTP reenrollment unless the user is still in `pending_password_change`
-  - `POST /api/v1/users/{user_id}/break-glass-account-recovery` performs the same break-glass checks and temporary-password flow, and also clears MFA/recovery-code state before forced password/TOTP onboarding
-  - legacy `recover-password` and `recover-account` endpoints fail closed with `410 deprecated_recovery_endpoint`
-
-### Self-service account details
-
-Authenticated normal users and team leaders may update their own account through Settings > Account:
-
-- name changes normalize Unicode and whitespace and affect only the signed-in owner
-- email changes require the current password and, when an active primary TOTP method exists, a fresh authenticator code
-- password changes require the current password, confirmation, the existing permanent-password strength policy, and a fresh authenticator code when TOTP is active
-- email uniqueness uses the normalized database identity and returns a generic unavailable message
-- successful email or password changes revoke all active sessions and trusted devices, then issue one replacement session to the initiating browser
-- account-change audit events store action, outcome, reason code, and changed field names only; they never store submitted names, emails, passwords, or TOTP codes
-- browser forms use the existing session-bound CSRF protection; sensitive email/password attempts share a `5 per 5 minutes` client-IP limit
-
-Email changes apply immediately after strong reauthentication. Pending-address verification is not implemented in the current schema and remains a production-hardening follow-up.
-
-## Brute-force protection
-
-- login routes are rate-limited at `5 per 5 minutes` per client IP
-- TOTP challenge and break-glass recovery routes are rate-limited at `10 per 10 minutes` per client IP
-- self-service email and password changes share a rate limit of `5 per 5 minutes` per client IP
-- public account-request submission is rate-limited at `3 per hour` per client IP
-- whole-file transcription upload routes are rate-limited at:
-  - `30 per minute` by default
-  - `1000 per day` by default
-- whole-file upload throttling keys to the authenticated user when a valid session can be resolved, with safe fallback to hashed session token or client IP
-- the browser and JSON variants of each route share the same limiter bucket
-- browser rate-limit responses render a generic wait-and-retry page
-- rate-limit hits are recorded in the server logs through `openscribe.security`
-- auth-facing limits remain unchanged when provider-call safeguards are relaxed; provider quotas remain system-admin-only abuse-monitoring metadata and are not shown in normal user or team-leader UI
-
-## Browser CSRF protection
-
-- browser state-changing routes now require a CSRF token in addition to the normal session cookie
-- the app issues a separate `openscribe_csrf` cookie for browser flows
-- authenticated CSRF tokens are stable for one login session, HMAC-bound to the opaque session token, and invalidated when that session rotates
-- browser forms render and submit the CSRF token as `_csrf_token`; the shared nonce-protected CSRF script refreshes or adds the field as a client-side fallback
-- browser JavaScript requests submit the token as `X-CSRF-Token` from server-rendered page state, not from a JavaScript-readable cookie
-- unsafe `/api/v1` requests with cookie-backed authority require same-origin `Origin` or `Referer` and the session-bound `X-CSRF-Token`; safe API methods remain exempt
-- CSRF protection reduces cross-site request forgery risk; it does not prevent an already-authenticated user from scripting their own browser
-
-### Account requests
-
-- `POST /api/v1/account-requests`
-- `GET /api/v1/account-requests`
-- `POST /api/v1/account-requests/{request_id}/approve`
-- `POST /api/v1/account-requests/{request_id}/reject`
-
-### Onboarding
+Onboarding:
 
 - `POST /api/v1/onboarding/password`
 - `POST /api/v1/onboarding/totp/start`
@@ -235,110 +119,89 @@ Email changes apply immediately after strong reauthentication. Pending-address v
 - `POST /api/v1/onboarding/recovery-codes`
 - `POST /api/v1/onboarding/skip-recovery-codes`
 
-## Browser routes
+Account requests:
 
-- `/login`
-- `/forgot-password`
-- `/reset-password`
-- `/activate-account`
-- `/request-access`
-- `/onboarding`
-- `/mfa/challenge`
-- `/home`
-- `/admin`
-- `/logout`
+- `POST /api/v1/account-requests`
+- `GET /api/v1/account-requests`
+- `POST /api/v1/account-requests/{request_id}/approve`
+- `POST /api/v1/account-requests/{request_id}/reject`
 
-## Authorization rules
+The complete endpoint inventory and response contracts are in [api.md](api.md).
 
-### Session requirements
+## Activation and recovery
 
-- unauthenticated requests receive `401` on JSON routes
-- `pending_mfa` sessions receive `403 mfa_required` on normal JSON routes
-- onboarding-only sessions receive `403 onboarding_incomplete` on normal JSON routes
-- browser routes redirect onboarding sessions to `/onboarding` when appropriate
-- browser routes redirect `pending_mfa` sessions to `/mfa/challenge` when appropriate
+Activation and reset links use `auth_email_tokens`. Plaintext tokens are sent to the user and only token hashes are persisted.
 
-### Management authority
+Self-service reset:
 
-- `/admin` is system-admin-only
-- team and user creation through JSON APIs is available to:
-  - system admins across all teams
-  - leaders for their own team only
-- leaders may not create system-admin accounts
-- STT config management through JSON and browser routes is available to:
-  - system admins for an explicitly selected team
-  - leaders for their own team only
-- STT config management remains metadata-only and does not imply transcript readability
+- password-reset requests return a generic response for existing and missing users when mail is enabled;
+- when mail is disabled, browser self-service reset is hidden and the API returns `503 mail_transport_disabled`;
+- successful password reset revokes sessions and trusted devices;
+- password-only reset preserves TOTP methods and recovery codes;
+- activation links are first-use setup links and force TOTP onboarding before full access.
 
-### Planned account-administration authority
+Manager recovery actions are metadata-only and do not grant content visibility:
 
-The next account-administration slice should make suspension and deletion authority explicit rather than treating user lifecycle as an implicit side effect of generic edit permissions.
+- send activation/setup link;
+- send password-reset link;
+- send full account-recovery link;
+- reset MFA;
+- break-glass password reset;
+- break-glass full account recovery.
 
-Planned manager scope:
+Break-glass temporary-password actions are not ordinary manager reset buttons. They require the applicable break-glass policy, the manager's current TOTP code, a reason, and confirmation that email recovery is unavailable. They generate an expiring temporary password, persist only its hash, revoke authority, force password-change onboarding, and write a security audit event. Full account recovery also clears MFA/recovery-code state. Legacy `recover-password` and `recover-account` endpoints fail closed with `410 deprecated_recovery_endpoint`.
 
-- system admins may suspend, reactivate, and delete any non-protected account
-- team leaders may suspend, reactivate, and delete non-system-admin users in their own team only
-- leaders may not act on users outside their own team
-- leaders may not act on system-admin accounts
+## Self-service account changes
 
-Planned guardrails:
+Normal users and team leaders can update their own account from `/workspace/account`.
 
-- never allow deletion or suspension of the last active system-admin account
-- do not let leaders or system admins gain transcript readability through account-administration routes
-- revocation of active sessions and trusted devices must happen immediately on suspension
-- full user deletion remains a hard-delete operation, not a soft-delete
+- Name changes affect only the authenticated owner.
+- Email changes require the current password and a fresh TOTP code when TOTP is active.
+- Password changes require current password, confirmation, password-strength validation, and fresh TOTP when active.
+- Email uniqueness is checked against normalized database identity.
+- Successful email/password changes revoke all sessions and trusted devices and issue one replacement session to the initiating browser.
+- Audit events record action/outcome/field metadata, not submitted names, emails, passwords, or TOTP codes.
 
-Planned operational meanings:
+Pending-address verification is not implemented; an accepted email change applies immediately after strong reauthentication.
 
-- suspension is the reversible manager action for stopping login and access without deleting content
-- security disable remains a separate concern from manager suspension
-- temporary security lockouts remain a separate concern from both suspension and disable
-- deletion is destructive and cascades according to the user-deletion rules already defined elsewhere
+## Account lifecycle authority
 
-Planned status semantics:
+Implemented manager lifecycle rules:
 
-- `active`
-  - normal access allowed
-- `suspended`
-  - manager action by leader or system admin
-  - reversible
-  - blocks login and normal access
-- `locked`
-  - temporary security/auth-abuse state
-  - blocks login and normal access
-- `disabled`
-  - stronger security or platform action
-  - blocks login and normal access
+- `suspended` is the reversible manager-controlled state and blocks login/access;
+- leaders can suspend/reactivate/delete non-system-admin users only in their own team;
+- system administrators can manage other users across teams subject to protected-account checks;
+- self-suspension, self-reactivation, and self-deletion through manager routes are blocked;
+- reactivation currently forces password-change onboarding and clears prior MFA trust;
+- manager deletion is an immediate hard delete with the implemented user/transcript cascades;
+- preserved account-request records have their nullable user reference cleared.
 
-Planned reactivation rule for the first slice:
+Manager authority never grants transcript, working-note, dictation, generated-document, redaction, or other owner-content readability.
 
-- reinstating a user from either `suspended` or `disabled` should require password reset and MFA trust reset
-- this is stricter than a soft operational reinstatement, but keeps the first implementation simple and safe
+## Rate limits
 
-Implemented now in the first account-administration slice:
+Fixed authentication/account limits:
 
-- `suspended` is the manager-controlled reversible state
-- suspended users cannot log in
-- leaders may suspend and reactivate non-system-admin users in their own team only
-- system admins may suspend and reactivate other accounts across teams
-- manager reactivation currently resets the user into password-change onboarding and disables prior MFA setup
-- self-management through the suspend/reactivate routes is blocked
+- login and password-reset request: `5/5 minutes` per client IP;
+- TOTP challenge and break-glass account-security actions: `10/10 minutes` or the account-security limiter applicable to the route;
+- self-service sensitive account changes: `5/5 minutes` per client IP;
+- public account request: `3/hour` per client IP.
 
-Implemented now in the destructive manager-delete slice:
+Configurable provider-call limits:
 
-- leaders may delete non-system-admin users in their own team only
-- system admins may delete other accounts across teams
-- self-delete through manager routes is blocked
-- user deletion is immediate hard delete
-- user deletion removes currently implemented user-owned transcript rows and transcript versions
-- account-request links to the deleted user are nulled so review records remain structurally valid
+- live chunks: `LIVE_CHUNK_UPLOAD_RATE_LIMIT`, default `1/second`;
+- whole-file upload burst: `WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT`, default `1/5 seconds`;
+- whole-file uploads per day: `WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT`, default `100/day`;
+- LLM generation burst: `LLM_GENERATION_BURST_RATE_LIMIT`, default `20/3 minutes`;
+- LLM generations per day: `LLM_GENERATION_DAILY_RATE_LIMIT`, default `200/day`.
 
-### Transcript privacy boundary
+Authenticated upload/generation limits key to the resolved user where possible, with a hashed-session or client-IP fallback. Browser and JSON variants sharing a limiter scope consume the same bucket. See [environment.md](environment.md) for all quota and duration controls.
 
-Transcript routes still require full authenticated access and remain owner-only:
+## Authorization response behavior
 
-- only the owning user may create a transcript for themselves
-- only the owning user may commit transcript versions
-- only the owning user may list their transcripts
-
-System-admin or leader authority does not grant transcript-content access.
+- Unauthenticated JSON requests receive `401 unauthorized`.
+- `pending_mfa` sessions receive `403 mfa_required` on full-access routes.
+- onboarding sessions receive `403 onboarding_incomplete` on full-access routes.
+- Browser pages redirect partial sessions to the corresponding onboarding/MFA page.
+- System-admin-only APIs return `403 forbidden` to authenticated non-admins.
+- Owner-scoped content lookups generally return `404` when another user attempts to address an object, preventing cross-owner existence disclosure.

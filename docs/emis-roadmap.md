@@ -1,196 +1,93 @@
-# EMIS Structured Note Roadmap
+# Structured EMIS Notes
 
-## Scope
+## Status
 
-This note captures the next planned work for the structured EMIS note flow.
+The original persistence/editor roadmap is implemented and was subsequently generalized into the current **Working note** and generated-note editor contracts. The old statements that section context disappears between generations and that output line selection/editing remain future work are obsolete.
 
-Current behavior:
+Current behavior is documented in:
 
-- structured EMIS templates exist
-- per-section EMIS prompts exist on `template_versions.config_json`
-- users can prefill section context before generation
-- structured generation validates section keys and persists `generated_document_sections`
+- [working_note_implementation.md](working_note_implementation.md)
+- [transcript-capture.md](transcript-capture.md)
+- [workspace.md](workspace.md)
+- [api.md](api.md)
+- [tutorials/user.md](tutorials/user.md)
 
-Current gap:
+## Structured profile
 
-- user-entered section context in `/transcribe` does **not** persist between generations
-- the next page load shows empty EMIS context fields again
+Structured Templates and Working notes use the fixed EMIS profile with these allowed keys:
 
-That is not the intended UX.
+- `problem`
+- `history`
+- `family_history`
+- `social_history`
+- `examination`
+- `comment`
+- `tasks`
+- `investigations`
 
-## Target behavior
+The backend validates keys, drops/omits empty sections where appropriate, preserves canonical order, and rejects unknown/malformed structured configuration. UI needs must not relax this provider-independent JSON contract.
 
-The EMIS flow should behave like an in-progress working note, not a one-shot prompt form.
+## Living structured source
 
-Desired behavior:
+The user-facing source is the transcript-owned Working note in `structured` mode.
 
-1. user enters or edits section text in the EMIS context area
-2. that text persists on the transcript session
-3. future generations reuse that text automatically unless the user changes it
-4. generated section output is clearly separated line-by-line
-5. users can select or deselect individual lines for clipboard copy
-6. Enter creates a new selectable line
-7. Shift+Enter creates a soft line break inside the current line
+- One living Working note exists per transcript.
+- First non-empty save locks the mode.
+- Clearing removes the living content and unlocks mode.
+- Section lines persist between generations and page loads.
+- Hidden sections remain persisted even when a selected output Template shows a narrower section subset.
+- Saves/clears use optimistic concurrency.
+- Content is owner-only transcript-derived data encrypted under the owner's DEK.
+- Transcript-root retention/deletion owns the Working note.
 
-## Recommended persistence model
+Earlier implementation used transcript structured-context fields as the persistence foundation. Current models/migrations/services are authoritative for the physical field names; product documentation should describe Working note rather than exposing legacy “structured context” terminology.
 
-Persist EMIS working context at the transcript root, not only on individual generated documents.
+## Generation snapshots
 
-Why:
+When structured generation is queued:
 
-- the user expectation is that the session remembers their working EMIS fields
-- multiple generations for the same transcript should share the same working section state
-- generated documents are outputs, not the editable session workspace source of truth
+- dirty Working-note edits are saved first;
+- the exact Working-note source used for the request is snapshotted encrypted on the generated document;
+- later edits to the living Working note do not mutate historical generation snapshots;
+- transcript, Working note, and dictation are labelled as separate sources;
+- source text is redacted before provider dispatch;
+- the provider returns the strict structured note shape;
+- output is validated, reidentified where applicable, encrypted, and persisted.
 
-Recommended DB addition:
+A valid structured result has a short title and `content` object keyed only by allowed sections. Provider-specific response schema support does not replace backend validation.
 
-- `transcripts.structured_context_json`
+## Structured editor
 
-Shape:
+Implemented editor behavior includes:
 
-```json
-{
-  "profile": "emis",
-  "sections": {
-    "problem": ["Known asthma", "Worse cough for 2 weeks"],
-    "history": ["Symptoms improved after doxycycline", "Green sputum returned today"],
-    "tasks": ["Peak flow diary requested"]
-  }
-}
-```
+- line-aware editing per section;
+- Enter creates a new selectable statement/line;
+- Shift+Enter creates a soft line break within the current line;
+- blank rows do not become meaningful stored lines;
+- generated section lines default to the current selection behavior and support section/statement selection for copying;
+- generated section content can be edited and persisted through generated-document optimistic concurrency;
+- statement reordering and keyboard/accessible controls where exposed by the current workspace;
+- copy follows canonical EMIS section order and selected content;
+- generated-note edits do not update the Working note.
 
-Notes:
+The database does not need a dedicated line table merely because the browser presents line rows; current generated-document section storage remains the source of truth unless a future feature needs independently addressable line identity/history.
 
-- store lines as arrays, not one large blob
-- this matches the intended selectable-line UX
-- blank sections can be omitted
-- this stays owner-only transcript-derived content
+## Privacy and lifecycle
 
-## Why not keep using `generated_documents.structured_context_json`
+- Only the transcript owner can read/write Working-note or generated-section content.
+- Team leaders/system administrators gain no content access.
+- Working-note/output lines must not appear in logs, audit, usage, task payloads, or provider error metadata.
+- Generated sections and snapshots follow generated-document/transcript-root deletion/retention.
+- Reusable Template instructions/configuration must not contain patient content.
 
-That field is still useful as a snapshot of what a specific generation run used.
+## Remaining roadmap
 
-But it is the wrong source of truth for the workspace because:
+Possible future work, only when justified by a concrete user need:
 
-- it exists only when a generation is queued
-- it does not represent the current working state of the session
-- it makes the form feel stateless between generations
+- independently addressable line-level history/comments/provenance;
+- additional structured profiles beyond EMIS;
+- richer copy/export destination integrations;
+- explicit owner-visible generation-source provenance UI;
+- improved browser accessibility/visual regression coverage for large structured notes.
 
-Recommended rule:
-
-- `transcripts.structured_context_json` = current working session state
-- `generated_documents.structured_context_json` = immutable generation snapshot
-
-## UX stages
-
-### Stage 1: Persist section text between generations
-
-Status: implemented
-
-Add:
-
-- transcript-backed EMIS working context
-- preload `/transcribe` EMIS fields from transcript working context
-- save updated context whenever the user runs generation
-
-Expected outcome:
-
-- the user does not lose section text between runs
-- each generation snapshots the current EMIS context into the generated document
-
-Current implementation notes:
-
-- transcript-backed working state now lives in `transcripts.structured_context_json`
-- `/transcribe` EMIS context fields are hydrated from that transcript-backed state
-- queued structured note generation updates the transcript-backed state and snapshots it into `generated_documents.structured_context_json`
-- the transcript-backed state now persists per-section line arrays
-
-### Stage 2: Line-based section editor
-
-Status: implemented in first browser form
-
-The workspace now uses a line-aware browser editor per section.
-
-Current interaction:
-
-- each section displays one or more line rows
-- Enter creates a new line row
-- Shift+Enter inserts a newline inside the current line row
-- blank rows are ignored when syncing back into the hidden JSON payload
-
-### Stage 3: Output-side line selection parity
-
-The generated section display should mirror the editor model.
-
-Add:
-
-- default all generated lines to selected
-- allow section-level select all / deselect all
-- copy selected lines in EMIS order
-
-### Stage 4: Editable generated sections
-
-Allow users to edit generated section lines directly and persist them.
-
-Recommended model:
-
-- keep `generated_document_sections` as the saved output state
-- split section text into line arrays in UI only unless line-level persistence becomes necessary
-
-Only add a dedicated `generated_document_section_lines` table if real per-line persistence becomes necessary.
-
-## Prompting contract
-
-Structured EMIS generation should continue to require:
-
-```json
-{
-  "title": "Two to three word summary",
-  "content": {
-    "problem": "...",
-    "history": "..."
-  }
-}
-```
-
-Backend remains responsible for:
-
-- validating allowed section keys
-- dropping empty sections
-- preserving canonical order
-- rendering full note text
-- persisting structured sections
-
-Do not relax this contract just to compensate for UI/editor needs.
-
-## Near-term implementation order
-
-1. add `transcripts.structured_context_json`
-2. load it into `/transcribe`
-3. save it when generation is queued
-4. snapshot it into `generated_documents.structured_context_json`
-5. replace EMIS context textareas with line-aware section editors
-6. add section-level select all / deselect all in output
-
-Completed:
-
-- 1 through 5 are now in place
-
-Remaining:
-
-- 6 section-level select all / deselect all in output
-
-## Risks / assumptions
-
-- transcript-backed EMIS working context is transcript-derived content and must remain owner-only
-- transcript deletion must cascade through all transcript-derived EMIS outputs as it already does
-- no leader/admin content access should be introduced by this feature
-- do not log EMIS working context lines
-
-## Architecture checkpoint summary
-
-- Privacy boundaries: preserved if EMIS working context stays transcript-owned and owner-only
-- Ownership rules: preserved if only the transcript owner can read/write the working context
-- Deletion semantics: preserved if transcript-root deletion removes the working context and all derived outputs
-- Provider rules: preserved if the LLM still receives only the resolved provider/model plus redacted transcript/context
-- Structured-note contract: preserved if backend remains strict about allowed EMIS section keys and JSON shape
+These require a focused design. Do not reintroduce the obsolete premise that structured session context is one-shot or unpersisted.

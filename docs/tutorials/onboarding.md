@@ -2,64 +2,77 @@
 
 ## Audience
 
-This tutorial is for new users, team leaders, and admins completing account setup.
+This tutorial is for normal users, team leaders, and system administrators completing first account setup after receiving a temporary password or an activation/setup link.
 
-## Account Setup Link
+## Protect setup material
 
-A team leader or system admin may send a setup link. Use only the latest link you received. If a link is expired or invalid, ask for a new setup link.
+A setup link or temporary password is a credential.
 
-Do not forward setup links. Treat them like security credentials.
+- Use only the newest link or temporary password supplied through the approved channel.
+- Do not forward it or paste it into chat/tickets.
+- Ask a team leader or system administrator for replacement when it is expired or invalid.
+- A setup link is single-use and does not provide full application access by itself.
 
-## Set Password
+## Set a permanent password
 
-1. Open the setup link.
-2. Enter a new password.
+1. Open the activation/setup page or sign in with the temporary password.
+2. Enter a new permanent password.
 3. Submit the form.
-4. Continue to MFA setup.
+4. Continue to TOTP setup.
 
-Use a unique password. Do not reuse passwords from other clinical or personal systems.
+The password must be at least 12 characters and include uppercase, lowercase, and numeric characters. Use a unique password that is not shared with another clinical or personal system.
 
-## Set Up TOTP MFA
+Until password change and required MFA enrollment are complete, the session is restricted to onboarding/current-user/logout routes.
+
+## Enroll TOTP MFA
 
 1. Start TOTP enrollment.
-2. Scan the QR code with your authenticator app.
-3. Enter the current code from the app.
+2. Scan the QR code with an approved authenticator app or enter the displayed secret manually.
+3. Enter the current six-digit code.
 4. Verify the code.
 
-Until MFA setup is complete, access remains restricted to onboarding steps.
+The seed/QR code is shown only during the authorized enrollment flow. Do not ask another person to copy or store it for you.
 
-## Recovery Codes
+## Recovery codes
 
-OpenScribe may offer recovery codes after TOTP setup.
+OpenScribe offers optional recovery codes after successful TOTP enrollment.
 
-If you generate recovery codes:
+When generating them:
 
-- store them somewhere approved by local policy
-- do not store them in a shared chat or ticket
-- treat each code as sensitive
+- store them in a location approved by local policy;
+- do not put them in a shared chat, ticket, or clinical record;
+- treat each code as a one-time credential;
+- understand that OpenScribe cannot recover their plaintext from the database.
 
-If you skip recovery codes, account recovery may require team leader or system admin help.
+Skipping recovery codes is allowed, but loss of the authenticator may then require an approved manager-assisted recovery flow.
 
-## First Sign-In After Setup
+## Complete onboarding
 
-After onboarding is complete:
+After the final onboarding step, sign in normally:
 
-1. Sign in with your email and password.
-2. Enter your authenticator code if asked.
-3. Confirm you land in the correct area:
-   - normal user: consultation workspace or Home
-   - team leader: Home
-   - system admin: Admin
+1. enter email and permanent password;
+2. complete the authenticator challenge when requested;
+3. verify the correct destination:
+   - system administrator: `/admin`;
+   - normal user or team leader: current login redirects to `/home`, from which ongoing user work should open the canonical `/workspace` shell.
 
-## Problems During Onboarding
+The permanent workspace contains Scribe, Account, Preferences, Library, and leader-only Team sections. See [user.md](user.md) and [team-leader.md](team-leader.md).
 
-Ask for help if:
+## Remember this browser
 
-- setup link is invalid
-- password form rejects your password
-- QR code does not scan
-- authenticator codes fail repeatedly
-- you lose access to your authenticator app
+On the MFA challenge, a user can choose to remember the browser. This does not replace password authentication and does not create permanent MFA bypass. It allows a correct password login to skip TOTP only while the server-side trusted-device record remains valid and within the current 24-hour MFA freshness window.
 
-Do not ask anyone to bypass MFA for routine use. Recovery should use approved recovery flows.
+Use it only on an approved personal/managed device. Sign out and report the device when it is lost or compromised.
 
+## Problems during onboarding
+
+Ask a team leader or system administrator for help when:
+
+- the setup link or temporary password is invalid/expired;
+- password validation repeatedly fails despite meeting the stated rule;
+- the QR code cannot be scanned;
+- authenticator codes repeatedly fail after checking device time;
+- access to the authenticator or recovery codes is lost;
+- the account returns to onboarding unexpectedly.
+
+Routine support must not bypass MFA. Use recovery codes, email recovery, or the approved manager-assisted recovery paths described in [../auth.md](../auth.md).

@@ -1,230 +1,144 @@
-You are a coding agent working on the Ambient Scribing project.
+# OpenScribe Contributor Brief
 
-Your job is to implement code changes that follow the project architecture exactly, while preserving privacy, ownership boundaries, and deletion semantics.
+## Source of truth
 
-You are not the product architect. Do not invent alternative architectures unless you have identified a concrete implementation blocker. When in doubt, preserve the current architecture and ask for clarification through structured notes in your change summary.
+Use [`AGENTS.md`](AGENTS.md) as the repository-wide contributor rule set and [`docs/README.md`](docs/README.md) as the documentation index.
 
-PROJECT ARCHITECTURE PRINCIPLES
+When prose conflicts with implementation, inspect in this order:
 
-1. Privacy-first
-- All transcript-derived content is private and non-shareable.
-- Only the owning user can access transcript-derived content.
-- Team leaders and system admins may manage accounts/policies/metadata, but may not read transcript/note content by default.
-- Operational metadata is visible where required; content is not.
+1. Alembic migrations and database constraints;
+2. models and service/domain code;
+3. FastAPI routes/dependencies and schemas;
+4. focused tests and `app/api_route_audit.py`;
+5. maintained operational documentation;
+6. historical roadmap/brief/plan files.
 
-2. Ownership-first authorization
-- Content access is based first on owner_user_id, then role.
-- Administrative authority does not imply content visibility.
-- Shared assets (templates/quick actions) are references until forked.
+Do not implement obsolete table names, watcher abstractions, route paths, or role rules from historical documents.
 
-3. Team model
-- Each non-admin user belongs to exactly one team.
-- Users table carries team_id and team_role.
-- is_system_admin is separate from team_role.
-- System admin accounts are admin-only and do not own transcript-derived content.
+## Non-negotiable architecture
 
-4. Transcript model
-- A transcript row is created when recording starts.
-- Partial realtime transcript updates write into transcripts.current_draft_text_encrypted.
-- Transcript editing uses debounced draft save in the UI.
-- A committed transcript version is created only on blur, explicit save, or action execution.
-- Redaction is lazy: only run pseudonymisation when an action requires it.
-- Transcript root is the retention root.
+### Privacy and ownership
 
-5. Generated documents
-- Multiple generated outputs are allowed for the same transcript version/template/action.
-- Generated documents are editable by the owner user.
-- Generated documents use a hybrid model:
-  - root document text
-  - optional structured sections/components
-- Structured note generation uses a JSON response including:
-  - title
-  - content
-- Quick actions/follow-ups are freeform text only in MVP.
+- Transcript-derived content belongs to exactly one normal user/team leader.
+- Team and provider policy context does not grant content visibility.
+- Team leaders/system administrators can manage authorized metadata/policy/accounts but cannot read another user's transcript, Working note, dictation, generated documents, prompts, redaction/PII, or source audio.
+- System-administrator accounts are admin-only and cannot own transcripts.
+- Content access is owner-first and cross-owner lookups use non-disclosing behavior where defined.
+- Do not add transcript-derived sharing/export without an explicit privacy/authorization design.
 
-6. Structured notes
-- Initial structured profile is EMIS.
-- Allowed EMIS sections:
-  - problem
-  - history
-  - family_history
-  - social_history
-  - examination
-  - comment
-  - tasks
-  - investigations
-- EMIS templates may remove/reorder sections and customize per-section prompts.
-- Structured templates support:
-  - global instruction
-  - per-section instructions
-- Empty sections are omitted.
+### Transcript lifecycle
 
-7. Sharing model
-- Templates and quick actions are normal configuration unless they intentionally contain transcript-derived text.
-- Team assets are available in team scope; they are not force-added into user libraries.
-- Personal template/action sharing is same-team only.
-- Same-team shared assets are discoverable, not auto-added.
-- Users explicitly watch them to add them to their own library.
-- Editing a watched/shared/team/system asset creates a user-scoped fork.
-- Renaming/customizing shared assets requires a fork.
-- Deleting a watched original removes watcher access immediately; explicit forks survive.
+- The transcript root owns retention/deletion for transcript-derived content.
+- Persisted ingestion modes are `whole_file` and `live_chunked`.
+- Whole-file/live jobs, Working note, dictation, generated documents, redaction/PII, source-audio cleanup, and related lifecycle metadata follow current service/model relationships.
+- Team retention is snapshotted server-side and cannot be extended by user payload.
+- Expired roots are denied before periodic physical cleanup.
+- Manual transcript/user/team deletion is hard delete under current cascades/cleanup; there is no undo grace period.
 
-8. Deletion model
-- Deletion means deletion.
-- Manual deletion is immediate once confirmed; no undo grace period in MVP.
-- Users may manually delete:
-  - their own generated documents
-  - their own transcript roots
-- Deleting a transcript root cascades to:
-  - transcript versions
-  - redaction runs
-  - redaction entities
-  - generated documents
-  - generated document sections
-- Transcript-derived retention expiry is set once and does not extend on later edits.
-- Expired transcript-derived content is hard-deleted immediately in MVP.
-- Team leaders can lock/deactivate users but cannot fully delete them.
-- Locking revokes active sessions immediately but does not change content state.
-- System-level user deletion immediately deletes:
-  - transcript-derived content
-  - personal templates/actions
-  - watcher access to those assets
-- Team deletion is blocked until cleanup is explicit.
+### Reversible versus destructive account actions
 
-9. Encryption and secrets
-- HashiCorp Vault is the KEK/master-key layer.
-- One DEK is created per user at account creation and wrapped by Vault.
-- User-owned confidential content is encrypted with the user DEK.
-- Provider credentials are stored as Vault references, not raw secrets in the database.
+- Suspension is the reversible manager access-stop action.
+- Reactivation currently forces password-change onboarding and clears prior MFA trust.
+- Eligible leaders can suspend/reactivate and hard-delete eligible non-system-admin users in their own team.
+- System administrators can manage across teams subject to self/protected/last-active-admin rules.
+- Hard user/team deletion removes content/assets/auth/key/provider state through current cascades and durable external cleanup.
 
-10. Provider resolution
-- System admin provisions provider credentials per team.
-- For STT in MVP, system admins provision the available team STT endpoints and their credentials.
-- Team leaders may choose which admin-provisioned STT service/model is active for their team and may clear that team-level selection, but they may not view or recover raw provider secrets.
-- DB stores Vault references only.
-- Multiple LLM providers/models may be allowed per team.
-- User chooses one active LLM for all LLM actions until changed.
-- If user preference becomes invalid, fall back to team default.
-- Transcription provider is fixed per team in MVP, but the active team policy may be selected from the admin-provisioned STT options for that team.
-- Pseudonymisation provider is centrally fixed across the platform in MVP.
+The old rule that team leaders cannot delete users is obsolete.
 
-IMPLEMENTATION RULES
+### Encryption and secrets
 
-A. Preserve invariants
-- Keep database constraints aligned with ownership/scope rules.
-- Use foreign keys and cascade deletes where architecturally intended.
-- Do not add sharing for transcript-derived content.
-- Do not weaken deletion semantics.
-- Do not move sensitive content into logs, caches, or non-confidential tables.
+- Designated owner/authentication content is encrypted with versioned AES-GCM envelopes under per-user DEKs.
+- Vault Transit wraps DEKs under the deployment KEK.
+- Password reset/recovery does not rotate/destroy the user DEK.
+- Provider credentials and selected platform secrets live in Vault/deployment identity, not PostgreSQL.
+- Provider drafts/revisions inherit required credentials by copying them to draft-owned unique versioned Vault paths; they do not alias the active root reference.
+- Cleanup uses durable exact-reference intents, retries, compensation, and live-reference guards.
+- Crypto/Vault/redaction/provider errors fail closed where content/confidentiality requires it; never fall back to plaintext.
 
-B. Keep schema and API explicit
-- Prefer explicit states/enums over ambiguous booleans.
-- Prefer additive migrations.
-- Snapshot source metadata where hard deletes would otherwise erase provenance.
-- Keep generated_documents and generated_document_sections flexible enough for freeform/structured/canvas evolution.
+### Queued work and quotas
 
-C. Testing is mandatory for every change
-For every change you make, add or update:
-- unit tests
-- integration/API tests where relevant
-- migration tests if schema changes are involved
-- authorization tests when access rules are affected
-- deletion/cascade tests when lifecycle rules are affected
+- Business rows and deterministic task-dispatch outbox rows are committed transactionally.
+- Immediate broker publish is attempted; Beat retries pending outbox rows every second.
+- Retention, source-audio cleanup, provider-secret cleanup, and quota lifecycle run every 10 seconds.
+- Provider credentials are resolved before an attempt is marked submitted.
+- Definite pre-dispatch credential failure does not consume provider quota.
+- Duplicate delivery uses database claims/idempotency; losing workers cannot fail/settle winning work.
+- Queue/outbox/attempt/audit/usage payloads contain metadata only.
 
-D. Documentation is mandatory for every change
-For every change you make, update:
-- relevant architecture notes
-- API docs or endpoint docs
-- migration notes if schema changes
-- README/dev setup docs if workflow changes
-- any checklists affected by the change
-- test documentation split by concern where relevant, not one monolithic testing page
-- behavior-first test docs that explain the rule in plain language first, then briefly show the test shape/code that proves it
-- DB-specific behavior and DB-specific tests in `docs/dbtesting.md`
-- broader API/UI/integration coverage in separate docs such as `docs/testing.md`
+### Generated content
 
-E. Every task must use checklists and checkpoints
-Before coding:
-- restate the target change
-- identify affected modules
-- identify affected tests
-- identify architectural risks
-- produce a checklist
+- Every generation creates an owner-only generated document.
+- Transcript, Working note, and dictation are distinct labelled sources.
+- Dirty Working-note edits save before enqueue; generation blocks if all saved sources are empty.
+- Source content is redacted before LLM dispatch and allowed placeholders are reidentified afterward.
+- Structured EMIS output uses only:
+  - `problem`
+  - `history`
+  - `family_history`
+  - `social_history`
+  - `examination`
+  - `comment`
+  - `tasks`
+  - `investigations`
+- Backend validation remains authoritative.
+- Generated text is always a draft requiring clinician review.
 
-During coding:
-- pause at meaningful checkpoints
-- confirm schema, auth, and lifecycle implications
-- update checklist progress
+### Reusable assets
 
-After coding:
-- summarize what changed
-- list tests added/updated
-- list docs added/updated
-- list open risks or assumptions
-- list follow-up tasks
+Current reusable assets are platform/team/personal Templates, platform/team/personal Quick Actions, and personal Smart Phrases with explicit version/scope/authorization rules.
 
-F. Prefer small vertical slices
-When implementing a feature, aim for:
-- migration/schema
-- models/repositories
-- service logic
-- API/handlers
-- tests
-- docs
-in one coherent change set
+- Team assets are directly discoverable/usable under current authorization; there is no implemented watcher model.
+- Copy/duplicate/import creates independent roots/versions as defined by current services.
+- Bundle import/export transfers portable content only, never ownership/team/creator/version/active/usage authority.
+- Reusable configuration must not contain patient/transcript content.
 
-G. Escalate instead of improvising when touching architecture boundaries
-If a change would affect:
-- ownership rules
-- privacy model
-- deletion semantics
-- encryption model
-- provider resolution rules
-- structured-note contract
-then stop and note the issue clearly rather than silently inventing a new design.
+The old watcher/fork-as-primary-sharing model is obsolete.
 
-EXPECTED ENGINEERING STYLE
+### Provider policy
 
-- Use clear naming that matches the architecture.
-- Keep business rules in service/domain layers, not scattered in handlers.
-- Prefer deterministic behavior over convenience.
-- Favor explicit validation on structured LLM JSON.
-- Backend is the source of truth for schema normalization and persistence.
-- Logs must contain metadata, not transcript/note/prompt content.
-- Sensitive test fixtures should be obviously synthetic.
+- System administrators provision credential-bearing providers/configs.
+- Leaders select/clear eligible options for their own team.
+- Consultation STT and post-consultation dictation STT can use separate purpose selections.
+- Multiple LLM adapters/presets, including Gemini Enterprise, are supported under current policy.
+- De-identification and clinical NLP selections remain distinct.
+- Queued work snapshots execution metadata so later policy edits do not retarget existing work.
+- Provider management never grants content visibility.
 
-REQUIRED CHANGE OUTPUT FORMAT
-Each day we create an md in docs/progress with the date and what has been done:
+The old “one fixed transcription/pseudonymisation provider” description is obsolete.
 
-Task Title
-1. Scope
-- what you implemented
+## Browser and API boundaries
 
-2. Checklist
-- completed items
-- remaining items
+- Canonical user workspace: `/workspace`.
+- `/home` remains the current normal-user post-login compatibility landing until migration completes.
+- `/transcribe` and `/settings` redirect to canonical workspace routes.
+- Canonical system-admin workspace: `/admin`.
+- `/api/v1` is the JSON boundary and every route must appear in `app/api_route_audit.py`.
+- Browser unsafe cookie-authorized requests require current CSRF and same-origin checks.
+- Session/trusted-device/CSRF cookies remain `HttpOnly`.
+- Production browser runtime dependencies remain same-origin and CSP-compatible.
+- Authenticated/content/API pages use no-store behavior according to current middleware.
 
-3. Files changed
-- brief purpose for each
+## Engineering workflow
 
-4. Tests
-- added/updated
-- what they verify
+For each change:
 
-5. Documentation
-- added/updated
+1. state target behavior and current behavior;
+2. identify affected schema/models/services/routes/workers/UI/configuration;
+3. evaluate ownership, privacy, encryption, retention, deletion, provider, quota, outbox, and audit consequences;
+4. implement the smallest coherent vertical slice;
+5. add/update unit, integration/API, migration, authorization, lifecycle, browser, and security tests as applicable;
+6. update `app/api_route_audit.py` for API route changes;
+7. update the closest operational document and root README/index for user-facing/setup changes;
+8. keep historical evidence immutable and add newer dated evidence instead.
 
-6. Risks / assumptions
-- anything the architect should review
+A mandatory per-day `docs/progress/<date>.md` file is not part of the current repository workflow. Use commits, PR descriptions, focused plans/issues, tests, and maintained docs as the change record unless a task explicitly requires a progress artifact.
 
-7. Checkpoint summary
-- note any architecture-sensitive decision you preserved
+## Testing and documentation
 
-NON-NEGOTIABLES
+- `docs/testing.md`: general/API/UI/security workflows;
+- `docs/dbtesting.md`: database isolation/migration/real-connection behavior;
+- `scripts/audit_api_auth.py`: route manifest/access probe;
+- `.github/scripts/check-operational-docs.py`: maintained-doc path/link consistency;
+- `.github/workflows/docker-smoke.yml`: documentation/script/Compose/build/start/restart health gate.
 
-- Do not make transcript-derived content shareable.
-- Do not let admin/team-leader authority imply content readability.
-- Do not replace immediate deletion semantics with soft-delete unless explicitly instructed.
-- Do not store raw provider secrets in the database.
-- Do not log transcript text, generated note text, prompts, or redaction values.
-- Do not remove tests or docs to move faster.
+Do not remove tests or documentation to make a change pass. Do not copy secrets, raw provider responses, or real patient/transcript/note content into fixtures, logs, issues, evidence, or documentation.

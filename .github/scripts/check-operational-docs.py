@@ -8,25 +8,45 @@ from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[2]
 
-OPERATIONAL_DOCS: tuple[Path, ...] = tuple(
+MAINTAINED_DOCS: tuple[Path, ...] = tuple(
     ROOT / path
     for path in (
         "README.md",
+        "AGENTS.md",
+        "brief.md",
+        "CONTEXT.md",
         "docs/README.md",
         "docs/setup.md",
         "docs/docker.md",
         "docs/environment.md",
         "docs/auth.md",
+        "docs/account_recovery_brief.md",
         "docs/security.md",
         "docs/security-xss.md",
         "docs/mfa-secret-encryption.md",
+        "docs/dek-kek-production-plan.md",
         "docs/api.md",
+        "docs/DatabasePlan.md",
         "docs/workspace.md",
+        "docs/home_brief.md",
+        "docs/transcribe_brief.md",
         "docs/transcript-capture.md",
         "docs/live_stt.md",
+        "docs/working_note_implementation.md",
+        "docs/emis-roadmap.md",
+        "docs/editor-smart-phrases.md",
+        "docs/template_io_plan.md",
+        "docs/hallucination-check-design.md",
+        "docs/transcribe-playwright-checklist.md",
         "docs/stt-config.md",
         "docs/llm-providers.md",
         "docs/gemini-enterprise-setup.md",
+        "docs/provider-credential-combined-flow-plan.md",
+        "docs/admin_workspace_function_map.md",
+        "docs/admin_brief.md",
+        "docs/usage_tab.md",
+        "docs/styling_condensation_plan.md",
+        "docs/feature_todo.md",
         "docs/testing.md",
         "docs/dbtesting.md",
         "docs/tutorials/README.md",
@@ -78,7 +98,7 @@ def resolved_local_target(document: Path, target: str) -> Path | None:
 def main() -> int:
     failures: list[str] = []
 
-    for document in OPERATIONAL_DOCS:
+    for document in MAINTAINED_DOCS:
         relative_document = document.relative_to(ROOT)
         if not document.is_file():
             failures.append(f"missing maintained document: {relative_document}")
@@ -111,12 +131,12 @@ def main() -> int:
                 )
 
     if failures:
-        print("Operational documentation check failed:", file=sys.stderr)
+        print("Maintained documentation check failed:", file=sys.stderr)
         for failure in failures:
             print(f"- {failure}", file=sys.stderr)
         return 1
 
-    print(f"Checked {len(OPERATIONAL_DOCS)} maintained documentation files.")
+    print(f"Checked {len(MAINTAINED_DOCS)} maintained documentation files.")
     return 0
 
 

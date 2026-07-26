@@ -1,39 +1,30 @@
-# Persistent Docker runtime
+# Persistent Docker Runtime
 
-The `runtime` Compose profile runs OpenScribe as a restartable single-host stack.
-It is intended to replace `start-dev.sh` when the application should keep running
-after the shell closes and should return after a host or Docker daemon restart.
+The `runtime` Compose profile runs OpenScribe as a restartable single-host stack. It replaces `start-dev.sh` when the application must continue after a shell closes and return after host/Docker daemon restart.
 
 The profile starts:
 
-- PostgreSQL with a named data volume
-- Redis with append-only persistence
-- Vault with a named storage volume
-- one OpenScribe application container running migrations, local Vault bootstrap,
-  the FastAPI web server, one Celery worker for all queues, and Celery Beat
+- PostgreSQL with a named data volume;
+- Redis with append-only persistence;
+- Vault with a named storage volume;
+- one OpenScribe container that bootstraps/unseals local Vault, applies migrations, and supervises FastAPI, one Celery worker consuming all queues, and Celery Beat.
 
-This profile preserves the current local architecture. It is not a production
-reference topology: the bundled database credentials and local Vault root-token
-bootstrap must not be used as production secrets, and production workers should
-be isolated by queue.
+This preserves the current local architecture. It is not a production reference topology: bundled database credentials and persistent local Vault root/unseal material must not be used as production secrets, and production workers should be isolated by queue.
 
 ## Prerequisites
 
-- Docker Engine with the Compose v2 plugin (`docker compose`).
-- Buildx is recommended and is the default builder on current Docker Engine and
-  Docker Desktop. Without it, Compose falls back to the legacy builder and may
-  print a deprecation warning; the build still completes.
+- Docker Engine with Compose v2 (`docker compose`);
+- Buildx is recommended; legacy builder fallback can still complete with a deprecation warning.
 
 ## First start
 
 ```bash
 cp .env.example .env
-# Review APP_PUBLIC_URL, secrets, mail, and Docker settings before starting.
-
+# Review APP_PUBLIC_URL, secrets, mail, proxy trust, and Docker settings.
 docker compose --profile runtime up -d --build
 ```
 
-The web application is published on `127.0.0.1:8080` by default. Check startup:
+The web application publishes on `127.0.0.1:8080` by default.
 
 ```bash
 docker compose --profile runtime ps
@@ -43,19 +34,18 @@ curl --fail http://127.0.0.1:8080/health
 
 On every application-container start, the entrypoint:
 
-1. waits for PostgreSQL and Redis;
-2. initializes or unseals the persistent local Vault;
-3. ensures the KV-v2 and Transit mounts and user-content KEK exist;
-4. applies `alembic upgrade head`;
-5. optionally seeds local test accounts;
-6. starts the Celery worker, Celery Beat, and Uvicorn.
+1. fixes ownership of the named Vault-bootstrap mount while running as root;
+2. re-executes itself as the unprivileged `openscribe` user (UID/GID `10001`);
+3. waits for PostgreSQL and Redis;
+4. initializes or unseals persistent local Vault;
+5. ensures KV-v2, Transit, and the user-content KEK exist;
+6. applies `alembic upgrade head`;
+7. optionally seeds local test accounts;
+8. starts the Celery worker, Celery Beat, and Uvicorn.
 
-If any of those three long-running processes exits, the container stops so the
-`unless-stopped` restart policy can restart the complete runtime consistently.
+If any supervised long-running process exits, the container stops and `restart: unless-stopped` restarts the complete runtime consistently.
 
-The entrypoint never purges the Celery queues. Work already queued in Redis is
-consumed after every start, and Beat resumes scheduling retention and
-Vault-cleanup tasks immediately on each container start.
+The entrypoint never purges Redis/Celery queues. Queued work resumes after restart. Beat publishes pending durable task-dispatch rows every second and runs retention, transcript-audio cleanup, provider-secret cleanup, and quota lifecycle processing every 10 seconds.
 
 ## Common operations
 
@@ -63,126 +53,95 @@ Vault-cleanup tasks immediately on each container start.
 # Status
 docker compose --profile runtime ps
 
-# Follow application, worker, and scheduler output
+# Follow web, worker, and Beat output
 docker compose logs -f openscribe
 
-# Restart only the OpenScribe runtime
+# Restart only the application runtime
 docker compose restart openscribe
 
-# Rebuild after code or dependency changes
+# Rebuild after code/dependency changes
 docker compose --profile runtime up -d --build
 
-# Stop the stack but preserve all named volumes
+# Stop while preserving named volumes
 docker compose --profile runtime down
 
-# Start it again without rebuilding
+# Start again without rebuilding
 docker compose --profile runtime up -d
 ```
 
-Do not add `--volumes` to `docker compose down` unless the PostgreSQL, Redis,
-Vault, and Vault-bootstrap data should be destroyed intentionally.
+Do not add `--volumes` unless PostgreSQL, Redis, Vault, and bootstrap data should be destroyed intentionally.
 
-## Migrating from `./start-dev.sh`
+## Migrating from `start-dev.sh`
 
-The host development flow and the runtime profile share the same Compose
-project. PostgreSQL and Vault data already stored in their named volumes carry
-over. Wrapped user DEKs and Vault-stored provider credentials therefore remain
-valid only when the matching PostgreSQL, Vault, and bootstrap material are kept
-together. Redis did not use a named volume before this runtime profile, so its
-old container-local queue, result, and rate-limit state does not automatically
-migrate when Compose recreates Redis with `redis_data`.
+The host development flow and runtime profile share the same Compose project. Existing PostgreSQL and Vault named volumes carry over. Wrapped user DEKs/provider credentials remain usable only when matching PostgreSQL, Vault storage, and bootstrap material are kept together.
+
+Redis did not originally use a named volume. Its old container-local queue/result/rate-limit state does not automatically migrate when Compose creates `redis_data`.
 
 Before the first runtime start:
 
-1. Stop the host processes. `./start-dev.sh` and its FastAPI server, Celery
-   worker, and Celery Beat must not run alongside the runtime profile: they
-   compete for the same `APP_PORT` and broker queues, and two active Beats
-   double-schedule retention and Vault cleanup.
-2. Copy the Vault bootstrap files into the `vault_bootstrap` volume. The host
-   flow stores them at `.local/vault/`; the container reads them from
-   `/app/.local/vault/` on the named volume. If `vault_data` was already
-   initialized by the host flow while the volume is empty, the application
-   fails closed on startup (see Troubleshooting). Copy the files without
-   printing their contents:
+1. Stop the host FastAPI server, Celery worker, and Celery Beat. Running both workflows competes for `APP_PORT` and queues, and multiple Beat processes duplicate periodic work.
+2. Copy host Vault bootstrap files into `vault_bootstrap` when the existing `vault_data` was initialized by `start-dev.sh`:
 
-   ```bash
-   docker compose --profile runtime build openscribe
+```bash
+docker compose --profile runtime build openscribe
 
-   docker compose --profile runtime run --rm --no-deps \
-     --volume "$PWD/.local/vault:/host-bootstrap:ro" \
-     --entrypoint sh \
-     openscribe \
-     -c 'install -o 10001 -g 10001 -m 600 /host-bootstrap/root-token /app/.local/vault/root-token && install -o 10001 -g 10001 -m 600 /host-bootstrap/unseal-key /app/.local/vault/unseal-key'
-   ```
+docker compose --profile runtime run --rm --no-deps \
+  --volume "$PWD/.local/vault:/host-bootstrap:ro" \
+  --entrypoint sh \
+  openscribe \
+  -c 'install -o 10001 -g 10001 -m 600 /host-bootstrap/root-token /app/.local/vault/root-token && install -o 10001 -g 10001 -m 600 /host-bootstrap/unseal-key /app/.local/vault/unseal-key'
+```
 
-   The command copies the files without displaying them. Skip this step only
-   when Vault has never been initialized on this host.
+The command copies without printing values. Skip only when Vault has never been initialized on this host.
 
-On the first runtime start, Compose may recreate the PostgreSQL, Redis, and
-Vault containers to apply the runtime configuration. The named volumes
-for PostgreSQL and Vault persist, but expect a short dependency outage while
-the containers are replaced. The first runtime start creates `redis_data`; it
-does not copy state from the earlier unpersisted Redis container, so queued
-broker work, task results, and rate-limit counters held only there may be lost.
-After this migration, Redis uses append-only persistence and future runtime
-restarts retain its state. Stop or drain important queued work before the first
-migration rather than assuming it will be replayed.
+On first start, Compose can recreate dependency containers. PostgreSQL/Vault named volumes persist. `redis_data` starts empty and does not copy an earlier unpersisted Redis container; drain or accept loss of important queued work/results before migration.
 
 ## Persistent data
 
 | Volume | Contents |
 | --- | --- |
 | `postgres_data` | Application database and migration state. |
-| `redis_data` | Celery broker/result data and rate-limit state. |
-| `vault_data` | Vault file storage, including KV and Transit state. |
-| `vault_bootstrap` | Local Vault root token and unseal key used by the application entrypoint. |
+| `redis_data` | Celery broker/results and rate-limit state. |
+| `vault_data` | Vault file storage, KV secrets, Transit key state. |
+| `vault_bootstrap` | Local Vault root token and unseal key used by the entrypoint. |
 
-PostgreSQL content, Vault key material, and the Vault bootstrap credentials are
-linked: database rows contain wrapped user keys that require the corresponding
-Vault Transit state, and the runtime cannot unseal or authenticate to Vault
-without the bootstrap files. Back up `postgres_data`, `vault_data`, and
-`vault_bootstrap` together and restore them as one deployment set. `redis_data`
-holds queued Celery and rate-limit state; include it when queued work must
-survive host loss, but it is not part of the encrypted-content set. Do not wipe
-or replace the Vault volumes while retaining encrypted application data unless
-the established unreadable-content recovery procedure is being followed
-deliberately (see Troubleshooting).
+Back up and restore `postgres_data`, `vault_data`, and `vault_bootstrap` as one encrypted-content recovery set. Database rows contain wrapped user keys requiring the corresponding Vault Transit state, and the runtime requires bootstrap material to unseal/authenticate to this local Vault.
 
-## Configuration inside Compose
+Include `redis_data` when queued work/result/limiter continuity matters, but PostgreSQL remains authoritative and Redis is not a database backup.
 
-Compose reads `.env` for variable interpolation, then overrides addresses that
-must use the internal Docker network:
+Do not wipe/reinitialize Vault while retaining encrypted application data unless following the explicit unreadable-content recovery procedure.
 
-- `DATABASE_URL` uses `postgres:5432`
-- `RATE_LIMIT_STORAGE_URL` uses `redis:6379/0`
-- Celery broker and result backend use `redis:6379/2`
-- `VAULT_ADDR` uses `vault:8200`
-- `VAULT_TOKEN_FILE` uses `/app/.local/vault/root-token`
-- the web process binds to container port `8080`
+## Compose configuration
 
-`APP_PORT` controls the host-published port. For example:
+Compose reads `.env` for interpolation and explicitly maps supported runtime variables. It overrides addresses that must use Docker service DNS:
+
+- `DATABASE_URL` -> `postgres:5432`;
+- limiter storage -> `redis:6379/0`;
+- Celery broker/result backend -> `redis:6379/2`;
+- `VAULT_ADDR` -> `vault:8200`;
+- `VAULT_TOKEN_FILE` -> `/app/.local/vault/root-token`;
+- web bind -> internal `0.0.0.0:8080`.
+
+`APP_PORT` controls the published host port:
 
 ```env
 APP_PORT=8090
 APP_PUBLIC_URL=http://127.0.0.1:8090
 ```
 
-Then recreate the service:
+Then recreate:
 
 ```bash
 docker compose --profile runtime up -d
 ```
 
-See [environment.md](environment.md) for the complete configuration reference.
+See [environment.md](environment.md) for all mapped settings and code defaults.
 
 ## Google Application Default Credentials
 
-Gemini Enterprise can use Application Default Credentials (ADC). Do not copy a
-credential file into the image or put its JSON in `.env`. The optional
-`docker-compose.adc.yml` override mounts one host credential file read-only into
-the single container that runs both the web and generation-worker processes.
+Gemini Enterprise can use ADC. Do not copy credential JSON into the image or `.env`.
 
-Set the host path, then include both Compose files:
+The optional `docker-compose.adc.yml` mounts one host file read-only into the application container and sets `GOOGLE_APPLICATION_CREDENTIALS`:
 
 ```bash
 export GOOGLE_ADC_HOST_FILE="$HOME/.config/gcloud/application_default_credentials.json"
@@ -194,7 +153,7 @@ docker compose \
   up -d --build
 ```
 
-Confirm resolution without printing a token or credential content:
+Verify identity resolution without printing a token/credential:
 
 ```bash
 docker compose \
@@ -204,106 +163,92 @@ docker compose \
   python -c 'import google.auth; c,p=google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"]); print(type(c).__name__, p, c.quota_project_id)'
 ```
 
-The container runs as UID `10001`; the mounted file must be readable by that UID.
-Do not make the credential world-readable to bypass a permission problem. For a
-production workload, prefer an attached service identity or Workload Identity
-Federation rather than a user ADC refresh-token file.
+Application processes run as UID `10001`; the mounted file must be readable by that UID. Do not make it world-readable. Production should prefer attached workload identity/Workload Identity Federation over a user ADC refresh-token file.
 
 ## Reverse proxy and network exposure
 
-The safe default publishes only to localhost:
+Safe default:
 
 ```env
 DOCKER_APP_BIND=127.0.0.1
 ```
 
-A reverse proxy running directly on the host can connect to that address. When a
-proxy in another container or a private network must connect, set an appropriate
-bind address deliberately and firewall the origin. Also configure:
+A host reverse proxy can connect to loopback. When a proxy in another container/private network must connect, bind deliberately and firewall the origin.
 
-- `APP_PUBLIC_URL` to the public HTTPS URL;
-- `COOKIE_SECURE_MODE=always` for production HTTPS;
-- exactly one HSTS owner through `HSTS_SOURCE`;
-- `FORWARDED_ALLOW_IPS` to the actual trusted proxy address or addresses;
-- audit forwarded-header trust only when the proxy sanitizes those headers and
-  direct origin access is blocked.
+Configure all relevant boundaries independently:
 
-Do not use `FORWARDED_ALLOW_IPS=*` as a convenience setting on an origin that can
-be reached directly.
+- `APP_PUBLIC_URL` = public HTTPS origin;
+- `APP_ENV=production`;
+- `COOKIE_SECURE_MODE=always`;
+- one HSTS owner through `HSTS_SOURCE`;
+- `FORWARDED_ALLOW_IPS` = actual trusted proxy addresses accepted by Uvicorn;
+- `TRUST_FORWARDED_ORIGIN_HEADERS=true` only when that proxy sanitizes forwarded host/proto and direct origin access is blocked;
+- `AUDIT_TRUST_X_FORWARDED_FOR`/`AUDIT_TRUST_CLOUDFLARE` only for the expected sanitizing proxy/CDN path.
 
-## Seeding test accounts
+These switches are separate. Trusting Uvicorn forwarded headers does not automatically trust them for CSRF origin reconstruction or audit client IP.
 
-The persistent profile does not seed test users by default. For a private local
-instance only:
+Do not use `FORWARDED_ALLOW_IPS=*` on an origin that is directly reachable.
+
+## Test-account seeding
+
+Persistent runtime does not seed accounts by default. For a private localhost disposable instance:
 
 ```env
 DOCKER_SEED_TEST_ACCOUNTS=true
 ```
 
-The `DEV_TEST_*` values in `.env` control the seeded names and credentials. Turn
-this back off before using a persistent instance with real data or additional
-users.
+`DEV_TEST_*` values control seeded account data. Disable before adding real/shared data. Seeded accounts are localhost-only in application policy and are not production accounts.
 
 ## Troubleshooting
 
-### Vault is initialized but the bootstrap files are missing
+### Vault initialized but bootstrap files missing
 
-The application entrypoint fails closed and the container stops when
-`docker compose logs openscribe` shows one of:
-
-- `Local Vault is initialized but root token is missing at /app/.local/vault/root-token`
-- `Local Vault is initialized but unseal key is missing at /app/.local/vault/unseal-key`
-- either message with `is empty at` instead of `is missing at`
-
-The Vault server in `vault_data` was already initialized — usually by an
-earlier `./start-dev.sh` run or a previous stack — but the `vault_bootstrap`
-volume does not hold the matching root-token and unseal-key files. The runtime
-refuses to reinitialize Vault or invent credentials.
+The entrypoint fails closed when existing `vault_data` is initialized but `/app/.local/vault/root-token` or `unseal-key` is missing/empty.
 
 Recovery:
 
-1. Locate the original bootstrap files. For a host-developed instance they are
-   `.local/vault/root-token` and `.local/vault/unseal-key`; otherwise restore
-   them from the deployment backup.
-2. Copy them into the volume without printing them, using the command in
-   "Migrating from `./start-dev.sh`".
-3. Start the runtime again:
+1. restore the matching original `.local/vault/root-token` and `.local/vault/unseal-key` or deployment backup;
+2. copy them using the migration command above without printing them;
+3. restart:
 
-   ```bash
-   docker compose --profile runtime up -d
-   ```
+```bash
+docker compose --profile runtime up -d
+```
 
-If the original files are unrecoverable, the Vault Transit key material that
-wraps existing user DEKs cannot be re-derived. Do not wipe `vault_data` or
-reinitialize Vault while retaining encrypted application data: affected rows
-would look intact but remain permanently unreadable. A destructive reset —
-removing the `vault_data` and `vault_bootstrap` volumes, or
-`docker compose --profile runtime down --volumes` — destroys every wrapped DEK
-and Vault-stored provider credential. That is content loss, not recovery:
-afterwards, follow the established unreadable-content recovery procedure and
-audit local content-owning accounts with
-`python scripts/reset_unreadable_owner_content.py`, rerunning with `--apply`
-only when deleting the unreadable transcript-derived content and issuing fresh
-DEKs is the explicit intent.
+If those files/Vault state are unrecoverable, existing wrapped DEKs cannot be re-derived. Removing Vault/bootstrap volumes or running `down --volumes` is content/key loss, not recovery.
+
+Only when destructive loss handling is explicit, audit affected owners with:
+
+```bash
+python scripts/reset_unreadable_owner_content.py
+```
+
+Run again with `--apply` only when deleting unreadable transcript-derived content and issuing fresh DEKs is the approved intent.
+
+### Runtime unhealthy
+
+```bash
+docker compose --profile runtime ps -a
+docker inspect --format '{{json .State.Health}}' "$(docker compose --profile runtime ps -q openscribe)"
+docker compose --profile runtime logs --tail=300 openscribe
+```
+
+Check migrations, Vault bootstrap/unseal, PostgreSQL/Redis connectivity, stable CSRF secret, production cookie settings, and worker/Beat startup.
 
 ## Host development remains available
 
-`./start-dev.sh` still starts only PostgreSQL, Redis, and Vault in Compose, then
-runs FastAPI, Celery, Beat, and optional Brave processes from the host virtualenv.
-Use that workflow for live reload and local debugging. Do not run `start-dev.sh`
-and the `runtime` profile at the same time: stop the host FastAPI server, Celery
-worker, and Celery Beat before starting the runtime, and see "Migrating from
-`./start-dev.sh`" when moving an existing host-developed instance across.
+`start-dev.sh` starts only PostgreSQL, Redis, and Vault in Compose, then runs FastAPI/Celery/Beat and optional Brave on the host virtualenv for reload/debugging.
+
+Do not run it alongside the `runtime` profile.
 
 ## Production boundary
 
-Before treating this as a production deployment, replace the local assumptions:
+Before clinical production:
 
-- use strong, separately managed database and Redis credentials;
-- use TLS and network controls for all backing services;
-- pre-provision Vault and inject least-privilege runtime tokens rather than a
-  persisted root token;
-- run separate Celery workers for `control`, `generation`, and `ingestion`;
-- place the web service behind a configured HTTPS reverse proxy;
-- establish coordinated PostgreSQL and Vault backup/restore procedures;
-- monitor web, worker, Beat, database, Redis, and Vault health independently.
+- use separately managed strong database/Redis credentials and network/TLS controls;
+- pre-provision Vault and inject least-privilege runtime identities instead of persistent root credentials;
+- split Celery workers by queue and monitor worker/Beat independently;
+- use a configured HTTPS reverse proxy and deliberate forwarded-header trust;
+- coordinate PostgreSQL/Vault backup and restore drills;
+- monitor web, worker, Beat, database, Redis, Vault, retention, source-audio cleanup, provider-secret cleanup, and quota/outbox lifecycle;
+- establish deployment secret rotation, audit review, recovery, and destructive deletion procedures.

@@ -3058,6 +3058,25 @@ def test_admin_workspace_global_sidebar_areas_render_real_controls(client, make_
     assert "Team identity, status and operational summary" not in team_usage.text
 
 
+def test_admin_directory_without_teams_renders_csrf_bootstrap(client, make_user):
+    admin = make_user(
+        email="empty-directory-admin@example.com",
+        password="password-1",
+        is_system_admin=True,
+    )
+    client.post(
+        "/login",
+        data={"email": admin.email, "password": "password-1"},
+        follow_redirects=False,
+    )
+
+    directory = client.get("/admin?tab=directory")
+
+    assert directory.status_code == 200
+    assert 'action="/admin/teams"' in directory.text
+    assert "window.OpenScribeCSRF" in directory.text
+
+
 def test_admin_workspace_pending_provider_drafts_offer_finalize_and_cancel(client, db_session, make_team, make_user, make_stt_config, make_llm_config):
     from app.models import LlmConfigSetupStatus, SttConfigSetupStatus
 

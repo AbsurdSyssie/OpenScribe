@@ -4614,7 +4614,6 @@
       </section>
     </div>
 
-    {% include "_csrf_script.html" %}
     <script nonce="{{ request.state.csp_nonce }}">
       document.addEventListener("submit", (event) => {
         const form = event.target.closest("form[data-confirm-submit]");
@@ -5412,6 +5411,7 @@
       });
     </script>
     {% endif %}
+    {% include "_csrf_script.html" %}
     <div class="toast-container" data-toast-container></div>
     {% if active_admin_tab == 'usage' or workspace_team_tab == 'usage' %}
     <script id="usage-chart-data" type="application/json" data-range-label="{{ usage_range_label }}" data-has-comparison="{{ 'true' if usage_has_comparison else 'false' }}">{{ usage_comparison_trend_points|tojson }}</script>

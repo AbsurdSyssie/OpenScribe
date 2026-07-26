@@ -1,631 +1,166 @@
 # Account Recovery Brief
 
-This note defines a recovery model that fits the current OpenScribe architecture.
+## Status
 
-It is intentionally scoped around authentication recovery only.
-It does not widen transcript visibility, alter deletion semantics, or couple data access to the user password.
+This document records the implemented local-auth recovery model and explicitly separates unimplemented future options. The earlier “current gaps” were obsolete: transactional email, self-service password reset, activation/setup links, manager MFA reset, manager recovery links, break-glass recovery, session/trusted-device revocation, and durable security audit metadata are implemented.
 
-## Existing baseline
-
-Current implemented pieces:
-
-- email + password login
-- TOTP enrollment during onboarding
-- post-password MFA challenge for completed accounts
-- optional one-time recovery codes generated during onboarding
-- trusted-device skip window for recent MFA
-- revocable opaque sessions and trusted-device records
-
-Current gaps:
-- no manager-assisted TOTP reset flow
-- no dedicated recovery UX for "lost password and lost authenticator"
-- no outbound email transport abstraction for reset delivery
-- no external IdP / Auth0 auth mode
+The authoritative route and access contract is [auth.md](auth.md) and [api.md](api.md).
 
 ## Hard rules
 
-Any recovery design must preserve these:
+- Passwords are authentication material only and never encrypt transcript-derived content.
+- Password/account recovery must not rotate or destroy the user's content DEK.
+- Recovery never grants leaders/system administrators owner-content readability.
+- Password, MFA, trusted-device, session, setup/reset token, and recovery-code material are separate authorities.
+- Recovery revokes stale sessions/trusted-device trust according to the action performed.
+- Public reset requests do not disclose whether an email exists when mail is enabled.
+- Plaintext setup/reset tokens and temporary passwords are shown/sent only through their intended one-time channel; only hashes are persisted.
+- Recovery audit contains bounded action/outcome/reason metadata, never credentials, submitted TOTP values, recovery codes, tokens, or owner content.
 
-- passwords are auth material only
-- passwords do not encrypt transcript-derived data
-- password reset must not rotate or destroy the user DEK
-- leaders and system admins still do not gain transcript readability
-- recovery must revoke stale sessions and trusted-device trust where appropriate
-- recovery flows must not leak whether an email exists
-- one account must have one clear auth authority; do not mix local-password reset and Auth0 reset for the same identity without an explicit model
+## Current authentication authority
 
-## Auth authority models
+OpenScribe currently owns local authentication:
 
-There are two valid models.
-Pick one per account.
+- password verification/reset;
+- TOTP enrollment/challenge/reset;
+- optional recovery-code generation/storage;
+- session and trusted-device state;
+- activation/setup tokens;
+- manager-assisted recovery;
+- break-glass temporary-password recovery.
 
-### Model A: local auth owned by OpenScribe
+There is no implemented `auth_provider` model or Auth0 login/recovery mode in the current route/schema contract. External identity integration requires a separate architecture decision; do not document Auth0 as an available recovery path.
 
-OpenScribe owns:
+## Implemented self-service recovery
 
-- password verification
-- password reset
-- TOTP enrollment
-- recovery codes
-- manager-assisted recovery
+### Password reset request
 
-This is the current architectural direction.
+`POST /api/v1/auth/password-reset/request`
 
-### Model B: external auth owned by Auth0
+- requires configured transactional mail;
+- returns a generic response for existing/missing users when enabled;
+- returns `503 mail_transport_disabled` when the deployment cannot send recovery mail;
+- creates a bounded single-use hashed email token for eligible accounts;
+- never returns the plaintext token through the API.
 
-Auth0 owns:
+### Password reset completion
 
-- primary login
-- password reset
-- MFA challenge and MFA reset for Auth0-managed factors
-- recovery flows for Auth0-managed accounts
+`POST /api/v1/auth/password-reset/confirm`
 
-OpenScribe still owns:
+- validates the single-use token and expiry;
+- applies the permanent-password policy;
+- revokes sessions and trusted devices;
+- preserves TOTP methods/recovery codes for password-only reset;
+- preserves the user DEK and encrypted owner content;
+- requires normal login/MFA after reset.
 
-- application sessions after successful Auth0 login
-- authorization, roles, teams, and ownership
-- transcript privacy boundaries
-- optional local break-glass logic only if explicitly designed
+### Account activation/setup completion
 
-Strong rule:
+`POST /api/v1/auth/account-activation/confirm`
 
-- do not run both local-password recovery and Auth0-password recovery against the same account without a formal `auth_provider` model
-- otherwise users and managers will not know which system is authoritative
+Activation/setup is first-use account setup rather than ordinary password-only recovery. It establishes a permanent password and forces TOTP onboarding before full access.
 
-## Supported recovery scenarios
+## Recovery codes
 
-The scenarios below assume local-auth accounts unless noted otherwise.
+Recovery codes are optionally generated during onboarding and stored as one-way hashes. Their plaintext cannot be recovered from database state.
 
-### 1. Lost password, still has TOTP
+The current operational API/auth documentation does not expose a recovery-code alternative on `POST /api/v1/auth/mfa/totp` or a dedicated recovery-code-to-TOTP-re-enrollment route. Do not instruct users that they can enter a recovery code at the MFA challenge until that flow is explicitly implemented, tested, and documented.
 
-Recommended flow:
+Current user guidance should say:
 
-1. user requests password reset by email
-2. system issues a single-use reset token with short expiry
-3. user sets a new password
-4. existing sessions and trusted-device records are revoked
-5. user logs in with new password
-6. normal MFA challenge still applies
+- store generated codes according to local policy;
+- treat each as credential material;
+- contact a leader/system administrator for approved recovery when the authenticator is lost and no implemented self-service path is available.
 
-This is standard password recovery only.
-It should not reset TOTP by itself.
+A future recovery-code flow should consume one code, issue only restricted recovery authority, force TOTP re-enrollment, revoke old trust, and never grant indefinite full access directly.
 
-### 2. Lost TOTP, still has password and a recovery code
+## Implemented manager-assisted recovery
 
-Recommended flow:
+Eligible team leaders and system administrators can perform metadata-only actions within their authorization scope:
 
-1. user logs in with email + password
-2. MFA challenge offers either TOTP or recovery code
-3. recovery code is verified and consumed
-4. current `pending_mfa` session is elevated into a restricted recovery session
-5. user is forced to enroll a new TOTP secret
-6. old recovery codes are deleted
-7. new recovery codes may be generated
-8. trusted devices are reset because old MFA trust is no longer valid
+- send activation/setup link;
+- send password-reset link;
+- send full account-recovery link;
+- reset MFA;
+- break-glass password reset;
+- break-glass full account recovery.
 
-Important point:
-recovery code should not just drop the user into ordinary full access forever.
-It should be treated as a one-time bridge into MFA re-enrollment.
+Leaders are restricted to non-system-admin users in their own team and cannot act on themselves through protected manager lifecycle routes. System-admin protected-account/last-admin rules remain authoritative.
 
-### 3. Lost password, lost TOTP, still has recovery code
+### Send password-reset link
 
-Recommended flow:
+Use when the password is lost but existing MFA should remain. Completion revokes session/trusted-device authority and preserves TOTP/recovery-code state.
 
-1. user completes self-service password reset
-2. user logs in with the new password
-3. MFA challenge accepts recovery code
-4. system consumes the code and forces TOTP re-enrollment
-5. new recovery codes are generated or explicitly skipped
+### Send full account-recovery link
 
-This stays self-service.
+Use when the account needs password plus MFA recovery. Completion resets the applicable authentication factors and returns the user to required setup/onboarding without touching owner-content keys.
 
-### 4. Lost TOTP and no recovery codes, still knows password
+### Reset MFA
 
-Recommended flow:
+Use when the user knows the password but cannot use the authenticator. The action revokes existing authority, removes active TOTP/recovery-code state, and forces re-enrollment through the implemented onboarding state.
 
-1. user contacts a manager out of band
-2. team leader or system admin verifies identity outside the app
-3. manager triggers "reset MFA"
-4. system revokes sessions and trusted devices
-5. system deletes active TOTP methods and recovery codes
-6. account state is moved back to `pending_totp_enrollment`
-7. user logs in with existing password and is forced through TOTP setup again
+### Break-glass password reset
 
-This is manager-assisted recovery.
-It does not require a password reset if the password is still known.
+Use only when policy permits and email recovery is unavailable. It requires:
 
-### 5. Lost password, lost TOTP, and no recovery codes
+- the manager's current TOTP code;
+- a reason;
+- explicit confirmation that email recovery is unavailable;
+- rate-limited/protected manager authority.
 
-Recommended flow:
+It returns an expiring temporary password once, stores only its hash, revokes authority, and forces password change. It preserves MFA state for password-only recovery.
 
-1. user contacts a manager out of band
-2. team leader or system admin verifies identity outside the app
-3. manager triggers "reset password and MFA"
-4. system sets a temporary password or password-reset token
-5. system deletes active TOTP methods and recovery codes
-6. system revokes sessions and trusted devices
-7. account state returns to onboarding
-8. user changes password, enrolls TOTP, and optionally regenerates recovery codes
+### Break-glass full account recovery
 
-This is the strongest recovery action and should be audited clearly.
+Uses the same safeguards but also clears MFA/recovery-code state and forces full password/TOTP setup.
 
-### 6. Auth0-managed account recovery
+Legacy `recover-password` and `recover-account` endpoints are deprecated and fail closed with `410 deprecated_recovery_endpoint`.
 
-For Auth0-managed accounts:
+## Mail infrastructure
 
-1. user chooses sign-in with Auth0
-2. lost-password flow is handled by Auth0 reset email
-3. lost MFA flow is handled by Auth0 guardian/MFA recovery path
-4. once Auth0 authenticates the user, OpenScribe creates or refreshes its own app session
+Transactional email is instance-level infrastructure, not team/user provider policy.
 
-Manager role in this case:
+Supported transports:
 
-- leaders and system admins may disable the OpenScribe account
-- they may not reset Auth0 secrets from inside OpenScribe unless we intentionally build admin-management integration with Auth0 APIs
+- `disabled`;
+- `stdout` in local/test only;
+- `resend`.
 
-Best first plan:
+Required production considerations:
 
-- keep Auth0 recovery self-service only
-- do not try to build manager-triggered Auth0 admin actions in phase 1
+- verified sender and correct public HTTPS `APP_PUBLIC_URL`;
+- API key injected through deployment secret or provisioned Vault reference;
+- no reset/setup token logging;
+- clear expiry/single-use behavior;
+- delivery monitoring without copying message/token content into support logs.
 
-## Recommended product behavior
+See [environment.md](environment.md) and [setup.md](setup.md).
 
-### Self-service features
+## Recovery effects matrix
 
-Add:
+| Action | Password | TOTP / recovery codes | Sessions / trusted devices | User DEK / owner content |
+| --- | --- | --- | --- | --- |
+| Self-service password reset | Replace | Preserve | Revoke | Preserve |
+| Manager password-reset link | Replace on completion | Preserve | Revoke | Preserve |
+| Activation/setup link | Establish/replace | Force enrollment | Revoke/replace | Preserve/initialize as applicable |
+| Manager MFA reset | Preserve | Clear and re-enroll | Revoke | Preserve |
+| Full account-recovery link | Replace | Clear and re-enroll | Revoke | Preserve |
+| Break-glass password reset | Temporary then permanent | Preserve | Revoke | Preserve |
+| Break-glass full recovery | Temporary then permanent | Clear and re-enroll | Revoke | Preserve |
+| Suspension | Preserve | Preserve but trust unusable | Revoke/block | Preserve |
+| Hard deletion | Delete account | Delete | Delete | Delete through current lifecycle/cascades |
 
-- forgot-password request form
-- emailed password reset link
-- password reset completion form
-- recovery-code option on MFA challenge
+## Future external identity
 
-Strong recommendation:
+External IdP support is not currently implemented. Before adding it, define:
 
-- keep recovery codes, but stop treating them as a soft extra in practice
-- either make them mandatory for MFA-required accounts
-- or keep skip available but warn clearly that manager intervention will otherwise be required
+- per-account auth authority (`local` versus specific external provider);
+- account linking/provisioning/deprovisioning;
+- MFA and password recovery owner;
+- app-session creation/revocation;
+- trusted-device interaction;
+- break-glass policy;
+- audit/incident behavior;
+- migration and rollback.
 
-### Manager-assisted features
-
-Allow team leaders and system admins to do metadata-only recovery actions:
-
-- issue password reset
-- reset MFA only
-- reset password and MFA together
-
-Do not allow them to:
-
-- view TOTP secrets
-- view recovery codes
-- bypass ownership and read content
-
-## Suggested state model
-
-The cleanest shape is:
-
-- keep current onboarding states for first-time setup
-- add a separate security-recovery requirement instead of overloading full access
-
-Recommended new session/auth concept:
-
-- `recovery_reenroll`
-
-Meaning:
-
-- user has passed password plus a one-time recovery factor
-- user may access only the recovery flow
-- user must set up a new TOTP method before regaining full access
-
-If you want lower schema churn, a simpler variant is:
-
-- reuse onboarding gating
-- after manager-assisted reset or recovery-code login, set user back to a pending setup state
-
-That is cheaper to ship, but it mixes first-time onboarding with later account recovery.
-It is acceptable in MVP if the UX copy is explicit.
-
-## Schema additions
-
-Minimum new schema:
-
-- `password_reset_tokens`
-  - `id`
-  - `user_id`
-  - `token_hash`
-  - `expires_at`
-  - `used_at`
-  - `created_at`
-  - optional `created_by_user_id` for manager-issued resets
-  - optional `purpose` enum such as `self_service` or `manager_reset`
-
-Possible small additions:
-
-- `user_sessions.auth_level` new value for recovery-only sessions
-- optional `users.recovery_required_at`
-- optional audit/event table if recovery actions need durable review trail beyond logs
-
-## Email delivery and instance linking
-
-Self-service password reset is not complete until the app can deliver a reset message.
-
-Recommended model:
-
-- outbound email is instance-level platform infrastructure
-- it is not team-scoped
-- it is not user-configurable
-- system admins configure it once per deployment
-
-This section applies to local-auth password reset.
-If Auth0 owns password reset for a user, Auth0 sends the reset email instead of OpenScribe.
-
-Why:
-
-- reset delivery is platform security infrastructure
-- it should not depend on team leaders
-- it should not reuse transcript/LLM/STT provider config tables
-
-### Transport options
-
-Recommended first transport now:
-
-- Resend Email API
-
-Why Resend first:
-
-- direct transactional email API fits account activation and password reset flows
-- Python SDK and REST API are both available
-- API-level idempotency helps safe retry from an outbox worker
-- delivery webhooks can be added later without changing the auth-token model
-
-Keep the mailer interface provider-neutral so SMTP can still be added later for:
-
-- internal corporate SMTP relay
-- AWS SES SMTP
-- Postmark SMTP
-- SendGrid SMTP
-
-### Recommended config shape
-
-Add one instance-level mail transport config, for example:
-
-- `MAIL_TRANSPORT=disabled|stdout|resend`
-- `MAIL_FROM_ADDRESS`
-- `MAIL_FROM_NAME`
-- `MAIL_REPLY_TO` optional
-- `APP_PUBLIC_URL`
-
-Sensitive Resend values should not live in plain env for production if the rest of the app already uses Vault-backed secrets.
-
-Recommended secret model:
-
-- store Resend API key material in Vault
-- store only a Vault reference in the database if you need editable admin-managed config
-- or load the secret from env only in local/dev if you want the smallest first slice
-
-Pragmatic split:
-
-- dev: env vars acceptable
-- production: Vault-backed secret strongly preferred
-
-### Suggested ownership model
-
-Best fit for current architecture:
-
-- system admin provisions outbound email transport
-- database stores only metadata and optional Vault reference
-- runtime mailer resolves the secret from Vault when sending
-- leaders have no power to edit or view mail credentials
-
-That mirrors the existing provider-secret pattern.
-
-For Resend production setup:
-
-- verify the sending domain before enabling production delivery
-- prefer a dedicated transactional subdomain
-- use a sending-restricted API key when available
-- use one stable sender identity for security email
-
-### Send path
-
-Recommended send path:
-
-1. create password reset token row
-2. enqueue email job or write to outbox
-3. worker sends email using instance mail transport
-4. job stores delivery status metadata only
-
-Do not send reset mail synchronously in the request path unless shipping a very small MVP.
-
-Why queue it:
-
-- avoids tying auth latency to mail server latency
-- gives retry behavior
-- gives auditability
-
-### Minimum email content
-
-Reset email should contain:
-
-- generic security wording
-- short-lived reset link
-- expiry duration
-- ignore-this-if-not-you copy
-
-Do not include:
-
-- sensitive account state
-- role/team data unless necessary
-- anything transcript-related
-
-### URL generation
-
-The reset link needs an external base URL.
-
-Add one explicit public app origin setting, for example:
-
-- `APP_PUBLIC_URL=https://openscribe.example.com`
-
-Then generate links like:
-
-- `${APP_PUBLIC_URL}/reset-password?token=...`
-
-Do not infer this from request headers alone for security-sensitive emails.
-
-### Local development
-
-For development, easiest options are:
-
-- console/file outbox mode
-- MailHog/Mailpit if SMTP support is added later
-
-Suggested dev option:
-
-- `MAIL_TRANSPORT=stdout`
-- `APP_ENV=local`
-
-That lets tests and local runs verify the flow without a real external provider.
-
-### Account activation and setup email
-
-Account activation should use the same email/token infrastructure as password reset.
-
-Recommended model:
-
-- add a generic auth email token table, or extend `password_reset_tokens` before naming locks in too narrowly
-- token purposes should include:
-  - `account_activation`
-  - `password_reset`
-  - `manager_password_reset`
-  - `manager_account_recovery`
-- manager-created users and approved account requests can receive setup email instead of relying only on an out-of-band temporary password
-- setup link lets the user choose the first real password
-- TOTP onboarding remains mandatory before full access
-- temporary-password onboarding may remain as fallback until production email delivery is proven
-
-Security rules:
-
-- store only token hash
-- activation tokens are single-use and short-lived
-- activation does not grant full access until password and MFA onboarding complete
-- setup/reset emails contain no team secrets, provider secrets, transcript text, note text, or recovery codes
-
-### Resend send behavior
-
-The first Resend adapter should:
-
-- call the Email API with `from`, `to`, `subject`, `html`, and `text`
-- set an idempotency key based on the outbox row id
-- store Resend message id and delivery attempt metadata only
-- treat API key as a platform secret
-- retry transient failures from the worker
-
-Implemented first slice:
-
-- mail service supports `disabled`, `stdout`, and `resend`
-- `resend` uses the direct Resend Email API with bearer auth and a `User-Agent`
-- `stdout` keeps local/dev and no-Resend deployments usable
-- `scripts/send_test_email.py` sends a non-content test email through the configured transport
-- `auth_email_tokens` stores account setup/reset tokens as hashes with purpose, expiry, and used state
-- `/forgot-password`, `/reset-password`, and `/activate-account` provide browser flows
-- `POST /api/v1/auth/password-reset/request`, `POST /api/v1/auth/password-reset/confirm`, and `POST /api/v1/auth/account-activation/confirm` provide API flows
-- manager recovery endpoints can send setup links, reset MFA, or reset password/password+MFA with a one-time visible random temporary password
-- only the temporary password hash is stored; the plaintext value is returned once to the manager and must not be logged
-
-Resend webhooks are optional for MVP.
-If added, webhook processing must verify provider signatures before trusting event payloads and should store status metadata only.
-
-### Tests needed for email transport slice
-
-- reset request writes token row but never reveals user existence
-- email job/outbox row created for real users only
-- public response remains generic for both existing and missing emails
-- token confirmation works without requiring mail provider network access in tests
-- logs contain event metadata only, not token plaintext
-- manager roles cannot view raw mail credentials
-
-## Endpoint / route shape
-
-### Public self-service
-
-- `POST /api/v1/auth/password-reset/request`
-- `POST /api/v1/auth/password-reset/confirm`
-- browser pages for request and completion
-
-Rules:
-
-- always return generic success text from request
-- rate limit tightly
-- token must be single-use and short-lived
-
-### MFA fallback
-
-- `POST /api/v1/auth/mfa/recovery-code`
-
-Rules:
-
-- only valid for a `pending_mfa` session
-- consumes exactly one stored recovery code
-- rotates the session
-- sends user into TOTP re-enrollment, not ordinary steady-state access
-
-### Manager-assisted
-
-- `POST /api/v1/users/{user_id}/recover-password`
-- `POST /api/v1/users/{user_id}/reset-mfa`
-- `POST /api/v1/users/{user_id}/recover-account`
-
-Authority:
-
-- system admins: any allowed non-protected account
-- team leaders: non-system-admin users in their own team only
-
-Behavior:
-
-- revoke sessions
-- revoke trusted devices
-- clear the right MFA/recovery state
-- update onboarding or recovery gating state
-- expose temporary passwords only for manager-assisted non-email recovery; never expose reset tokens, MFA secrets, recovery codes, or content
-
-### Auth0 login / callback
-
-If Auth0 is added, the minimum route shape is:
-
-- `GET /auth/auth0/login`
-- `GET /auth/auth0/callback`
-- optional logout handoff if single logout is desired
-
-OpenScribe then:
-
-- verifies Auth0 identity token / callback result
-- resolves local user by stable subject/email mapping
-- creates the normal opaque OpenScribe app session
-- continues to enforce local team/role/content ownership
-
-Recommended user model additions if Auth0 is adopted:
-
-- `auth_provider` enum such as `local` or `auth0`
-- `external_subject` for stable Auth0 identity binding
-- optional `password_hash` nullable only for non-local accounts
-
-Important:
-
-- email alone is not the strongest long-term binding key
-- stable Auth0 subject should be stored if available
-
-## Security controls
-
-Required:
-
-- generic responses for public reset request
-- hashed reset tokens only
-- short expiry
-- single-use token invalidation
-- revoke all existing reset tokens on successful reset
-- revoke trusted devices on password reset and MFA reset
-- audit log events for request, issue, use, failure, and manager action
-- rate limits for reset request, reset confirm, and recovery-code attempts
-
-Recommended:
-
-- notify the user by email when password or MFA is reset
-- require reason text for manager-assisted recovery
-- show last recovery event timestamp to the user after login
-
-If Auth0 is used:
-
-- verify issuer, audience, nonce, and expiry correctly
-- never trust raw browser profile data without token validation
-- treat Auth0 as the auth source only; OpenScribe authorization still happens locally
-- avoid silent local-user auto-linking on email alone unless policy is explicit
-
-## UX guidance
-
-The recovery UX should present plain choices:
-
-- forgot password
-- use recovery code instead
-- ask your team lead for help
-
-Avoid mixing all recovery logic into the regular login form.
-The login form should stay simple.
-
-If both local auth and Auth0 exist:
-
-- present them as clearly separate sign-in methods
-- recovery help must branch based on account auth mode
-- local accounts see OpenScribe reset path
-- Auth0 accounts see "Continue with Auth0" and Auth0-managed recovery guidance
-
-The MFA challenge page is the right place to surface:
-
-- TOTP code entry
-- "use a recovery code"
-- "I lost my authenticator"
-
-Manager tools should use careful wording:
-
-- `Reset MFA`
-- `Reset password`
-- `Reset password and MFA`
-
-Not:
-
-- `Recover account` as the only label
-
-That is too vague for an action with strong consequences.
-
-## Recommended implementation order
-
-### Phase 1
-
-- decide auth scope:
-  - local auth only
-  - or mixed local + Auth0 account model
-- if mixed, add explicit `auth_provider` model first
-
-### Phase 2
-
-- self-service password reset
-- outbound email transport or dev outbox mode
-- `password_reset_tokens`
-- public request/confirm routes
-- session + trusted-device revocation on success
-
-### Phase 3
-
-- recovery-code MFA challenge
-- forced TOTP re-enrollment after recovery-code use
-- recovery-code regeneration
-
-### Phase 4
-
-- Auth0 login/callback implementation if chosen
-- external-subject binding
-- local session creation after Auth0 auth
-- recovery UX branching by auth mode
-
-### Phase 5
-
-- manager-assisted MFA reset
-- manager-assisted password+MFA reset
-- audit trail and notifications
-
-### Phase 6
-
-- polish recovery UX
-- decide whether recovery codes become mandatory
-- add dedicated recovery event history if needed
-
-## Recommendation
-
-Best MVP path:
-
-1. build self-service password reset first
-2. build recovery-code MFA fallback second
-3. build manager-assisted reset third
-
-That order covers the biggest real-world failures without changing the privacy or encryption model.
-
-If Auth0 is desired, the first question is not "how do we send reset email?"
-It is "which accounts are local and which are Auth0-managed?"
+Do not run local password recovery and an external IdP recovery flow against the same identity without an explicit authority model.

@@ -1,40 +1,102 @@
-# API Behavior
+# JSON API Behavior
 
-Canonical JSON API routes are versioned under `/api/v1`.
+OpenScribe's canonical programmatic interface is versioned under `/api/v1`. The generated OpenAPI document at `/openapi.json` is the authoritative request/response schema for the running build; this document records access tiers, route groups, cross-cutting behavior, and lifecycle contracts that are easy to lose in generated schemas.
 
-Browser navigation behavior:
+In production, `/docs`, `/redoc`, and `/openapi.json` default to full system-administrator authentication unless `PUBLIC_API_DOCS=true` is explicitly configured.
 
-- invalid non-API browser routes now redirect by session state:
-  - unauthenticated users -> `/login`
-  - authenticated users -> `/home`
-- invalid `/api/*` routes still return JSON `404` responses and are not redirected
+## Maintenance rule
 
-## Implemented endpoint groups
+Every new or removed `/api/v1` route must update:
 
-### Auth
+- the FastAPI route/schema implementation;
+- `app/api_route_audit.py`;
+- focused authorization/behavior tests;
+- this route-group index when the public surface changes;
+- the relevant feature documentation and root README when user-facing entry points change.
+
+Run:
+
+```bash
+./.venv/bin/python scripts/audit_api_auth.py
+```
+
+The audit compares the live FastAPI route inventory with its manifest and probes negative access scenarios. It exits non-zero for missing manifest entries or incorrect auth behavior.
+
+## Error envelope
+
+Non-2xx JSON responses use:
+
+```json
+{
+  "error": {
+    "code": "validation_error",
+    "message": "Request validation failed",
+    "details": {
+      "issues": []
+    }
+  }
+}
+```
+
+`details` is optional and must remain bounded and non-sensitive. Raw provider responses, credentials, cookies, transcript text, prompts, dictation, generated content, PII values, and uploaded audio do not belong in error payloads.
+
+Common authorization responses:
+
+- `401 unauthorized`: no valid session;
+- `403 onboarding_incomplete`: onboarding session used on a full-access route;
+- `403 mfa_required`: pending-MFA session used on a full-access route;
+- `403 forbidden`: valid full session without the required role/scope;
+- `404 not_found`: missing object and many cross-owner lookups where existence should not be disclosed.
+
+Rate limiting uses `429 rate_limited`, `Too many requests`, and `Retry-After`. Provider quota denial is not a route-rate-limit condition: internal `quota_disabled`/`quota_exceeded` outcomes are returned to owners as the bounded public code `quota_exceeded` without allowance/usage/reset metadata and should not be automatically retried.
+
+## Authentication and CSRF
+
+Browser/API authentication uses the opaque `openscribe_session` cookie. The database stores only its hash and explicit auth/session state.
+
+Access tiers used by the route audit:
+
+- `public`: no session required;
+- `authenticated`: any valid session, including onboarding or pending MFA where explicitly allowed;
+- `full`: completed onboarding and MFA/trusted-device requirements;
+- `manager`: full system administrator or own-team leader;
+- `system_admin`: full system-administrator session;
+- `local_debug`: localhost seeded development account plus owner restrictions.
+
+Unsafe `/api/v1` requests carrying session or trusted-device cookies require:
+
+- a session-bound `X-CSRF-Token`;
+- a matching `Origin` or `Referer`;
+- the normal authentication/authorization dependency.
+
+Safe `GET`, `HEAD`, and `OPTIONS` requests do not require CSRF. Public unsafe auth/account-request endpoints remain callable without CSRF only when no cookie-backed authority is present.
+
+See [auth.md](auth.md) and [security.md](security.md).
+
+## Public and partial-session routes
+
+### Public auth/account routes
 
 - `POST /api/v1/auth/login`
-- `POST /api/v1/auth/mfa/totp`
 - `POST /api/v1/auth/logout`
 - `POST /api/v1/auth/password-reset/request`
-  - returns generic success only when outbound mail is enabled
-  - returns `503 mail_transport_disabled` when email reset is not configured, so clients can tell users to contact a team leader or system administrator
 - `POST /api/v1/auth/password-reset/confirm`
 - `POST /api/v1/auth/account-activation/confirm`
+- `POST /api/v1/account-requests`
+
+Password-reset request is generic for existing/missing users when mail is enabled. When mail is disabled it returns `503 mail_transport_disabled` so clients can direct the user to manager-assisted recovery.
+
+Public account requests are deduplicated by normalized email plus normalized requested-team name while pending. A request for an existing normalized user email is rejected.
+
+### Valid-session auth routes
+
+- `POST /api/v1/auth/mfa/totp`
 - `GET /api/v1/auth/me`
 - `GET /api/v1/auth/trusted-device`
 
-### Public account requests
+Pending-MFA sessions can use the TOTP/current-user/logout/trusted-device subset. Trusted devices never authenticate independently; they only allow a correct password login to skip TOTP while the server-side record remains valid and within the 24-hour MFA freshness window.
 
-- `POST /api/v1/account-requests`
-
-### Manager review
-
-- `GET /api/v1/account-requests`
-- `POST /api/v1/account-requests/{request_id}/approve`
-- `POST /api/v1/account-requests/{request_id}/reject`
-
-### Onboarding
+### Onboarding routes
 
 - `POST /api/v1/onboarding/password`
 - `POST /api/v1/onboarding/totp/start`
@@ -42,97 +104,167 @@ Browser navigation behavior:
 - `POST /api/v1/onboarding/recovery-codes`
 - `POST /api/v1/onboarding/skip-recovery-codes`
 
-### Team management
+Onboarding sessions cannot use normal content/provider/management routes.
+
+## Management routes
+
+### Account-request review
+
+Manager routes:
+
+- `GET /api/v1/account-requests`
+- `POST /api/v1/account-requests/{request_id}/approve`
+- `POST /api/v1/account-requests/{request_id}/reject`
+
+Leaders are restricted to matching requests for their own team. System administrators can review across teams.
+
+### User management
+
+Manager routes:
+
+- `POST /api/v1/users`
+- `GET /api/v1/users`
+- `POST /api/v1/users/{user_id}/send-activation`
+- `POST /api/v1/users/{user_id}/send-password-reset`
+- `POST /api/v1/users/{user_id}/send-account-recovery`
+- `POST /api/v1/users/{user_id}/break-glass-password-reset`
+- `POST /api/v1/users/{user_id}/break-glass-account-recovery`
+- `POST /api/v1/users/{user_id}/reset-mfa`
+- `POST /api/v1/users/{user_id}/suspend`
+- `POST /api/v1/users/{user_id}/reactivate`
+- `DELETE /api/v1/users/{user_id}`
+
+Deprecated `recover-password` and `recover-account` routes return `410 deprecated_recovery_endpoint`.
+
+Leader scope:
+
+- own team only;
+- non-system-admin targets only;
+- no manager self-suspend/reactivate/delete;
+- current protected-account checks remain authoritative.
+
+Suspension is reversible and blocks access. Reactivation currently forces password-change onboarding and re-establishment of MFA trust. Deletion is immediate hard delete with implemented cascades/cleanup and no undo path.
+
+Break-glass routes require policy eligibility, the manager's current TOTP code, a reason, confirmation that email is unavailable, and metadata-only security audit recording. The returned temporary password is one-time display material and only its hash is persisted.
+
+### Teams
+
+System-admin-only:
 
 - `POST /api/v1/teams`
 - `GET /api/v1/teams`
 
-### User management
+`default_retention_days` is system-admin-managed policy constrained to `1..MAX_RETENTION_DAYS` (default maximum 90). Transcript creation snapshots server-owned team retention; transcript payloads cannot extend it.
 
-- `POST /api/v1/users`
-- `GET /api/v1/users`
-- `POST /api/v1/users/{user_id}/suspend`
-- `POST /api/v1/users/{user_id}/reactivate`
-- `POST /api/v1/users/{user_id}/send-activation`
-- `POST /api/v1/users/{user_id}/send-password-reset`
-- `POST /api/v1/users/{user_id}/break-glass-password-reset` returns a one-time visible expiring `temporary_password` when break-glass policy allows it
-- `POST /api/v1/users/{user_id}/reset-mfa`
-- `POST /api/v1/users/{user_id}/send-account-recovery`
-- `POST /api/v1/users/{user_id}/break-glass-account-recovery` returns a one-time visible expiring `temporary_password` and resets MFA when break-glass policy allows it
-- `POST /api/v1/users/{user_id}/recover-password` and `POST /api/v1/users/{user_id}/recover-account` are deprecated and return `410`
-- `DELETE /api/v1/users/{user_id}`
+Quota administration is currently browser-only under CSRF-protected `/admin` member forms. There is no JSON quota-management API under `/api/v1`. Quota policy/usage remains system-admin-only metadata.
 
-### User quota administration
+## STT configuration and selection
 
-Quota policy and usage are abuse-monitoring controls visible only to full
-authenticated system administrators. Normal users and team leaders receive no
-quota dashboard, allowance, remaining-use, warning, or reset-time UI. Quota
-administration is browser-only in this first slice; no JSON quota-management
-routes exist under `/api/v1`. System administrators use CSRF-protected form posts
-from canonical `/admin` member detail panels:
+System-admin provisioning:
 
-- `POST /admin/users/{user_id}/quotas/limits`
-- `POST /admin/users/{user_id}/quota-grants`
-- `POST /admin/users/{user_id}/quota-resets`
-- `POST /admin/users/{user_id}/quota-grants/{grant_id}/revoke`
+- `GET /api/v1/stt-configs`
+- `GET /api/v1/stt-configs/{config_id}`
+- `POST /api/v1/stt-configs/inspect`
+- `POST /api/v1/stt-configs/{config_id}/inspect`
+- `POST /api/v1/stt-configs/drafts`
+- `POST /api/v1/stt-configs/{config_id}/finalize`
+- `POST /api/v1/stt-configs/{config_id}/replace-credential`
+- `POST /api/v1/stt-configs`
+- `DELETE /api/v1/stt-configs/{config_id}`
 
-Only normal team members are eligible quota targets. Administrators cannot view
-or change their own quota. Forms require a client operation UUID for idempotent
-retry, a controlled reason code, and a nonblank administrative reason. HTML
-responses redirect back to the selected member panel on success; they do not
-expose a JSON management surface.
+Manager selection:
 
-Provider authorization internally distinguishes:
+- `GET /api/v1/stt-selection`
+- `GET /api/v1/stt-selection/options`
+- `POST /api/v1/stt-selection`
+- `DELETE /api/v1/stt-selection`
 
-- `quota_disabled`: effective allowance for a required window is zero
-- `quota_exceeded`: reservation would exceed a finite daily or monthly
-  window
+Selection purpose supports at least `conversation` and `post_consultation_dictation`. Leaders can select/clear ready active options only for their own team and cannot provision/reveal/replace credentials.
 
-Those internal errors and their metadata are available only to the quota service
-and system-admin management view. Owner-facing API responses preserve the
-appropriate HTTP status, return the public code `quota_exceeded`, and show
-`Your usage quota has been used up. Contact your administrator for help.` They
-do not expose limits, usage, remaining allowance, period, or reset time.
+Current adapter families include `openai_cloud`, `openai_compatible_rest`, `elevenlabs_speech_to_text`, and `generic_rest`, with provider-specific behavior described in [stt-config.md](stt-config.md).
 
-Normal workspace UI does not render quota metadata. It retries only
-`rate_limited` after `Retry-After`; public `quota_exceeded` responses are not
-retried. Internally, both `quota_exceeded` and `quota_disabled` use that public
-response without exposing quota policy to users.
+Credential rules:
 
-### Transcripts
+- raw credentials are written to Vault, not provider rows;
+- responses expose bounded status/`has_secret`, never raw credentials or unrestricted Vault references;
+- create/update supports explicit keep/replace/remove semantics subject to provider auth requirements;
+- required-auth draft/revision inheritance copies the credential to a draft-owned versioned Vault path before the draft commit—it does not alias the active config's secret reference;
+- replacement/removal/deletion/revision cleanup uses durable cleanup intents and live-reference guards;
+- provider credential fingerprints are server-side non-reversible HMAC values used for duplicate warning, not authentication.
 
-- `POST /api/v1/transcripts`
-- `POST /api/v1/transcripts/start`
-- `PATCH /api/v1/transcripts/{transcript_id}`
-- `DELETE /api/v1/transcripts/{transcript_id}`
-- `GET /api/v1/transcripts/{transcript_id}`
-- `POST /api/v1/transcripts/{transcript_id}/commit`
-- `POST /api/v1/transcripts/{transcript_id}/finalize-live-capture`
-- `POST /api/v1/transcripts/{transcript_id}/audio-chunks`
-- `POST /api/v1/transcripts/{transcript_id}/audio-file`
-- `POST /api/v1/transcripts/{transcript_id}/retry-audio-file`
-- `POST /api/v1/transcripts/{transcript_id}/manual-pii`
-- `DELETE /api/v1/transcripts/{transcript_id}/manual-pii/{entity_id}`
-- `GET /api/v1/transcripts/{transcript_id}/post-consultation-dictation`
-- `PATCH /api/v1/transcripts/{transcript_id}/post-consultation-dictation`
-- `POST /api/v1/transcripts/{transcript_id}/post-consultation-dictation/preview-audio-file`
-- `POST /api/v1/transcripts/{transcript_id}/post-consultation-dictation/audio-file`
-- `POST /api/v1/transcripts/{transcript_id}/quick-action-context/preview-audio-file`
-- `GET /api/v1/transcripts/{transcript_id}/working-note`
-- `PATCH /api/v1/transcripts/{transcript_id}/working-note`
-- `DELETE /api/v1/transcripts/{transcript_id}/working-note`
-- `GET /api/v1/transcripts/{transcript_id}/generated-documents`
-- `PATCH /api/v1/generated-documents/{generated_document_id}`
-- `GET /api/v1/generated-documents/{generated_document_id}/redaction-debug`
-- `POST /api/v1/transcripts/{transcript_id}/generate-output`
-- `GET /api/v1/transcripts`
-  - self-scoped to the authenticated owner
-  - returns metadata-only consultation pages: `items`, `next_cursor`, `has_more`
-  - supports `limit` and keyset `cursor`
-- whole-file upload rejects oversize payloads with:
-  - status `413`
-  - code `payload_too_large`
-  - message `Audio file exceeds the current maximum upload size`
+Queued ingestion snapshots the resolved provider/config/model/contract metadata so later team edits do not retarget existing jobs.
+
+## LLM configuration, selection, and preferences
+
+System-admin provisioning:
+
+- `GET /api/v1/llm-configs`
+- `POST /api/v1/llm-configs/inspect`
+- `POST /api/v1/llm-configs/{config_id}/inspect`
+- `POST /api/v1/llm-configs/drafts`
+- `POST /api/v1/llm-configs/{config_id}/finalize`
+- `POST /api/v1/llm-configs/{config_id}/replace-credential`
+- `POST /api/v1/llm-configs`
+- `DELETE /api/v1/llm-configs/{config_id}`
+
+Manager team policy:
+
+- `GET /api/v1/llm-selection`
+- `GET /api/v1/llm-selection/options`
+- `POST /api/v1/llm-selection`
+- `DELETE /api/v1/llm-selection`
+
+System-admin hallucination-check policy:
+
+- `GET /api/v1/hallucination-check-selection`
+- `POST /api/v1/hallucination-check-selection`
+- `DELETE /api/v1/hallucination-check-selection`
+
+Full-user preferences:
+
+- `GET /api/v1/llm-preference`
+- `POST /api/v1/llm-preference`
+- `DELETE /api/v1/llm-preference`
+- `GET /api/v1/app-preferences`
+- `POST /api/v1/app-preferences`
+- `DELETE /api/v1/app-preferences`
+
+Current adapters include `openai_chat`, `ollama_chat`, `bedrock_chat`, and `gemini_enterprise`. Model discovery has no generic built-in LLM fallback list: a non-auth discovery failure can require a manually entered model, while definitive credential failures create neither draft nor secret. Provider-specific discovery/finalization behavior is in [llm-providers.md](llm-providers.md).
+
+Required-token revisions copy inherited credentials to draft-owned versioned Vault paths. They do not share the active root reference. Credential removal/replacement and retired references use the durable cleanup path rather than relying on a delete-before-database-commit sequence.
+
+Ready/active/default-model rules are enforced server-side. Team policy carries the allowed model subset/default; user preference is validated against that policy and falls back to the team default when stale/invalid.
+
+Gemini Enterprise uses project/location/capacity plus ADC or Vault-backed service-account JSON. It rejects bearer-token/base-URL semantics and never exposes credential JSON/access tokens. See [gemini-enterprise-setup.md](gemini-enterprise-setup.md).
+
+## De-identification and clinical NLP
+
+System-admin provider/assignment routes:
+
+- `GET /api/v1/deidentification-providers`
+- `POST /api/v1/deidentification-providers`
+- `POST /api/v1/deidentification-providers/inspect`
+- `DELETE /api/v1/deidentification-providers/{provider_id}`
+- `GET /api/v1/deidentification-provider-assignments`
+- `POST /api/v1/deidentification-provider-assignments`
+- `DELETE /api/v1/deidentification-provider-assignments`
+
+Manager own-team selection:
+
+- `GET /api/v1/deidentification-selection`
+- `GET /api/v1/deidentification-selection/options`
+- `POST /api/v1/deidentification-selection`
+- `DELETE /api/v1/deidentification-selection`
+- `GET /api/v1/clinical-nlp-selection`
+- `GET /api/v1/clinical-nlp-selection/options`
+- `POST /api/v1/clinical-nlp-selection`
+- `DELETE /api/v1/clinical-nlp-selection`
+
+The historical `deidentification` provider object can advertise PII-redaction, clinical-NLP, or both capabilities. Remote clinical endpoints receive redacted source by default; unredacted submission is restricted to explicitly configured local/private endpoint behavior. The built-in native Presidio path remains the PII-redaction fallback; clinical NLP has no built-in fallback.
+
+Admin inspection uses synthetic caller-supplied test text and can return raw synthetic provider JSON for contract testing. Runtime patient-content provider responses are not exposed through admin routes or persisted raw.
+
+## Templates, Quick Actions, and Smart Phrases
 
 ### Templates
 
@@ -147,78 +279,6 @@ response without exposing quota policy to users.
 - `POST /api/v1/templates/import/preflight`
 - `POST /api/v1/templates/import`
 
-Template bundles use the public version 1 JSON contract in
-[`openscribe-template-bundle-v1.schema.json`](../app/static/schemas/openscribe-template-bundle-v1.schema.json).
-The format carries portable template content, not database authority: each entry
-contains its name, description, and latest version mode, prompt text, and
-configuration. Scope, active state, UUIDs, ownership, creator identity, version
-numbers, and timestamps are omitted.
-
-`POST /api/v1/templates/export` accepts JSON containing 1 to 100 distinct
-`template_ids`. A bundle may combine the caller's Personal templates and Team
-templates visible in the caller's current team. If any requested identifier is not
-visible, the whole request fails. The response downloads as
-`openscribe-templates.json`.
-
-Both import endpoints accept multipart form data containing `destination` and a
-`bundle` file. The workspace submits an uploaded file or converts pasted JSON
-into the same browser-held file payload; pasted input does not use a separate
-parser, endpoint, or authorisation path. For pasted input only, the client may
-remove one surrounding Markdown code fence before submission; it does not repair
-the enclosed JSON. The client first performs a strict JSON parse and gives
-actionable guidance for malformed text, including unescaped quotation marks;
-only valid JSON is submitted for server preflight. `destination` is `personal` or `team`; file contents cannot
-select or transfer scope. Personal is the workspace default. Personal import
-creates roots owned by the normal user. Team import requires current-team leader
-authority and creates roots in that team. System administrators cannot own or
-import these user/team templates.
-
-Bundles must be UTF-8 JSON, no larger than 1 MiB, and contain 1 to 100 entries.
-Unsupported formats or versions and malformed required fields are rejected.
-Unknown additive fields at bundle, template, and latest-version level are ignored
-with path-specific warnings. Structured `config_json` is strict: unknown fields,
-unsupported profiles or section keys, incorrect ordering, duplicate sections,
-and empty instructions invalidate the entry. Freeform entries require
-`config_json: null`.
-
-Structured sections carry `section_key`, `instruction`, and `section_order`;
-OpenScribe derives the canonical user-facing label from `section_key`. The public
-JSON Schema rejects `section_label`, limits every supported key to one occurrence,
-and requires each sections array to carry positional one-based order `1..n`.
-
-`POST /api/v1/templates/import/preflight` performs no writes. It returns source
-indexes, proposed names, default selections, entry errors, ignored-field warnings,
-and counts. An existing active template with the same trimmed, case-insensitive
-name and canonical content is an `exact_copy`: deselected by default but still
-selectable. Other collisions receive a deterministic ` copy N` suffix, including
-collisions reserved earlier in the bundle.
-
-`POST /api/v1/templates/import` also accepts `selected_indexes` as a JSON array in
-the multipart form. It reparses, reauthorises, revalidates, and replans the original
-file. The selected subset is created atomically as active independent roots at
-version 1; an invalid selection creates nothing. Unselected entries are reported
-as skipped. Because confirmation replans current destination state, concurrent
-changes can alter a suffix or cause the uniqueness constraint to reject the
-transaction.
-
-The workspace submits the commit immediately after preflight only when the
-response contains exactly one `ready`, selectable, default-selected entry and no
-bundle-level or entry-level warning. Validation failures are shown without a
-commit; exact-copy and renamed results and every multi-template bundle remain in
-the review step. This is only a client interaction shortcut: the commit endpoint
-still performs its full reparse, authorisation, validation, duplicate planning,
-and atomic creation.
-
-The workspace help dialog explains import and export and can copy a
-vendor-neutral prompt that asks an external AI assistant to produce the public
-bundle format. The prompt treats the user's description as a brief, asks only
-about unresolved requirements, defaults to one template, and requires
-clarification when freeform versus supported structured EMIS output is unclear.
-It does not expand the schema or accepted structured section keys. The dialog
-warns users not to include patient information, transcripts, clinical notes,
-credentials, or other confidential data; clipboard failure reveals the same
-instructions for manual copying.
-
 ### Quick Actions
 
 - `GET /api/v1/quick-actions/available`
@@ -232,16 +292,6 @@ instructions for manual copying.
 - `POST /api/v1/quick-actions/import/preflight`
 - `POST /api/v1/quick-actions/import`
 
-Quick Action bundles use
-[`openscribe-quick-action-bundle-v1.schema.json`](../app/static/schemas/openscribe-quick-action-bundle-v1.schema.json).
-They contain 1 to 100 names, descriptions, and latest freeform prompts. Export
-accepts visible Personal and current-Team action IDs. Import uses the same
-Personal-default or leader-authorised Team destination rules, preflight,
-duplicate planning, atomic selected-subset commit, 1 MiB limit, and original-file
-resubmission as template import. Imported actions are active independent roots at
-version 1. Additive unknown bundle fields are reported and ignored; authority and
-database metadata are never portable.
-
 ### Smart Phrases
 
 - `GET /api/v1/smart-phrases/available`
@@ -254,720 +304,147 @@ database metadata are never portable.
 - `POST /api/v1/smart-phrases/import/preflight`
 - `POST /api/v1/smart-phrases/import`
 
-Smart Phrase bundles use
-[`openscribe-smart-phrase-bundle-v1.schema.json`](../app/static/schemas/openscribe-smart-phrase-bundle-v1.schema.json).
-They are Personal-only and contain 1 to 100 triggers, expansions, and optional
-descriptions. IDs, ownership, timestamps, usage counts, and last-used state are
-excluded. Import reuses the maintained trigger and text validation, resets usage
-metadata, and proposes deterministic `_COPY`, `_COPY_2`, and later suffixes for
-collisions while remaining within the 64-character trigger limit. Unknown fields
-are rejected. Selected entries are revalidated and created atomically.
-
-Across the Template, Quick Action, and Smart Phrase workspace libraries, export
-selection is capped at the API limit of 100 items. While an import commit is
-pending, Cancel, the dialog close control, and Escape do not close or reset the
-dialog; controls become available again if the request fails.
-
-### Team transcription configuration
-
-- `GET /api/v1/stt-configs`
-- `GET /api/v1/stt-configs/{config_id}`
-- `POST /api/v1/stt-configs/inspect`
-- `POST /api/v1/stt-configs/{config_id}/inspect`
-- `POST /api/v1/stt-configs/drafts`
-- `POST /api/v1/stt-configs/{config_id}/finalize`
-- `POST /api/v1/stt-configs/{config_id}/replace-credential`
-- `POST /api/v1/stt-configs`
-- `DELETE /api/v1/stt-configs/{config_id}`
-- `GET /api/v1/stt-selection`
-- `GET /api/v1/stt-selection/options`
-- `POST /api/v1/stt-selection`
-- `DELETE /api/v1/stt-selection`
-- `GET /api/v1/stt-selection` now accepts optional `purpose` query param:
-  - `conversation` default
-  - `post_consultation_dictation`
-- `DELETE /api/v1/stt-selection` now accepts same optional `purpose` query param
-- `POST /api/v1/stt-selection` now accepts `purpose` in JSON body with same values
-- these are metadata and secret-reference routes, not transcript-content routes
-- inspect validates/dereferences OpenAPI documents, then proposes `transcribe_path`, `file_field_name`, `model_field_name`, `language_field_name`, `response_text_path`, optional segment fields, and extra form defaults; save persists those fields for runtime use
-- runtime response parsing supports configured segment paths/field names and JSONPath response extraction through `jsonpath-ng`; queued ingestion snapshots persist the segment mapping used when the job was queued
-- STT config responses include credential `credential_status` and sanitized `inspection_metadata_json`, but never `vault_secret_ref` or raw bearer token
-- STT base URLs reject embedded credentials, query strings, and fragments;
-  logged/legacy inspection response URLs are rebuilt without credentials, query,
-  or fragment components
-- STT draft finalization and draft credential replacement take `config_id` from the path; JSON bodies include team/label/model or replacement token fields only and do not require a duplicate body `config_id`
-- STT provider revisions inherit a blank credential only when the resolved target preset requires an API key. Moving to an optional/no-auth preset without supplying a token stores `auth_mode=none` and no Vault reference; supplying an optional token stores `auth_mode=bearer`.
-- STT create/update accepts explicit `credential_action: keep | replace | remove`; a supplied `bearer_token` is treated as `replace` for backward compatibility
-- blank `bearer_token` on edit keeps the saved credential only when `credential_action` is `keep`; `remove` clears credential-derived state and deletes the saved Vault secret
-- `openai_cloud` and `elevenlabs_speech_to_text` require `auth_mode=bearer`; updates reject `auth_mode=none` before changing config metadata or its Vault reference, even when `credential_action=keep`
-- create/update with a bearer token computes a server-side credential fingerprint and warns with `409 provider_credential_duplicate_warning` before any Vault write or provider inspection when same team, adapter, endpoint, and credential already exist; callers may retry with `confirm_duplicate: true`
-- create/update with a bearer token validates/inspects server-side before replacing a saved STT secret, records `verified` or `partial`, and rejects invalid credentials without deleting an existing config or selection
-- manual `generic_rest` and `openai_compatible_rest` save-time validation uses the saved transcribe path, field names, response path, and bundled synthetic audio sample instead of depending on default OpenAPI discovery or static metadata only
-- saved-provider re-inspection uses `POST /api/v1/stt-configs/{config_id}/inspect` and the saved Vault reference; credential rejection marks the provider `invalid` and clears active STT selections using it
-- old clients that omit STT model/language field names keep `model` and `language` defaults when values are present
-- bearer tokens supplied to standalone inspect are never returned or preserved in hidden browser fields; save-and-inspect tokens are written to Vault and never returned
-
-### Team LLM configuration
-
-- `GET /api/v1/llm-configs`
-- `POST /api/v1/llm-configs/inspect`
-- `POST /api/v1/llm-configs/{config_id}/inspect`
-- `POST /api/v1/llm-configs/drafts`
-- `POST /api/v1/llm-configs/{config_id}/finalize`
-- `POST /api/v1/llm-configs/{config_id}/replace-credential`
-- `POST /api/v1/llm-configs`
-- `DELETE /api/v1/llm-configs/{config_id}`
-
-Material provider edits use pending revisions while active config ids remain stable. Blank revision credentials reuse the root config's exact stored Vault reference only for presets that require a token. Moving to Ollama without a submitted token stores `auth_mode=none` and no Vault reference; an explicitly submitted optional token stores `auth_mode=bearer`. Replacement credentials are rebound to a fresh root-owned Vault path before promotion; superseded root and revision paths are cleaned only after the database commit succeeds.
-- `GET /api/v1/llm-selection`
-- `GET /api/v1/llm-selection/options`
-- `POST /api/v1/llm-selection`
-- `DELETE /api/v1/llm-selection`
-- `GET /api/v1/hallucination-check-selection`
-- `POST /api/v1/hallucination-check-selection`
-- `DELETE /api/v1/hallucination-check-selection`
-- `GET /api/v1/llm-preference`
-- `POST /api/v1/llm-preference`
-- `DELETE /api/v1/llm-preference`
-- `GET /api/v1/app-preferences`
-- `POST /api/v1/app-preferences`
-- `DELETE /api/v1/app-preferences`
-- these are metadata and secret-reference routes, not transcript-content routes
-- LLM inspect accepts branded `provider_preset` values and returns `provider_preset`, `provider_display_name`, `discovery_status`, `default_model_source`, `requires_bearer_token`, `supports_model_discovery`, and `warnings` so clients can distinguish fetched, manual-required, and failed discovery states
-- LLM inspect remains scoped to known protocol adapter families (`openai_chat`, `bedrock_chat`, `ollama_chat`); it does not save or activate a provider
-- LLM draft creation is system-admin-only; it saves the submitted credential to Vault, stores discovered model metadata, returns `has_secret=true`, and never returns raw keys or Vault refs
-- LLM draft finalization sets `setup_status=ready`, stores the chosen default model, and applies the `is_active` availability toggle without changing the team's selected config id. If the promoted model catalog changed, the leader-approved allowlist is intersected with the new catalog; an empty intersection narrows to the new provider default, invalid team defaults move to that model, and invalid hallucination-check overrides clear to the same config's default.
-- LLM credential replacement reruns discovery, clears availability, and returns the config to `pending_model_selection`
-- saved LLM provider inspect uses an existing Vault-backed credential only when `auth_mode=bearer`, refreshes sanitized available-model metadata, reconciles model selections, and never returns the raw key
-- LLM create/update accepts explicit `credential_action: keep | replace | remove`; `remove` is allowed for optional-token local adapters such as Ollama, while OpenAI and Bedrock configs require either a replacement bearer token or an existing saved bearer token when `credential_action` is `keep`
-- LLM `credential_action=remove` deletes the Vault secret before clearing the DB reference; Vault delete failure aborts the request with the saved DB reference intact, stale/missing Vault content can still be cleared, and DB commit failure triggers best-effort Vault secret restoration when the old token was readable
-- persisted credential status/fingerprint metadata is STT-only in this slice; LLM stores last inspection metadata in `inspection_metadata_json`
-- LLM selection options and selection writes require `setup_status=ready`, `is_active=true`, and a non-empty default `model_name`; pending provider drafts are hidden from leaders/users and rejected by ID
-- hallucination-check selection is system-admin-only and reuses ready active team LLM configs with an optional model override; no raw provider secrets are returned
-
-### Shared NLP endpoint configuration
-
-- `GET /api/v1/deidentification-providers`
-- `POST /api/v1/deidentification-providers`
-- `POST /api/v1/deidentification-providers/inspect`
-- `DELETE /api/v1/deidentification-providers/{provider_id}`
-- `GET /api/v1/deidentification-provider-assignments`
-- `POST /api/v1/deidentification-provider-assignments`
-- `DELETE /api/v1/deidentification-provider-assignments`
-- `GET /api/v1/deidentification-selection`
-- `GET /api/v1/deidentification-selection/options`
-- `POST /api/v1/deidentification-selection`
-- `DELETE /api/v1/deidentification-selection`
-- `GET /api/v1/clinical-nlp-selection`
-- `GET /api/v1/clinical-nlp-selection/options`
-- `POST /api/v1/clinical-nlp-selection`
-- `DELETE /api/v1/clinical-nlp-selection`
-- these routes keep the historical `deidentification` API name, but the saved generic REST endpoint can be used for PII redaction, clinical entity extraction, or both
-- built-in native provider remains selectable for every team as the PII redaction fallback
-- clinical entity extraction is separate from PII redaction: admins mark endpoints as clinical NLP-capable and assign them to a team; team leaders enable one assigned clinical NLP endpoint through the clinical selection routes
-- clinical NLP has no built-in fallback; no clinical selection means disease/symptom extraction is off
-- external endpoints require explicit admin assignment before team selection
-- inspect can load `/docs`, `/redoc`, or OpenAPI JSON paths to infer detect path, request text/language fields, extra body defaults, and response entity fields before saving
-- inspect separates `openapi_path` (docs/schema discovery, not saved for runtime) from `detect_path` (selected POST endpoint saved and used for runtime redaction)
-- after docs discovery, callers may pass `openapi_path` plus a selected `detect_path` from `candidate_paths` to infer and ping that specific endpoint contract
-- inspect pings against a concrete or inferred detect path use caller-supplied synthetic sample text only and return parsed entity spans plus the raw provider JSON response for admin testing
-- raw inspect responses are for synthetic provider tests only; runtime redaction does not expose provider responses or transcript-derived content in admin routes
-- runtime generic REST parsing accepts either offset entities (`start`, `end`, label/type, optional score/confidence) or value-only entities with detected text plus label; value-only entities are matched back into the submitted source text to derive offsets
-- inspect can adjust response field settings from a successful synthetic ping when OpenAPI schemas say `entity_type`/`score` but the actual response uses common clinical-NLP fields such as `label`/`confidence`
-- the same saved provider contract can opt into disease/symptom detection for transcript snapshots
-- when clinical detection is enabled, remote/public endpoints receive the redacted transcript text from the linked redaction run; unredacted transcript text is sent only when the admin enabled that option and the endpoint host is localhost, private, link-local, or unspecified
-- these are metadata and secret-reference routes, not transcript-content routes
-
-## Error envelope
-
-All non-2xx JSON responses use:
-
-```json
-{
-  "error": {
-    "code": "validation_error",
-    "message": "Request validation failed",
-    "details": {
-      "issues": []
-    }
-  }
-}
-```
-
-Rate-limited requests return the same envelope with:
-
-- status `429`
-- code `rate_limited`
-- message `Too many requests`
-- a `Retry-After` response header that clients should honor before retrying
-
-Internal `quota_exceeded` and `quota_disabled` outcomes are provider
-authorization decisions, not route-rate-limit outcomes. Public clients receive
-both as `quota_exceeded` with safe contact-your-administrator copy and no quota
-metadata. Clients must not retry them as transient `rate_limited` responses.
-
-## Current auth and authorization rules
-
-### Authentication
-
-- protected JSON routes require a valid opaque session cookie
-- unauthenticated access returns `401 unauthorized`
-- invalid login credentials return the same `401 unauthorized` response shape
-- the explicit session-public API route allowlist is currently:
-  - `POST /api/v1/auth/login`
-  - `POST /api/v1/auth/logout`
-  - `POST /api/v1/account-requests`
-- completed MFA-enabled users may receive `auth_level = pending_mfa` after password success
-- login is rate-limited at `5 per 5 minutes` per client IP
-- whole-file transcript uploads are rate-limited at:
-  - `1 per 5 seconds` by default via `WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT`
-  - `100 per day` by default via `WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT`
-- whole-file upload throttling is shared across:
-  - `POST /api/v1/transcripts/{transcript_id}/audio-file`
-  - `POST /transcribe/upload`
-- whole-file upload throttling keys to the authenticated user when a valid session resolves, with hashed-session/IP fallback only when user resolution is unavailable
-- whole-file uploads are also capped by:
-  - raw upload size: `200 MB`
-  - normalized whole-file duration: `4 hours`
-
-### Pending-MFA sessions
-
-- accounts with completed onboarding and active TOTP may still require a second step after password login
-- the resulting session has `auth_level = pending_mfa`
-- pending-MFA sessions may use only:
-  - `auth/me`
-  - `auth/mfa/totp`
-  - `auth/logout`
-  - `auth/trusted-device`
-- normal JSON routes return:
-  - `403`
-  - code `mfa_required`
-
-### Trusted-device freshness
-
-- trusted-device cookies only influence post-password MFA skipping
-- they do not replace password login
-- a fresh trusted device currently means:
-  - same browser still holds the opaque trusted-device cookie
-  - the server-side record is not revoked or expired
-  - the last MFA verification was within 24 hours
-
-### Public account requests
-
-- account-request submission is rate-limited at `3 per hour` per client IP
-
-### MFA challenge
-
-- TOTP challenge submission is rate-limited at `10 per 10 minutes` per client IP
-
-### Onboarding-only sessions
-
-- accounts with incomplete onboarding authenticate successfully
-- the resulting session has `auth_level = onboarding`
-- onboarding-only sessions may use only onboarding routes, `auth/me`, and logout
-- normal JSON routes return:
-  - `403`
-  - code `onboarding_incomplete`
-
-## Route auth audit
-
-- run `./.venv/bin/python scripts/audit_api_auth.py` to probe every `/api/v1` route with:
-  - no session cookie
-  - an invalid session cookie
-  - onboarding, pending-MFA, normal-user, and leader sessions where denial is expected
-- the script exits non-zero if:
-  - a protected route does not deny the expected scenario
-  - a new `/api/v1` route exists without an audit manifest entry
-
-### Manager routes
-
-These routes require a full authenticated manager session:
-
-- `GET /api/v1/account-requests`
-- `POST /api/v1/account-requests/{request_id}/approve`
-- `POST /api/v1/account-requests/{request_id}/reject`
-- `POST /api/v1/users`
-- `GET /api/v1/users`
-- `POST /api/v1/users/{user_id}/send-activation`
-- `POST /api/v1/users/{user_id}/send-password-reset`
-- `POST /api/v1/users/{user_id}/send-account-recovery`
-- `POST /api/v1/users/{user_id}/break-glass-password-reset`
-- `POST /api/v1/users/{user_id}/break-glass-account-recovery`
-- `POST /api/v1/users/{user_id}/reset-mfa`
-- `POST /api/v1/users/{user_id}/suspend`
-- `POST /api/v1/users/{user_id}/reactivate`
-- `DELETE /api/v1/users/{user_id}`
-- `GET /api/v1/stt-selection`
-- `GET /api/v1/stt-selection/options`
-- `POST /api/v1/stt-selection`
-- `DELETE /api/v1/stt-selection`
-
-Managers are:
-
-- system admins
-- team leaders
-
-Leader scope is restricted to their own team.
-
-Current account-administration behavior:
-
-- leaders may suspend and reactivate non-system-admin users in their own team only
-- leaders may delete non-system-admin users in their own team only
-- system admins may suspend and reactivate other users across teams
-- system admins may delete other users across teams
-- no manager may suspend their own account through these routes
-- no manager may delete their own account through these routes
-- suspended users cannot log in
-- reactivated users are forced back into password-change onboarding and must re-establish MFA setup
-- delete is immediate hard delete and returns `204`
-- deleting a user removes currently implemented user-owned transcript data immediately
-- email recovery routes require configured mail transport; break-glass routes require manager TOTP, reason, explicit email-unavailable confirmation, and write metadata-only security audit rows
-
-Current STT-configuration behavior:
-
-- system admins provision STT endpoint rows and Vault-backed secrets per team
-- system admins may list, inspect, create, update, and delete provisioned STT configs, but must supply `team_id`
-- leaders may not provision, rotate, or delete STT credentials
-- leaders may read only their own team's selectable provisioned endpoints through the selection routes
-- leaders may set or clear only their own team's active STT selection
-- normal users may not access provisioning or selection routes
-- onboarding-only and pending-MFA sessions may not access provisioning or selection routes
-- `generic_rest` inspection fetches `base_url + openapi_path` and returns inferred fields without saving
-- `openai_cloud` inspection uses the official OpenAI SDK server-side to return built-in contract defaults plus a filtered `available_models` list
-- if OpenAI model discovery fails, `openai_cloud` inspection falls back to a built-in transcription-model allowlist and still returns `200`
-- `openai_cloud` inspection also returns labeled model-option metadata so the UI can show whether each choice was `fetched` live or supplied from the built-in `default` list
-- `openai_compatible_rest` inspection returns built-in known-contract defaults without OpenAPI fetch
-- inspection also returns documented field descriptions and required flags when the provider's OpenAPI schema exposes them
-- the admin HTML inspect flow discards the entered token after the request; saving a newly inspected credential requires token re-entry, while saved-provider re-inspection uses the Vault reference server-side
-- saved STT config now carries an explicit `adapter_kind`
-- currently supported adapter families are `generic_rest`, `openai_cloud`, and `openai_compatible_rest`
-- the API never returns the bearer token
-- the API currently returns metadata plus `has_secret`, not the raw Vault secret reference
-- one team may have multiple provisioned STT config rows
-- one team may have only one active STT selection row
-
-Current LLM-configuration behavior:
-
-- system admins provision LLM provider rows and Vault-backed secrets per team
-- system admins may list, inspect, create, update, and delete provisioned LLM configs, but must supply `team_id`
-- leaders may not provision, rotate, or delete LLM credentials
-- leaders may read only their own team's selectable provisioned LLM providers through the selection routes
-- leaders may set or clear only their own team's active LLM selection
-- the active team selection stores both:
-  - a team default model
-  - an allowed-model subset that controls which models normal users can see and choose
-- normal users may not access provisioning or team-selection routes
-- normal users may set or clear only their own preferred default model through `/api/v1/llm-preference`
-- normal team users may read, write, and clear only their own `/api/v1/app-preferences` row
-- `user_app_preferences` currently stores validated workflow metadata only:
-  - favourite quick action ids
-  - favourite template ids
-  - default quick action/template ids
-  - `llm_detail_level` (`concise`, `balanced`, `detailed`) for template note-generation detail only
-  - `note_generation_length` (`short`, `normal`, `long`) for template note-generation token caps only
-  - preferred recording mode
-  - preferred transcribe tab
-- `user_app_preferences` rejects template/quick-action ids outside the caller's currently visible owner/team scope
-- when referenced templates or quick actions are later deleted or hidden, `/api/v1/app-preferences` drops those stale ids lazily on read
-- if the user's preferred model is no longer allowed for the active team provider, runtime resolution falls back to the team-selected default model
-- the implemented LLM adapter families are `openai_chat`, `bedrock_chat`, and `ollama_chat`
-- `openai_chat` inspection uses the official OpenAI SDK server-side to return built-in contract defaults plus a filtered `available_models` list
-- if OpenAI model discovery fails, `openai_chat` inspection falls back to a built-in chat-model list and still returns `200`
-- `bedrock_chat` uses Amazon Bedrock's OpenAI-compatible Bedrock Mantle endpoint and the existing OpenAI SDK integration for both `/models` discovery and Chat Completions generation
-- `bedrock_chat` accepts an optional `bedrock_region`; when supplied, OpenScribe derives `https://bedrock-mantle.<region>.api.aws/v1` and treats the region as authoritative over stale submitted base URLs
-- `bedrock_chat` does not use a built-in fallback model list because the available models are region- and account-specific; admins may still save a model manually if discovery is unavailable
-- `ollama_chat` inspection calls `GET /api/tags` on the configured Ollama host and generation uses streaming `POST /api/chat`
-- local Ollama may run without an API key; remote Ollama endpoints must still use `https`
-- the admin HTML inspect flow discards the entered API key after the request; saving a newly inspected credential requires key re-entry, while saved-provider re-inspection uses the Vault reference server-side
-- remote LLM endpoints must use `https`; `http` is accepted only for localhost/private-network hosts
-- the API never returns the bearer token
-- the API currently returns metadata plus `has_secret`, not the raw Vault secret reference
-- normal team users may patch only their own ready note documents through `/api/v1/generated-documents/{generated_document_id}`
-- note save requests must include `expected_updated_at`; stale revisions return `409 conflict`
-- Working-note save and clear requests use `expected_updated_at` for optimistic concurrency. Clearing an existing Working note without the current token, or saving with a stale token after another tab clears it, returns `409 conflict`.
-- one team may have multiple provisioned LLM config rows
-- one team may have only one active LLM selection row
-
-Current template behavior:
-
-- team templates are normal configuration data, not transcript-derived content
-- leaders may create, update, list, and delete team templates for their own team
-- normal users may create, update, list, and delete only their own personal templates
-- system admins do not own or manage transcript-derived generation output through these routes
-- template updates create a new immutable `template_versions` row while updating the logical template root metadata
-- quick actions now follow the same team/personal scope model as templates:
-  - leaders may create, update, list, and delete team quick actions for their own team
-  - normal users may create, update, list, and delete only their own personal quick actions
-  - quick action updates create a new immutable `quick_action_versions` row while updating the logical quick action root metadata
-- smart phrases are personal configuration only:
-  - normal team users may create, update, list, mark-used, and hard-delete only their own smart phrases
-  - triggers are stored uppercase without the leading slash and unique per owner case-insensitively
-  - system admins do not own smart phrases
-
-Current generation behavior:
-
-- note generation is owner-only and runs against the selected transcript root
-- follow-up generation is also owner-only and runs against the selected transcript root
-- quick action generation is owner-only and runs against the selected transcript root
-- generation snapshots the current transcript draft into a new `transcript_versions` row before calling the LLM
-- queued generated-document rows now also snapshot:
-  - resolved `llm_config_id`
-  - resolved `model_used`
-  - prompt text for template and quick-action runs
-  - provider execution metadata needed to keep the worker stable if team defaults later change
-- generation resolves the active team LLM provider plus the user's preferred/default model through the existing provider-selection path
-- generation currently supports both OpenAI chat-style providers and Ollama chat hosts
-- template note generation snapshots the current user's saved note options when the generated-document row is queued; later preference changes affect future queued notes only
-- the transcribe workspace waits for pending note option/model preference saves and retries each save once before queueing template note generation; if the retry still fails, the user is warned and the queued row snapshots the last saved options
-- `note_generation_length` keeps the saved/snapshotted `short`, `normal`, or `long` preference metadata; absent preferences use `normal`; for Gemini, this selection currently adds no semantic prompt guard and every generation request sets `max_output_tokens=30000`, reserving quota against that 30,000-token ceiling and releasing unused units during settlement
-- OpenAI-compatible and Bedrock gateway request bodies use `max_completion_tokens`; Ollama `/api/chat` requests use `options.num_predict`
-- `llm_detail_level` adds format-neutral detail guidance to template-note system prompts only; quick actions, follow-ups, dictation cleanup, redaction, clinical extraction, and STT do not use it
-- generation now applies native PHI pseudonymisation before outbound LLM calls:
-  - a successful reusable `redaction_runs` row is created lazily per `transcript_versions` snapshot when first needed
-  - `redaction_entities` persist the placeholder-to-original mapping for later reconstruction
-  - generated-document rows keep the `redaction_run_id` used for that run
-  - transcript text is sent to the external LLM only in redacted form
-  - static template and quick-action asset instructions are sent as configured, without PHI redaction
-  - dynamic clinician/user/patient-originated prompt inputs such as dictation, Working note, follow-up requests, quick-action additional context, and structured context strings are redacted transiently before the provider call
-  - quick-action context audio preview uses the post-consultation dictation STT selection, returns `{ "text": "..." }`, and does not persist a separate transcript-derived row before the client submits the existing quick-action context field
-  - generated output is validated so only well-formed known placeholders survive to re-identification
-  - final stored output is re-identified before being written back into `generated_documents`
-- clinical NLP snapshots are created beside successful redaction runs when the team has selected a clinical NLP endpoint:
-  - `clinical_entity_runs` records owner/team/transcript/version scope, provider snapshot metadata, status, and whether the submitted source text was redacted
-  - `clinical_entities` stores detected disease/symptom values encrypted per owner, with owner-keyed normalized hashes for duplicate matching
-  - long clinical NLP payloads are split into bounded text chunks before generic REST calls; returned spans are offset back into the original transcript text before persistence
-  - local `/analyze` clinical endpoints default to `sentence_detection=false` unless the provider config explicitly supplies that field, avoiding observed long-input timeouts on the OpenMedNER dev service
-  - deleting a clinical NLP provider clears active clinical NLP selections and preserves historical clinical runs by setting their provider reference to null
-  - clinical detection failure does not expose provider output or transcript text through admin routes
-- a dev-only verification endpoint now exists for localhost seeded test accounts:
-  - `GET /api/v1/generated-documents/{generated_document_id}/redaction-debug`
-  - it remains owner-only
-  - it returns the redacted transcript payload and placeholder inventory for the linked `redaction_run`
-  - it does not return the original PHI values
-- the implemented generators are:
-  - template-based note output that now requires the LLM to return JSON with:
-    - `title`: a short user-facing consultation summary
-    - `content`: the full note body for `freeform` templates, or an object keyed by selected EMIS section names for `structured` templates
-  - freeform follow-up output
-  - quick action freeform output written back into the follow-up lane
-- template mode now supports:
-  - `freeform`
-  - `structured`
-- the first structured profile is EMIS with allowed section keys:
-  - `problem`
-  - `history`
-  - `family_history`
-  - `social_history`
-  - `examination`
-  - `comment`
-  - `tasks`
-  - `investigations`
-- structured template versions store per-section instructions in `template_versions.config_json`
-- structured generation uses saved transcript/dictation/Working-note sources only; `POST /generate-output` accepts `template_id` and rejects transient `structured_context`
-- follow-up generation always uses saved transcript/dictation/Working-note sources plus the typed follow-up request; saved Working note content is redacted and included, not opt-in. At least one saved consultation source is required
-- quick action generation always uses saved transcript/dictation/Working-note sources plus selected quick-action instructions and optional submitted quick-action context; saved Working note content is redacted and included, not opt-in. At least one saved consultation source is required
-- the current transcript session stores structured Working note content in `transcripts.structured_context_json`
-- legacy `PATCH /api/v1/transcripts/{transcript_id}` structured Working-note writes accept `expected_updated_at` and enforce the same stale-write guard as `/working-note`
-- `/transcribe` reloads EMIS context fields from that transcript-backed state
-- when template, follow-up, or quick-action generation is queued, the saved Working note is snapshotted onto generated-document Working-note snapshot fields
-- for structured notes, backend validation:
-  - rejects user-submitted section keys outside the configured EMIS subset
-  - rejects unsupported saved Working-note section keys instead of dropping them
-  - validates saved Working note EMIS sections through the Working-note API
-  - drops empty sections
-  - preserves configured section order
-  - renders full note text into `generated_documents`
-  - persists section parts into `generated_document_sections`
-- for template-generated notes, the returned JSON `title` is persisted into `generated_documents.title`
-- if a template-generated note returns invalid JSON or omits `title`/`content`, generation fails with `llm_generation_invalid_json`
-- template-note JSON parsing applies only mild coercion before failure:
-  - strips markdown code fences
-  - extracts the first balanced JSON object if the model wraps it in surrounding prose
-- if note JSON still fails, the raw redacted provider output is retained on the generated document for localhost dev-account debugging only
-- structured template generation may run a hallucination-check pass after first-pass structured JSON validation and before reidentification/final storage
-- hallucination check uses only redacted transcript, Working note, and dictation evidence plus the redacted first-pass note; template instructions are not sent to the checker
-- hallucination-check selection is resolved at worker processing time, not snapshotted at queue time
-- checker output is exact-substring JSON edits; invalid checker output retries once, then the first-pass note is saved as unchecked
-- checker provider, Vault secret, or invalid-response failure does not fail the generated document; responses expose `hallucination_check_bucket` as `checked`, `unchecked`, or `not_applicable`
-- development debug output for first-pass note and checker edits is encrypted at rest and returned only to the owning user when `HALLUCINATION_CHECK_DEBUG_UI=1`
-- generation is now asynchronous:
-  - `POST /api/v1/transcripts/{transcript_id}/generate-output` returns `202`
-  - `POST /api/v1/transcripts/{transcript_id}/generate-followup` returns `202`
-  - `POST /api/v1/transcripts/{transcript_id}/run-quick-action` returns `202`
-  - the app creates a `generated_documents` row immediately with status `queued`
-  - a Celery worker later moves it through `processing` to `ready` or `failed`
-- follow-up generation stores the typed follow-up request on the queued generated-document row and uses the same worker, rate limits, and metadata-only usage logging as note generation
-- quick action generation stores the selected `quick_action_version_id` plus the quick action name on the queued generated-document row and uses the same worker, rate limits, and metadata-only usage logging as notes/follow-ups
-- generated output is persisted into `generated_documents` and remains private to the transcript owner
-- template or quick-action deletion no longer breaks queued/generated output:
-  - generated documents retain their prompt snapshot
-  - source version references may be cleared when the source asset is deleted
-  - already queued work still has enough context to run
-- generation routes are throttled per authenticated user:
-  - `20 per 3 minutes` by default via `LLM_GENERATION_BURST_RATE_LIMIT`
-  - `200 per day` by default via `LLM_GENERATION_DAILY_RATE_LIMIT`
-- browser and JSON generation routes share the same authenticated limiter bucket
-- generation workers now persist metadata-only usage events in `provider_usage_events` as well as emitting runtime usage logs
-- generation metadata now carries team/user IDs, provider/model names, statuses, durations, input/output/total token counts, and safe provider error metadata when available
-- persisted provider error codes are controlled allowlisted values or
-  status-derived safe categories; raw provider error strings are not persisted
-- every potentially billable generation and hallucination-check provider call
-  creates an authoritative metadata-only `provider_attempt` reservation before
-  dispatch; this includes explicit retries
-- queued source row, any reservation, and deterministic Celery dispatch intent
-  commit together; publisher retry and worker claim prevent duplicate task
-  delivery from invoking a provider twice
-- reported provider token totals settle actual token use; post-dispatch unknown
-  token outcomes settle the conservative reservation; a definite pre-dispatch
-  failure cancels it
-- generated-document rows now retain per-run input/output/total token counts, durations, provider HTTP status, and safe provider error codes for later debugging
-- failed generations now keep a more specific safe reason where available, such as provider timeout, unreachable provider, rejected credentials, missing model, or provider-side rate limiting
-- transcript deletion cascades to generated documents through the transcript-root delete path
-
-### System-admin-only routes
-
-These require a full authenticated system-admin session:
-
-- `POST /api/v1/teams`
-- `GET /api/v1/teams`
-
-Team retention policy:
-
-- `POST /api/v1/teams` accepts `default_retention_days` only as admin-managed team policy
-- `default_retention_days` must be between `1` and `MAX_RETENTION_DAYS` days; default max is `90`
-
-### Transcript routes
-
-Transcript routes require a full authenticated user and remain owner-only:
-
-- `POST /api/v1/transcripts/start` creates the transcript root for the current user
-- `/api/v1/transcripts/start` records or implies `ingestion_mode`
-- a user may create a transcript only for `owner_user_id == current_user.id`
-- a user may commit only their own transcript
-- a user may list only their own transcripts
-- a user may upload audio chunks only for their own transcript
-
-Current transcript-start behavior:
-
-- the current user becomes `owner_user_id`
-- `team_id` is derived from the current user
-- `title` lives on the transcript root and is the current browser-level session title
-- the transcript root remains the current session root for retention, versions, and derived-document lineage
-- creating a new transcript root is rejected when the owner's latest transcript is still blank:
-  - title-only does not count as content
-  - a non-empty draft, a transcript version, or an ingestion job does count
-- creating a new transcript root is also rejected while the owner's latest session is still `transcribing`
-- `PATCH /api/v1/transcripts/{transcript_id}` currently supports owner-only title updates
-- `PATCH /api/v1/transcripts/{transcript_id}` also supports owner-only `ingestion_mode` switching between `whole_file` and `live_chunked`
-- mode switching is allowed only while the session is still blank and idle
-- `POST /api/v1/transcripts/{transcript_id}/finalize-live-capture` is owner-only and valid only for `live_chunked` transcripts:
-  - moves an active live transcript out of `recording`
-  - applies completed chunks in sequence
-  - returns `transcribing` without creating a redaction run if chunks are still queued or processing
-  - creates or reuses a transcript version and owner-scoped redaction run once the final draft is `ready`
-- `DELETE /api/v1/transcripts/{transcript_id}` hard-deletes the owner transcript root immediately and cascades to transcript versions, ingestion jobs, generated documents, post-consultation dictation, redaction runs, and manual PII rows
-- `POST /api/v1/transcripts/{transcript_id}/manual-pii` lets the owning user persist a missed PII item for transcript review/highlighting:
-  - JSON body: `entity_type`, `value`, optional `occurrence_count`
-  - response: owner-only PII row with `id`, `entity_type`, plaintext `value`, `placeholder = "Manual"`, `occurrence_count`, and `source = "manual"`
-  - stored value is encrypted with the owner content DEK
-  - duplicate type/value rows for the same transcript return/update the existing row rather than creating another
-  - saved manual PII is also applied as an outbound redaction layer for LLM generation and added to the PHI placeholder index for output validation/reidentification
-- `DELETE /api/v1/transcripts/{transcript_id}/manual-pii/{entity_id}` hard-deletes one owner-created manual PII row
-- `POST /api/v1/transcripts/{transcript_id}/pii-entities/reveal` returns original PII values for the owning user only:
-  - non-owners receive `404` so transcript existence is not confirmed
-  - default workspace and generated-document PII rows omit `value` and include `has_value` for explicit reveal UI
-  - route uses POST so browser CSRF/origin checks apply
-- system-admin accounts are blocked from owning transcript content
-- `ingestion_mode` is persisted on the transcript root and currently supports:
-  - `whole_file`
-  - `live_chunked`
-- if the caller omits `ingestion_mode`, the route currently implies `whole_file`
-- team retention defaults are server-owned and always applied to new transcript roots
-- public transcript create/start/update payloads cannot extend `retention_days_applied` or `retention_expires_at`
-- transcript JSON detail responses expose plaintext draft as `current_draft_text`; DB/request storage fields keep `current_draft_text_encrypted`
-- generated-document JSON responses expose plaintext output as `original_output_text` and `edited_output_text`; DB storage fields keep `_encrypted` names
-- sensitive transcript/workspace/generated-document API responses include `Cache-Control: no-store` and `Pragma: no-cache`
-- transcript JSON responses remain owner-plaintext where explicitly requested even though transcript drafts, transcript structured context, committed transcript versions, STT job result text, generated-document body fields, generated-document sections, follow-up prompts, redaction output text, and redaction entity values are now stored encrypted at rest per owner
-- transcript and generated-document `title` fields remain plaintext metadata in this slice
-
-Current live chunk-ingestion behavior:
-
-- `POST /api/v1/transcripts/{transcript_id}/audio-chunks` accepts multipart audio upload for owner-only live chunked transcripts
-- live chunk upload is rate-limited to `1 request/second` by default per authenticated user/session bucket via `LIVE_CHUNK_UPLOAD_RATE_LIMIT`
-- the rolling hourly audio budget remains enabled by default (`LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS=3600`) as defense in depth for users whose system-admin quota is unlimited
-- the route currently requires:
-  - `audio`
-  - `chunk_sequence_no`
-- the route currently accepts:
-  - `declared_duration_seconds`
-- chunk uploads are rejected unless the transcript `ingestion_mode` is `live_chunked`
-- the server measures the uploaded audio duration before queueing:
-  - that measured duration is what counts toward the rolling hourly budget
-  - client-supplied `declared_duration_seconds` is no longer trusted for budgeting
-- live chunk uploads reject measured durations above the current 30-second maximum
-- the route queues a transcript-ingestion job and returns `202 Accepted`
-- the response includes both the transcript summary and the queued ingestion job
-- queued live chunk jobs now persist both `source_audio_size_bytes` and the measured chunk duration in `declared_duration_seconds` so upload volume can be aggregated later for dashboarding or broader ingestion policy
-- queued chunk jobs now snapshot the resolved STT provider execution settings at enqueue time:
-  - selected STT config id
-  - adapter kind
-  - base URL and transcribe path
-  - resolved model and language
-  - file field name, response text path, and extra form fields
-- the backend worker normalizes the uploaded audio to `16 kHz` mono PCM WAV with `ffmpeg`; ffprobe/ffmpeg calls have bounded timeouts so stuck media inspection/normalization fails cleanly
-- the backend worker reads the queued STT snapshot plus the selected provider credentials from Vault
-- the backend worker forwards the normalized chunk to the external STT service
-- Deepgram STT calls always include `mip_opt_out=true`; save paths add it when missing and reject explicit non-true values so admins cannot provision an opt-in Deepgram endpoint
-- the backend worker encrypts the returned live-chunk text at rest before later owner-visible draft reconciliation
-- live chunk application is sequence-aware:
-  - duplicate `chunk_sequence_no` values are rejected at queue time
-  - completed chunks are appended only in order using `next_live_chunk_sequence_no_applied`
-- live chunk jobs left queued or processing beyond `LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS` are marked `failed` with `ingestion_processing_stale` during transcript reconciliation, so later completed chunks can advance through the existing failed-gap path
-- the transcript status remains `transcribing` while more live chunks may still arrive
-- leaders/admins may configure team transcription metadata without gaining transcript readability
-- each conversation STT provider call is quota-authorized by a metadata-only
-  audio `provider_attempt` using server-measured duration; duration settlement
-  uses that measurement rather than caller-declared duration
-
-Current whole-file ingestion behavior:
-
-- `POST /api/v1/transcripts/{transcript_id}/audio-file` accepts multipart audio upload for owner-only `whole_file` transcripts
-- whole-file queueing now records both `source_audio_size_bytes` and `source_audio_duration_seconds` on the ingestion job for later upload reporting
-- whole-file queueing keeps a rolling hourly upload-byte safety budget per authenticated owner via `WHOLE_FILE_HOURLY_UPLOAD_BYTES` (default `209715200`, or 200 MiB/hour)
-- the rolling source-duration budget remains enabled by default (`WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS=14400`, or 4 hours) as defense in depth for users whose system-admin quota is unlimited
-- whole-file normalization uses `AUDIO_FFMPEG_TIMEOUT_SECONDS` (default `1800`) and STT provider requests use `STT_TRANSCRIPTION_TIMEOUT_SECONDS` (default `14400`) so long accepted uploads are not abandoned before the provider returns
-- whole-file ingestion no longer persists newly uploaded source audio blobs in Postgres while the owner-content at-rest encryption path is still pending
-- newly uploaded whole-file source audio is retained for retry in Vault-backed secret storage, with only a Vault reference stored on the ingestion job row
-- after successful ingestion, the source reference is cleared from the job in the same commit that records a durable audio-cleanup outbox intent; a failed immediate Vault delete retries from that intent rather than restoring the job reference
-- before deleting queued retry audio, cleanup rechecks that no ingestion job still references its Vault ref; a live reference removes stale cleanup intent and preserves retry data
-- `POST /api/v1/transcripts/{transcript_id}/retry-audio-file` works when the latest failed whole-file job still has a stored retry source, either as a legacy DB blob or a Vault-backed source-audio ref
-- retry transfers an existing Vault-backed audio reference to the new job and
-  clears the failed job reference in the same database transaction; it does not
-  create a duplicate Vault secret
-- transcript, user, team, and retention deletion commit retry-audio Vault references to a durable cleanup outbox before owning rows are removed; transient Vault outages retain retry metadata without delaying database hard deletion
-- if committing a newly written source-audio reference fails, rollback compensation commits a cleanup intent in a fresh transaction; only if that cannot persist does validated direct Vault deletion run, and failure of both paths is explicit
-- applied whole-file jobs now keep `source_audio_size_bytes` and `source_audio_duration_seconds` so rolling hourly budgets continue to count recently completed uploads
-- file ingestion is rejected unless the transcript `ingestion_mode` is `whole_file`
-- file ingestion is rejected while another `audio_file` ingestion job for that transcript is already `queued` or `processing`
-- the route queues a transcript-ingestion job and returns `202 Accepted`
-- queueing now fails early if no active team STT selection exists
-- queueing now also fails early with `stt_config_secret_missing` if the selected STT config expects a saved credential and Vault no longer has it
-- queued file jobs snapshot the resolved STT provider execution settings at enqueue time, so later team-setting changes do not alter where an already-uploaded file is sent
-- the backend worker normalizes the uploaded audio to `16 kHz` mono PCM WAV with `ffmpeg`; ffprobe/ffmpeg calls have bounded timeouts so stuck media inspection/normalization fails cleanly
-- the backend worker uses the queued STT snapshot plus the saved bearer credential when the selected adapter needs one
-- the backend worker forwards the normalized audio file to the external STT service
-- the backend worker appends the returned transcript text into `current_draft_text_encrypted`
-- transcript drafts, committed transcript versions, and STT job result text now use one wrapped user DEK per normal content-owning user, with the DEK wrap/unwrap path handled through Vault Transit
-- the transcript status moves to `ready` when the provider returns successfully
-- if the queued STT config no longer has a readable saved credential, the job is marked `failed` with the same `stt_config_secret_missing` message the browser upload path uses
-- generic REST STT failures now keep safer detail at the job level:
-  - connect failure -> `stt_unavailable`
-  - timeout -> `stt_timeout`
-  - upstream non-2xx -> `stt_request_failed` with `status_code`, `provider_status_code`, and a safe `provider_error_code` when the provider returns one
-  - unreadable JSON or missing transcript text path -> `stt_response_invalid`
-- `GET /api/v1/transcripts/{transcript_id}` now includes the latest ingestion failure metadata when present:
-  - `next_live_chunk_sequence_no_upload`
-  - `latest_ingestion_job_status`
-  - `latest_ingestion_error_code`
-  - `latest_ingestion_error_message`
-  - `latest_ingestion_retry_available`
-- `GET /api/v1/transcribe/workspace` now exposes the owner-facing read model for the `/transcribe` page:
-  - `recent_transcripts`
-  - `active_transcript`
-  - `active_transcript_pii_entities`
-  - `active_transcript_redaction_status` with latest owner-visible redaction status, entity count, and safe error code
-  - `generated_documents`
-  - `available_templates`
-  - `available_quick_actions`
-  - `active_structured_context`
-  - current session-level capability flags like `can_create_new_session` and `can_switch_to_whole_file`
-- `GET /api/v1/transcribe/workspace/stream` now exposes the same owner-facing workspace payload as an SSE stream for the `/transcribe` page.
-- the SSE route validates auth using short-lived DB sessions and does not hold a request-scoped SQLAlchemy session open for the lifetime of the stream
-  - emits `workspace` events
-  - follows the same owner-only access rules as the JSON workspace endpoint
-- the owner-facing `/transcribe` workspace now:
-  - creates blank sessions from the session rail
-  - blocks a second blank session until the latest session has draft content or descendant work, or is deleted
-  - also blocks a new session while the latest session is still transcribing
-  - requires an active selected session before upload
-  - uses a single whole-file session type in the browser and lets the user choose file upload or microphone batch inside the session
-  - queues file ingestion into the selected transcript root
-  - records microphone batches locally in the browser with `MicVAD` voice-only gating plus short buffer and submits one captured WAV blob through the same `/transcribe/upload` file-ingestion path
-  - supports bulk-delete of selected transcript sessions from the session rail
-  - exposes `recent_transcripts[].has_transcript_content` as an owner-only boolean so the browser can require confirmation before deleting a non-empty session without exposing transcript text in the rail
-  - exposes `active_transcript_pii_entities` as owner-only summary rows from the latest successful redaction run, disease/symptom rows from the latest successful clinical NLP run, plus owner-created manual PII rows for the active transcript; original values are omitted until explicit reveal
-  - exposes `active_transcript_redaction_status` and `active_transcript_clinical_nlp_status` so empty review rows can distinguish not-run, failed, and succeeded-with-zero-results states without exposing transcript text
-  - includes note-level `generated_documents[].pii_entities` summary rows without original values so switching selected notes refreshes the PII panel without a page reload
-  - hydrates the active workspace state from `GET /api/v1/transcribe/workspace`
-  - keeps an owner-scoped SSE connection to `GET /api/v1/transcribe/workspace/stream` for workspace updates
-  - suppresses browser refresh bursts while that SSE connection is healthy
-  - falls back to polling the same owner-only workspace read model only when SSE is unavailable or disconnected
-  - creates new sessions through `POST /api/v1/transcripts/start`
-  - deletes selected sessions through owner-scoped `DELETE /api/v1/transcripts/{transcript_id}` calls
-  - switches a blank session back to `whole_file` through `PATCH /api/v1/transcripts/{transcript_id}`
-  - switches the active session in place by refetching `GET /api/v1/transcribe/workspace?transcript_id=...` instead of full-page navigation
-  - patches transcript session title and EMIS working context through `PATCH /api/v1/transcripts/{transcript_id}`
-  - queues whole-file upload directly through `POST /api/v1/transcripts/{transcript_id}/audio-file`
-  - recorded microphone upload rolls over before browser-captured WAV parts approach whole-file limits, sends each part through the same owner-only whole-file endpoint, and holds later parts in memory while the backend's one-active-file-job rule clears
-  - offers retry through the same workspace when `active_transcript.latest_ingestion_retry_available` is true
-  - queues note/follow-up/quick-action generation directly through the corresponding `/api/v1/transcripts/{transcript_id}/...` JSON routes
-  - enforces the same 4000-character limit for quick-action additional context on the API path as the browser textarea, trimming blank-only values to null server-side
-  - the non-JS `/transcribe/run-quick-action` form path now enforces that same quick-action additional-context limit before queueing work
-  - shows recent owner transcripts and current draft text on refresh or poll completion
-  - preserves structured EMIS note section rendering and copy-selected-lines behavior during workspace refreshes by rebuilding the section view from generated-document section data
-  - includes each structured generated note's snapshotted allowed section definitions in workspace/API note payloads so deleted template provenance does not expand the editable section set on refresh
-  - silently saves dirty owner note edits before switching note-history versions; if save fails or conflicts, the browser keeps the current editor state selected
-  - now shows explicit session progress copy in the header and active rail row for local recording, uploading, queued, transcribing, ready, and failed states
-- if no active team STT selection exists, the browser flow fails early with:
-  - `No STT configured, please ask your team leader {email}`
-  - or a generic team-leader message when no active leader email is available
-
-System-admin or leader authority does not grant transcript-content access.
-
-Transcript-root deletion commits the database root cascade before deleting any
-Vault-backed retry audio. `DELETE /api/v1/transcripts/{transcript_id}`, user
-deletion, team deletion, and retention cleanup persist a metadata-only cleanup
-job in that same transaction. A Vault outage does not restore or expose the
-deleted transcript: cleanup is retried durably until the Vault path is deleted
-or confirmed already absent.
-
-### Provider model enforcement
-
-- STT and LLM selection flows now enforce server-provided model lists server-side, not only in the UI
-- leader/team LLM allowed-model subsets must be chosen from the provider-discovered model list
-- user LLM preferences must be chosen from the leader-approved allowed-model subset
-- STT team selection rejects model overrides outside the provider-discovered model list
-- if a provider does not return a selectable model list, the selection APIs reject free-text overrides rather than silently accepting them
-
-### Gemini Enterprise LLM fields
-
-LLM inspect, draft, and upsert requests accept `provider_preset=gemini_enterprise` with `google_project_id`, `google_location`, `google_auth_method` (`application_default` or `service_account_json`), optional input-only `google_service_account_json`, and `capacity_mode` (`auto`, `shared`, or `dedicated`). Gemini rejects `bearer_token` and ignores submitted base URLs by deriving audit metadata from location.
-
-LLM config responses expose only `google_project_id`, `google_location`, `google_auth_method`, and `capacity_mode`. They never expose the provider config wholesale, credential JSON, Vault reference, or access token. ADC responses report `has_secret=false`.
-
-## Current uniqueness and onboarding rules
-
-### User email
-
-- emails are normalized before persistence
-- uniqueness is enforced case-insensitively by a unique index on `lower(email)`
-
-### Team name
-
-- teams keep the display `name`
-- teams also store a canonical `name_key`
-- `name_key` is built from Unicode normalization + trim + collapsed whitespace + case-folding
-- uniqueness is enforced on `name_key`
-
-### Account requests
-
-- account requests are deduplicated by normalized email + normalized requested team name while pending
-- creating a request for an existing user email returns `409 conflict`
-
-### Managed users
-
-- manager-created users are active immediately
-- they are created with a temporary password hash
-- they start with:
-  - `must_change_password = true`
-  - `onboarding_state = pending_password_change`
+Scope:
+
+- normal users manage caller-owned personal assets;
+- leaders manage authorized team Templates/Quick Actions in their current team;
+- Smart Phrases are personal only;
+- system administrators do not own normal user/team generation assets.
+
+Bundle contracts are published under `app/static/schemas/`. Bundles carry portable content, never ownership/team/creator/UUID/version/active/usage authority. Limits are 1 MiB and 100 entries. Preflight is read-only; commit reparses/re-authorizes/revalidates the original file and creates the selected subset atomically.
+
+Structured EMIS templates use only: `problem`, `history`, `family_history`, `social_history`, `examination`, `comment`, `tasks`, `investigations`.
+
+## Transcript, workspace, and generated-content routes
+
+Full-user owner-scoped routes include:
+
+- `POST /api/v1/transcripts`
+- `POST /api/v1/transcripts/start`
+- `GET /api/v1/transcripts`
+- `GET /api/v1/transcripts/{transcript_id}`
+- `PATCH /api/v1/transcripts/{transcript_id}`
+- `DELETE /api/v1/transcripts/{transcript_id}`
+- `POST /api/v1/transcripts/{transcript_id}/commit`
+- `POST /api/v1/transcripts/{transcript_id}/audio-chunks`
+- `POST /api/v1/transcripts/{transcript_id}/finalize-live-capture`
+- `POST /api/v1/transcripts/{transcript_id}/audio-file`
+- `POST /api/v1/transcripts/{transcript_id}/retry-audio-file`
+- `GET /api/v1/transcribe/workspace`
+- `GET /api/v1/transcribe/workspace/stream`
+- `POST /api/v1/transcribe/stt-health/recheck`
+
+Owner working-note/dictation/context routes:
+
+- `GET|PATCH|DELETE /api/v1/transcripts/{transcript_id}/working-note`
+- `GET|PATCH /api/v1/transcripts/{transcript_id}/post-consultation-dictation`
+- `POST /api/v1/transcripts/{transcript_id}/post-consultation-dictation/preview-audio-file`
+- `POST /api/v1/transcripts/{transcript_id}/post-consultation-dictation/audio-file`
+- `POST /api/v1/transcripts/{transcript_id}/quick-action-context/preview-audio-file`
+
+Owner PII/redaction routes:
+
+- `POST /api/v1/transcripts/{transcript_id}/manual-pii`
+- `DELETE /api/v1/transcripts/{transcript_id}/manual-pii/{entity_id}`
+- `POST /api/v1/transcripts/{transcript_id}/pii-entities/reveal`
+
+Owner generation/document routes:
+
+- `POST /api/v1/transcripts/{transcript_id}/generate-output`
+- `POST /api/v1/transcripts/{transcript_id}/generate-followup`
+- `POST /api/v1/transcripts/{transcript_id}/run-quick-action`
+- `GET /api/v1/transcripts/{transcript_id}/generated-documents`
+- `PATCH /api/v1/generated-documents/{generated_document_id}`
+- `DELETE /api/v1/generated-documents/{generated_document_id}`
+- `GET /api/v1/generated-documents/{generated_document_id}/redaction-debug` (localhost seeded-development owner only)
+
+Cross-cutting transcript rules:
+
+- system administrators cannot own transcripts;
+- owner/team are derived/validated server-side;
+- only `whole_file` and `live_chunked` are persisted ingestion modes;
+- team retention is snapshotted server-side;
+- expired roots are unavailable before asynchronous physical cleanup;
+- cross-owner access fails without content disclosure;
+- transcript titles remain plaintext metadata; designated content fields are encrypted at rest;
+- owner API responses return authorized plaintext fields and use `Cache-Control: no-store`;
+- deletion is immediate and cascades through transcript-derived children/queued cleanup.
+
+See [transcript-capture.md](transcript-capture.md), [live_stt.md](live_stt.md), and [workspace.md](workspace.md).
+
+## Audio ingestion
+
+Whole-file defaults:
+
+- individual raw upload: 200 MiB;
+- individual normalized duration: four hours;
+- burst: one request per five seconds;
+- daily: 100 uploads;
+- hourly aggregate: 200 MiB and four hours.
+
+Live defaults:
+
+- one chunk request per second;
+- one hour aggregate duration per rolling hour;
+- measured chunk maximum around 30 seconds.
+
+The server measures/probes audio rather than trusting declared duration for enforcement/accounting. Accepted jobs snapshot STT execution metadata and create task-dispatch/quota metadata transactionally.
+
+Whole-file source audio required for asynchronous processing/retry is stored under a bounded Vault reference, not a new PostgreSQL audio blob. Successful/terminal/deletion paths clear or durably queue cleanup with live-reference guards. Retry transfers an existing source reference transactionally rather than duplicating it.
+
+Workers normalize to 16 kHz mono PCM WAV, resolve the snapshotted credential, mark the provider attempt submitted only at dispatch, call the adapter under configured timeouts, encrypt result text, settle usage, and reconcile transcript/job state.
+
+## Working note and dictation
+
+Working note:
+
+- one owner transcript note in `freeform` or `structured` mode;
+- mode locks on first non-empty save and unlocks when cleared;
+- optimistic concurrency uses `expected_updated_at`;
+- generation snapshots the saved note used for the request;
+- source is redacted before LLM dispatch.
+
+Post-consultation dictation:
+
+- preview audio returns editable text without persistence;
+- saved audio adds immutable segments to a transcript-owned aggregate;
+- edited combined text is the authoritative generation source when present;
+- an intentionally empty edited value suppresses dictation fallback;
+- quick-action context preview is transient and populates the ordinary context field rather than a separate stored dictation row.
+
+## Generation lifecycle
+
+Generation endpoints return `202 Accepted` with a queued `generated_documents` row. Creation commits:
+
+- source/generated-document metadata;
+- encrypted source/request snapshots as applicable;
+- provider quota reservation;
+- deterministic durable task-dispatch outbox row.
+
+The worker claims the document/attempt, resolves the credential before marking submission, dispatches once, validates/parses provider output, reidentifies allowed placeholders after redaction, encrypts stored output, records safe metadata, and transitions to `ready` or `failed`.
+
+Template, follow-up, and Quick Action requests are owner-only. Saved transcript, working note, and dictation sources are redacted before provider dispatch. Static reusable asset instructions are treated as configuration and must not contain patient content.
+
+Generation limits default to `20/3 minutes` and `200/day` per authenticated owner bucket. Provider quotas are separate authoritative accounting controls.
+
+Generated-document edits use optimistic concurrency (`expected_updated_at`). Deleting an originating Template/Quick Action does not invalidate already queued/generated work because required snapshots are retained and source references can be cleared.
+
+## Security and caching
+
+- `/api` responses are no-store/no-cache.
+- API cookies remain `HttpOnly`; browser JavaScript receives CSRF state only through server-rendered data.
+- Provider credentials and Vault references are never returned through normal config/content APIs.
+- Audit/usage/attempt/outbox rows contain metadata only.
+- Sensitive values must not be added to validation details or support diagnostics.
+- Browser invalid non-API routes redirect by current auth state; invalid `/api/*` routes remain JSON `404` and are never redirected to HTML.
+
+## Related references
+
+- [auth.md](auth.md)
+- [security.md](security.md)
+- [environment.md](environment.md)
+- [stt-config.md](stt-config.md)
+- [llm-providers.md](llm-providers.md)
+- [transcript-capture.md](transcript-capture.md)
+- [workspace.md](workspace.md)
+- [testing.md](testing.md)

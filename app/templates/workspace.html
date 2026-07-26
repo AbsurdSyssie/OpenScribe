@@ -24,6 +24,7 @@
     {% else %}
       <main class="workspace-main"><div class="workspace-section workspace-section--settings settings-content">
         {% if message %}<div class="flash {{ message_kind|default('success') }}">{{ message }}</div>{% endif %}
+        {% if recovery_temporary_password %}<section class="settings-recovery panel" data-recovery-modal role="dialog" aria-modal="true" aria-labelledby="recovery-modal-title"><div><h2 id="recovery-modal-title">Temporary password</h2><p>Copy now and share it with the user out of band. It will not display again.</p></div><input value="{{ recovery_temporary_password }}" readonly data-recovery-temp-password aria-label="Temporary password"><button class="btn-primary-sm" type="button" data-recovery-copy>Copy password</button><span data-recovery-copy-status></span></section>{% endif %}
         {% set settings_tab = active_workspace_section %}
         {% if active_workspace_section == 'account' %}{% include "settings/_account.html" %}
         {% elif active_workspace_section == 'preferences' %}{% include "settings/_preferences.html" %}

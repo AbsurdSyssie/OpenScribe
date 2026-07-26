@@ -37,7 +37,7 @@ These documents are maintained as descriptions of implemented behavior or an exp
 | Area | Reference |
 | --- | --- |
 | Permanent user workspace | [workspace.md](workspace.md) |
-| `/home` compatibility boundary | [home_brief.md](home_brief.md) |
+| User-workspace migration history and legacy `/home` redirects | [home_brief.md](home_brief.md) |
 | Scribe workspace summary | [transcribe_brief.md](transcribe_brief.md) |
 | Transcript capture contracts and remaining roadmap | [transcript-capture.md](transcript-capture.md) |
 | Live chunked STT behavior | [live_stt.md](live_stt.md) |

@@ -31,3 +31,10 @@ security_remediation_plan.md
 opencode.jsonc
 celerybeat-schedule*
 encrypt_mfa.md
+
+AGENTS.md
+brief.md
+CONTEXT.md
+
+.codex
+.agents

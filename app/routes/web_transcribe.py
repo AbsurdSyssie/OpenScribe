@@ -1,9 +1,5 @@
 """Transcribe browser routes extracted from the home/transcribe route module."""
 
-from pathlib import Path
-
-from fastapi.templating import Jinja2Templates
-
 from .. import main as main_module
 from ..main import *  # noqa: F401,F403
 from ..main import (
@@ -14,15 +10,6 @@ from ..main import (
 )
 from ..web.transcribe_workspace import _missing_stt_selection_message
 from ..web.workspace import WORKSPACE_SCRIBE, render_workspace
-
-
-_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-_transcriber_col_templates = Jinja2Templates(
-    directory=[
-        _REPOSITORY_ROOT / "transcriber_changes" / "workspace" / "templates",
-        _REPOSITORY_ROOT / "app" / "templates",
-    ]
-)
 
 
 def _transcribe_redirect_response(*, message: str, message_kind: str, queued_transcript_id: UUID | None = None):
@@ -96,65 +83,6 @@ def workspace_scribe_page(
         current_user=context.user,
         active_section=WORKSPACE_SCRIBE,
         section_context=section_context,
-    )
-
-
-@app.get("/transcriber_col_changes", response_class=HTMLResponse)
-def transcriber_col_changes_page(
-    request: Request,
-    message: str | None = None,
-    message_kind: str = "success",
-    transcript_id: str | None = None,
-    queued_transcript_id: str | None = None,
-    tab: str = "transcript",
-    db: Session = Depends(get_db),
-):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
-    if response is not None:
-        return response
-    if context.user.is_system_admin:
-        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
-    safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
-    return _render_transcribe_page(
-        request,
-        db,
-        current_user=context.user,
-        template_name="transcribe/transcribe.html",
-        template_renderer=_transcriber_col_templates,
-        transcript_id=transcript_id,
-        queued_transcript_id=queued_transcript_id,
-        active_tab=tab,
-        message=message,
-        message_kind=safe_message_kind,
-    )
-
-
-@app.get("/transcribe-claude", response_class=HTMLResponse)
-def transcribe_claude_page(
-    request: Request,
-    message: str | None = None,
-    message_kind: str = "success",
-    transcript_id: str | None = None,
-    queued_transcript_id: str | None = None,
-    tab: str = "transcript",
-    db: Session = Depends(get_db),
-):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
-    if response is not None:
-        return response
-    if context.user.is_system_admin:
-        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
-    safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
-    return _render_transcribe_page(
-        request,
-        db,
-        current_user=context.user,
-        template_name="transcribe.html",
-        transcript_id=transcript_id,
-        queued_transcript_id=queued_transcript_id,
-        active_tab=tab,
-        message=message,
-        message_kind=safe_message_kind,
     )
 
 

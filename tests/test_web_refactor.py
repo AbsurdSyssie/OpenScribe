@@ -193,12 +193,32 @@ def test_generation_loading_replaces_plain_text_placeholders():
     assert not Path("loading_animation.html").exists()
 
 
-def test_legacy_glm_transcribe_route_is_removed():
-    transcribe_routes = Path("app/routes/web_transcribe.py").read_text()
+def test_retired_prototype_routes_are_not_defined_or_linked_from_canonical_ui():
+    retired_routes = (
+        "/legacy-admin",
+        "/admin2",
+        "/transcribe-glm-2",
+        "/transcribe-claude",
+        "/transcriber_col_changes",
+    )
+    route_sources = (
+        Path("app/routes/web_admin.py").read_text(),
+        Path("app/routes/web_transcribe.py").read_text(),
+    )
+    canonical_ui_sources = (
+        Path("app/templates/admin_mockup.html").read_text(),
+        Path("app/templates/workspace.html").read_text(),
+        Path("app/templates/workspace/_sidebar.html").read_text(),
+        Path("app/templates/transcribe/_workspace.html").read_text(),
+        Path("app/templates/transcribe/_sidebar.html").read_text(),
+        Path("app/static/js/workspace/app.js").read_text(),
+        Path("app/static/js/transcribe/app.js").read_text(),
+    )
     transcribe_app = Path("app/static/js/transcribe/app.js").read_text()
 
-    assert '"/transcribe-glm-2"' not in transcribe_routes
-    assert "'/transcribe-glm-2'" not in transcribe_app
+    for retired_route in retired_routes:
+        assert all(retired_route not in source for source in route_sources)
+        assert all(retired_route not in source for source in canonical_ui_sources)
     assert "'/transcribe'" in transcribe_app
 
 

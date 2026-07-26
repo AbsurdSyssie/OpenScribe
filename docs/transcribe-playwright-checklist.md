@@ -2,7 +2,7 @@
 
 ## Status
 
-This is a browser-test coverage roadmap, not proof that every item is automated. The canonical Scribe route is `/workspace`. `/transcribe` is a compatibility redirect; preview routes such as `/transcribe-glm-2` are development surfaces and should not replace canonical coverage.
+This is a browser-test coverage roadmap, not proof that every item is automated. The canonical Scribe route is `/workspace`. `/transcribe` is a compatibility redirect. Retired prototype routes must not replace canonical coverage.
 
 The existing optional browser regression in `tests/test_csrf_browser.py` verifies real login, compatibility redirect, canonical workspace loading, transcript creation, and session-bound CSRF behavior. Broader Scribe E2E coverage remains incremental.
 
@@ -18,17 +18,14 @@ The seeded development account is localhost-only, has onboarding complete, and h
 Required:
 
 - `/workspace` canonical shell;
+- full normal-user login redirects directly to `/workspace`;
 - `/transcribe` temporary redirect preserving only validated `transcript_id`;
 - `/settings` compatibility redirect through its closed tab/query map;
-- normal-user post-login `/home` compatibility landing followed by navigation into `/workspace`.
+- legacy `GET /home` temporarily redirects allowlisted tabs/selected assets into canonical workspace sections and never renders the retired landing.
 
-Optional development coverage:
+Retired-route coverage:
 
-- `/transcribe-glm-2`;
-- `/transcribe-claude`;
-- `/transcriber_col_changes`.
-
-Preview routes must use owner-authorized workspace data and remain clearly separated from the product navigation contract.
+- `/transcribe-glm-2`, `/transcribe-claude`, and `/transcriber_col_changes` are removed prototype routes and should return the normal not-found response.
 
 ## Baseline workspace load
 

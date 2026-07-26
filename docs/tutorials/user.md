@@ -30,7 +30,7 @@ Do not use real patient content until local validation/training is complete.
 
 ## Open the workspace
 
-Normal-user login currently lands on the `/home` compatibility page. Open the consultation/Scribe link to enter the canonical `/workspace` shell.
+Normal-user login opens the canonical `/workspace` shell directly.
 
 The workspace contains:
 

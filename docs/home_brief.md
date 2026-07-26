@@ -1,10 +1,10 @@
-# Home and User Workspace Brief
+# Home and User Workspace Migration Record
 
 ## Status
 
-`/home` is a separately rendered compatibility landing and the current normal-user/team-leader post-login destination. It is not the canonical long-term workspace.
+The separately rendered `/home` compatibility landing is retired. Full normal-user and team-leader login now goes directly to `/workspace`; `GET /home` remains only as a temporary redirect for allowlisted legacy links.
 
-The canonical user surface is `/workspace`, documented in [workspace.md](workspace.md). New navigation, forms, return routes, and product guidance should use:
+This document records the completed migration and current compatibility boundary. The canonical user surface is `/workspace`, documented in [workspace.md](workspace.md). Navigation, forms, return routes, and product guidance use:
 
 - `/workspace` — Scribe;
 - `/workspace/account`;
@@ -16,7 +16,7 @@ The canonical user surface is `/workspace`, documented in [workspace.md](workspa
 - `/workspace/team/members`;
 - `/workspace/team/account-requests`.
 
-`/settings` and `/transcribe` are compatibility redirects into that permanent workspace. `/home2` is a development/preview surface, not the canonical contract.
+`/settings`, `/transcribe`, and `GET /home` are compatibility redirects into that permanent workspace. `/home2` is a development/preview surface, not the canonical contract.
 
 ## Role boundary
 
@@ -117,16 +117,16 @@ Every action is validated server-side for own-team/non-system-admin scope. Accou
 
 ## Compatibility behavior
 
-- Successful normal-user login currently redirects to `/home`.
-- `/home` remains functional until its retirement is implemented/tested.
-- New documentation should direct ongoing work to `/workspace`.
+- Successful full-session normal-user/team-leader login redirects to `/workspace`; system administrators continue to `/admin`.
+- `GET /home` no longer renders the old landing. It temporarily maps allowlisted legacy tabs and selected Template/Quick Action identifiers into canonical workspace sections.
+- Established mutation handlers can retain paths with the `/home` prefix while canonical workspace forms and feedback use them. These are compatibility implementation endpoints, not primary navigation.
 - `/settings` maps a closed set of tabs/identifiers to canonical workspace routes and drops arbitrary query parameters.
 - `/transcribe` redirects to `/workspace`, preserving only validated `transcript_id`.
 - Preview routes are development surfaces and should not be linked as primary navigation.
 
-## Migration completion criteria
+## Completed migration
 
-Retire `/home` only after:
+The landing was retired after the migration established:
 
 1. normal-user/team-leader login redirects directly to `/workspace`;
 2. every Home mutation/feedback path has a canonical workspace equivalent;
@@ -134,4 +134,4 @@ Retire `/home` only after:
 4. legacy links/return values are removed or explicitly redirected;
 5. root README, auth/workspace/tutorial docs are updated together.
 
-Until then, describe `/home` as a compatibility landing—not the permanent user workspace and not already removed.
+Future cleanup can rename or remove legacy mutation paths with the `/home` prefix only as a separate route-contract change with focused authorization, CSRF, feedback/redirect, and browser regression coverage. It must not weaken owner/team scope or make the old landing a product surface again.

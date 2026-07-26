@@ -42,9 +42,9 @@ A component belongs here only when semantics and layout are consistent across pa
 - `splash.css`: public marketing layout/visuals;
 - `transcribe.css` and responsive workspace CSS: Scribe/consultation controls, panes, rail, editors, recording, dictation, PII, generation, tours;
 - `workspace.css` or current workspace-shell assets: permanent user navigation/settings/library/team layout;
-- `admin.css`: admin shell, provider/directory/usage/audit/danger layouts;
+- canonical Admin styles: remain colocated with `admin_mockup.html` pending a focused extraction;
 - `auth.css`: login/request/reset/onboarding/MFA;
-- `home.css`: transitional `/home` compatibility surface;
+- `home.css`: retained preview-only Home styles; canonical users enter `/workspace`;
 - `template-editor.css` and other focused assets where still used.
 
 Page-specific workflow selectors should remain local when moving them would risk behavior, accessibility, scroll ownership, or privacy-sensitive rendering.

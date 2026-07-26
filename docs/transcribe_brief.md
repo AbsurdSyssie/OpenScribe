@@ -2,7 +2,7 @@
 
 ## Status
 
-The canonical consultation workspace is `/workspace`, not `/transcribe`. `/transcribe` is a temporary compatibility redirect that preserves only a validated `transcript_id`. Preview routes such as `/transcriber_col_changes`, `/transcribe-glm-2`, and `/transcribe-claude` are development surfaces backed by owner-authorized data; they are not alternate content-access paths or primary navigation.
+The canonical consultation workspace is `/workspace`, not `/transcribe`. `/transcribe` is a temporary compatibility redirect that preserves only a validated `transcript_id`. The former `/transcriber_col_changes`, `/transcribe-glm-2`, and `/transcribe-claude` prototype routes have been removed; they are not alternate content-access paths or compatibility routes.
 
 Detailed behavior is maintained in [workspace.md](workspace.md), [transcript-capture.md](transcript-capture.md), [live_stt.md](live_stt.md), and [api.md](api.md).
 

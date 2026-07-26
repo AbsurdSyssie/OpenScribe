@@ -8,7 +8,7 @@ System administrators manage platform/team metadata, provider provisioning, defa
 
 ## Admin workspace
 
-Use `/admin` as the canonical admin workspace. `/admin2` and other alternate/mockup routes are development/compatibility surfaces unless a deployment explicitly adopts them.
+Use `/admin` as the canonical and only admin workspace. The former `/legacy-admin` and `/admin2` development/compatibility routes have been removed.
 
 The current workspace includes global and team-scoped areas such as:
 

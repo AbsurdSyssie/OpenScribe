@@ -19,16 +19,14 @@ export function createTranscribeLayout({
     dom.workspaceSettingsLink.hidden = false;
     if (getCurrentAssistantTab() === 'followups') {
       const selectedOption = dom.runQuickActionSelect?.selectedOptions?.[0] || null;
-      const transcriptId = getTranscriptId() || '';
-      dom.workspaceSettingsLink.href = selectedOption?.dataset?.settingsUrl || '/settings?tab=quick-actions';
+      dom.workspaceSettingsLink.href = selectedOption?.dataset?.settingsUrl || '/workspace/library/quick-actions';
       dom.workspaceSettingsLink.title = 'Edit quick actions';
       dom.workspaceSettingsLink.setAttribute('aria-label', 'Edit quick actions');
       return;
     }
 
     const selectedOption = dom.generateOutputTemplateSelect?.selectedOptions?.[0] || null;
-    const transcriptId = getTranscriptId() || '';
-    dom.workspaceSettingsLink.href = selectedOption?.dataset?.settingsUrl || `/home?tab=templates&return_view=transcribe&queued_transcript_id=${encodeURIComponent(transcriptId)}&transcribe_tab=output`;
+    dom.workspaceSettingsLink.href = selectedOption?.dataset?.settingsUrl || '/workspace/library/templates';
     dom.workspaceSettingsLink.title = 'Edit templates';
     dom.workspaceSettingsLink.setAttribute('aria-label', 'Edit templates');
   };

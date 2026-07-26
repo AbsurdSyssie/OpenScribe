@@ -1,20 +1,12 @@
 from pathlib import Path
 
 
-def test_runtime_image_packages_transcriber_workspace_assets() -> None:
+def test_runtime_image_does_not_package_removed_transcriber_prototype() -> None:
     dockerfile = Path("Dockerfile").read_text()
-    dockerignore = Path(".dockerignore").read_text().splitlines()
+    dockerignore = Path(".dockerignore").read_text()
 
-    assert (
-        "COPY transcriber_changes/workspace/static "
-        "./transcriber_changes/workspace/static"
-    ) in dockerfile
-    assert (
-        "COPY transcriber_changes/workspace/templates "
-        "./transcriber_changes/workspace/templates"
-    ) in dockerfile
-    assert "!transcriber_changes/workspace/static/**" in dockerignore
-    assert "!transcriber_changes/workspace/templates/**" in dockerignore
+    assert "transcriber_changes" not in dockerfile
+    assert "transcriber_changes" not in dockerignore
 
 
 def test_test_dependencies_split_out_of_runtime_requirements() -> None:

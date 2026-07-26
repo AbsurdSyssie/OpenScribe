@@ -1,467 +1,139 @@
-# Admin Brief
+# System Administrator Brief
 
-## Admin release routing
+## Status
 
-- `/admin` renders `admin_mockup.html`; this is the user-facing canonical admin route.
-- Canonical mutation feedback is promoted from inline flash markup into top-right toasts; error text remains server-supplied and safely rendered as text.
-- `/legacy-admin` retains deprecated `admin.html` as an untested compatibility route.
-- `/admin2` remains unchanged as a secondary developer reference.
-- `admin_mockup.html` has passed its release decision and replaced the deprecated admin page.
-- Existing mutation endpoints remain under `/admin/...`; validated `return_view` values preserve the initiating workspace.
-- Absent or invalid `return_view` values resolve to canonical `/admin`; only explicit `legacy` resolves to `/legacy-admin` and deprecated `admin.html`.
-- Default-template create, edit, duplicate, save, delete, cancel, and sidebar navigation initiated from `/admin?tab=global-defaults` carry validated `return_tab=global-defaults` and return to that canonical page. Legacy `defaults` return behavior remains only for an explicit `return_view=legacy` request.
-- Current wired redesign slices include team member creation/lifecycle/recovery actions, team De-ID provider attach/detach, team hard-delete, and future-only team retention-default updates.
-
-## Purpose
-
-This document inventories what `/admin` contains today, without tying future design work to the current arrangement of tabs, panels, forms, or tables.
-
-Goal:
-- describe what information exists
-- describe what can be changed
-- describe who can change it
-- separate metadata administration from content access assumptions
-
-This page is for system admins only.
-
-## Layout notes
-
-- `/admin` uses a flat sidebar workspace with card-based sections for providers, defaults, directory, usage, and requests.
-- `/admin2` is a system-admin-only dark UI preview for testing `admin2.html`; it reuses the same admin context, POST endpoints, CSRF fields, and return-route handling as `/admin`.
-- `/admin2` now exposes the same operational action families as `/admin`: team/user lifecycle, recovery emails/break-glass forms, account-request approval/rejection, provider create/edit/inspect/test/delete, team provider selection clear actions, de-identification assignment/selection controls from the Teams page, default template/quick-action create/edit/duplicate/delete, and usage/failure metadata views.
-- `/admin2` splits provider registry into distinct STT, LLM, De-identification, and Clinical NLP pages. Provider rows are created in registry pages; team assignment and selection happen from Workspace -> Teams.
-- `/admin2` Teams starts with all teams collapsed; opening a team requires choosing its row, and collapse returns to no open team. People rows show team names and collapse lifecycle/recovery/delete actions into an Actions dropdown.
-- `/admin2` Account requests use card-style review rows so request metadata, approval inputs, and rejection inputs do not compete for table-cell space.
-- `/admin2` template create/edit forms show EMIS section prompts only while mode is `structured`; switching to `freeform` leaves only the global prompt visible.
-- `/admin2` Preferences includes a dark/light theme toggle. Choice is stored in browser `localStorage` as `openscribe_admin2_theme`, avoiding schema changes.
-- `/admin2` uses wider content containers for admin-heavy tables/forms: `wide` pages cap at 1440px and `inner` pages cap at 1240px with responsive padding.
-- `/admin2` setting-row dividers are scoped to the descriptive cell so horizontal rules do not run beneath adjacent selects/buttons.
-- `/admin2` section headings align across two-column grids, use stronger heading weight, and leave more space before/after clear-action button rows.
-- `/admin2` custom action dropdowns use a Notion-like popover style. Open menus portal to `body`, layer above other content, scroll up to 70vh/400px, close on click-away/Escape/resize, and auto-close after 3 seconds without hover. Theme remains a simple toggle; native provider `<select>` controls remain browser-native.
-- `/admin2` select fields are progressively enhanced into custom listbox dropdowns with the same front-layer, scrollable, click-away, Escape, resize, and hover-timeout behavior. Original `<select>` elements remain present and synced so existing POST handlers continue to receive normal form values.
-- `/admin2` Usage has local Overview, Teams, and Providers tabs. Teams shows team-level metadata only; Providers shows provider/model counts, token totals, estimated cost, latency, and success rate without transcript, prompt, or note content.
-- `/admin2` Usage > Teams has Active and Suspended status tabs. `/admin2` People table header icons sort by name, age/newest/oldest, team, role, and status. One People filter popover contains team/status selects and uses the same auto-closing dropdown behavior.
-- `/admin2` Failures loads aggregate failure source/code/count rows from the same usage metadata context; quick-action forms preserve the `quick-actions` tab on save, duplicate, and delete.
-- Provider setup is split into STT, LLM, and de-identification subtabs while preserving the same backend forms and routes.
-- LLM and de-identification inspect/ping responses reopen their originating provider subtab instead of resetting to STT.
-- Provider and directory cards display operational metadata only; transcript-derived text and generated clinical content remain absent from this page.
-- Destructive lifecycle actions remain explicit form submissions with confirmation prompts.
-
-## Audience and access
-
-### Primary user
-
-- system admin
-
-### Not primary users here
-
-- normal users
-- team leaders
-
-Notes:
-- system admin can manage teams, users, providers, and requests
-- system admin still does not gain transcript readability from this page
-
-## Information Inventory
-
-### Admin session context
-
-Contained information:
-- signed-in admin identity
-- sign-out action
-- high-level statement of admin responsibilities
-- transient success/error status messaging
-
-System admin can change:
-- end session
-
-How:
-- sign out
-
-Access:
-- system admin only
-
-### Team selection context
-
-Contained information:
-- full list of teams
-- currently selected team for provider-management scope
-
-System admin can change:
-- which team is being targeted for provider administration
-
-How:
-- choose team scope
-
-Access:
-- system admin only
-
-### STT provider provisioning
-
-Contained information:
-- all provisioned STT configs for selected team
-- current active team STT selection
-- per STT config:
-  - label
-  - adapter kind
-  - base URL
-  - transcribe path
-  - secret-present flag
-  - default model
-  - model field name
-  - default language
-  - language field name
-  - response text path and optional segment field mapping
-  - extra request-field metadata
-  - credential status (`unknown`, `verified`, `partial`, `degraded`, or `invalid`)
-  - active flag
-- inspection results for candidate endpoint setup
-- test results for bundled STT sample
-
-System admin can change:
-- create STT config
-- inspect candidate STT endpoint before save
-- save and inspect a new/updated STT credential in one server-side pass
-- re-inspect existing STT configs using the saved Vault reference
-- edit STT config metadata
-- keep, replace, or remove STT secret references explicitly
-- activate/deactivate STT config row
-- delete STT config
-- test STT config
-- set active team STT selection
-- clear active team STT selection
-
-How:
-- choose target team
-- inspect endpoint metadata
-- save-and-inspect or edit provisioned config
-- confirm duplicate credential warning when intentionally saving same team/adapter/endpoint/key combination
-- re-inspect saved config without entering the key again
-- run test
-- set or clear active team policy
-
-Access:
-- system admin only
-
-Notes:
-- secret material is stored via Vault reference, not shown back in plaintext
-- standalone inspect tokens are not retained after the response; save-and-inspect stores the submitted credential once in Vault and never renders it back
-- manual generic STT save-and-inspect tests the saved contract against bundled synthetic audio instead of requiring OpenAPI discovery
-- invalid re-inspection clears active STT selections that point at the rejected config
-- this area manages metadata and connectivity, not transcript content
-
-### LLM provider provisioning
-
-LLM provider save forms also use explicit `credential_action`. OpenAI and Bedrock providers require a saved bearer token; local optional-token providers such as Ollama default to keeping/no credential when the token field is blank, and can remove a saved token explicitly.
-
-Contained information:
-- all provisioned LLM configs for selected team
-- current active team LLM selection
-- per LLM config:
-  - label
-  - adapter kind
-  - base URL or region-derived endpoint details
-  - secret-present state
-  - provider model
-  - active flag
-- inspection results for candidate provider setup
-  - model discovery status and warning state
-
-System admin can change:
-- create LLM config
-- discover models before save
-- re-inspect saved LLM provider models using the Vault-backed credential
-- edit LLM config metadata
-- replace or preserve secret reference
-- activate/deactivate LLM config row
-- delete LLM config
-- set active team LLM selection
-- choose allowed model subset for selected team
-- choose team default model from allowed subset
-- clear active team LLM selection
-
-How:
-- choose target team
-- discover provider models/metadata
-- re-inspect saved provider when models need refreshing without re-entering the key
-- save/edit provider config
-- set active team LLM policy
-
-Access:
-- system admin only
-
-Notes:
-- system admin manages provider availability and team policy
-- saved-provider model re-inspection reads the Vault reference server-side and does not render the raw key
-- this page does not display note/transcript content generated by those providers
-
-### De-identification / PII provider provisioning
-
-Contained information:
-- all provisioned de-identification providers
-- current selected provider for the selected team
-- per provider:
-  - label
-  - adapter kind
-  - base URL
-  - selected runtime detect endpoint
-  - secret-present state
-  - request text/language field names
-  - extra JSON body defaults
-  - response entity path and entity field names
-  - active flag
-- OpenAPI/docs inspection results for provider setup
-- synthetic ping response for the configured endpoint
-
-System admin can change:
-- create or edit a generic REST de-identification provider
-- inspect `/docs`, `/redoc`, or `/openapi.json` to discover candidate POST endpoints
-- choose the runtime endpoint from discovered candidates
-- ping the selected endpoint with synthetic sample text
-- tune request body fields and response parsing fields
-- save provider metadata and Vault-backed bearer token reference
-- assign provider to a team
-- select assigned provider for team runtime redaction
-- clear team selection back to built-in native Presidio fallback
-
-How:
-- choose target team
-- enter provider `Base URL`
-- enter `OpenAPI/docs path` such as `/docs` or `/openapi.json`
-- click `Ping provider` to discover candidate endpoints
-- choose a candidate in `Detect path / selected endpoint`
-- click `Ping provider` again to test that endpoint's request and response contract
-- use raw synthetic ping response to set:
-  - `Response entities path`, for example `entities`
-  - `Response type field`, for example `label` or `entity_type`
-  - `Response score field`, for example `score` or `confidence`
-  - optional `Entity type map JSON`, for example `{"NAME":"PERSON"}`
-- leave `Request language field` blank unless the API expects a field name such as `lang` or `language`; do not enter the value `en`
-- remove extra body fields rejected by the provider as `extra_forbidden`
-- save provider
-- assign provider to the selected team
-- click `Use for team`; runtime redaction uses this selected provider, not the last successful ping
-
-Access:
-- system admin only
-
-Notes:
-- `OpenAPI/docs path` is for discovery only and is not the runtime endpoint
-- `Detect path / selected endpoint` is the POST endpoint saved for runtime redaction
-- ping uses synthetic sample text and may display raw provider response for debugging
-- runtime redaction sends transcript-derived text only through the selected provider path and does not expose raw provider responses in admin UI
-- value-only provider responses are supported when the response includes detected text plus label; OpenScribe matches the detected text back to the submitted source text to derive offsets
-- explicit `start` and `end` offsets remain more reliable for repeated identical values or transformed text
-
-### Team records
-
-Contained information:
-- all teams
-- per team:
-  - name
-  - status
-  - default retention days
-
-System admin can change:
-- create team
-
-How:
-- enter team name
-- choose team status
-- choose default retention days
-- save team
-
-Access:
-- system admin only
-
-Notes:
-- current UI emphasizes creation and listing more than in-place editing
-
-### Managed user records
-
-Contained information:
-- all users
-- per user:
-  - name
-  - email
-  - team
-  - onboarding state
-  - account status
-  - system-admin flag in creation context
-  - MFA requirement in creation context
-
-System admin can change:
-- create user
-- assign user to team
-- assign team role
-- optionally mark account as system admin
-- choose user starting status
-- choose MFA requirement
-- suspend user
-- reactivate suspended/disabled user
-- delete user permanently
-- open quota management for an eligible normal team member
-- set four base quota limits, add/revoke allowance, and reset one or all quota windows
-
-How:
-- enter identity and temporary password
-- set role/team/status/admin/MFA fields
-- save creation
-- use account actions for suspend/reactivate/delete
-- select **Manage quotas** from a member's Actions menu; this opens the canonical Members detail panel at `/admin?team_id=<team_uuid>&team_tab=members&member_id=<member_uuid>`
-
-Access:
-- system admin only
-
-Notes:
-- deleting a user also deletes owned transcript-derived content
-- current user cannot delete self from this page
-- quota management is system-admin-only. It excludes system-admin accounts, the acting admin, and users without normal team membership. Normal users and team leaders have no quota policy, usage, remaining-allowance, proactive warning, or reset-time UI; rejected requests show only safe quota-used-up contact-your-administrator copy.
-- quota panel shows four UTC windows: daily/monthly Tokens and daily/monthly Audio. Each shows Used, Reserved, Base, Temporary, Effective, Remaining, and reset time. `NULL` base/effective/remaining is labelled **Unlimited**; zero base/effective is **Disabled**.
-- base-limit, allowance, reset, and active-grant revocation forms require a controlled reason code and non-empty free reason. Free reasons must not contain patient or clinical data.
-- every mutation has a UUID operation id for idempotent browser retry, CSRF protection, and POST/303/GET return to same member panel. Relative/calendar presets (`24 hours`, `7 days`, `End today`, and `End month`) are anchored to the first accepted operation timestamp, so an exact retry reuses its persisted absolute expiry even after a UTC day/month boundary. No JSON quota-management API exists.
-- active unexpired/permanent allowances are loaded independently of the latest-50 policy history and always remain visible with revocation controls.
-- quota ledger preserves actor/revoker UUID snapshots if an actor is deleted. Security audit records reason code and safe operation metadata only; it excludes free reason text.
-
-### Account requests
-
-Contained information:
-- all manageable account requests
-- per request:
-  - requester name
-  - requester email
-  - requested team name
-  - free-text request details
-  - request status
-
-System admin can change:
-- approve request
-- reject request
-- choose actual team on approval
-- choose team role on approval
-- set temporary password on approval
-- add review notes
-
-How:
-- enter approval details and create user
-- enter rejection notes and reject request
-
-Access:
-- system admin only
-
-### Usage and observability
-
-Contained information:
-- metadata-only usage overview
-- no transcript or note content
-- optional team filter
-- window summaries
-- team activity summaries
-- per-user activity summaries within selected team
-- metrics such as:
-  - generation completions
-  - generation failures
-  - total tokens
-  - ingestion job count
-  - ingestion failures
-  - uploaded megabytes
-  - audio hours
-  - whole-file upload count
-  - live chunk count
-
-System admin can change:
-- usage scope filter by team
-
-How:
-- choose team filter
-
-Access:
-- system admin only
-
-Notes:
-- this area is explicitly metadata-only observability
-- it should not be redesigned into content browsing
-- usage reporting and quota policy are separate: reporting telemetry remains historical/observational, while quota windows use authoritative provider-attempt reservations and settlements. Resetting quota does not delete or alter reporting telemetry; accepted pending work remains counted.
-
-## Capability Summary
-
-### System admin can
-
-- manage team records
-- create managed users
-- suspend/reactivate/delete users
-- provision STT providers
-- provision LLM providers
-- inspect/test provider configurations
-- set or clear active team STT policy
-- set or clear active team LLM policy
-- define allowed model subsets and defaults
-- review and action account requests
-- inspect metadata-only usage and activity
-
-### System admin cannot infer from this page
-
-- transcript text
-- note text
-- redaction source values
-- provider secrets in plaintext
-
-## Redesign constraints
-
-Any redesign must preserve:
-- system-admin-only access
-- metadata administration without transcript readability
-- team-scoped provider provisioning
-- separate STT and LLM policy concepts
-- user lifecycle management
-- account-request review
-- metadata-only usage visibility
-- destructive actions remaining explicit
-
-## Design implications
-
-- `/admin` combines several different admin jobs:
-  - provider provisioning
-  - team policy
-  - directory management
-  - user lifecycle
-  - request triage
-  - observability
-- some tasks are high-trust and destructive
-- some tasks are exploratory or diagnostic
-- provider configuration and provider policy are related but not identical
-- Provider policy uses one scrollable six-row table. Inline provider/model/language controls remain visible; writing-assistant model visibility stays compact in its model cell. Empty rows link to provisioning, and clearing De-identification states that native Presidio becomes active.
-- usage is observability, not content review
-
-Useful future design split:
-- provider setup
-- team policy
-- directory and lifecycle
-- request review
-- observability
-
-Current visual direction:
-- keep `/admin` as a server-rendered Jinja surface
-- use a persistent sidebar for area selection instead of top card tabs
-- top-align admin pane grid content so sparse work areas remain directly below the page header
-- keep the sidebar area selector flat against the sidebar surface; do not inherit the shared horizontal tab container card chrome
-- mark the active admin area with the shared accent color and stronger label weight
-- render Team scope with the same panel, heading, description, and selector spacing before and after team selection
-- use flat full-width editing panes with row dividers instead of stacked cards
-- keep provider setup, defaults, directory, requests, and usage as separate admin work areas
-- keep any future provider-policy split explicit so provisioning and team selection authority remain understandable
-- render LLM user-visible models as multi-column selectable tiles, with team default model chosen from a dropdown populated only by enabled visible models
-
-## Recommended use of this brief
-
-Use this document as an admin capability map:
-- not “how current admin layout is organized”
-- but “what `/admin` must expose and protect”
-
-That should make it easier to redesign admin UX while preserving the privacy and authority boundaries that matter.
-# Provider editing
-
-Provider rows expose one `Edit` action that reuses add wizard with supported non-secret settings populated. Credential remains blank and saved credential is retained unless replacement is entered. Edit stages revision; active root remains unchanged until finalization.
-# Provider wizard inspection
-
-Admin workspace STT and LLM wizards inspect connections through authenticated JSON draft APIs. Inspection and model choices come only from server responses. Finalize uses draft ID; cancel deletes server draft before closing. Back is locked after draft creation to prevent connection changes against staged credentials. Browser unload may leave stale drafts for future cleanup.
+This is the concise role/product brief for the canonical `/admin` workspace. Detailed route/tab/control behavior is maintained in [admin_workspace_function_map.md](admin_workspace_function_map.md). Provider contracts are maintained in [stt-config.md](stt-config.md), [llm-providers.md](llm-providers.md), and [api.md](api.md).
+
+Canonical route:
+
+- `/admin`
+
+Compatibility/development surfaces:
+
+- `/legacy-admin`: deprecated earlier template;
+- `/admin2`: alternate development/reference UI.
+
+Neither compatibility route overrides the canonical `/admin` behavior.
+
+## Role boundary
+
+System administrators manage platform and team metadata, accounts, providers, defaults, quotas, aggregate usage, and security audit data.
+
+They do not gain access to another user's transcript, working note, dictation, generated document, prompt, redaction/PII, or uploaded audio. System-admin accounts cannot own transcripts.
+
+The admin UI must never expose raw provider credentials, unrestricted Vault references, password/reset/setup material, TOTP/recovery values, cookies, plaintext session tokens, or raw patient-content provider responses.
+
+## Primary functions
+
+### Teams
+
+- create and open teams;
+- view/edit supported team policy metadata such as future-root retention default;
+- inspect blockers and hard-delete an eligible team through the Danger zone;
+- understand deletion as immediate/irreversible and content/key/provider-cleanup aware.
+
+### Users and requests
+
+- review all account requests;
+- create normal users/leaders in an explicit team;
+- create/manage additional system-administrator accounts through protected flows;
+- send activation, password-reset, and account-recovery links;
+- perform policy-approved break-glass recovery;
+- reset MFA;
+- suspend/reactivate/delete eligible accounts;
+- protect self/last-active-admin and team/role boundaries;
+- manage selected-member quotas.
+
+Account management remains metadata-only and does not grant owner-content review.
+
+### Provider provisioning
+
+System administrators provision and inspect credential-bearing configurations for:
+
+- speech-to-text;
+- LLM/writing assistants, including Gemini Enterprise;
+- de-identification;
+- clinical NLP;
+- hallucination checking through current LLM policy.
+
+Important rules:
+
+- provider policy selection is separate from credential provisioning;
+- secrets are Vault-backed or supplied through deployment identity;
+- responses show bounded status/`has_secret`, never the secret/reference;
+- required-auth drafts/revisions copy inherited credentials into draft-owned unique versioned Vault paths—they do not alias the active root's secret reference;
+- replacement/removal/deletion/cancel/promotion use durable cleanup intent, retries, and live-reference guards;
+- synthetic inspection content only is permitted in admin diagnostics;
+- successful connectivity does not establish regulatory/clinical suitability.
+
+### Team provider policy
+
+Within a selected team, admins can manage active selections/defaults for supported purposes. Consultation and post-consultation dictation STT can differ. LLM policy controls provider, allowed models, and default model. De-identification and clinical NLP remain separate selections.
+
+Queued work retains its snapshotted execution metadata; later policy edits do not silently retarget an existing job.
+
+### Defaults and reusable assets
+
+- manage global default Templates and Quick Actions;
+- view team asset summaries/navigate to leader-owned management;
+- preserve owner/team/version authority on import/export;
+- never place patient/transcript content in reusable prompts/instructions.
+
+### Usage and audit
+
+Usage surfaces expose metadata-only aggregates for global or validated team scope. See [usage_tab.md](usage_tab.md).
+
+Audit surfaces expose bounded action/outcome/actor/target/team/route/IP/user-agent metadata. They exclude request bodies, credentials, tokens, raw emails where subject hashing is required, and all transcript-derived content.
+
+## Navigation summary
+
+Global areas:
+
+- Admin home;
+- Teams / Manage teams;
+- Account requests;
+- System administrators;
+- Global defaults;
+- De-identification providers;
+- Usage;
+- Audit.
+
+Selected-team tabs:
+
+- Overview;
+- Members;
+- Provider policy;
+- STT;
+- LLM;
+- De-identification;
+- Defaults;
+- Usage;
+- Security;
+- Danger zone.
+
+Team and tab are validated URL state. The workspace does not guess a team when none is selected.
+
+## Security and browser behavior
+
+- All mutations are explicit CSRF-protected POST operations or authenticated JSON APIs.
+- Server authorization is authoritative; hidden controls are not a security boundary.
+- Secret inputs are write-only and never repopulated after validation errors.
+- Safe non-secret form values can be preserved.
+- Redirect-after-POST preserves only closed/validated return state.
+- Runtime assets are same-origin and CSP-compatible.
+- Provider/usage/audit errors remain bounded and content-safe.
+
+## Operational responsibilities
+
+Before clinical production, administrators/operators must establish:
+
+- HTTPS/reverse-proxy/HSTS/cookie/CSRF/forwarded-header policy;
+- least-privilege database/Redis/Vault/provider identities;
+- coordinated PostgreSQL + Vault backup and restore drills;
+- monitoring for web, worker, Beat, database, Redis, Vault, outbox, quota, retention, source-audio cleanup, and provider-secret cleanup;
+- provider/subprocessor governance;
+- account recovery and destructive deletion procedures;
+- audit review and incident escalation;
+- user training and clinical review expectations.
+
+The persistent Docker profile is a single-host baseline, not a production security architecture. See [docker.md](docker.md), [environment.md](environment.md), and [security.md](security.md).

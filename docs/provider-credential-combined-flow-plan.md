@@ -1,195 +1,131 @@
-# Provider Credential Combined Save And Inspect Plan
+# Provider Credential Save, Inspection, and Cleanup
 
-## Target Behavior
+## Status
 
-System admins should enter provider API credentials once. Create flow should save the credential reference and validate/inspect it in one server-side pass, without returning raw secrets to the browser or requiring a second key entry.
+**Implemented design history.** The original goal—enter a provider credential once, inspect it server-side, persist only a Vault reference and safe metadata, and allow later reinspection without redisplaying the credential—is implemented across current provider flows.
 
-Existing saved providers remain usable. Admins may re-inspect existing providers manually using saved Vault references.
+Current contracts are maintained in:
 
-## Affected Areas
+- [stt-config.md](stt-config.md)
+- [llm-providers.md](llm-providers.md)
+- [admin_workspace_function_map.md](admin_workspace_function_map.md)
+- [api.md](api.md)
+- [security.md](security.md)
 
-- Admin provider UI for STT, LLM, de-identification, and future provider credential forms.
-- Admin provider create endpoints that currently split inspect/discover and save.
-- Saved provider credential models and provider metadata/status fields.
-- Vault-backed provider secret lifecycle.
-- Team provider selection rows when providers are deleted or marked invalid.
-- Provider inspection services and tests.
+This file records the principal lifecycle decisions and corrects early proposed generic endpoint/status details that are not the current API schema.
 
-## Architecture Constraints
+## Implemented authority and privacy
 
-- System admins may manage provider credentials, but raw secrets must never be shown back in HTML or JSON.
-- Team leaders may select active providers/models where allowed, but must not view or recover raw credentials.
-- Inspection must never send transcript text, note text, generated document text, prompts containing patient content, or real clinical content.
-- Provider secrets stay in Vault. Postgres stores only Vault references and sanitized metadata.
-- Do not delete Vault secrets before DB references are removed unless compensation/retry cleanup exists.
-- Logs and audit events may include IDs, provider type, team ID, statuses, error codes, durations, and counts only.
+- System administrators provision credential-bearing providers.
+- Team leaders select eligible provisioned policies for their own team but cannot create/reveal/replace/delete raw credentials.
+- Provider inspection uses metadata or synthetic fixture content, never transcript, Working-note, dictation, generated-document, or patient prompt content.
+- PostgreSQL stores configuration metadata, bounded inspection status, fingerprints, and Vault references—not raw credentials.
+- Browser/API responses expose bounded status and `has_secret`, never the raw value or unrestricted Vault reference.
+- Logs/audit/usage contain IDs, type/adapter/preset, team, status, safe error code, duration, and counts only.
 
-## Proposed Flow
+## Current create/draft flow
 
-### Create Provider Credential
+Provider families have adapter-specific setup, but the common safety pattern is:
 
-1. Admin submits provider metadata, secret/API key, and optional `confirm_duplicate` flag.
-2. Server computes a safe non-reversible secret fingerprint/HMAC using server-side material.
-3. If same team, provider type, endpoint/base URL, and fingerprint look duplicated, return a duplicate warning before any Vault write or provider call.
-4. If admin confirms duplicate, continue.
-5. Store secret in Vault.
-6. Create DB provider row with Vault reference and `pending_inspection` status.
-7. Validate credential with cheapest safe provider call.
-8. If credential is invalid, remove DB row first, then delete Vault secret or enqueue cleanup/retry. Return sanitized error.
-9. If credential is valid, run best-effort metadata/model discovery.
-10. Save sanitized metadata and final status.
+1. Validate actor/team/provider metadata.
+2. Reject malformed/unsafe endpoint/auth shapes before a provider call.
+3. For credential-bearing setup, write the submitted credential to a unique versioned Vault path only when the flow reaches the persistence stage.
+4. Inspect/validate with the cheapest safe provider-specific operation.
+5. On definitive credential rejection, create neither a usable config nor a retained secret; any external write that cannot be deleted immediately is durably queued for cleanup.
+6. Save only sanitized model/contract/status metadata.
+7. Keep incomplete setup in a non-selectable pending/draft state until required model/contract choices are finalized.
+8. Promote finalized metadata to a ready active/available root according to the provider service contract.
 
-### Status Outcomes
+The concrete API uses provider-specific routes (`/api/v1/stt-configs/*`, `/api/v1/llm-configs/*`, and de-identification routes), not the proposed generic `/admin/provider-credentials` endpoint.
 
-- `verified`: credential valid and useful metadata/model discovery succeeded.
-- `partial`: credential valid, but metadata/model discovery failed or timed out.
-- `pending_inspection`: transient create state only.
-- `unknown`: existing providers or providers not yet manually re-inspected.
-- `degraded`: saved provider re-inspection failed or timed out without credential rejection.
-- `invalid`: saved provider credential rejected by provider on re-inspection.
+## Duplicate credential handling
 
-Runtime may use `unknown`, `verified`, `partial`, and `degraded`. New team selections should block `invalid`. If an active provider becomes `invalid`, clear or fallback according to existing provider resolution rules.
+STT credential duplicate detection uses a non-reversible HMAC fingerprint with `PROVIDER_CREDENTIAL_FINGERPRINT_SECRET` (and controlled fallback behavior documented in [environment.md](environment.md)).
 
-### Re-Inspect Existing Provider
+A fingerprint is:
 
-- Re-inspect uses saved Vault reference and never asks admin to re-enter the key.
-- If metadata discovery succeeds, update sanitized metadata.
-- If provider is unreachable or times out, keep provider and mark `degraded`.
-- If provider rejects credential, mark `invalid` and clear/fallback any active team selection using that provider.
-- Do not auto-delete existing providers after re-inspect failure; admin delete remains explicit.
+- duplicate-warning metadata only;
+- not authentication material;
+- not reversible credential storage;
+- scoped with provider/team/endpoint metadata as required by the service;
+- stable only when the deployment uses a stable dedicated production secret.
 
-### Delete Provider
+Duplicate handling remains provider/service specific; do not assume every provider family implements the exact early-plan warning status set.
 
-- Delete remains explicit admin action.
-- If provider is active for any team, UI warns that deletion clears active selection for affected team count.
-- In one DB transaction, clear selections referencing provider, then remove provider DB reference.
-- After commit, delete Vault secret or enqueue cleanup/retry.
-- Never silently leave selection rows pointing at deleted providers.
+## Saved provider reinspection
 
-## Duplicate Warning
+Authorized reinspection:
 
-Duplicate detection should warn, not block.
+- reads the saved Vault reference/deployment identity server-side;
+- never requests/renders the saved secret in the browser;
+- performs adapter-specific metadata/model/health checks;
+- persists bounded inspection metadata/time/status;
+- does not auto-delete the provider merely because a remote call is temporarily unavailable;
+- can make a rejected/incomplete provider non-selectable according to current service/policy rules;
+- never exposes raw provider response bodies from runtime patient-content calls.
 
-Recommended matching inputs:
+STT saved diagnostics can use the bundled synthetic audio fixture. LLM discovery/finalization behavior is provider-specific; Gemini Enterprise uses Google identity/project/location rather than bearer-token/base-URL semantics.
 
-- team/scope
-- provider type
-- endpoint/base URL or region identity
-- safe secret fingerprint/HMAC
+## Revisions and credential inheritance
 
-First submit with likely duplicate returns warning and does not save or inspect. Confirmed submit proceeds with create flow.
+The current revision flow is stronger than the early proposal:
 
-## Inspection Calls
+- A required-auth draft/revision that inherits a saved credential reads it only inside the authorized service.
+- It immediately copies the credential to a draft-owned unique versioned Vault path.
+- The draft does **not** persist an alias to the active root's Vault reference.
+- Promotion transactionally updates the stable root and retires superseded references through durable cleanup.
+- Cancelling a draft removes its metadata and safely/durably cleans its draft-owned reference.
+- A revision changing to no-auth/ADC can explicitly remove the previous credential through the same retirement path.
 
-Credential validation should use the cheapest safe authenticated call available.
+This isolates pending work from concurrent active-root credential replacement/deletion and preserves rollback safety.
 
-- LLM: model list, health, or equivalent authenticated metadata call.
-- STT: health, model list, OpenAPI metadata, or equivalent authenticated provider call. Do not upload patient audio.
-- De-identification: health/capabilities call. Do not send transcript text.
+## Replacement, removal, deletion, and rollback
 
-Model/capability discovery is best effort after credential validity is established. If discovery fails after credential validation succeeds, save provider as `partial`.
+External Vault writes/deletes cannot be atomically committed with PostgreSQL. Current services use DB-first durable intent/compensation patterns:
 
-## API Shape
+- replacement writes a new unique reference before switching database metadata;
+- the old reference is retired only after database commit;
+- removal/deletion/promotion/cancellation records exact FK-free cleanup intent where needed;
+- cleanup workers retry and verify a reference is not live before deletion;
+- if a Vault write succeeds but the database transaction fails, rollback compensation queues the orphan reference;
+- team/provider deletion clears or blocks dependent assignments/selections according to the current service contract;
+- queued/processing generated work can block ordinary provider edits/deletion to preserve runtime snapshots.
 
-Create endpoint should accept provider metadata and secret once, for example:
+Credential correction during in-flight LLM work is a narrow validated exception described in [llm-providers.md](llm-providers.md); it cannot silently alter unrelated endpoint/model/availability fields.
 
-```http
-POST /admin/provider-credentials
-```
+## Status terminology
 
-Request fields:
+Do not use the original generic `verified`/`partial`/`pending_inspection` proposal as a universal enum. Current STT and LLM models have provider-specific setup and credential-inspection status fields such as pending model selection, ready, and bounded credential/discovery states.
 
-- provider type
-- team/scope
-- endpoint/base URL or provider-specific location fields
-- provider-specific config
-- secret/API key
-- `confirm_duplicate`
+The operational rule is stable:
 
-Response shapes:
+- incomplete/invalid configs are not newly selectable;
+- ready/active/complete configs can be selected subject to team policy;
+- temporary inspection failure does not disclose secrets or patient content;
+- definitive invalid identity/credential fails safely and updates availability according to that provider service.
 
-- duplicate warning, no provider created
-- `verified` with sanitized metadata
-- `partial` with sanitized warning
-- invalid credential error, no provider retained
+## Testing requirements
 
-Saved-provider re-inspect stays separate, for example:
+Provider credential lifecycle tests should cover:
 
-```http
-POST /admin/provider-credentials/{id}/inspect
-```
+- system-admin-only provisioning/reinspection/replacement/deletion;
+- leader/user denial and no-secret response shape;
+- invalid credential creates neither retained usable config nor untracked Vault secret;
+- saved reinspection uses the saved reference without browser key input;
+- draft inheritance creates a distinct reference;
+- rollback compensation after external write + DB failure;
+- durable cleanup and live-reference guard;
+- selection/assignment behavior after provider invalidation/deletion;
+- queued-work edit/delete blockers;
+- no raw secret/provider body/content in responses, logs, audit, usage, or cleanup rows.
 
-## UI Requirements
+## Remaining improvements
 
-- Replace inspect-then-save key re-entry with one `Save and inspect` action for new providers.
-- Keep `Re-inspect` action on existing provider rows.
-- Display duplicate warning before save and require explicit confirmation.
-- Show `verified`, `partial`, `unknown`, `degraded`, and `invalid` status clearly.
-- Show sanitized provider error code/message only. Do not show raw response bodies.
-- Warn before deleting active provider that team selection will be cleared.
+Possible focused follow-up work includes:
 
-## Audit Events
+- stale abandoned draft visibility/cleanup policy;
+- richer operator health/cleanup metrics;
+- stronger production Vault identity/rotation controls;
+- consistent user-facing status vocabulary where provider-specific semantics permit it.
 
-Recommended events:
-
-- `provider_credential_create_attempt`
-- `provider_credential_duplicate_warning`
-- `provider_credential_create_verified`
-- `provider_credential_create_partial`
-- `provider_credential_create_failed`
-- `provider_credential_reinspect`
-- `provider_credential_deleted`
-
-Audit payloads should contain IDs, provider type, team ID, status, sanitized error code, duration, and affected selection counts only.
-
-## Tests To Add
-
-- Admin-only create authorization.
-- Duplicate warning returns before Vault write and before provider inspect call.
-- Confirmed duplicate can proceed.
-- Valid credential creates Vault reference, DB provider row, sanitized metadata, and `verified` status.
-- Valid credential with discovery failure saves provider as `partial`.
-- Invalid first-add credential removes DB reference before Vault cleanup/retry.
-- Re-inspect existing provider uses saved Vault reference and no key input.
-- Re-inspect credential rejection marks provider `invalid` and clears/fallbacks active selection.
-- Delete active provider clears affected team selection rows in same DB transaction.
-- Responses/logs/audit payloads do not include raw secrets or raw provider bodies.
-
-## Documentation To Update During Implementation
-
-- `docs/admin_brief.md`: provider UI authority, new create/re-inspect actions, statuses.
-- `docs/stt-config.md`: STT credential lifecycle and status behavior.
-- `docs/api.md`: admin provider credential endpoints and response semantics.
-- `docs/security.md`: Vault cleanup order and no-secret/no-raw-response logging rule.
-- `docs/testing.md`: focused provider credential test commands.
-- `docs/progress.md`: implementation checkpoint and final architecture summary.
-
-## Checklist Before Coding
-
-- Target behavior: admin enters provider secret once; create saves and validates/inspects in one server-side pass.
-- Affected schema/modules/endpoints: provider credential models, admin provider routes, Vault secret service, provider inspection services, team selection rows.
-- Affected tests: admin auth, Vault cleanup, duplicate warning, provider status, active-selection clearing, no-secret responses/logs.
-- Architecture risks: Vault/DB transaction boundary, active-provider fallback behavior, duplicate fingerprint storage, raw provider error leakage.
-- Docs referenced: `AGENTS.md`, `docs/admin_brief.md`, `docs/stt-config.md`, `docs/llm-providers.md`, `docs/security.md`.
-
-## Coding Checkpoints
-
-- Schema checkpoint: add status/metadata/fingerprint fields only where needed; preserve provider/team ownership constraints.
-- Auth/ownership checkpoint: create/re-inspect/delete stays system-admin only; team leaders never see raw credentials.
-- Lifecycle/deletion checkpoint: DB references removed or selections cleared before Vault cleanup; retry path exists for failed Vault deletion.
-- Docs/tests checkpoint: update docs and run focused `.venv/bin/pytest -q` provider/admin tests, then full suite where practical.
-
-## Completion Checklist
-
-- Code complete: provider create, revision, replacement, removal, and deletion paths use DB-first durable cleanup.
-- Tests added/updated: provider cleanup worker, lifecycle integration, migration rollback, and team deletion coverage added.
-- Docs added/updated: security, STT, LLM, testing, and progress notes describe the implemented contract.
-- Open issues: production requires Celery Beat and workers to process cleanup jobs; failed jobs remain durable and retry indefinitely.
-
-## Architecture Checkpoint Summary
-
-- Privacy boundaries: inspection uses metadata/synthetic-only provider calls; no transcript-derived content added to admin flow.
-- Ownership rules: provider provisioning remains system-admin scoped; team/user content ownership unchanged.
-- Deletion semantics: invalid first-add cleanup and provider deletion preserve DB-first then durable outbox/Vault cleanup order.
-- Provider rules: raw credentials remain Vault-backed; team selection/fallback remains policy-driven.
-- Structured-note contract: no EMIS or generated-document JSON contract change.
+Implement these through the current provider-specific services and update the operational references above. Do not revive the generic endpoint/model as if it were the existing API.

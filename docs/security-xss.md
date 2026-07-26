@@ -1,101 +1,119 @@
 # XSS Testing
 
-This document records the current XSS test plan and the repeatable probe script for OpenScribe.
+This document describes the repeatable, non-destructive reflected/stored HTML-injection probe in `scripts/security/xss_probe.py`. It is a focused regression aid, not a complete browser security assessment or evidence that a deployment is free from XSS.
 
 ## Scope
 
-The goal is to detect straightforward reflected or stored XSS in:
+The probe submits inert HTML-like markers and checks whether they are absent or escaped rather than rendered as live markup.
 
-- public browser pages
-- authenticated browser pages
-- user-controlled labels and titles rendered back into the UI
+Public coverage:
 
-The current probe set is intentionally non-destructive. It checks whether inert HTML-like payloads are reflected as live markup or only as escaped text.
+- `/login` failed-login reflection;
+- `/request-access` submitted name/team/details reflection.
 
-## Public pages checked
+Authenticated localhost-development coverage:
 
-Target public pages:
+- personal Template name/description rendered in `/workspace/library/templates`;
+- personal Quick Action name/description rendered in `/workspace/library/quick-actions`;
+- transcript title rendered in canonical `/workspace` Scribe state.
 
-- `/login`
-- `/request-access`
+The authenticated suite creates temporary rows and attempts to delete them after each probe. Run it only with a disposable localhost seeded development account and database. The current script requires a full login session and does not automate TOTP; seeded development accounts have MFA disabled specifically for controlled local tooling.
 
-Checks:
+## Run public probes
 
-- query and form input are not reflected as live HTML
-- failed-login responses do not echo attacker-controlled values into the page
-- request-access success pages do not render submitted values unsafely
-
-Manual public-site result noted on `https://medscribe.duckdns.org`:
-
-- no obvious reflected XSS observed on `/login`
-- no obvious reflected or post-submit HTML injection observed on `/request-access`
-- a direct `<script>` query probe triggered a front-door `403`, likely upstream filtering, so the manual verification relied on inert HTML markers instead
-
-## Authenticated/stored candidates
-
-The first authenticated/stored checks target user-editable content that is later rendered in browser pages:
-
-- personal template names and descriptions
-- personal quick-action names and descriptions
-- transcript titles
-
-Recommended follow-up coverage after credentials are available:
-
-- team template names and descriptions
-- team quick-action names and descriptions
-- account-request review screens
-- provider labels
-- generated-document titles
-
-## Script
-
-Run the probe script:
+Against a local instance:
 
 ```bash
-./.venv/bin/python scripts/security/xss_probe.py --base-url https://medscribe.duckdns.org --suite public
+./.venv/bin/python scripts/security/xss_probe.py \
+  --base-url http://127.0.0.1:8080 \
+  --suite public
 ```
 
-Authenticated suite:
+The base URL can also be provided through `OPENSCRIBE_BASE_URL`.
+
+Do not aim the account-request probe at a production/shared instance without an approved test plan because it creates pending account-request records.
+
+## Run authenticated probes
+
+With the seeded localhost-only development user:
 
 ```bash
-OPENSCRIBE_EMAIL='user@example.com' \
-OPENSCRIBE_PASSWORD='password-1' \
+OPENSCRIBE_EMAIL='dev.user@example.com' \
+OPENSCRIBE_PASSWORD='test1234' \
 ./.venv/bin/python scripts/security/xss_probe.py \
-  --base-url https://medscribe.duckdns.org \
+  --base-url http://127.0.0.1:8080 \
   --suite authenticated
 ```
 
-All suites:
+The probe:
+
+1. signs in through `POST /api/v1/auth/login`;
+2. requires `auth_level=full`;
+3. reads the session-bound CSRF token from the HTTP client's cookie jar;
+4. sends `Origin` and `X-CSRF-Token` on unsafe cookie-authorized API requests;
+5. uses canonical workspace routes;
+6. cleans up created Template, Quick Action, and transcript rows when identifiers are returned.
+
+A pending-MFA response causes the authenticated suite to stop with exit code `2` rather than bypassing MFA or accepting a partial session.
+
+Run both suites:
 
 ```bash
-OPENSCRIBE_EMAIL='user@example.com' \
-OPENSCRIBE_PASSWORD='password-1' \
+OPENSCRIBE_EMAIL='dev.user@example.com' \
+OPENSCRIBE_PASSWORD='test1234' \
 ./.venv/bin/python scripts/security/xss_probe.py \
-  --base-url https://medscribe.duckdns.org \
+  --base-url http://127.0.0.1:8080 \
   --suite all
 ```
 
 JSON output:
 
 ```bash
-./.venv/bin/python scripts/security/xss_probe.py --base-url https://medscribe.duckdns.org --suite public --json
+./.venv/bin/python scripts/security/xss_probe.py \
+  --base-url http://127.0.0.1:8080 \
+  --suite public \
+  --json
 ```
 
-## Interpretation
+## Interpret results
 
 Expected safe outcomes:
 
-- payload not reflected
-- payload present only in escaped form
+- marker not reflected;
+- marker appears only in HTML-escaped form;
+- no live probe tag/attribute appears in the response.
 
-Potentially unsafe outcomes:
+A failed result means the returned HTML contains the submitted marker or a matching live-tag pattern. Treat it as a review trigger; confirm with the template/DOM context before classifying severity.
 
-- payload reflected as live HTML or raw markup
-- new DOM elements with probe attributes appear after submission/render
-- probe strings execute as script or event handlers
+Exit codes:
+
+- `0`: all executed probes passed;
+- `1`: at least one probe found potentially unsafe reflection;
+- `2`: setup/auth/request execution failed or required credentials were missing.
+
+## Additional automated checks
+
+The primary template/CSP regression tests remain:
+
+```bash
+pytest -q tests/test_xss_coverage.py tests/test_cookie_csrf_security.py
+rg '\bstyle\s*=' app/templates
+rg 'cdn\.jsdelivr\.net|cdn\.tailwindcss\.com|unpkg\.com|fonts\.googleapis\.com|fonts\.gstatic\.com' app/templates app/static/js
+```
+
+Expected searches: no production runtime dependency or inline-style-attribute matches unless a focused reviewed exception has been introduced.
 
 ## Limitations
 
-- the script does not execute JavaScript payloads or attempt exploitation
-- authenticated coverage depends on valid credentials and does not yet automate TOTP
-- upstream WAF/proxy behavior can block some payloads before they reach the app
+The probe does not:
+
+- execute JavaScript payloads or drive a real browser DOM;
+- test every user-controlled field or every encoding context;
+- automate TOTP, leader, or system-administrator workflows;
+- prove CSP effectiveness against browser-specific behavior;
+- replace dependency review, template escaping tests, Playwright coverage, CSP/header validation, SAST, DAST, or manual security review;
+- preserve dated evidence for a deployment.
+
+Recommended expansion areas include team assets, provider labels, account-request review, generated-document titles, imported bundle fields, and other server-rendered metadata. Add each case with automatic cleanup, current CSRF/origin handling, and safe synthetic values.
+
+Historical manual results belong in dated compliance/security-evidence folders. Do not keep an undated production-host result in this operational guide or treat a front-door/WAF block as proof that application rendering is safe.

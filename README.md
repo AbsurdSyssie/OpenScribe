@@ -2,23 +2,22 @@
 
 ## Documentation
 
-Start with the [documentation index](docs/README.md), which separates maintained operational references from roadmaps, plans, and dated compliance evidence.
+Start with the [documentation index](docs/README.md), which separates maintained current references from implemented design history, future roadmaps, and dated compliance evidence.
 
 Primary references:
 
 - setup and local run: [docs/setup.md](docs/setup.md)
 - persistent Docker runtime: [docs/docker.md](docs/docker.md)
 - environment variables: [docs/environment.md](docs/environment.md)
-- authentication and access control: [docs/auth.md](docs/auth.md)
-- security model: [docs/security.md](docs/security.md)
-- API contract and behavior: [docs/api.md](docs/api.md)
-- permanent user workspace: [docs/workspace.md](docs/workspace.md)
-- team STT configuration: [docs/stt-config.md](docs/stt-config.md)
-- LLM provider configuration: [docs/llm-providers.md](docs/llm-providers.md)
-- transcript capture contracts and remaining roadmap: [docs/transcript-capture.md](docs/transcript-capture.md)
-- test strategy: [docs/testing.md](docs/testing.md)
-- database behavior and DB-specific tests: [docs/dbtesting.md](docs/dbtesting.md)
-- frontend direction: [docs/frontend-roadmap.md](docs/frontend-roadmap.md)
+- authentication and account recovery: [docs/auth.md](docs/auth.md), [docs/account_recovery_brief.md](docs/account_recovery_brief.md)
+- security and encryption: [docs/security.md](docs/security.md), [docs/dek-kek-production-plan.md](docs/dek-kek-production-plan.md)
+- API and persistence contracts: [docs/api.md](docs/api.md), [docs/DatabasePlan.md](docs/DatabasePlan.md)
+- permanent user workspace and Scribe: [docs/workspace.md](docs/workspace.md), [docs/transcript-capture.md](docs/transcript-capture.md)
+- STT/LLM provider configuration: [docs/stt-config.md](docs/stt-config.md), [docs/llm-providers.md](docs/llm-providers.md)
+- admin workspace and Usage reporting: [docs/admin_workspace_function_map.md](docs/admin_workspace_function_map.md), [docs/usage_tab.md](docs/usage_tab.md)
+- testing and database-test safety: [docs/testing.md](docs/testing.md), [docs/dbtesting.md](docs/dbtesting.md)
+- role-based product tutorials: [docs/tutorials/README.md](docs/tutorials/README.md)
+- current focused backlog: [docs/feature_todo.md](docs/feature_todo.md)
 
 ## Primary local URLs
 
@@ -60,7 +59,7 @@ docker compose logs -f openscribe
 curl --fail http://127.0.0.1:8080/health
 ```
 
-The persistent profile stores PostgreSQL, Redis, Vault, and Vault bootstrap state in named volumes. It initializes or unseals Vault, applies migrations, and starts the web server, Celery worker, and Celery Beat whenever the application container starts. Read [docs/docker.md](docs/docker.md) before migrating an existing `start-dev.sh` instance or exposing the service beyond localhost.
+The persistent profile stores PostgreSQL, Redis, Vault, and Vault bootstrap state in named volumes. It initializes/unseals Vault, applies migrations, and supervises the web server, one Celery worker, and Celery Beat whenever the application container starts. Beat publishes pending task-dispatch rows every second and runs retention, transcript-audio cleanup, provider-secret cleanup, and quota lifecycle processing every 10 seconds. Read [docs/docker.md](docs/docker.md) before migrating an existing `start-dev.sh` instance or exposing the service beyond localhost.
 
 Local `.env` should include `APP_ENV=local` and `COOKIE_SECURE_MODE=auto`. The application defaults to production behavior when no environment selector is set. Production must use `APP_ENV=production`, `COOKIE_SECURE_MODE=always`, an explicit or Vault-backed stable CSRF secret, intentional proxy trust, and exactly one HSTS owner through `HSTS_SOURCE`.
 

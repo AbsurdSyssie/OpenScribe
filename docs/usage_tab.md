@@ -1,215 +1,134 @@
-# Usage Tab
+# Admin Usage Reporting
 
-The usage overview uses the standard admin panel inset so its heading, scope,
-filter, and KPI row remain clear of the rounded panel border.
+## Status
 
-## Purpose
+This document describes the implemented system-administrator Usage surfaces and the metadata boundary they must preserve. It is not a quota-policy contract; quota behavior is documented in [api.md](api.md), [security.md](security.md), and [admin_workspace_function_map.md](admin_workspace_function_map.md).
 
-- Define the intended system-admin usage experience for `/admin?tab=usage`.
-- Keep the page strictly metadata-only.
-- Use the telemetry already stored in the database before introducing new schema.
+## Routes and scope
 
-## Scope
+Usage is available in the canonical `/admin` workspace:
 
-- System-admin only.
-- `/admin?tab=usage` reports all-team aggregates and labels them as such.
-- A validated `team_id` filters the aggregates and visible scope label to that team; invalid IDs do not create a team scope.
-- No transcript text.
-- No note text.
-- No prompt text.
-- No provider secrets.
-- No content-derived browsing.
+- global Usage: `/admin?tab=usage`;
+- selected-team Usage: `/admin?team_id=<team_uuid>&team_tab=usage`;
+- per-user aggregate rows appear only inside a validated selected-team scope.
 
-## Existing telemetry
+Only full system-administrator sessions can access these surfaces. Invalid or missing team identifiers do not create a team scope.
 
-### Reporting is not quota policy
+The page is metadata-only. It must not expose:
 
-- This tab reports retained operational telemetry. It is not an expenditure-control source and does not reconstruct quota usage after policy changes.
-- Quota enforcement uses metadata-only `provider_attempts`: accepted reservations plus settled units in UTC daily/monthly windows. Pending accepted work remains committed until settled or lifecycle cleanup terminalizes it.
-- A quota reset changes the authoritative quota usage start for its selected window; it never deletes, rewrites, or hides provider/ingestion reporting telemetry. Therefore Usage totals and a user's post-reset quota status can intentionally differ.
-- Quota administration remains in canonical selected-team Members detail, not this tab: `/admin?team_id=<team_uuid>&team_tab=members&member_id=<member_uuid>`.
-- Quota policy and consumption are system-admin-only abuse-monitoring metadata. Normal users and team leaders receive no quota dashboard, remaining allowance, proactive warning, or reset-time UI. On rejection they receive only a safe quota-used-up message directing them to their administrator.
+- transcript, working-note, dictation, generated-document, or prompt text;
+- detected/manual PII values;
+- uploaded audio;
+- provider credentials, unrestricted Vault references, or raw provider responses;
+- cookies, setup/reset tokens, TOTP values, recovery codes, or plaintext session identifiers.
+
+## Reporting versus quota enforcement
+
+Usage reporting summarizes retained operational telemetry. It does not reconstruct or control provider quotas.
+
+Quota enforcement uses `provider_attempts`, reservations, grants, limits, and reset boundaries. A quota reset changes the authoritative usage start for its selected window; it does not delete or rewrite reporting telemetry. Therefore a Usage total can legitimately differ from a user's current post-reset quota consumption.
+
+Quota management remains under a selected team's Members detail:
+
+`/admin?team_id=<team_uuid>&team_tab=members&member_id=<member_uuid>`
+
+There is no normal-user or team-leader quota dashboard. Public quota rejection remains a bounded `quota_exceeded` response without allowance, usage, or reset details.
+
+## Data sources
+
+The reporting service aggregates metadata from current persistence models, including:
 
 ### Provider usage events
 
-Source: `provider_usage_events`
-
-Available metadata:
-
-- team
-- owner user
-- generated document
-- transcript id reference
-- LLM config id reference
-- provider adapter
-- model name
-- event type: queued, started, completed, failed, enqueue_failed
-- status snapshot
-- prompt, completion, and total tokens
-- estimated cost
-- total duration and provider duration
-- error code, provider error code, provider HTTP status
-- created timestamp
+- team and owner identifiers;
+- generated-document and transcript references;
+- provider/config/adapter/model metadata;
+- generation event/status type;
+- prompt, completion, and total token counts;
+- estimated cost where available;
+- total/provider duration;
+- bounded error/provider status metadata;
+- timestamps.
 
 ### Generated documents
 
-Source: `generated_documents`
-
-Available metadata:
-
-- generator type: template, followup, quick_action
-- status
-- token counts
-- estimated cost
-- duration fields
-- provider errors
-- created, started, completed timestamps
+- generator type (`template`, `followup`, `quick_action`);
+- status;
+- token/duration/cost metadata;
+- bounded provider error metadata;
+- created, started, and completed timestamps.
 
 ### Transcript ingestion jobs
 
-Source: `transcript_ingestion_jobs`
+- team and owner identifiers;
+- transcript/job/config references;
+- job kind (`audio_file`, `live_chunk`);
+- chunk sequence where applicable;
+- snapshotted STT adapter/config/model metadata;
+- status;
+- source byte and duration metadata;
+- bounded error code/message;
+- created, started, completed, and applied timestamps.
 
-Available metadata:
-
-- team
-- owner user
-- transcript id reference
-- job kind: audio_file, live_chunk
-- chunk sequence number
-- STT config reference
-- STT adapter kind and resolved STT metadata snapshots
-- status
-- source audio size
-- source or declared duration
-- error code and message
-- created, started, completed, applied timestamps
-
-## UX goals
-
-- Give an admin a fast operational read in one screen.
-- Emphasize comparison, not just raw tables.
-- Make activity trends visible with charts.
-- Preserve the repo's privacy boundary by showing only metadata.
-- Handle sparse telemetry gracefully where cost or model fields are not always populated.
-
-## Recommended information architecture
-
-### 1. Overview band
-
-Default to monthly data. Show headline metrics for the current rolling 30-day window with change against the previous equal 30-day window:
-
-- completed generations
-- input tokens
-- output tokens
-- processed audio hours
-- combined failures
-
-### 2. Window comparison
-
-Show compact cards for:
-
-- last 24 hours
-- last 7 days
-- last 30 days
-
-Each card should include:
-
-- generated count
-- provider success rate
-- input tokens
-- output tokens
-- ingestion jobs
-- uploaded volume
-- audio hours
-- delta vs prior equal window for generation, input tokens, output tokens, and audio
-
-### 3. Daily trend charts
-
-Show 30-day charts by default for:
-
-- completed generations
-- input tokens
-- output tokens
-- ingestion jobs
-- failures
-
-### 4. Team comparison
-
-Use a sortable comparison table with in-cell bars for:
-
-- generated count
-- provider success rate
-- average input and output tokens per generation
-- live vs whole-file mix
-- uploaded volume
-- activity share
-
-### 5. Team drilldown
-
-For all teams or a selected team, show:
-
-- provider and model mix
-- generated document type mix
-- ingestion mix by STT adapter and job kind
-- top failure hotspots
-
-### 6. Per-user comparison
-
-When a team is selected, show:
-
-- summary cards for top active users
-- per-user comparison table
-- share of team activity
-- generation quality and ingestion mix metrics
-
-Implemented in each selected team's **Usage** tab. User rows are constrained by validated team scope and show account metadata plus aggregate counts/tokens/audio/rates only. Global Usage does not expose per-user rows.
-
-## Comparison rules
-
-- Use equal-window comparisons for all deltas.
-- Use percentages for success and failure rates.
-- Use per-generation averages where token counts would otherwise reward only volume.
-- Use activity share bars for fast visual ranking.
+The reporting service returns aggregates to the browser. It does not send raw event rows to chart code.
 
 ## Reporting ranges
 
-- Default URL state is `range=30d` with daily buckets.
-- `range=90d` uses daily buckets.
-- `range=1y` uses weekly buckets.
-- `range=all` starts at oldest retained provider or ingestion metadata and uses monthly buckets.
-- Invalid range values fall back to 30 days.
-- Fixed ranges compare against previous equal period. All-available range omits comparison because no earlier retained period exists.
-- Fixed ranges use exact rolling timestamp boundaries for KPI cards, tables, and charts. Daily charts retain the partial first calendar-day bucket instead of dropping its first 24 hours; events before the exact boundary remain excluded.
-- ECharts zoom explores aggregate buckets already returned; changing reporting range performs a new server-side aggregate query. Raw events are never sent to chart code.
+Supported URL range values:
 
-## Visual direction
+- `30d`: rolling 30 days, daily buckets, selected by default;
+- `90d`: rolling 90 days, daily buckets;
+- `1y`: rolling year, weekly buckets;
+- `all`: all retained telemetry, monthly buckets.
 
-- Keep the page server-rendered in Jinja.
-- Use a graph-first layout with a single KPI rail, dominant chart canvas, and aggregate tables.
-- Do not use floating card grids for Usage. Separate sections with whitespace and restrained rules.
-- Use locally vendored Apache ECharts 6.1.0 for responsive SVG charts, axes, tooltips, zoom, and current/previous period comparisons. Do not load chart code or usage data from a third-party CDN.
-- Keep the admin visual language aligned with the current flat workspace styling.
+Invalid values fall back to `30d`.
 
-## Redesign progress
+Fixed ranges compare with the immediately preceding equal-duration period. The all-available range has no previous-period comparison. Exact rolling timestamp boundaries determine KPI/table membership; chart buckets can include a partial first calendar bucket while still excluding events before the exact boundary.
 
-- New `/admin` workspace defaults KPI rail, daily token/audio/failure charts, team comparison, and provider/activity/failure aggregates to rolling 30-day data. Full-width ECharts plots cluster solid current-period bars with shaded previous-30-day bars on a shared scale.
-- Team table reuses existing usage rollup service and links each team into URL-scoped usage view. Detailed team breakdown belongs in each team's Usage area.
-- Team workspace now includes Usage with the same reporting ranges and charts plus a team-scoped user breakdown table.
-- Security and frequent-IP reporting belongs in Audit/Security, not Usage.
-- Currency/cost reporting is excluded. Consumption uses input tokens, output tokens, audio hours, jobs, failures, rates, and latency.
-- Planned follow-up: global 24-hour/7-day/30-day/90-day/custom range control (30 days selected by default), equal-period shaded comparison series, failed-token accounting, P50/P95 latency, and URL-configured table columns/filters/grouping.
+## Implemented presentation
 
-## Limits of current telemetry
+The canonical admin workspace renders:
 
-- Estimated cost exists structurally but may remain zero if pricing data is unavailable.
-- Provider HTTP status exists structurally but may be sparse in live data.
-- STT model-level comparison may be incomplete where `stt_model_name` is not populated.
-- Active-seat or login-adoption views are out of scope until session telemetry is intentionally added.
+- KPI summary cards;
+- current-versus-previous trend series;
+- generation token/activity charts;
+- audio/ingestion charts;
+- failure charts;
+- team comparison rows in global scope;
+- provider/model, generator-type, ingestion-type, and failure aggregates;
+- selected-team user aggregate rows.
 
-## Architecture constraints
+Charts use the locally vendored Apache ECharts runtime and server-rendered aggregate data. No usage data or runtime code is loaded from a public CDN.
 
-- Privacy boundaries preserved: metadata-only observability.
-- Ownership rules preserved: system-admin-only route, no transcript-derived content access.
-- Deletion semantics preserved: usage rows continue to follow existing cleanup rules.
-- Provider rules preserved: this page reports provider metadata but does not expose secrets.
-- Structured-note contract preserved: generator reporting must not change EMIS or output JSON rules.
+Global Usage does not expose per-user rows. A selected-team Usage view constrains users and all other aggregates to the validated team.
+
+## Comparison and display rules
+
+- Compare fixed windows with equal previous windows.
+- Show percentages for success/failure rates.
+- Use per-generation averages where raw token volume would otherwise dominate comparison.
+- Display sparse/missing telemetry honestly rather than synthesizing values.
+- Estimated cost can remain zero/blank where pricing data is unavailable.
+- Provider HTTP status and STT model metadata can be incomplete for older or adapter-specific records.
+- Keep usage and security reporting separate: frequent client IPs and security events belong in Audit/Security, not Usage.
+
+## Privacy and lifecycle constraints
+
+- System-administrator access to aggregates does not grant owner-content access.
+- Usage identifiers and dimensions are operational metadata only.
+- Deletion/retention follows the current model/service cleanup rules; this view does not create a parallel content store.
+- Charts/tables must not make content-derived classifications unless an explicit privacy-reviewed metadata field is persisted for that purpose.
+- Free-text administrative reasons or user-supplied content must not be copied into usage events.
+
+## Remaining roadmap
+
+Potential improvements that are not part of the current contract include:
+
+- additional short/custom reporting ranges beyond the implemented `30d`, `90d`, `1y`, and `all` values;
+- P50/P95 latency reporting;
+- configurable table columns, filters, and grouping;
+- improved failed-token accounting where providers expose reliable usage on failures;
+- active-seat/login-adoption reporting after an intentional privacy-reviewed session-telemetry design;
+- richer pricing/cost reporting after a maintained pricing source and accounting policy exist.
+
+Implement these only through metadata-safe service queries and update this document, the admin workspace map, tests, and README documentation index as appropriate.

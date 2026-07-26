@@ -1,107 +1,176 @@
-# Admin Tutorial
+# System Administrator Tutorial
 
-## Audience
+## Audience and boundary
 
-This tutorial is for system admins using the admin workspace after the first system admin account already exists.
+This guide is for system administrators using the browser admin workspace after bootstrap. First-time infrastructure/bootstrap is in [system-admin-setup.md](system-admin-setup.md).
 
-For first-time bootstrap and infrastructure setup, read [System admin setup tutorial](system-admin-setup.md).
+System administrators manage platform/team metadata, provider provisioning, defaults, quotas, account requests, and security/usage metadata. They are admin-only accounts and cannot own or read transcript-derived content through normal product routes.
 
-## Role Boundary
+## Admin workspace
 
-System admins manage teams, users, provider configuration, default assets, account requests, and usage metadata.
+Use `/admin` as the canonical admin workspace. `/admin2` and other alternate/mockup routes are development/compatibility surfaces unless a deployment explicitly adopts them.
 
-System admin accounts are admin-only in the MVP. They do not own transcript-derived content and do not gain transcript or generated-note visibility by default.
+The current workspace includes global and team-scoped areas such as:
 
-## Admin Workspace
+- provider directory/policy;
+- teams and members;
+- account requests and system administrators;
+- STT, LLM, de-identification, clinical NLP, and hallucination-check configuration;
+- default Templates and Quick Actions;
+- user/team quotas;
+- aggregate usage/failure metadata;
+- security audit metadata;
+- team danger/deletion controls.
 
-Use `/admin` or `/admin2` for:
+Admin pages must not expose transcript, working-note, dictation, generated-document, prompt, raw provider response, credential, reset/setup token, TOTP/recovery code, or plaintext session content.
 
-- teams and people
-- account requests
-- provider setup
-- team provider assignment and selection controls
-- default templates and quick actions
-- usage and failure metadata
+## Teams
 
-Admin pages must show operational metadata only. They must not expose transcript text, note text, prompts containing patient content, model responses containing patient content, provider secrets, reset tokens, or plaintext session identifiers.
+System administrators can create/manage/delete teams subject to current blockers and cleanup.
 
-## Manage Teams
+Before team deletion:
 
-Admins may create and manage teams. Team deletion is destructive and must not silently skip blockers.
+- confirm the exact team and authorization;
+- resolve linked system-administrator accounts, because deletion blocks while a system-admin remains attached;
+- understand that normal users and their owner content can be hard-deleted through the team lifecycle;
+- verify team Templates/Quick Actions, provider selections/configs, usage/quota rows, account-request links, and Vault cleanup intents are included by current services;
+- treat the operation as irreversible.
 
-Before team deletion, confirm cleanup can enumerate and remove:
+Do not use team deletion to pause access. Suspend users or change team status/policy where the product supports a reversible action.
 
-- team users
-- transcript-derived content
-- team-scoped templates and quick actions
-- provider config and selection rows
-- usage metadata
-- linked account requests
-- provider credential references
+## Users and account requests
 
-If a system-admin account is still linked to the team, team deletion must block until that link is resolved.
+System administrators can:
 
-## Manage Users
+- review all account requests;
+- create normal users/leaders across teams;
+- create additional system administrators through protected admin flows;
+- send activation/setup, password-reset, and account-recovery links;
+- use approved break-glass recovery when email is unavailable and policy permits;
+- suspend/reactivate eligible accounts;
+- reset MFA;
+- hard-delete eligible users subject to protected-account/self/last-admin rules.
 
-Admins may:
+System-admin lifecycle actions do not grant owner-content visibility.
 
-- create users
-- send setup links
-- reset or recover accounts
-- lock or deactivate users
-- perform system-level user deletion when allowed
+Hard user deletion removes implemented owner transcript-derived content, personal assets, sessions/trusted devices, key metadata, and related rows/cleanup according to current cascades. It has no undo path.
 
-System-level user deletion immediately deletes transcript-derived content and personal templates/actions. Treat it as irreversible.
+## Provider provisioning
 
-## Provider Provisioning
+Raw provider credentials belong in Vault/deployment identity, not PostgreSQL or docs/logs.
 
-Admins provision providers for teams. Raw provider credentials must be stored as Vault references in the database, not plaintext.
+Provisioning areas include:
 
-Provider areas include:
+- speech-to-text;
+- LLM/writing assistants;
+- Gemini Enterprise identity/configuration;
+- de-identification;
+- clinical NLP;
+- hallucination-check provider selection.
 
-- speech-to-text
-- LLM providers/models
-- de-identification
-- clinical NLP
+For credential-bearing STT/LLM providers:
 
-When testing or inspecting providers, only safe operational metadata should appear in UI or logs:
+1. select the team and provider preset;
+2. enter endpoint/identity metadata;
+3. enter the credential once;
+4. inspect/discover supported contracts/models;
+5. finalize a ready config;
+6. run the saved diagnostic where available;
+7. activate it and verify leader selection options;
+8. confirm retired/orphan secret cleanup jobs remain healthy after edits/deletes.
 
-- status
-- provider/model labels
-- error codes
-- durations
-- counts
-- cost estimates
+Draft/revision credential inheritance copies to a draft-owned Vault reference. Never implement or document an alias to an active secret as a substitute for rollback-safe versioning.
 
-Do not log or display raw secrets, transcript text, prompts, generated note text, or provider responses containing patient data.
-If using openscribe for personal data or special category data, remember that you will require a data processing agreement with the data controller and any sub-processors which you use. 
+Detailed references:
 
-## Default Templates and Quick Actions
+- [../stt-config.md](../stt-config.md)
+- [../llm-providers.md](../llm-providers.md)
+- [../gemini-enterprise-setup.md](../gemini-enterprise-setup.md)
 
-Default assets are admin-managed starter configuration. They are not transcript-derived content unless someone wrongly puts patient content into them.
+## Provider diagnostics and safe errors
 
-When creating defaults:
+Provider tools may show bounded operational data:
 
-- keep wording generic
-- avoid real patient examples
-- mark generated outputs as drafts needing review
-- keep structured templates within EMIS section rules
+- provider/config/model labels;
+- setup/credential status;
+- sanitized error code/status;
+- latency/duration/size/counts;
+- synthetic bundled test output where a diagnostic intentionally transcribes a repository fixture.
 
-## Usage and Failure Metadata
+They must not show/log raw secrets, arbitrary provider response bodies, patient content, prompt bodies, generated clinical text, or unrestricted Vault references.
 
-Usage views may show aggregate metadata such as counts, status, provider/model names, latency, token counts, and estimated cost.
+A successful technical diagnostic does not establish data-protection or clinical suitability. Deployment owners must separately assess contracts, subprocessors, residency, retention, model behavior, consent, and local approval.
 
-Usage views must not show transcript-derived text or generated clinical content.
+## Team provider policy
 
-## Escalation Points
+System administrators provision providers; leaders select among eligible options for their own team. Admins can also manage policy across teams.
 
-Pause and seek architecture direction before changing:
+Selections are metadata references and can be purpose-specific. Consultation STT and post-consultation dictation STT should be checked separately. Later selection changes do not rewrite already queued ingestion snapshots.
 
-- ownership model
-- privacy model
-- deletion model
-- encryption/key model
-- provider resolution model
-- structured-note JSON contract
-- shareability of transcript-derived content
+## Quotas and usage
 
+The admin workspace can manage per-user/team/provider accounting controls and display aggregate usage/failure metadata.
+
+Allowed examples:
+
+- request/attempt counts and status;
+- audio seconds/bytes;
+- token counts;
+- latency/duration;
+- provider/model/config labels;
+- estimated cost;
+- quota limits/grants/expiry/reset metadata.
+
+Quota/usage data is not content access. Do not add prompts, transcripts, notes, dictation, PII values, raw audio, or raw provider responses to usage/audit tables.
+
+When resetting/revoking quotas, understand the active reservation/attempt lifecycle rather than editing aggregate counters directly.
+
+## Defaults and shared assets
+
+System administrators manage global default Templates and Quick Actions. Team leaders manage own-team assets.
+
+- Keep reusable instructions generic and patient-free.
+- Use synthetic examples.
+- Validate structured EMIS section keys and required instructions.
+- Review active/version behavior after edits.
+- Imported bundle metadata must not become ownership/team/version/creator authority.
+- Mark output as draft requiring clinician review where appropriate.
+
+## Security audit
+
+Audit views contain bounded metadata only. Useful investigation dimensions include action, outcome, reason code, actor/target/team IDs, route/method, sanitized IP/user agent, and timestamp.
+
+Subject identifiers such as login/reset email are HMAC digests where recorded, not plaintext. Never add request bodies or sensitive values to audit detail payloads.
+
+Proxy/audit IP trust must be configured deliberately; forwarded headers are not trustworthy merely because they exist.
+
+## Production operations
+
+The single-host persistent Docker profile is a local/small-host runtime baseline. Before clinical production, confirm:
+
+- external TLS/proxy and HSTS ownership;
+- production cookie/CSRF/proxy trust settings;
+- least-privilege database/Redis/Vault identities;
+- consistent PostgreSQL + Vault backups and restore drills;
+- persistent worker/Beat monitoring;
+- retention/audio/provider-secret cleanup health;
+- provider/subprocessor governance;
+- logging/audit monitoring without content leakage;
+- tested account recovery and destructive deletion procedures.
+
+See [../docker.md](../docker.md), [../environment.md](../environment.md), and [../security.md](../security.md).
+
+## Escalate architecture changes
+
+Do not silently change:
+
+- owner-only content policy;
+- admin-only account ownership;
+- hard-delete/retention roots;
+- DEK/KEK and Vault boundaries;
+- provider secret versioning/cleanup;
+- durable outbox/quota settlement semantics;
+- structured-note JSON contracts;
+- sharing/export of transcript-derived content.
+
+Use a focused plan, migrations/services/tests, and update the operational docs/README when such a change is approved.

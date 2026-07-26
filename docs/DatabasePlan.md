@@ -1,1417 +1,255 @@
-# Ambient Scribing Database Technical Design
+# Persistence Architecture
 
-## 1. Purpose
+## Status
 
-This document explains the database design for the Ambient Scribing system so that a coding agent can:
+The original database design mixed durable invariants with proposed table names and unimplemented watcher/generic-provider abstractions. It is retained here as a current persistence map instead.
 
-* understand the ownership and privacy model
-* implement schema and migrations correctly
-* build APIs and services against the intended data model
-* preserve deletion, retention, and provider-selection behavior
-* know which features are already decided and which areas must not be improvised
+Authoritative schema sources are:
 
-This document is implementation-oriented. It should be used alongside the main architecture plan, but it is intended to stand on its own.
+- Alembic migrations;
+- `app/models.py`;
+- database/service constraints;
+- [dbtesting.md](dbtesting.md);
+- feature operational references in the [documentation index](README.md).
 
----
+Do not implement a table/field merely because it appeared in an older version of this document.
 
-## 2. Database philosophy
+## Durable invariants
 
-The database design follows a few strict principles.
+### Ownership first
 
-### 2.1 Ownership-first model
+- Transcript-derived content belongs to exactly one normal user/team leader.
+- `owner_user_id` represents the only content owner.
+- `team_id` supplies policy/accounting context and never implies team visibility.
+- System administrators manage metadata/configuration but do not own/read transcripts.
+- Cross-owner content lookups generally use non-disclosing not-found behavior.
 
-Transcript-derived content is owned by exactly one user.
+### Transcript root owns retention/deletion
 
-That means tables holding transcript-derived data should make ownership obvious:
+The transcript root owns implemented children including:
 
-* `owner_user_id` identifies the only user who can access content
-* `team_id` identifies the team policy context
+- committed transcript versions;
+- ingestion jobs/source-audio lifecycle;
+- Working note;
+- post-consultation dictation/segments;
+- generated documents/sections/request-source snapshots;
+- redaction runs/entities/manual PII;
+- provider-attempt/task-dispatch/quota relationships as defined by current services.
 
-Team context does **not** imply content visibility.
+Team retention is snapshotted server-side onto the transcript root. Expired roots are denied by services before periodic physical cleanup. Manual transcript/user/team deletion is hard delete with current cascades and durable external cleanup; there is no undo grace period.
 
-### 2.2 Content privacy is stricter than administrative authority
+### Configuration is not content
 
-Team leaders and system admins can manage users, policies, and metadata, but they do not automatically gain access to transcript or note content.
+Reusable/configuration domains include:
 
-The schema therefore separates:
+- platform/team/personal Templates and immutable versions;
+- platform/team/personal Quick Actions and immutable versions;
+- personal Smart Phrases;
+- provider configs, assignments, selections, preferences, and policy;
+- quotas, attempts, usage, audit, and cleanup metadata.
 
-* content records n- configuration records
-* operational metadata
+Configuration visibility/management never grants owner-content access. Reusable assets must not contain patient/transcript data.
 
-### 2.3 Transcript root is the retention and deletion root
+The earlier proposed `template_watchers`, `quick_action_watchers`, generic `providers`, `team_provider_credentials`, and generic `team_provider_policies` are not the current schema contract.
 
-A transcript is the root object for transcript-derived content.
+## Sensitivity classes
 
-Deleting a transcript should remove all transcript-derived children:
+### Encrypted owner/authentication content
 
-* transcript versions
-* redaction runs
-* redaction entities
-* generated documents
-* generated document sections
+Current services encrypt designated fields using versioned AES-GCM envelopes under per-user DEKs wrapped by Vault Transit. Categories include:
 
-This same tree is also used for retention-based deletion.
+- transcript draft/version text;
+- ingestion result text;
+- Working-note and dictation content;
+- generated-document request/source/output/edit fields and sections;
+- redacted output/original detected/manual PII values;
+- TOTP seed envelopes.
 
-### 2.4 Configuration is shared; content is private
+Titles, IDs, status, counts, timestamps, provider labels/snapshots, and other bounded metadata can remain plaintext where explicitly designed.
 
-Templates and quick actions are configuration objects.
+### Hashed credential/bearer material
 
-They may be:
+Hash-only persistence includes:
 
-* system-scoped
-* team-scoped
-* user-scoped
+- passwords (Argon2id);
+- session tokens;
+- trusted-device tokens;
+- activation/reset/recovery email tokens;
+- recovery codes;
+- provider duplicate fingerprints/subject hashes where used as non-reversible metadata.
 
-They can be watched and forked.
+### Vault/deployment secrets
 
-By contrast, transcript-derived content is never shareable in MVP.
+Raw provider credentials and selected platform secrets live in Vault or deployment identity. PostgreSQL stores only bounded metadata/reference/status. Cleanup uses durable exact-reference intents with retries/live-reference guards.
 
-### 2.5 Hard delete means hard delete
+## Identity and tenancy
 
-This project uses immediate destructive deletion for content and assets where deletion has been chosen.
+### Teams
 
-That means:
+Teams provide organizational/policy scope. Important behavior:
 
-* no undo grace period for manual deletion
-* transcript-derived retention expiry deletes immediately
-* templates/quick actions are hard-deleted when removed
-* watcher access disappears immediately if the original shared asset is deleted
+- normalized unique names;
+- server-owned default retention constrained by `MAX_RETENTION_DAYS`;
+- one-team normal users/leaders;
+- team deletion blocker for attached system administrators;
+- hard deletion of normal members/content/configuration and durable external secret/key cleanup according to service rules.
 
-### 2.6 Schema should enforce structural truths
+### Users
 
-The database should enforce:
+Current user state includes normalized email, password hash, team/role, system-admin flag, account status, onboarding/MFA state, and base quota limits.
 
-* foreign keys
-* scope invariants
-* uniqueness rules
-* transcript-root cascade relationships
-* one-team-per-user structural assumptions where appropriate
+Lifecycle semantics:
 
-Workflow nuances should remain in application logic.
+- `suspended`: reversible manager action;
+- `locked`: temporary security/auth-abuse state where used;
+- `disabled`: stronger security/platform state;
+- manager suspension/reactivation/delete are explicit and scoped;
+- reactivation currently forces password-change onboarding and clears prior MFA trust;
+- hard delete removes owner content/personal assets/auth state/key metadata through current cascades/cleanup;
+- system-admin accounts are protected by self/last-active-admin rules.
 
----
+The earlier “planned account-administration clarification” is implemented and must not remain described as future work.
 
-## 3. Sensitivity classes of stored data
+### Authentication support
 
-The database contains three broad classes of data.
+Current tables/services cover:
 
-## 3.1 Confidential user-owned content
+- account requests;
+- opaque hashed sessions with auth level/lifecycle;
+- trusted devices;
+- encrypted TOTP methods;
+- hashed recovery codes;
+- hashed single-use activation/reset/recovery email tokens;
+- security audit metadata.
 
-This is application-layer encrypted using the user’s DEK:
+Exact names/columns are defined by current models/migrations, not this summary.
 
-* `transcripts.current_draft_text_encrypted`
-* `transcript_versions.text_encrypted`
-* `redaction_runs.redacted_text_encrypted`
-* `redaction_entities.original_value_encrypted`
-* `generated_documents.original_output_text_encrypted`
-* `generated_documents.edited_output_text_encrypted`
-* `generated_document_sections.original_text_encrypted`
-* `generated_document_sections.edited_text_encrypted`
+## Encryption metadata
 
-## 3.2 Normal configuration data
+Per-user key metadata stores wrapped DEK and key/version/status information. PostgreSQL never stores plaintext DEKs.
 
-Not encrypted at the application layer by default unless transcript-derived text is intentionally stored in it:
+- Password/MFA/account recovery preserves the DEK.
+- Content encryption uses owner/table/field/record-bound associated data.
+- Vault/key failure fails closed.
+- PostgreSQL and Vault form one recoverable set.
+- User/content hard deletion removes or durably cleans key material according to service rules.
 
-* `templates`
-* `template_versions`
-* `template_watchers`
-* `quick_actions`
-* `quick_action_versions`
-* `quick_action_watchers`
-* `teams`
-* `providers`
-* `team_provider_policies`
-* most of `audit_events`
+See [security.md](security.md) and [dek-kek-production-plan.md](dek-kek-production-plan.md).
 
-## 3.3 Secrets and secret references
+## Transcript and ingestion persistence
 
-The database should not store raw infrastructure/provider secrets where avoidable.
+The transcript root records owner/team/title/status/ingestion mode/retention/timestamps and encrypted current text.
 
-Instead it stores references such as:
+Persisted ingestion modes:
 
-* `team_provider_credentials.vault_secret_ref`
-* `user_encryption_keys.wrapped_dek`
+- `whole_file`;
+- `live_chunked`.
 
-Security tokens such as reset and invite tokens should be hashed, not encrypted.
+Ingestion jobs store metadata such as kind/status/sequence/config snapshot/source byte-duration/safe error/time fields and encrypted result text. Whole-file retry source audio is referenced through bounded Vault storage rather than a PostgreSQL audio blob.
 
----
+Creation/retry uses transactional durable task-dispatch metadata. Provider-attempt/quota reservation, source-audio cleanup, job claim/idempotency, and transcript reconciliation are service-layer workflows backed by explicit rows/constraints.
 
-## 4. Core entity overview
+## Working note and dictation
 
-The main domains are:
+One living Working note per transcript stores mode and encrypted freeform/structured content with optimistic-concurrency metadata. Mode locks after first non-empty save and unlocks when cleared.
 
-* identity and onboarding
-* transcripts and committed versions
-* pseudonymisation persistence
-* templates and quick actions
-* generated notes/documents
-* providers and team-scoped provider access
-* audit and operational events
+Post-consultation dictation persists transcript-owned aggregate metadata, immutable segment sources, and encrypted combined/edited text. An intentionally empty edited combined value suppresses segment fallback.
 
-A simplified content graph:
+Both remain distinct generation sources and follow transcript-root deletion/retention.
 
-```text
-users ──< transcripts ──< transcript_versions ──< redaction_runs ──< redaction_entities
-                                  │
-                                  └───────────────< generated_documents ──< generated_document_sections
-```
+## Redaction and PII
 
-A simplified configuration graph:
+Version-linked redaction runs store encrypted redacted output and encrypted entity originals. Manual PII uses owner-scoped keyed duplicate detection and encrypted original values.
 
-```text
-templates ──< template_versions
-        └──< template_watchers
+Admin/leader metadata authority never grants reveal access. Owner reveal is an explicit protected action. Redaction/PII lifecycle follows the transcript root/version contracts.
 
-quick_actions ──< quick_action_versions
-             └──< quick_action_watchers
-```
+## Generated documents
 
----
+Generated documents persist owner/team/transcript/provider/template/action metadata, lifecycle status, encrypted request/source/output/edit/debug fields, usage/duration/error-safe metadata, and optional sections.
 
-## 5. Identity, tenancy, and onboarding
+- Every generation creates a new row.
+- Existing result remains after originating reusable asset deletion because required snapshots are retained and source FK can be cleared.
+- Edits use optimistic concurrency.
+- Structured output uses fixed EMIS keys.
+- Follow-ups/Quick Actions are generated-document variants, not separate content-authority models.
+- Checker metadata is non-content; debug content is encrypted owner-only/local-gated.
 
-## 5.1 `teams`
+## Reusable assets
 
-Purpose:
+Current root/version patterns support platform defaults, team assets, and personal assets with normalized uniqueness and active-version invariants.
 
-* organizational grouping
-* source of team-level defaults and provider policy context
+- Normal users own personal assets.
+- Leaders manage Team Templates/Quick Actions in their own team.
+- Smart Phrases are personal only.
+- Import/export transfers portable latest-version content, not authority/version/history.
+- Deletion is hard delete subject to generated-document snapshot/reference handling.
 
-Recommended fields:
+No watcher/sharing layer is implemented.
 
-* `id`
-* `name`
-* `status`
-* `default_retention_days`
-* `created_at`
-* `updated_at`
+## Provider persistence
 
-Notes:
+Current provider domains are explicit rather than one generic table:
 
-* team deletion is blocked until explicit cleanup is complete
-* team is a policy boundary, not a content-sharing boundary
+- STT configs/drafts/selections;
+- LLM configs/drafts/selections/user preferences/hallucination selection;
+- de-identification providers/assignments/selections;
+- clinical NLP selection;
+- provider usage/attempt/quota metadata;
+- durable retired-secret cleanup.
 
-## 5.2 `users`
+Provider rows store safe metadata/reference/fingerprint/status only. Draft credential inheritance copies to a draft-owned unique Vault path; it does not alias the active root reference.
 
-Purpose:
+Queued work snapshots execution metadata so later config/policy edits do not mutate existing work.
 
-* core identity row
-* team attachment
-* account status
-* MFA state
+## Quotas, usage, outbox, and audit
 
-Recommended fields:
+### Quotas/attempts
 
-* `id`
-* `full_name`
-* `email`
-* `password_hash`
-* `team_id`
-* `team_role` (`leader`, `user`)
-* `is_system_admin`
-* `status` (`active`, `suspended`, `locked`, `disabled`)
-* `must_change_password`
-* `onboarding_state`
-* `mfa_required`
-* `mfa_enabled`
-* `created_at`
-* `updated_at`
-* `last_login_at`
+User base limits plus grants/reservations/attempts provide authoritative token/audio accounting. `NULL` base means unlimited; `0` means no base allowance; positive grants can enable a zero-base window. Calendar windows and activation/reset semantics are enforced by current services.
 
-Rules:
+### Durable task dispatch
 
-* each normal user belongs to exactly one team in MVP
-* `team_role` is team-scoped
-* `is_system_admin` is platform-scoped
-* system admin accounts are admin-only in MVP and do not own transcript-derived content
+Business row + deterministic task-dispatch outbox creation is transactional. Immediate broker publish is attempted; Beat retries pending rows every second. Publication uses claim/idempotency/backoff and terminal failure after `TASK_OUTBOX_MAX_ATTEMPTS`.
 
-Behavior:
+### Usage
 
-* locking a user blocks login and revokes active sessions immediately
-* locking a user does not alter content state
-* full system-level user deletion deletes transcript-derived content immediately
-* full system-level user deletion also deletes the user’s personal templates and quick actions immediately
+Usage events/jobs/generated-document metadata provide aggregate reporting without storing content. Reporting telemetry is distinct from quota authority/reset windows.
 
-### Implemented provider quota limits
+### Security audit
 
-`users` also holds four nullable base limits:
+`security_audit_events` stores bounded sanitized metadata. It excludes request bodies, credentials/tokens, transcript/prompt/note/dictation/PII/provider-response content. Login/reset subjects are HMAC digests where recorded.
 
-* `daily_token_limit`
-* `monthly_token_limit`
-* `daily_audio_seconds_limit`
-* `monthly_audio_seconds_limit`
+## External cleanup
 
-All values are non-negative integers. `NULL` means unlimited; `0` means no
-base allowance; a positive value is an enforced base allowance. A positive
-active grant can enable a zero-base window. Grants never constrain an unlimited
-base window.
+Durable cleanup models/services handle:
 
-Quota windows are UTC calendar days and calendar months. When a window changes
-from unlimited to finite, authoritative accounting starts at that activation
-time in the current UTC window; earlier reporting telemetry is not backfilled.
-Other finite-to-finite limit changes do not restart the window.
+- temporary transcript source audio;
+- retired/orphan provider secrets;
+- user/provider/team Vault material where applicable.
 
-Planned account-administration clarification:
+Cleanup retries, uses exact references and live-reference guards, and supports compensation when an external write succeeds but the database transaction rolls back.
 
-* manager-initiated suspension should be modeled separately from destructive deletion semantics
-* the current `status` field should carry explicit meanings in code and docs before adding more manager actions
-* if a reversible manager suspension is introduced, it should revoke sessions immediately without deleting content
-* if manager deletion is introduced, it should still follow the same hard-delete cascade rules as system-level deletion
-* a useful working meaning is:
-  * `suspended` for manager action
-  * `locked` for temporary security/auth-abuse restriction
-  * `disabled` for stronger security/platform disable
-* in the first implementation, reactivation from `suspended` or `disabled` may share the same password-reset and MFA-trust-reset path for simplicity
+## Database test requirements
 
-## 5.3 `account_requests`
+Schema/service changes must test:
 
-Purpose:
+- constraints/normalization/uniqueness;
+- owner/team/system-admin scope;
+- retention and hard-delete cascades;
+- encrypted/hashed persistence and fail-closed behavior;
+- provider secret versioning/cleanup;
+- outbox/attempt/quota concurrency/idempotency;
+- migration upgrade/downgrade where supported;
+- pure versus rollback-isolated versus real-connection test modes.
 
-* public pre-account request intake for MVP
-* source of truth for manager-reviewed account-request onboarding
+See [dbtesting.md](dbtesting.md).
 
-Recommended fields:
+## Change rule
 
-* `id`
-* `requested_name`
-* `requested_email`
-* `requested_team_name`
-* `requested_team_name_key`
-* `request_details`
-* `status`
-* `review_notes`
-* `reviewed_by_user_id`
-* `linked_user_id`
-* `created_at`
-* `reviewed_at`
+For persistence changes:
 
-Rules:
-
-* account requests replace invite acceptance for MVP onboarding
-* leaders may review only requests for their own team
-* system admins may review all requests
-* approving a request may create the real user row immediately
-* direct manager-created users remain valid even without a prior request
-
-## 5.4 Auth support tables
-
-### `user_sessions`
-
-Stores hashed session tokens and revocation state.
-
-### `user_mfa_methods`
-
-Stores MFA methods such as TOTP and later WebAuthn.
-
-### `user_recovery_codes`
-
-Stores hashed recovery codes.
-
-### `password_reset_tokens`
-
-Stores hashed password reset tokens with expiry and used state.
-
----
-
-## 6. Encryption metadata
-
-## 6.1 `user_encryption_keys`
-
-Purpose:
-
-* store one wrapped DEK per user in MVP
-
-Recommended fields:
-
-* `id`
-* `user_id`
-* `wrapped_dek`
-* `kek_key_name`
-* `kek_key_version`
-* `created_at`
-* `rotated_at`
-* `is_active`
-
-Rules:
-
-* one DEK per user in MVP
-* DEK created when the user account is created
-* wrapped by HashiCorp Vault
-
-Application behavior:
-
-* app unwraps user DEK when working with confidential content
-* database never stores the unwrapped key
-
----
-
-## 7. Transcript data model
-
-## 7.1 `transcripts`
-
-Purpose:
-
-* transcript root object
-* retention root
-* current working draft storage
-
-Recommended fields:
-
-* `id`
-* `owner_user_id`
-* `team_id`
-* `title`
-* `current_draft_text_encrypted`
-* `status`
-* `duration_seconds`
-* `word_count`
-* `speaker_count`
-* `retention_days_applied`
-* `retention_expires_at`
-* `deletion_policy_source`
-* `created_at`
-* `updated_at`
-* `deleted_at`
-
-Important semantics:
-
-* created when recording starts
-* receives realtime partial transcript updates into `current_draft_text_encrypted`
-* belongs to exactly one owner user and one team context
-* root for retention and cascade deletion
-
-## 7.2 `transcript_versions`
-
-Purpose:
-
-* immutable committed snapshots of transcript text
-
-Recommended fields:
-
-* `id`
-* `transcript_id`
-* `version_no`
-* `source_type` (`transcribed`, `edited`)
-* `text_encrypted`
-* `content_hash`
-* `word_count`
-* `speaker_count`
-* `transcription_provider`
-* `transcription_model`
-* `diarisation_enabled`
-* `language_code`
-* `created_by_user_id`
-* `created_at`
-
-Commit boundaries in MVP:
-
-* blur from editor
-* explicit save
-* action execution
-
-Important semantics:
-
-* draft editing does not create versions on each keystroke
-* older versions are retained for provenance/internal history
-* users interact only with the latest working version in the UI
-
----
-
-## 8. Pseudonymisation persistence model
-
-## 8.1 `redaction_runs`
-
-Purpose:
-
-* persist one successful reusable pseudonymisation result for a transcript version in normal MVP flow
-* also capture failures/retries over time if needed
-
-Recommended fields:
-
-* `id`
-* `transcript_version_id`
-* `owner_user_id`
-* `team_id`
-* `status`
-* `redacted_text_encrypted`
-* `mapping_hash`
-* `entity_count`
-* `api_provider`
-* `api_model_or_version`
-* `created_at`
-* `updated_at`
-* `failed_at`
-* `error_code`
-
-Behavior:
-
-* redaction is lazy
-* a committed transcript version may have no redaction run yet
-* when an action needs redacted content, system checks for existing successful redaction run
-* if found, reuse it
-* if missing, create it
-
-## 8.2 `redaction_entities`
-
-Purpose:
-
-* persist the identifier mapping/index needed for later de-identification or reconstruction workflows
-
-Recommended fields:
-
-* `id`
-* `redaction_run_id`
-* `entity_order`
-* `entity_type`
-* `placeholder`
-* `original_value_encrypted`
-* `normalized_value_hash`
-* `occurrence_count`
-* `created_at`
-
-Notes:
-
-* stores sensitive original values, so it is confidential content
-* normalized hash columns are keyed owner-scoped digests, not plain deterministic hashes, so DB-only access cannot dictionary-test low-entropy PII values
-
-## 8.3 Optional later: `redaction_spans`
-
-Only needed if exact character offsets matter.
-
----
-
-## 9. Template and quick action model
-
-This domain is deliberately separate from transcript-derived content.
-
-## 9.1 Scope model
-
-Templates and quick actions can be:
-
-* `system`
-* `team`
-* `user`
-
-Scope constraints:
-
-* if `scope = user`, `owner_user_id` is not null and `team_id` is null
-* if `scope = team`, `team_id` is not null and `owner_user_id` is null
-* if `scope = system`, both are null
-
-## 9.2 `templates`
-
-Purpose:
-
-* logical template root
-
-Recommended fields:
-
-* `id`
-* `scope`
-* `owner_user_id`
-* `team_id`
-* `name`
-* `description`
-* `is_active`
-* `visibility`
-* `derived_from_template_id`
-* `created_by_user_id`
-* `created_at`
-* `updated_at`
-
-Behavior:
-
-* hard-deleted when removed
-* if deleted, watcher access disappears immediately
-* explicit forks survive independently
-
-## 9.3 `template_versions`
-
-Purpose:
-
-* immutable versions of template configuration
-
-Recommended fields:
-
-* `id`
-* `template_id`
-* `version_no`
-* `mode` (`freeform`, `structured`, `canvas`)
-* `prompt_text`
-* `config_json`
-* `content_hash`
-* `created_by_user_id`
-* `created_at`
-
-Important note:
-
-* current architecture treats templates as normal configuration data, so these do not need app-layer encryption by default
-
-## 9.4 `template_watchers`
-
-Purpose:
-
-* allow same-team users to explicitly watch a user-shared template
-
-Recommended fields:
-
-* `id`
-* `template_id`
-* `watcher_user_id`
-* `created_at`
-
-Rules:
-
-* watching is a live reference only
-* watching does not create ownership
-* if user customizes the watched item, create a fork
-
-## 9.5 `quick_actions`
-
-Same scope and sharing model as templates.
-
-Recommended fields:
-
-* `id`
-* `scope`
-* `owner_user_id`
-* `team_id`
-* `name`
-* `description`
-* `is_active`
-* `visibility`
-* `derived_from_quick_action_id`
-* `created_by_user_id`
-* `created_at`
-* `updated_at`
-
-## 9.6 `quick_action_versions`
-
-Purpose:
-
-* immutable versions of quick action config
-
-Recommended fields:
-
-* `id`
-* `quick_action_id`
-* `version_no`
-* `instruction_text`
-* `config_json`
-* `content_hash`
-* `created_at`
-
-MVP rule:
-
-* quick actions/follow-ups are freeform text outputs, not structured JSON-schema outputs
-
-## 9.7 `quick_action_watchers`
-
-Same pattern as `template_watchers`.
-
----
-
-## 10. Sharing and forking behavior
-
-This is a critical part of the design.
-
-## 10.1 Team assets
-
-Team templates and quick actions:
-
-* are available in team scope
-* are not force-added into user libraries
-* are not watched in the same way as personal shared assets unless product later adds that behavior
-
-## 10.2 Personal shared assets
-
-A user can mark a user-scoped asset as same-team discoverable.
-
-That means:
-
-* teammates can discover it
-* teammates must explicitly watch it to add it to their library
-* it is not auto-added to all teammates
-
-## 10.3 Watching
-
-Watching means:
-
-* live reference to original asset
-* latest active version is resolved in MVP
-* no ownership is created
-* deleting the original removes watcher access immediately
-
-## 10.4 Forking
-
-Forking means:
-
-* create a new user-scoped asset
-* set `derived_from_*` to original asset if desired
-* after fork, user owns it independently
-* later changes to the original do not affect the fork
-
-## 10.5 Renaming/customizing shared assets
-
-Any rename or customization of a shared/team/system asset requires a fork.
-
-This avoids per-user alias overlays and preserves clean ownership semantics.
-
----
-
-## 11. Generated document model
-
-## 11.1 `generated_documents`
-
-Purpose:
-
-* root record for all transcript-derived generated outputs
-
-Recommended fields:
-
-* `id`
-* `owner_user_id`
-* `team_id`
-* `transcript_id`
-* `transcript_version_id`
-* `redaction_run_id`
-* `generator_type` (`template`, `quick_action`, `manual`)
-* `template_version_id`
-* `quick_action_version_id`
-* `source_template_name`
-* `source_quick_action_name`
-* `status`
-* `title`
-* `document_mode` (`freeform`, `structured`, `canvas`)
-* `schema_version`
-* `original_output_text_encrypted`
-* `edited_output_text_encrypted`
-* `is_edited`
-* `retention_expires_at`
-* `token_count`
-* `model_used`
-* `created_at`
-* `updated_at`
-* `last_edited_at`
-
-Important semantics:
-
-* multiple outputs may exist for the same transcript version and same template/action
-* generated documents are editable by the owner user
-* full rendered text is retained even for structured documents
-* transcript-derived content remains private and non-shareable
-
-Why snapshot source names exist:
-
-* templates and quick actions are hard-deleted
-* generated docs should still preserve useful provenance even if source assets disappear
-
-## 11.2 `generated_document_sections`
-
-Purpose:
-
-* optional structured child components for structured/canvas modes
-
-Recommended fields:
-
-* `id`
-* `generated_document_id`
-* `section_key`
-* `section_label`
-* `section_type`
-* `sort_order`
-* `original_text_encrypted`
-* `edited_text_encrypted`
-* `is_deleted`
-* `created_at`
-* `updated_at`
-
-Important semantics:
-
-* `freeform` mode may have no sections
-* `structured` mode may use system-defined section libraries
-* `canvas` mode may later allow more flexible layouts
-* part-level edit/delete operates here when sections exist
-
----
-
-## 12. Structured note model
-
-## 12.1 Modes
-
-Supported document modes in design:
-
-* `freeform`
-* `structured`
-* `canvas`
-
-MVP focus:
-
-* freeform notes
-* structured EMIS profile
-
-## 12.2 EMIS structured profile
-
-Allowed EMIS section keys:
-
-* `problem`
-* `history`
-* `family_history`
-* `social_history`
-* `examination`
-* `comment`
-* `tasks`
-* `investigations`
-
-Rules:
-
-* fixed allowed section library
-* users may remove sections from a template
-* users may reorder sections
-* users may customize per-section prompts
-* users may supply a global instruction
-* only sections with content are persisted/rendered
-
-## 12.3 Structured template config
-
-`template_versions.config_json` for structured mode should support:
-
-* `mode = structured`
-* `profile = emis`
-* `global_instruction`
-* ordered selected sections
-* per-section instructions/prompts
-* output schema version
-
-## 12.4 Structured generation contract
-
-For note generation, LLM should return one JSON payload containing:
-
-* `title`
-* `content`
-
-Where `content` is keyed by section name.
-
-Example conceptual shape:
-
-```json
-{
-  "title": "Diabetes review with medication discussion",
-  "content": {
-    "problem": "...",
-    "history": "...",
-    "tasks": "..."
-  }
-}
-```
-
-Backend responsibilities:
-
-* validate returned JSON
-* reject or normalize malformed payloads
-* drop empty sections
-* preserve canonical order for rendered output
-* write full rendered text to `generated_documents`
-* write structured sections to `generated_document_sections`
-
-Important rule:
-
-* backend is the source of truth for persisted structure
-* LLM proposes structure, backend normalizes it
-
-## 12.5 Quick actions vs notes
-
-Quick actions/follow-ups:
-
-* remain freeform text in MVP
-* do not need the same title+structured-content JSON contract
-
----
-
-## 13. Provider model
-
-## 13.1 `providers`
-
-Purpose:
-
-* master list of provider integrations
-
-Recommended fields:
-
-* `id`
-* `provider_type` (`transcription`, `llm`, `pseudonymisation`)
-* `name`
-* `is_active`
-* `created_at`
-
-## 13.2 `team_provider_credentials`
-
-Purpose:
-
-* system-admin-managed team-scoped provider credentials
-
-Recommended fields:
-
-* `id`
-* `team_id`
-* `provider_id`
-* `label`
-* `vault_secret_ref`
-* `external_account_identifier`
-* `is_active`
-* `created_by_user_id`
-* `created_at`
-* `updated_at`
-
-Rules:
-
-* DB stores Vault reference only
-* raw provider secrets are not stored in DB
-* one team may have multiple active credentials/providers for same provider type if needed
-* for the first transcript-capture slice, transcription credentials should be resolved through this table rather than a separate ad hoc STT secret store
-
-## 13.3 `team_provider_policies`
-
-Purpose:
-
-* team-level allowlist/default behavior over provisioned providers
-
-Recommended fields:
-
-* `id`
-* `team_id`
-* `provider_id`
-* `allowed`
-* `allowed_models_json`
-* `default_model`
-* `is_default_for_type`
-* `created_at`
-* `updated_at`
-
-Behavior:
-
-* multiple LLM providers/models may be allowed per team
-* user selects one active LLM from allowed subset
-* if invalid, app falls back to team default
-* transcription provider is fixed per team in MVP
-* pseudonymisation provider is fixed globally in MVP
-* the active transcription provider policy is what transcript chunk ingestion resolves when forwarding audio to STT
-
-## 13.4 `user_provider_preferences`
-
-Purpose:
-
-* user-level active provider/model preference where allowed
-
-Recommended fields:
-
-* `id`
-* `user_id`
-* `provider_type` (`llm`)
-* `provider_id`
-* `model_name`
-* `created_at`
-* `updated_at`
-
-MVP use:
-
-* active LLM choice per user
-
-## 13.5 `provider_usage_events`
-
-Purpose:
-
-* usage and cost metadata without content retention
-
-Recommended fields:
-
-* `id`
-* `team_id`
-* `user_id`
-* `provider_id`
-* `credential_id`
-* `feature_type`
-* `model_name`
-* `input_tokens`
-* `output_tokens`
-* `audio_seconds`
-* `estimated_cost`
-* `status`
-* `error_code`
-* `created_at`
-
-Rules:
-
-* never store transcript text, prompt text, or generated output text here
-
-`provider_usage_events` remains reporting/cost telemetry. It is not used to
-authorize or enforce quota and historical telemetry is never backfilled into
-quota accounting.
-
-## 13.6 `provider_attempts`
-
-Purpose:
-
-* authoritative metadata-only ledger for quota authorization, reservations,
-  dispatch state, and settlement
-* one row for every potentially billable provider call
-
-Call kinds are `llm_generation`, `llm_hallucination_check`,
-`stt_conversation`, `stt_post_consultation_dictation`, `stt_prompt_context`,
-and `stt_provider_test`. This includes retries. Synthetic provider tests have
-no normal-user quota owner and are unmetered.
-
-The row stores team/optional owner attribution, optional transcript, ingestion
-job, and generated-document links; correlation id plus attempt number; resource;
-reservation and settlement units; safe provider metadata/error codes; and
-authorization/dispatch/terminal timestamps. It stores no transcript, prompt,
-provider response, secret, or Vault reference.
-
-Foreign keys independently enforce that referenced rows exist, but cannot prove
-their shared owner/team scope. The centralized `ProviderAttempt` service locks
-and validates the owner plus every supplied content reference, rejecting
-cross-owner, cross-team, and mismatched-transcript links before reservation.
-Durable provider error codes are controlled allowlisted metadata (or a
-status-derived safe category); raw provider error strings are never persisted.
-
-State is constrained to:
-
-* `reserved`: accepted authorization before provider dispatch
-* `submitted`: external dispatch occurred and has a deadline
-* `settled`: terminal `succeeded`, `failed`, or `unknown` usage result
-* `cancelled`: unused pre-dispatch reservation
-
-Authorization locks the owner row, serializing reservations for that user.
-Accounting uses `authorized_at`, not later dispatch or settlement time. Accepted
-reservations remain committed through resets, grant expiry/revocation, and
-later limit reductions until settlement or expiry.
-
-Token calls reserve a conservative centralized estimate: UTF-8 outbound byte
-length plus fixed per-message overhead and configured maximum completion tokens.
-Reported total tokens settle to actual use. A post-dispatch token call with
-unknown outcome settles its reservation conservatively. Audio reservations and
-settlement use server-measured duration, rounded up to whole seconds. Definite
-pre-dispatch failure cancels/releases the reservation. If actual token use
-exceeds its reservation, the extra settled usage remains authoritative and
-later reservations fail until capacity exists.
-
-Foreign keys preserve metadata while respecting hard deletion: team deletion
-cascades attempt rows; user, transcript, ingestion-job, and generated-document
-deletion set their attempt link to `NULL`. Lifecycle processing terminalizes
-active attempts before source deletion so an accepted dispatch is not silently
-lost.
-
----
-
-## 14. Audit and operations tables
-
-## 14.1 `audit_events`
-
-Purpose:
-
-* metadata-only audit trail
-
-Recommended fields:
-
-* `id`
-* `actor_user_id`
-* `team_id`
-* `target_type`
-* `target_id`
-* `event_type`
-* `metadata_json`
-* `created_at`
-
-Examples:
-
-* account locked
-* account suspended
-* account reactivated
-* account deleted
-* account request submitted
-* password reset requested
-* template deleted
-* transcript deleted
-* retention delete completed
-
-When destructive user deletion is performed, the audit metadata should snapshot enough non-content context to remain meaningful after the user row is gone:
-
-* target user id
-* target email
-* target team id
-* target role / admin flag
-* actor user id
-* reason
-
-## 14.2 `job_runs`
-
-Purpose:
-
-* track background job execution by target type/id
-
-Recommended fields:
-
-* `id`
-* `job_type`
-* `target_type`
-* `target_id`
-* `status`
-* `attempt_count`
-* `error_code`
-* `started_at`
-* `finished_at`
-* `created_at`
-
-## 14.3 `user_quota_policy_events`
-
-Purpose:
-
-* immutable operational ledger for quota grants, resets, and base-limit changes
-* durable before/after limit history and idempotent administrator operations
-
-Each event records operation id, target user, resource (`tokens` or
-`audio_seconds`), period (`daily` or `monthly`), event type (`grant`, `reset`,
-or `limit_change`), controlled reason code, required free-text reason,
-effective/optional expiry time, and created time. Limit-change events also hold
-the previous and new limits; grants hold a positive amount; resets hold neither.
-The base `users` update and its limit-change events commit together.
-
-An operation id is unique per target/resource/period/event type, allowing exact
-same-operation retries and rejecting conflicting reuse. Grant revocation is
-recorded on the original grant with a distinct, globally unique revocation
-operation id, revoker timestamps/reason, and immutable actor/revoker UUID
-snapshots. Live actor/revoker foreign keys use `ON DELETE SET NULL`; snapshots
-retain provenance without blocking required user deletion. Target-user deletion
-cascades its policy events.
-
-Browser relative/calendar-expiry grants persist one absolute expiry derived
-from the operation's first effective timestamp. Exact operation retries validate
-the requested preset against that persisted effective/expiry pair rather than
-deriving a new wall-clock or current UTC day/month expiry.
-
-Active grants are effective, unexpired, and not revoked. They add to finite
-base limits only. The admin read model fetches all active grants independently
-from its bounded latest-50 policy history, keeping every effective allowance
-revocable. A reset changes only its selected resource/period: usage starts
-at the later of the natural UTC window start and latest reset in that window, so
-a daily reset does not reset monthly usage.
-
-Reasons are administrative metadata only. Free-text reasons must not contain
-patient, clinical, transcript, prompt, or generated-note content. Security audit
-events record controlled reason codes and identifiers, never free-text reasons.
-
-## 14.4 `task_dispatch_outbox`
-
-Purpose:
-
-* durable metadata-only intent to publish generation or ingestion work to Celery
-* prevent rollback/publish gaps and duplicate provider dispatch
-
-Each row has deterministic UUIDv5 `task_id`, dispatch kind, matching polymorphic
-source kind/id, retry count, safe last error code, due time, lifecycle state,
-and timestamps. Source references are deliberately polymorphic rather than
-foreign keys; deletion lifecycle code cancels or removes relevant intent rows
-before source hard deletion.
-
-Creation commits source row, any provider-attempt reservation, and dispatch
-intent atomically. The publisher locks due pending rows with `SKIP LOCKED`,
-claims and publishes exactly one row per transaction using the stored
-deterministic task id, marks success `published`, or records only
-`task_publish_failed` with bounded exponential retry. Exhausted publication
-retries become `failed`; lifecycle reconciliation fails still-queued source work
-and terminalizes unused reservations. Lifecycle locks owner/source parents before
-attempts and never takes an outbox-first lock, avoiding inversion with normal
-worker paths. Generation workers also take a non-blocking, per-document
-PostgreSQL advisory lock across transcript snapshot refresh, provider-bound
-preparation, the atomic quota/source claim, and provider dispatch. This makes
-completion wake-ups and scheduled retries safe to overlap: a delivery that
-does not acquire the guard exits without changing source, outbox, or quota
-state. The atomic queued-source claim remains the durable boundary immediately
-before irreversible provider dispatch.
-
----
-
-## 15. Deletion and retention semantics
-
-## 15.1 Transcript-root deletion
-
-When a transcript root is deleted, all transcript-derived children should be removed.
-
-This applies to:
-
-* manual user delete
-* retention-based delete
-* system-level user deletion cascade
-
-Expired transcript roots are rejected by the central owner-content gate as soon
-as `retention_expires_at` is reached, including workspace hydration and mutation
-paths. Celery Beat queues hard-delete cleanup every 10 seconds. Each task
-invocation deletes at most one locked bounded batch, then returns; later Beat
-runs drain any backlog. Beat tasks expire after one interval, preventing stale
-queued work from accumulating. Concurrent workers can process distinct batches;
-`FOR UPDATE SKIP LOCKED` prevents them from deleting the same root. Database
-cascades remove transcript-derived children. Production therefore runs both
-Celery worker and Beat processes.
-Team retention changes apply to transcripts created afterward and do not extend
-or recalculate existing fixed expiry timestamps.
-
-Vault-backed retry audio uses a transactionally written,
-`transcript_audio_cleanup_jobs` outbox with no transcript, user, or team foreign
-keys. Root deletion and the cleanup reference commit together before any Vault
-delete call. Successful or already-absent Vault deletes remove the outbox row;
-failures retain metadata-only retry state for bounded scheduled processing.
-
-## 15.2 Generated document deletion
-
-When a generated document is deleted manually:
-
-* only that generated document and its sections are removed
-* transcript and redaction data remain intact
-
-## 15.3 Template/quick action deletion
-
-Hard delete the asset.
-
-Effects:
-
-* original asset disappears immediately
-* watcher access disappears immediately
-* explicit forks remain untouched
-* generated documents retain snapshot metadata and any surviving FK strategy used for provenance
-
-## 15.4 User deletion
-
-System-level full deletion should:
-
-* delete transcript-derived content immediately
-* delete user personal templates/actions immediately
-* remove watcher access to those original assets
-* leave independent forks owned by others intact
-
-Current clarification for manager deletion:
-
-* if team leaders are allowed to fully delete users in their own team, that action must follow the same hard-delete cascade semantics
-* leader deletion must still be team-scoped and must never apply to system-admin accounts
-* self-delete through manager routes is blocked
-* account-request foreign keys that point at the deleted user may need to be nulled before the `users` row is removed
-* logger-based metadata is acceptable for the first implementation, but account-lifecycle actions should later be persisted into `audit_events`
-
-## 15.5 Team deletion
-
-Blocked until explicit cleanup completes.
-
-Admin must first handle:
-
-* users
-* account requests
-* team templates/actions
-* provider policies
-* provider credential refs
-* other team-scoped resources
-
-Team deletion also cascades `provider_attempts`. Quota-policy events are removed
-through their target-user cascade. Pending dispatch intents and active attempts
-are reconciled/cancelled before their source/user roots are hard-deleted; no
-content is retained in either quota or dispatch metadata table.
-
----
-
-## 16. Constraints and DB-enforced truths
-
-The database should enforce structural truths where practical.
-
-## 16.1 Strong candidates for DB enforcement
-
-* template/action scope constraints
-* transcript child cascades
-* watcher uniqueness
-* version uniqueness within template/quick action/transcript
-* one provider preference per user/provider type
-* token uniqueness/hashing discipline
-* non-negative nullable user base quota limits
-* quota-policy event shape, nonblank bounded reason, expiry ordering, operation
-  idempotency, and grant-revocation shape
-* provider-attempt state transitions, settlement/resource payload shape,
-  positive reservations, correlation-attempt uniqueness, and deletion foreign
-  keys; composite shape checks use `... IS TRUE` so SQL `UNKNOWN`/`NULL` cannot
-  bypass them
-* task-dispatch outbox lifecycle timestamps, non-negative retry count, and one
-  dispatch intent per dispatch-kind/source-kind/source-id
-
-Quota lookup indexes support target history/window events, active grants,
-owner/resource authorization, active reservations, submitted deadlines,
-team/resource settlement, and due/source dispatch lookup.
-
-## 16.2 Better kept in application logic
-
-* same-team discoverability checks
-* admin-only account operational restrictions
-* “one successful reusable redaction run” behavior
-* provider fallback resolution
-* MFA first-login workflow
-* team deletion eligibility checks
-* manager scope checks for suspend/reactivate/delete authority
-* last-active-system-admin protection
-
----
-
-## 17. Authorization expectations for a coding agent
-
-This document is about the DB, but a coding agent must understand how DB rows are meant to be used.
-
-## 17.1 Content access
-
-Only owner can read/write transcript-derived content:
-
-* transcripts
-* transcript_versions
-* redaction_runs
-* redaction_entities
-* generated_documents
-* generated_document_sections
-
-## 17.2 Metadata access
-
-System admins may read operational metadata but not content text.
-
-Examples of acceptable metadata visibility:
-
-* transcript created time
-* duration
-* provider used
-* job status
-* token counts
-* failure codes
-
-## 17.3 Configuration access
-
-Depends on scope:
-
-* system admin manages system assets
-* team leader manages team assets
-* user manages user assets
-* users may watch discoverable same-team user assets
-
----
-
-## 18. Feature checklist implied by this DB design
-
-A coding agent should know these features still need implementation around the DB.
-
-## 18.1 Identity and auth features
-
-* account-request review and managed onboarding
-* password auth
-* MFA enrollment and challenge flow
-* session revocation on lock
-* password reset flow
-
-## 18.2 Transcript workflow features
-
-* transcript creation on recording start
-* realtime draft updates
-* commit transcript version on save/blur/action
-* transcript root deletion with cascade
-* retention cleanup worker
-* team transcription endpoint resolution through provider policy and Vault-backed credentials
-
-## 18.2a First transcript-capture MVP direction
-
-The first capture-oriented transcript slice should be implemented in this order:
-
-* team-managed transcription provider configuration
-* transcript root creation at recording start
-* client VAD chunk upload to backend
-* backend forwarding to external STT endpoint
-* update `transcripts.current_draft_text_encrypted`
-* keep transcript commit/version creation separate from chunk ingestion
-
-Recommended data-handling rules:
-
-* do not store raw audio blobs in Postgres
-* store provider metadata and Vault secret references only
-* if chunk-level observability is needed, store metadata-only rows such as sequence, duration, provider request id, status, and error code
-* do not let manager access to provider configuration imply transcript-content readability
-
-## 18.3 Pseudonymisation features
-
-* lazy redaction creation on action use
-* reuse existing redaction run for same transcript version
-* store mapping/index for later reuse
-
-## 18.4 Template and quick action features
-
-* scope-aware asset CRUD
-* watch/fork behavior
-* same-team discoverability
-* hard delete behavior
-* structured template config support
-
-## 18.5 Generated document features
-
-* freeform generation
-* structured note generation with JSON validation
-* section persistence
-* editing root text and section text
-* immediate deletion for whole docs and part-level deletions
-
-## 18.6 Provider features
-
-* team credential provisioning via Vault refs
-* team provider policy management
-* user active LLM preference
-* deterministic provider resolution and fallback
-* usage event logging
-* quota authorization through `provider_attempts`; telemetry remains separate
-  reporting data
-
----
-
-## 19. Guidance for another coding agent
-
-If you are implementing against this schema:
-
-1. preserve ownership boundaries first
-2. treat transcript-derived content as private by default
-3. do not invent sharing for notes/transcripts
-4. do not replace hard-delete semantics with soft-delete behavior unless explicitly instructed
-5. do not store raw provider secrets in DB
-6. do not rely only on service code for structural rules the DB can enforce
-7. snapshot provenance where hard deletion of config assets would otherwise remove useful context
-8. validate structured LLM JSON in backend before persistence
-9. never log transcript, note, redaction, or prompt text
-10. add tests for ownership, cascade deletion, watch/fork behavior, and provider resolution when touching those areas
-
----
-
-## 20. Recommended implementation order
-
-If implementing from scratch, the best database-first order is:
-
-1. `teams`, `users`, `account_requests`, sessions/MFA/reset tables
-2. `user_encryption_keys`
-3. `transcripts`, `transcript_versions`
-4. `redaction_runs`, `redaction_entities`
-5. `templates`, `template_versions`, `template_watchers`
-6. `quick_actions`, `quick_action_versions`, `quick_action_watchers`
-7. `generated_documents`, `generated_document_sections`
-8. `providers`, `team_provider_credentials`, `team_provider_policies`, `user_provider_preferences`
-9. `provider_usage_events`, `audit_events`, `job_runs`
-
-This order keeps identity, ownership, and deletion roots stable before more advanced features are built.
-
----
-
-## 21. Open items that should not be improvised silently
-
-If an agent needs to change any of these, it should raise the issue explicitly:
-
-* making transcript-derived content shareable
-* changing hard-delete semantics to soft-delete
-* changing one-DEK-per-user encryption model
-* allowing system admins to own transcript content
-* changing structured note JSON contract significantly
-* changing provider resolution hierarchy
-* allowing cross-team asset sharing in MVP
-
-These are architecture-sensitive boundaries.
+1. define the current state and invariant impact;
+2. add/modify migrations/models/services/constraints;
+3. add focused database/security/lifecycle tests;
+4. update the closest operational feature document and README/index when user-visible;
+5. do not revive historical table proposals without an explicit new design.

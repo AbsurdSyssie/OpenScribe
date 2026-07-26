@@ -1,534 +1,192 @@
-# Security
+# Security model
 
-This document records the current security model and the explicit library and architecture decisions the project is following.
+This document records implemented security boundaries and operational requirements. Repeatable browser/XSS checks are in [security-xss.md](security-xss.md). Authentication details are in [auth.md](auth.md).
 
-Repeatable XSS checks and the current probe plan are documented in [security-xss.md](/home/oscar/Documents/Code_Projects/OpenScribe/docs/security-xss.md).
+## Core invariants
 
-## Core rules
+- Transcript-derived content is owner-only.
+- Leader or system-administrator authority does not grant transcript, working-note, dictation, generated-document, prompt, redaction, or PII readability.
+- System-administrator accounts do not own transcript content.
+- Transcript retention is snapshotted from server-owned team policy; user payloads cannot extend it.
+- Expired transcript roots are unavailable to owner APIs before asynchronous physical cleanup.
+- User and team deletion follow implemented hard-delete semantics and must not be described as recoverable soft deletion.
+- Provider credentials, mail credentials, session tokens, trusted-device tokens, auth email tokens, recovery codes, and password material are never stored as recoverable plaintext when hashing or Vault references are sufficient.
+- Audit records must contain bounded metadata only, never credentials, cookies, request bodies, prompt text, transcript-derived text, or provider responses.
 
-- transcript-derived content is owner-only
-- admin or leader authority does not imply transcript readability
-- deletion remains immediate where the architecture says deletion is final
-- transcript retention snapshots are server-owned from team policy; users cannot extend retention through transcript create/start/update payloads
-- provider secrets must not be stored raw in the database
-- required-auth provider revisions that reuse a saved token must copy it into a draft-owned versioned Vault reference before the draft database commit; rollback compensation durably queues any newly written draft reference, and retired-reference cleanup must retain its live-reference guard
-- session identifiers, recovery codes, and password material must not be stored in plaintext form where hashing is sufficient
+## Authentication boundary
 
-## Authentication and onboarding model
+OpenScribe uses opaque browser tokens with server-side state:
 
-### Supported flow in MVP
+- `openscribe_session` is the authentication bearer token; PostgreSQL stores only its hash.
+- `openscribe_trusted_device` is a separate bearer token used only to skip TOTP after a correct password login; PostgreSQL stores only its hash.
+- `openscribe_csrf` and `openscribe_csrf_anon` are CSRF controls, not authentication tokens.
+- Session levels explicitly distinguish onboarding, pending MFA, and full access.
+- Suspension, disable/lock handling, password/account recovery, and sensitive account changes revoke the applicable sessions and trusted-device records.
+- Password hashes use Argon2id.
+- New TOTP seeds are encrypted under the owning user's DEK; recovery codes and auth email tokens are hash-only.
 
-- email + password
-- public account requests
-- leader/admin-created managed accounts
-- temporary-password first login for managed accounts
-- optional account setup links by transactional email
-- self-service password reset by single-use email token
-- manager-assisted password/MFA recovery actions
-- forced password change
-- forced TOTP enrollment
-- optional recovery-code generation
+Cookies are `HttpOnly`, `SameSite=Lax`, and use `Secure` according to `COOKIE_SECURE_MODE`. Production startup fails unless `COOKIE_SECURE_MODE=always`.
 
-New password hashes use Argon2id with OWASP baseline parameters. User-chosen permanent passwords for onboarding, activation, and password reset must be at least 12 characters and include uppercase, lowercase, and number characters.
-Non-Argon2id local dev hashes are not accepted after the Argon2id cutover; rotate dev users with `scripts/force_argon2id_password_rotation.py`.
+## CSRF and origin validation
 
-Invite acceptance is not the active MVP onboarding path anymore.
+Browser unsafe requests require project-owned HMAC CSRF tokens:
 
-### Onboarding session rules
+- anonymous forms use a token bound to an opaque anonymous nonce;
+- authenticated forms and same-origin API requests use a token bound to the active session token;
+- session rotation invalidates the old token;
+- forms submit `_csrf_token`;
+- browser JavaScript receives the value through nonce-protected server-rendered state and sends `X-CSRF-Token`;
+- the `HttpOnly` CSRF cookie is not read by JavaScript;
+- unsafe `/api/v1` requests with session or trusted-device cookies also require a matching `Origin` or `Referer`;
+- safe `GET`, `HEAD`, and `OPTIONS` requests are exempt.
 
-- first login with a temporary password creates an onboarding-only session
-- onboarding sessions may access only:
-  - onboarding routes
-  - current-user lookup
-  - logout
-- onboarding sessions may not access normal app routes or transcript features
-- normal access begins only after password change and TOTP enrollment complete
+Direct request scheme/host is authoritative by default. Set `TRUST_FORWARDED_ORIGIN_HEADERS=true` only when a trusted proxy sanitizes forwarded host/protocol values and direct origin access is blocked.
 
-### Account recovery rules
+`CSRF_SECRET` is the preferred explicit signing key. `SECRET_KEY` is a compatibility alias. When neither is set, production startup obtains a stable secret through Vault KV using `CSRF_SECRET_VAULT_REF` or the default logical reference `secret:openscribe/platform/csrf`. Startup fails closed when no stable key can be resolved.
 
-- auth email tokens are stored as hashes only and expire after a short window
-- setup/reset link plaintext is not logged or stored separately
-- public password-reset requests do not reveal whether an account exists
-- setup/reset confirmation validates token state before expensive password hashing and rejects weak permanent passwords
-- password reset never rotates, deletes, or rewraps the user DEK
-- successful password reset revokes active sessions and trusted devices
-- account setup links are restricted to first password setup and do not grant full access; users still complete TOTP onboarding
-- manager-assisted recovery is same-team/system-admin scoped and does not expose transcript, note, prompt, TOTP secret, recovery code, or token content
-- manager recovery prefers email reset/account-recovery links when mail transport is configured
-- temporary-password manager recovery is a break-glass path only when mail recovery is unavailable, unless explicitly enabled by deployment config
-- break-glass recovery requires manager TOTP, a rate-limited request path, a reason, explicit email-unavailable confirmation, session/trusted-device revocation, one-time display, expiry, and a metadata-only `security_audit_events` record
-- temporary recovery-password login creates onboarding-only access; normal app and transcript routes stay blocked until the user sets a permanent password and completes required MFA setup
+## HTTP security headers and caching
 
-### Session storage behavior
+OpenScribe currently emits:
 
-- browser cookie stores an opaque session token only
-- database stores only the hashed session token
-- sessions are tracked with:
-  - auth level
-  - status
-  - expiry
-  - revoke reason
-- locking or disabling a user revokes all active sessions immediately
+- nonce-based `Content-Security-Policy`;
+- `X-Content-Type-Options: nosniff`;
+- `Referrer-Policy: strict-origin-when-cross-origin`;
+- `X-Frame-Options: DENY`;
+- `Cross-Origin-Opener-Policy: same-origin`;
+- `Cross-Origin-Resource-Policy: same-origin`;
+- `Cross-Origin-Embedder-Policy: credentialless`;
+- a restrictive `Permissions-Policy`;
+- `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex`;
+- HSTS on HTTPS when `HSTS_SOURCE=app`, or only static fallback responses when `HSTS_SOURCE=proxy_static_fallback`.
 
-### Post-onboarding MFA challenge rules
+Choose exactly one HSTS owner. Set `HSTS_SOURCE=proxy` when the reverse proxy emits HSTS for every response.
 
-- password success is not enough for completed MFA-enabled accounts
-- those users receive a `pending_mfa` session until they complete a TOTP challenge
-- `pending_mfa` sessions may access only:
-  - `auth/me`
-  - TOTP challenge endpoints
-  - logout
-- `pending_mfa` sessions may not access normal app routes or transcript features
+No-store responses include:
 
-### Trusted-device and freshness rules
+- `/`, login, account request, reset, activation, onboarding, MFA, settings/workspace and admin surfaces;
+- `/api` and `/api/*`;
+- transcript, generated-document, dictation, and preview content routes.
 
-- the trusted-device cookie is a second opaque bearer secret and must be treated like a sensitive session cookie
-- trusted-device cookies are not JWTs and do not embed user identity or policy state
-- the database stores only the hashed device token
-- trusted devices only skip the TOTP step after a correct password login
-- trusted devices do not authenticate a user by themselves
-- current freshness policy:
-  - a remembered browser may skip TOTP for 24 hours from the last successful MFA verification
-  - using the remembered browser without redoing MFA does not extend that freshness window
-- trusted-device records are revoked when a user is locked or disabled
+Short public caching is limited to explicit metadata routes and static assets. `robots.txt` denies crawling, but crawler directives are not authorization controls.
 
-Threats and controls for trusted devices:
+API docs are public by default outside production. Production defaults `/docs`, `/redoc`, and `/openapi.json` to fully authenticated system administrators unless `PUBLIC_API_DOCS=true` is explicitly configured.
 
-- theft or browser compromise:
-  - mitigate with `HttpOnly`, `SameSite=Lax`, and `Secure` outside localhost
-- forgery:
-  - mitigate with high-entropy opaque tokens and server-side hash verification
-- replay on another browser or machine:
-  - limit blast radius with bounded freshness and revocation
-- leakage:
-  - do not log tokens, put them in URLs, or expose them to JavaScript
+## Content Security Policy and browser assets
 
-### Required cookie properties
+Production browser dependencies must be same-origin. Do not load runtime JavaScript, CSS, fonts, WASM, ONNX models, or other executable assets from public CDNs.
 
-- `HttpOnly`
-- `SameSite=Lax`
-- explicit expiry
-- `Secure` should be enabled once deployment moves beyond localhost
+Current policy goals:
 
-Current implementation:
+- scripts only from `'self'` and the response nonce;
+- no `script-src 'unsafe-inline'`;
+- no third-party script/style/font/connect origins;
+- no inline style attributes;
+- `frame-ancestors 'none'`;
+- `object-src 'none'`;
+- same-origin API, EventSource, and WebSocket connections;
+- narrow WASM support only where the pinned local runtime requires it.
 
-- session and trusted-device cookies are `HttpOnly`
-- production startup requires `COOKIE_SECURE_MODE=always`
-- production startup requires either `CSRF_SECRET`/`SECRET_KEY` or successful Vault-backed CSRF secret bootstrap
-- HTTPS responses include `Strict-Transport-Security: max-age=31536000; includeSubDomains` when `HSTS_SOURCE=app` (default); deployments where the edge/proxy owns HSTS for every response should set `HSTS_SOURCE=proxy`; deployments where the edge/proxy covers dynamic pages but misses `/static/` assets should set `HSTS_SOURCE=proxy_static_fallback`
-- all responses include `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, `Cross-Origin-Embedder-Policy: credentialless`, `Permissions-Policy: camera=(), geolocation=(), payment=(), usb=(), fullscreen=(self), microphone=(self)`, and `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex`
-- all HTML responses include nonce-based `Content-Security-Policy`
-- public splash and auth/account forms (`/`, `/login`, `/forgot-password`, `/request-access`, `/reset-password`, `/activate-account`) use `Cache-Control: no-store`, `Pragma: no-cache`, and `Expires: 0` because they create CSRF cookies or support account flows
-- `/api/` responses use `Cache-Control: no-store`, `Pragma: no-cache`, and `Expires: 0`; sensitive transcript/generated-document API prefixes keep the same no-store contract
-- public metadata routes are explicit, short-cacheable (`Cache-Control: public, max-age=3600`), and do not issue CSRF cookies: `/robots.txt` denies all compliant crawlers with `User-agent: *` and `Disallow: /`; `/.well-known/security.txt` publishes security contact metadata; `/sitemap.xml` returns intentional `404` because no sitemap is published
-- crawler directives are discovery controls, not authorization controls; authentication and owner-scoped authorization remain mandatory for private content
-- static assets under `/static/` use short public caching (`Cache-Control: public, max-age=3600`) and do not issue CSRF cookies
-- `/docs`, `/redoc`, and `/openapi.json` remain public in local/test by default, but production defaults to full system-admin authentication unless `PUBLIC_API_DOCS=true` is explicitly set
-- the signed CSRF cookie is `HttpOnly`; browser flows receive the same signed value through server-rendered hidden fields and the nonce-protected CSRF bootstrap script
-- the `HttpOnly` `openscribe_csrf` cookie is not an authentication bearer secret; before login it is bound to the separate anonymous nonce, and after login it is bound to the current session-token hash; browser JavaScript receives the same value from server-rendered page state rather than reading the cookie
-- passive scanners may identify `openscribe_csrf_anon`/`openscribe_csrf` as session-management cookies, but they are CSRF controls; only `openscribe_session` and `openscribe_trusted_device` are auth-bearing cookies
-- server-rendered browser forms include the same signed CSRF value in a hidden `_csrf_token` field so forms remain protected without depending on cookie reads from JavaScript
-- authenticated CSRF tokens are stable for the current session and HMAC-bound to its session-token hash; normal page navigation does not rotate them, while session rotation invalidates prior CSRF tokens
-- when explicit CSRF env secrets are absent in production, OpenScribe reads or creates a stable random Vault KV secret at `CSRF_SECRET_VAULT_REF` or `secret:openscribe/platform/csrf`
-- anonymous browser forms use an `HttpOnly` `openscribe_csrf_anon` nonce cookie to validate pre-login CSRF without a session
-- unsafe `/api/v1` requests require same-origin `Origin` or `Referer` plus `X-CSRF-Token` when a session or trusted-device cookie is present; API CSRF validation does not parse form bodies for fallback tokens
-- CSRF origin checks trust direct request host/scheme by default; deployments may set `TRUST_FORWARDED_ORIGIN_HEADERS=true` only when the proxy sanitizes forwarded host/proto headers
-- `_csrf_script.html` also wraps same-origin unsafe `/api/v1` `fetch` calls for legacy inline browser pages
-- safe `/api/v1` methods (`GET`, `HEAD`, `OPTIONS`) do not require CSRF verification
-- public login, password-reset, activation, and account-request API endpoints stay callable without CSRF only when no cookie-backed authority is present
-- logout clears session, trusted-device, and CSRF cookies
-- `COOKIE_SECURE_MODE` controls the `Secure` flag:
-  - `auto`: set `Secure` on non-local HTTPS requests
-  - `always`: always set `Secure`
-  - `never`: never set `Secure` and use only for local development
+Templates must not use `style="..."`. Dynamic visual values should be emitted as escaped/clamped data attributes and applied by nonce-approved code through direct CSS property assignment, not `setAttribute("style", ...)` or `cssText`.
 
-## Library bundle boundaries
-
-- Template and Quick Action export is limited to caller-owned Personal assets and
-  Team assets visible in the caller's current team. Smart Phrase export is
-  owner-only. Any inaccessible identifier fails the whole export.
-- Import never trusts file content for scope or identity. Personal imports are
-  caller-owned; Team Template and Quick Action imports require current-team
-  leader authority. Smart Phrase import is always Personal.
-- Preflight is read-only. Confirmation resubmits and revalidates the original file,
-  then creates all selected assets in one database transaction.
-- Imported Templates and Quick Actions are active independent version-1 roots.
-  Imported Smart Phrases reset usage count and last-used state. Bundle UUIDs,
-  owner/team identifiers, creator identity, timestamps, version numbers, active
-  state, and usage metadata are not accepted as portable authority.
-- Uploads are limited to 1 MiB and 100 entries. Structured configuration retains
-  the strict EMIS profile, section-key, label, order, uniqueness, and instruction
-  validation.
-- Import/export audit events contain scope/count/outcome metadata and object
-  identifiers only. Uploaded JSON, names, triggers, expansions, descriptions,
-  prompts, and structured instructions are excluded.
-- The implemented model has Personal ownership and Team scope only. Watcher,
-  visibility, system-scope, and derived-template fields in historical
-  `DatabasePlan.md` material are not implemented or part of the bundle contract.
-
-## Browser CSP and local runtime assets
-
-OpenScribe enforces a response-specific nonce-based Content Security Policy.
-
-Browser pages must not load runtime JavaScript, WASM, ONNX models, CSS, or fonts from public CDNs in production. Runtime browser assets are served from `/static/vendor` or compiled into `/static/css`.
-
-Current CSP goals:
-
-- script execution only from `'self'` and response nonces
-- no `script-src 'unsafe-inline'`
-- no third-party `script-src`, `style-src`, `font-src`, or `connect-src`
-- no `style-src-attr 'unsafe-inline'`
-- `frame-ancestors 'none'`
-- `object-src 'none'`
-- same-origin API/WebSocket/EventSource connections only
-- WASM allowed only through narrow ONNX Runtime requirement
-
-Templates must not use `style` attributes. Static presentation belongs in same-origin stylesheets or nonce-approved `<style>` blocks. Server-calculated visual percentages are rendered as escaped `data-*` values, clamped to `0..100`, then applied by nonce-approved JavaScript through direct CSSOM property assignment. Chromium permits `HTMLElement.style` property assignment and `style.setProperty(...)` under `style-src-attr 'none'`; the browser regression test exercises representative split-pane, menu geometry, textarea autosize, visualizer, tour, and admin chart mutations. Do not use `setAttribute("style", ...)` or `element.style.cssText`; both create CSP-blocked style attributes.
-
-Before merging this area:
+Run the focused checks before merging browser-asset or CSP changes:
 
 ```bash
 .venv/bin/pytest -q tests/test_cookie_csrf_security.py tests/test_xss_coverage.py
-rg "\bstyle\s*=" app/templates
-rg "cdn\.jsdelivr\.net|cdn\.tailwindcss\.com|unpkg\.com|fonts\.googleapis\.com|fonts\.gstatic\.com" app/templates app/static/js
+rg '\bstyle\s*=' app/templates
+rg 'cdn\.jsdelivr\.net|cdn\.tailwindcss\.com|unpkg\.com|fonts\.googleapis\.com|fonts\.gstatic\.com' app/templates app/static/js
 ```
 
-Expected search results: no matches.
-
-## Local infrastructure exposure
-
-- checked-in dev defaults must not publish Postgres, Redis, or Vault beyond localhost
-- checked-in dev defaults must not bind the FastAPI dev server beyond localhost
-- remote/LAN binding for development must require explicit operator opt-in
-- Vault dev mode is development-only and must never be treated as remotely safe
-- startup should fail loudly in the server terminal if live Docker port bindings expose Postgres, Redis, or Vault beyond localhost
-- Celery does not expose its own public port in this stack, but exposing Redis exposes the Celery broker/result backend indirectly
-
-### Forbidden
-
-- storing session tokens in `localStorage` or `sessionStorage`
-- exposing session identifiers to frontend JavaScript
-- allowing locked or disabled users to retain active sessions
-
-## MFA and recovery codes
-
-- TOTP is the first MFA method
-- TOTP setup is mandatory for managed-account onboarding
-- new and re-enrolled TOTP seeds use AES-256-GCM envelopes under the owning user's existing per-user DEK, with AAD bound to the `user_mfa_methods.secret` location plus user and method UUIDs
-- enrollment plaintext is disclosed only to the authenticated onboarding user and enrollment browser/API responses are `no-store`
-- encrypted-MFA Vault/key failures fail closed as an unavailable MFA service, separately from an invalid TOTP code; malformed, missing-key, or AEAD-invalid values are controlled unreadable-secret failures
-- temporary development/pre-production compatibility permits legacy plaintext Base32 seeds to be read without migration, rewrite, or DEK creation on read
-- all newly created local users, including teamless system administrators, receive DEKs for encrypted authentication material; this does not confer transcript ownership or content access
-- recovery codes are optional to generate in MVP
-- recovery codes are stored hashed only
-- displayed recovery codes are one-time display material and must not be recoverable from the database in plaintext
-
-The plaintext compatibility fallback, key-purpose separation, production Vault operations, rotation/history, and recovery runbook remain deferred production work. See [mfa-secret-encryption.md](mfa-secret-encryption.md).
-
-## Account-request security rules
-
-- account requests are public-facing and unauthenticated
-- duplicate pending requests are rejected deterministically
-- leader review scope is limited to the leader’s own team
-- system admins may review all requests
-- direct manager-created accounts and approved account requests both produce the same managed-account onboarding rules
-
-## Authorization model
-
-### Content access
-
-- transcript-derived content remains owner-only
-- transcript routes require full authenticated access
-- system-admin or leader authority does not grant transcript-content access
-- this remains true even when leaders or admins manage team transcription endpoints and credentials
-- default workspace PII rows omit original values; owners reveal original values only through `POST /api/v1/transcripts/{transcript_id}/pii-entities/reveal`
-- sensitive transcript, workspace, generated-document, and post-consultation dictation API responses are marked `Cache-Control: no-store`
-- plaintext API response fields avoid misleading `_encrypted` suffixes while encrypted DB fields keep their storage names
-
-### Metadata access
-
-- system admins may manage teams and all requests/users
-- leaders may manage users and account requests for their own team
-- leader access remains metadata-only, not content-readable
-- STT management is metadata and secret-reference management, not content visibility
-
-### Route-audit guardrail
-
-- `/api/v1` routes are now covered by an explicit auth-audit manifest
-- the manifest treats only these routes as session-public:
-  - `POST /api/v1/auth/login`
-  - `POST /api/v1/auth/logout`
-  - `POST /api/v1/account-requests`
-- all other `/api/v1` routes must deny anonymous access
-- routes requiring full access must also deny onboarding and pending-MFA sessions
-- manager and admin routes must also deny lower-privilege sessions
-- the audit script and regression test fail if a new API route appears without a declared auth expectation
-
-## Planned account suspension and deletion scope
-
-This is the next account-lifecycle planning area before implementation.
-
-Planned authority:
-
-- system admins may suspend, reactivate, and delete any non-protected account
-- team leaders may suspend, reactivate, and delete non-system-admin accounts in their own team only
-- leaders may never suspend or delete system-admin accounts
-- neither role gains transcript-content visibility through these routes
-
-Planned status meanings:
-
-- `suspended`
-  - manager-triggered reversible hold
-  - intended for leader/admin operational action
-- `locked`
-  - temporary security/auth-abuse state
-- `disabled`
-  - stronger security or platform action
-
-These states should not be collapsed into one generic “inactive” meaning, because the audit trail, UI wording, and later recovery policies are different.
-
-Implemented now:
-
-- `suspended` is available as a distinct user status
-- manager-triggered suspension revokes active sessions immediately
-- manager-triggered suspension revokes trusted-device records immediately
-- manager-triggered reactivation currently resets the account into password-change onboarding and requires fresh MFA setup
-- self-suspension through manager routes is blocked
-- manager-triggered delete is now implemented with the same team-scope and self-protection boundaries
-- delete is immediate hard delete, not soft-delete
-- delete currently removes user-owned transcript roots and transcript versions immediately
-- account-lifecycle actions now emit metadata-only durable audit rows in `security_audit_events`; runtime `openscribe.audit` logger entries may still be emitted for operational visibility
-
-Planned security rules:
-
-- suspension must revoke all active sessions immediately
-- suspension must revoke trusted-device records immediately
-- security disable must revoke all active sessions immediately
-- security disable must revoke trusted-device records immediately
-- deleted users must lose all active sessions immediately as part of the delete flow
-- no account-administration route may expose transcript, note, or prompt content
-- full deletion remains immediate and destructive, not soft-delete
-
-Planned reinstatement simplification for MVP:
-
-- returning a user from either `suspended` or `disabled` to `active` should require password reset and MFA trust reset
-- this keeps reinstatement logic shared initially, even though manager suspension is conceptually softer than security disable
-
-Current implementation note:
-
-- `security_audit_events` is the durable application security-audit sink.
-- audit details are metadata-only and recursively drop sensitive keys such as password, token, cookie, session, authorization, secret, prompt, provider response, and transcript text.
-- persisted security-audit request IPs use `request.client.host` by default and are bounded to the database column length.
-- deployments may set `AUDIT_TRUST_X_FORWARDED_FOR=true` only when a trusted proxy sanitizes `X-Forwarded-For`.
-- Cloudflare deployments may set `AUDIT_TRUST_CLOUDFLARE=true` to store `CF-Connecting-IP`, but only when Cloudflare/proxy is the only path to origin and direct origin access is blocked.
-- if audit origin IP always shows the reverse proxy host, the proxy is not forwarding the original client IP or the app is not configured to trust the forwarded header.
-- CSRF rejection, authorization denial, rate-limit events, password reset request/confirm events, invalid reset/setup token failures, provider inspect/test events, template/default-asset/preference/smart-phrase events, generation queue events, and audio-ingestion queue events are persisted as metadata-only audit rows.
-- submitted CSRF values, cookies, tokens, passwords, request bodies, prompts, provider responses, smart-phrase text, transcript/note text, filenames, and audio content are not stored in audit rows.
-- audit retention is separate from transcript retention; deleting transcript-derived content does not delete metadata-only security audit rows.
-- MVP audit read access is DB/operations access plus the system-admin-only read-only Admin Audit tab.
-- the Admin Audit tab renders detection signals and recent metadata-only audit rows from an allowlist of safe fields; it does not dump raw `details_json`.
-- the Admin Audit tab computes exact detection totals across a lookback capped at 30 days and displays at most 250 recent rows; oversized relative lookbacks clamp before duration construction, so hostile numeric input cannot overflow.
-- action/category/outcome/origin-IP filter dropdown queries use the same selected audit window and 1-to-250 event limit; each query deduplicates in SQL and caps returned options rather than scanning all history into the response.
-- future audit APIs/SIEM export must be system-admin/security-operator scoped and must not expose transcript-derived content.
-- normal audit writes use a short-lived best-effort database session so audit persistence cannot commit, roll back, or fail unrelated application work. Error-handler telemetry such as rate-limit and validation rejection audit remains best-effort to avoid masking the original protection response.
-- audit subject hashes use keyed HMAC-SHA256 rather than plain SHA-256. Secret priority is `AUDIT_SUBJECT_HASH_SECRET`, then `SECRET_KEY`, then `CSRF_SECRET`, then the Vault-backed platform CSRF secret in production. Production fails closed if no configured or Vault-backed secret can be resolved; the public dev fallback is restricted to explicit local/dev/test environments.
-- manual detection is supported by `scripts/security/audit_events_report.py`, which summarizes metadata-only audit counts and signals for auth failures, access denials, abuse signals, high-risk admin/destructive actions, and provider configuration changes.
-- audit detection computes counts, burst groups, destructive/admin actions, and provider-change signals in SQL across the full selected window; recent-row display remains separately limited to 250 rows.
-
-Required safety checks:
-
-- do not allow deletion or suspension of the last active system-admin account
-- require clear scope checks before any leader action against a team user
-- record actor, target, reason, and scope metadata for suspend/reactivate/delete actions
-- keep audit-row retention/access policy separate from user transcript-retention policy
-- preserve enough metadata in audit records that a later review still makes sense after hard deletion removes the `users` row
-
-Design caution:
-
-Leader deletion is powerful because full user deletion immediately removes private transcript-derived content and personal assets. That power must be intentional, well-confirmed in the UI, and explicitly audited.
-
-## Transcript capture and provider-secret rules
-
-The next transcript slice will let teams configure a transcription endpoint and let users upload VAD-produced audio chunks for draft transcription.
-
-Security rules for that slice:
-
-- the team transcription endpoint is a configuration concern, not a visibility concern
-- system admins provision STT endpoints and credentials for teams
-- leaders may choose or clear the active transcription service/model only for their own team
-- leaders may not recover raw STT credentials
-- users may send audio only for transcripts they own
-- managers do not gain transcript readability by configuring the endpoint
-- the backend fetches STT credentials from Vault when forwarding requests
-- the database stores Vault references and provider metadata only
-- raw provider secrets must not be persisted in Postgres
-- raw audio blobs must not be persisted in Postgres in the first STT slice
-- logs may contain provider metadata and failure codes, but not transcript text, audio payloads, or secret material
-
-Implemented now in the STT configuration slice:
-
-- each team may have multiple provisioned STT config rows in `team_stt_configs`
-- the active team STT policy is stored separately in `team_stt_selections`
-- leaders may manage only their own team's active selection
-- system admins may manage any team's provisioned config rows and active selection, but must choose the team explicitly
-- STT auth mode is explicit: `bearer` permits Vault credential reads and `none` prevents them for optional/no-auth providers
-- the first request shape is constrained REST metadata for multipart upload, not arbitrary request scripting
-- the official OpenAI adapter is a known-contract path and is intended to use the official Python SDK at runtime rather than OpenAPI discovery
-- OpenAPI inspection remains only for `generic_rest`
-- the bearer token is written to Vault
-- Postgres stores only `vault_secret_ref` plus non-secret request metadata
-- the UI and API expose only whether a secret exists, not the secret value
-- onboarding-only and pending-MFA sessions are blocked from STT management routes
-- STT save-and-inspect stores submitted credentials once in Vault, records only a Vault reference plus a server-side HMAC fingerprint for duplicate warnings, and never returns raw credentials
-- unconfirmed duplicate STT credentials warn before Vault write and before provider inspection
-- invalid first-add STT credentials roll back the DB row and durably queue or directly delete the newly written Vault secret; saved-provider deletion clears selections and commits cleanup intent with the removed DB reference
-- explicit STT/LLM credential removal and replacement commit the retired exact Vault reference to the provider cleanup outbox in the same transaction that changes the DB reference; blank secret fields do not silently remove saved secrets
-- STT re-inspection uses saved Vault references, marks rejected credentials `invalid`, and clears active STT selections that referenced the invalid provider
-- STT/LLM runtime paths require `auth_mode=bearer` before reading or forwarding a stored Vault credential, so stale references on no-auth rows cannot be sent to provider endpoints
-
-Implemented now in the first transcript chunk-ingestion slice:
-
-- owner-only `POST /api/v1/transcripts/{transcript_id}/audio-chunks`
-- owner-only `POST /api/v1/transcripts/{transcript_id}/audio-file`
-- queued transcript-ingestion jobs in `transcript_ingestion_jobs`
-- backend audio normalization to `16 kHz` mono PCM WAV before provider submission
-- backend fetch of the selected team STT bearer token from Vault at processing time
-- sequence-aware application of completed live chunks using `next_live_chunk_sequence_no_applied`
-- backend append of provider-returned live chunk text into the transcript draft
-- backend replacement of the draft text for completed file/batch ingestion
-- no raw audio persistence in Postgres
-
-Planned storage direction:
-
-- use the provider domain for transcription configuration
-- keep `team_provider_credentials.vault_secret_ref` as the secret boundary
-- treat any API key, bearer token, or endpoint credential as secret material
-
-## Current implementation direction
-
-### Current frontend
-
-- FastAPI + Jinja remains the active frontend
-- do not introduce React just to solve auth or session hardening
-- Next.js App Router remains the long-term frontend target
-
-### Library decisions
-
-- current TOTP library: `pyotp`
-- current QR rendering library for TOTP enrollment: `segno`
-- trusted-device implementation is application-owned on top of the existing DB-backed session model
-- future OAuth/OIDC/SSO library: `Authlib`
-- `fastapi-users` is not the intended long-term auth foundation
-
-### Session implementation note
-
-The current implementation uses DB-backed opaque sessions. Redis-backed server-side session acceleration may still be added later if it clearly improves the architecture without weakening revocation or auditability.
-
-## Threats this slice explicitly addresses
-
-- password reuse of temporary passwords beyond first login
-- accessing normal features before MFA enrollment
-- accessing normal features after password login but before TOTP challenge
-- indefinite MFA skipping from the same remembered browser without a fresh challenge
-- high-volume brute-force attempts against login, MFA, and public account-request endpoints
-- session reuse after account lock/deactivate
-- case-only duplicate identities
-- cross-team leader management
-- transcript access by admins or leaders
-
-## Rate limiting
-
-- rate limiting is now enforced with `slowapi`
-- limiter storage is Redis-backed via `RATE_LIMIT_STORAGE_URL`
-- current route groups:
-  - login: `5 per 5 minutes`
-  - TOTP challenge: `10 per 10 minutes`
-  - public account requests: `3 per hour`
-  - live STT chunks: `1 per second` by default
-  - whole-file STT: `1 per 5 seconds` and `100 per day` by default
-  - LLM generation: `20 per 3 minutes` and `200 per day` by default
-- provider-call safeguards remain deployment-configurable but default active at master-strength values because system-admin quotas are unlimited until configured
-- quota policy, usage, remaining allowance, proactive warnings, and reset times are system-admin-only abuse-monitoring metadata; normal user and team-leader UI does not expose them
-- route-level `rate_limited` responses include `Retry-After` and may be retried after that delay; internal `quota_exceeded` and `quota_disabled` outcomes are exposed as public `quota_exceeded` with safe contact-your-administrator copy, no quota metadata, and no retry
-- rate-limit hits are persisted in `security_audit_events` and may also be logged through the server logger `openscribe.security`
-- HTML and JSON login routes share the same login bucket
-- HTML and JSON TOTP challenge routes share the same MFA bucket
-- HTML and JSON account-request submission routes share the same request bucket
-
-Current limitations:
-
-- auth/public limiter groups are IP-based; provider-call safeguards use authenticated user keys with hashed-session/IP fallback when user resolution is unavailable
-- rotating-IP attacks are still a future hardening area
-- rate-limit events are persisted in `security_audit_events`, not a separate security-events table
-- route and rolling-hour safeguards remain defense in depth rather than expenditure accounting; changing them does not change system-admin quota policy
-
-## Transcript retry-audio deletion
-
-- transcript, user, team, and retention deletion queue each retry-audio Vault reference in `transcript_audio_cleanup_jobs` in the same database transaction that removes the transcript root
-- cleanup rows contain a Vault reference and retry metadata only; they contain no audio, transcript text, owner/team foreign keys, or other transcript-derived content
-- Vault deletion starts only after the root-deletion transaction commits; successful deletion removes the cleanup row
-- Vault failures retain the cleanup row with bounded exponential backoff, and Celery Beat retries bounded batches every 10 seconds
-- deleting an already-missing Vault path is idempotent success
-- retry logs contain cleanup/job IDs and error codes, never Vault references or confidential content
-
-## Provider credential deletion
-
-- STT, LLM, and de-identification credential retirement writes an exact Vault reference to the FK-free `provider_secret_cleanup_jobs` outbox in the same transaction that removes or replaces the database reference
-- provider configuration deletion, draft cancellation, revision promotion, replacement, and team deletion never depend on a best-effort post-commit delete
-- replacement credentials use versioned Vault paths so a failed database commit cannot overwrite the still-live credential
-- the cleanup worker rechecks all provider tables before deleting; a reference that became live again is preserved and its stale cleanup intent is removed
-- Vault failures retain the cleanup row and retry with bounded exponential backoff; an already-missing Vault path is idempotent success
-- cleanup logs contain cleanup IDs, provider kind, attempt counts, and error codes only; they never contain Vault references or credentials
-
-## Repository capture hygiene
-
-- never commit raw browser network logs, authenticated page dumps, screenshots, HAR files, or session-replay exports
-- browser captures can expose account identifiers, patient/resource IDs, OAuth state, PKCE challenges, session identifiers, and third-party telemetry even when request bodies and cookies are absent
-- convert needed UI references into synthetic, OpenScribe-owned fixtures; keep local raw captures outside the repository and delete them when no longer needed
-- review generated artifacts for confidential content before staging; repository history is not a safe secret store
-
-## Gemini Enterprise credentials
-
-- ADC configurations store no provider secret and use the application's runtime identity.
-- Service-account JSON accepts only `type=service_account`, is capped at 64 KiB, and requires `client_email`, `private_key`, `private_key_id`, and `token_uri`.
-- Uploaded `external_account` configuration is rejected; WIF must be deployment-configured to avoid arbitrary credential-source file/URL access.
-- Service-account JSON is validated before a draft or Vault write, stored only in a typed Vault payload, never returned by APIs, and retired through the existing post-commit cleanup queue.
-- Google errors are translated from structured status/reason data. SDK exception text and credential contents are not logged or returned.
-- Generated-document and checker snapshots include only non-secret project/location/capacity metadata.
-
-## Planned next hardening: lockouts and unlock workflow
-
-This is intentionally not implemented in the current slice.
-
-Planned direction:
-
-- add DB-backed failed-auth tracking for:
-  - repeated password failures per account
-  - repeated MFA failures per account
-  - repeated failures per client IP or network key where appropriate
-- add temporary account cooldowns before considering broader lock semantics
-- add explicit unlock workflow for leaders/admins only where the authorization model supports it
-- record lock and unlock decisions with reason and actor
-
-Likely database additions:
-
-- to `users` or a related auth-state table:
-  - `locked_at`
-  - `lock_reason`
-  - `unlock_at`
-  - `locked_by_user_id`
-  - `unlock_reason`
-- and/or a dedicated failed-auth tracking table for rolling windows and counters
-
-Design cautions:
-
-- automatic permanent account lockouts can become a denial-of-service vector
-- broad IP lockouts can harm shared networks and clinical/office environments
-- leader/admin unlock actions need auditability and clear team-scope rules
-- transcript/content authorization must remain unchanged regardless of auth-abuse controls
-
-Non-goals for the next small slice:
-
-- no permanent global IP bans
-- no broad security-event dashboard
-- no lockout logic that can silently expand transcript or metadata visibility
+Expected search result: no production runtime dependency matches.
+
+## Encryption and key hierarchy
+
+Transcript-derived and other designated owner content is encrypted before PostgreSQL persistence with per-user DEKs. Vault Transit wraps those DEKs under `VAULT_USER_CONTENT_KEK_KEY_NAME`.
+
+Operational rules:
+
+- PostgreSQL stores wrapped DEKs and ciphertext, not plaintext DEKs.
+- Vault and PostgreSQL backups are one recovery set; restoring only one side can make encrypted content unreadable.
+- User DEKs are not rotated or deleted during ordinary password reset.
+- Authentication-material encryption does not expand transcript ownership.
+- Encryption failures are controlled service failures and must not silently fall back to plaintext.
+- User/content deletion must also remove or durably queue cleanup for corresponding Vault material where the current model requires it.
+
+See [mfa-secret-encryption.md](mfa-secret-encryption.md) for TOTP compatibility and recovery behavior.
+
+## Provider credentials and outbound requests
+
+Provider metadata lives in PostgreSQL. Raw credentials live in Vault or the deployment identity layer.
+
+- API/browser responses expose `has_secret` or credential status, never the raw credential or unrestricted Vault reference.
+- Credentials are read only inside authorized provisioning/inspection or worker runtime paths.
+- Required-auth edit drafts that inherit a saved credential copy it to a draft-owned versioned Vault path before commit; they do not persist an alias to the active secret.
+- Replacement/removal/deletion records a durable cleanup intent for retired Vault references.
+- Cleanup workers verify that a reference is no longer live before deleting it.
+- Rollback compensation queues orphan cleanup when a Vault write succeeded but the database transaction failed.
+- Provider error persistence/logging uses bounded safe codes rather than raw response bodies.
+- Remote provider endpoints require HTTPS; HTTP is limited to localhost/private development targets under explicit adapter rules.
+- SSRF-sensitive inspection follows validated schemes/hosts, redirect rules, response size/content constraints, and provider-specific contracts.
+
+`PROVIDER_CREDENTIAL_FINGERPRINT_SECRET` is used for non-reversible STT duplicate-credential fingerprints. Set a stable dedicated production value.
+
+## Queued work and temporary audio
+
+Generation and ingestion creation use a durable metadata-only task-dispatch outbox. Business data commits before broker publication; a one-second Beat publisher is the fallback when immediate publish fails.
+
+- Broker payloads identify database rows; they do not contain transcript-derived content or credentials.
+- Provider credentials are resolved before a provider attempt is marked submitted.
+- Definite pre-dispatch credential failure cancels quota reservation without consuming provider quota.
+- Duplicate delivery is handled through database claim/idempotency controls.
+- Uploaded source audio needed for asynchronous processing/retry is stored under a bounded Vault reference and removed through durable cleanup after terminal lifecycle transitions.
+- Retention cleanup, transcript-audio cleanup, provider-secret cleanup, and quota lifecycle processing run every 10 seconds.
+
+## Security audit
+
+`security_audit_events` stores bounded metadata such as action, actor/target/team IDs, outcome, reason codes, route, method, sanitized IP, and user agent.
+
+The sanitizer removes nested keys containing sensitive terms, escapes CR/LF, bounds strings, lists, maps, and serialized detail size, and never intentionally records request bodies. Login/reset subjects are stored as HMAC-SHA256 digests, not raw email addresses.
+
+Configure a dedicated `AUDIT_SUBJECT_HASH_SECRET` in production where practical. The fallback chain uses `SECRET_KEY`, `CSRF_SECRET`, or the stable Vault-backed CSRF key. Audit client-IP trust is disabled by default:
+
+- `AUDIT_TRUST_X_FORWARDED_FOR=true` trusts the first forwarded address;
+- `AUDIT_TRUST_CLOUDFLARE=true` trusts Cloudflare's client address;
+- enable either only behind the expected sanitizing proxy with blocked direct origin access.
+
+## Rate limiting and quotas
+
+Authentication and account-security endpoints use fixed SlowAPI limits. Upload and LLM generation routes use configurable burst/daily limits and owner/session/IP-aware keys. Redis is the limiter store; `RATE_LIMIT_KEY_PREFIX` can isolate deployments sharing Redis.
+
+System-admin quotas and provider attempts are abuse/usage controls, not authorization grants. Quota rows contain accounting metadata and must not contain prompt or transcript text.
+
+See [environment.md](environment.md) for exact variables/defaults and [auth.md](auth.md) for route limits.
+
+## Local and Docker exposure
+
+Checked-in defaults bind FastAPI, PostgreSQL, Redis, and Vault to localhost. Persistent Compose publishes only the application port selected by `DOCKER_APP_BIND`; service ports remain localhost-bound.
+
+- Do not expose the local Vault server or its root/unseal material.
+- Exposing Redis also exposes Celery broker/result data and limiter state.
+- Do not use `FORWARDED_ALLOW_IPS=*` unless the application origin is unreachable except through the trusted proxy.
+- Enabling forwarded-origin or audit-header trust does not secure direct origin access.
+- `start-dev.sh` remote bind/service exposure requires explicit development opt-ins.
+
+The persistent Docker profile is a single-host runtime baseline, not a complete production security architecture. Production requires external TLS/proxy controls, managed secrets, backups, monitoring, least-privilege service identities, and deliberate database/Redis/Vault hardening. See [docker.md](docker.md).
+
+## Library import/export boundary
+
+Template and Quick Action bundles are limited to caller-owned personal assets and current-team visible assets. Smart Phrase import/export is owner-only. Import never accepts file-supplied ownership, team, creator, active state, version, usage, or authority metadata.
+
+Preflight is read-only. Confirmation revalidates the original file and creates selected assets in one transaction. Bundle uploads are limited to 1 MiB and 100 entries. Audit events exclude uploaded JSON and asset content.
+
+## Explicitly forbidden
+
+- storing session or trusted-device tokens in `localStorage` or `sessionStorage`;
+- exposing authentication tokens to browser JavaScript;
+- treating CSRF cookies as authentication;
+- granting leaders/admins owner-content access because of management authority;
+- logging credentials, cookies, raw reset/setup tokens, TOTP values, recovery codes, prompts, transcripts, notes, dictation, PII values, uploaded audio, or raw provider responses;
+- storing provider secrets in PostgreSQL;
+- loading production runtime browser dependencies from public CDNs;
+- describing dated compliance evidence as proof of the current build without a current rerun.
+
+Files under `docs/Compliance/` and dated security-evidence directories are point-in-time records. Preserve them as evidence snapshots and add newer assessments rather than rewriting historical results.

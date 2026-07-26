@@ -9,6 +9,10 @@ on:
       - docker-compose.adc.yml
       - docker/**
       - requirements.txt
+      - .env.example
+      - start-dev.sh
+      - README.md
+      - docs/**
       - app/**
       - alembic/**
       - alembic.ini
@@ -27,6 +31,10 @@ on:
       - docker-compose.adc.yml
       - docker/**
       - requirements.txt
+      - .env.example
+      - start-dev.sh
+      - README.md
+      - docs/**
       - app/**
       - alembic/**
       - alembic.ini
@@ -44,6 +52,17 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Validate operational documentation links
+        run: python .github/scripts/check-operational-docs.py
+
+      - name: Validate cited scripts
+        run: |
+          bash -n start-dev.sh
+          bash -n docker/entrypoint.sh
+          bash -n scripts/test_file_ingestion.sh
+          bash -n .github/scripts/wait-for-openscribe-health.sh
+          python -m py_compile scripts/security/xss_probe.py .github/scripts/check-operational-docs.py
 
       - name: Create local environment
         run: cp .env.example .env

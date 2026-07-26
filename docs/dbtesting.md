@@ -1,639 +1,210 @@
 # Database Testing
 
-This document is the database-specific test reference: what behavior we enforce at the DB and service boundary, how we protect local data while testing, and which tests prove those rules.
+This is the database-specific test reference: how tests select/reset databases, how ordinary and real-connection tests are isolated, and which persistence boundaries must remain covered. General test execution is in [testing.md](testing.md).
 
 ## Database split
 
-Tests run against `TEST_DATABASE_URL`, not `DATABASE_URL`.
+Tests use `TEST_DATABASE_URL`, never `DATABASE_URL`.
 
-By default:
+Default local names:
 
-- app and manual UI data live in `ambient_scribe`
-- automated tests reset only `ambient_scribe_test`
+- application/manual UI: `ambient_scribe`;
+- sequential tests: `ambient_scribe_test`;
+- xdist worker `gw0`: `ambient_scribe_test_gw0`;
+- xdist worker `gw1`: `ambient_scribe_test_gw1`, and so on.
 
-When explicitly running xdist (for example, `pytest -q -n 2`), each worker
-derives a stable database from the configured base URL: worker `gw0` uses
-`ambient_scribe_test_gw0`. Credentials, host, port, and query parameters are
-unchanged. The base database name plus worker suffix must fit PostgreSQL's
-63-byte identifier limit. Sequential runs (unset/`master`) use the exact base
-`TEST_DATABASE_URL`.
+The worker suffix is derived from `PYTEST_XDIST_WORKER`; only unset/`master` or `gw<digits>` values are accepted. The derived PostgreSQL identifier must fit PostgreSQL's 63-byte limit.
 
-Use `pytest -q -n 4` as the balanced full-suite command on the current
-development host. Measured full-suite times were 2m41s sequential, 1m30s with
-two workers, 60.32s with four workers, and 45.01s with eight workers. Worker
-startup makes sequential execution preferable for focused one-test or
-small-file runs; the best full-suite worker count remains host-dependent.
+Enforcement lives in:
 
-This is enforced by:
-
-- [tests/db_utils.py](/home/oscar/Documents/Code_Projects/OpenScribe/tests/db_utils.py)
-- [tests/conftest.py](/home/oscar/Documents/Code_Projects/OpenScribe/tests/conftest.py)
-- [tests/test_migrations.py](/home/oscar/Documents/Code_Projects/OpenScribe/tests/test_migrations.py)
+- [tests/db_utils.py](../tests/db_utils.py)
+- [tests/conftest.py](../tests/conftest.py)
+- [tests/test_migrations.py](../tests/test_migrations.py)
 
 ## Safety guard
 
-If `TEST_DATABASE_URL` or its derived worker URL matches `DATABASE_URL`, pytest
-fails immediately before any reset logic runs. `PYTEST_XDIST_WORKER` is read at
-test-helper import and accepts only unset/`master` or xdist names of the form
-`gw<digits>`; malformed values fail closed.
+Before any destructive test setup, the helper resolves both application and test URLs. If the selected test URL matches `DATABASE_URL`, pytest fails immediately.
 
-## Test database lifecycle
+The test helper may create missing test databases and reset their `public` schemas. It must never drop or recreate the application database.
 
-- the test helper creates `ambient_scribe_test` automatically if it does not exist
-- the first normal test whose resolved fixture closure contains `db_session` resets the `public` schema and runs `Base.metadata.create_all()`
-- later ordinary DB tests reuse that canonical schema: `db_session` is bound to one connection with a root transaction, and uses SQLAlchemy `join_transaction_mode="create_savepoint"` so application `commit()` and `rollback()` calls remain usable while fixture teardown rolls back the root transaction
-- `client` and `raw_client` bind app-created sessions to that same fixture connection with `create_savepoint`, so request-side commits are also isolated by the root rollback
-- tests marked `real_db_connections` retain engine-bound sessions and run PostgreSQL `TRUNCATE` over all trusted `Base.metadata` application tables with `RESTART IDENTITY CASCADE` both before and after the test; use this marker only for independent committed connections/threads/live servers/cross-session locks. `alembic_version` is excluded because it is not application metadata
-- test engines use `NullPool` so Postgres connections do not hold stale cached plans across schema drops
-- sequential database-backed tests flush the test Redis rate-limit store before and after each test
-- xdist database-backed tests use a per-worker SlowAPI `key_prefix` and clear
-  only that worker's `LIMITS:LIMITER/<prefix>/*` keys with Redis `SCAN` in
-  bounded batches; they never flush another worker's keys
-- pure and static tests without `db_session` skip PostgreSQL and Redis reset work
-- migration tests skip the normal pre-test schema path, retain their own `public` schema lifecycle, and invalidate canonical-schema readiness in fixture teardown (including after a failure). The next ordinary DB test then lazily resets `public` and runs `Base.metadata.create_all()` before opening its rollback-isolated connection
-- the sequential process or xdist controller holds the global test-infrastructure lock; workers run under that controller lock, preventing concurrent sequential and xdist invocations from interfering through shared Redis
-- the application database is not dropped or recreated by pytest
+A global `/tmp/openscribe_pytest.lock` prevents a sequential run and an xdist controller from sharing/resetting the same local PostgreSQL or Redis infrastructure concurrently. Xdist workers inherit the controller's protected run.
 
-Why this matters:
+## Ordinary database tests
 
-- plain `drop_all()/create_all()` on a reused pooled Postgres connection can leave enum and cached-plan state behind after interrupted runs
-- recreating the whole `public` schema remains the reliable recovery boundary after migration tests or a fresh pytest process; ordinary tests avoid per-test DDL/DML cleanup through root-transaction rollback, while real-connection tests use trusted-metadata `TRUNCATE`
-- checking pytest's resolved fixture closure avoids that schema work for tests with no database dependency
+The first ordinary test in a worker whose fixture closure requires `db_session`:
 
-## What we test at the DB boundary
+1. resets that worker database's `public` schema;
+2. creates canonical tables from `Base.metadata`;
+3. opens the test connection and root transaction.
 
-### Team names
+Later ordinary database tests reuse the canonical schema. `db_session` uses SQLAlchemy `join_transaction_mode="create_savepoint"`, so application `commit()`/`rollback()` calls can execute while fixture teardown rolls back the root transaction.
 
-Behavior in plain language:
+The `client` and `raw_client` fixtures bind request-created sessions to the same connection/savepoint model. This keeps route-side commits isolated without per-test schema recreation.
 
-- teams store the original display name plus a canonical `name_key`
-- `name_key` is built from trim + collapsed whitespace + Unicode normalization + case-folding
-- `Clinic North`, `clinic north`, and `  Clinic   North  ` are duplicates
-- punctuation is preserved, so `Clinic North` and `Clinic_North` are distinct
+Pure/static tests that do not resolve database fixtures skip PostgreSQL and Redis reset work.
 
-Brief test shape:
+## Real connection tests
 
-```python
-first = create_team(client, name="Clinic North")
-case_variant = create_team(client, name="clinic north")
-whitespace_variant = create_team(client, name="  Clinic   North  ")
-```
+Tests that need independent committed sessions, threads, database locks, live servers, or cross-session visibility use the `real_db_connections` marker.
 
-Expected:
+These tests:
 
-- first succeeds
-- normalized duplicates fail with `409 conflict`
+- use engine-bound sessions rather than the root rollback fixture;
+- truncate trusted `Base.metadata` application tables with `RESTART IDENTITY CASCADE` before and after the test;
+- exclude `alembic_version` because it is not application metadata;
+- must be used sparingly and intentionally.
 
-### User emails
+Do not use hand-written untrusted table names for cleanup.
 
-Behavior in plain language:
+## Migration tests
 
-- user emails are normalized before persistence
-- uniqueness is enforced case-insensitively by `lower(email)`
+Migration tests own the `public` schema lifecycle and do not use the ordinary pre-test schema path. They exercise Alembic upgrades/downgrades and database constraints against actual migration state.
 
-Brief test shape:
+After a migration test, teardown invalidates the worker's canonical-schema readiness flag even if the test fails. The next ordinary database-backed test rebuilds canonical metadata before opening its rollback-isolated connection.
 
-```python
-first = create_user(client, email="Mixed.Case@Example.com")
-second = create_user(client, email="mixed.case@example.com")
-```
+Test engines use `NullPool` so connections do not retain stale cached plans across schema drops.
 
-Expected:
+## Redis isolation
 
-- first succeeds
-- second fails with `409 conflict`
+Sequential database-backed tests clear the configured test limiter store before and after each test.
 
-### Managed user creation and password storage
+Xdist workers share the configured Redis database but use distinct SlowAPI `key_prefix` values. Cleanup scans/deletes only that worker's `LIMITS:LIMITER/<prefix>/*` keys in bounded batches; one worker must not flush another worker's keys or the application's Redis databases.
 
-Behavior in plain language:
+## Schema and normalization boundaries
 
-- manager-created users are persisted immediately as active accounts
-- the stored password is always a derived hash
-- the user starts with:
-  - `must_change_password = true`
-  - `onboarding_state = pending_password_change`
+Database/service tests should prove the following where applicable.
 
-Brief test shape:
+### Teams
 
-```python
-persisted_user.password_hash != "TempPass1"
-persisted_user.password_hash.startswith("$argon2id$")
-persisted_user.onboarding_state.value == "pending_password_change"
-```
+- original display name is retained;
+- canonical `name_key` uses normalization, trim, whitespace collapse, and case folding;
+- normalized duplicates fail with conflict;
+- punctuation that is not normalized away remains significant.
 
-### Account requests
+### Users
 
-Behavior in plain language:
+- emails are normalized before persistence;
+- uniqueness is case-insensitive;
+- new passwords are Argon2id hashes, never plaintext;
+- manager-created users start in password-change onboarding;
+- normal users receive per-user content-key metadata as required by current crypto services.
 
-- pending requests are deduplicated by normalized email + normalized requested team name
-- a real existing user blocks a new account request for the same normalized email
-- approved requests link to the created user
+### Sessions and MFA
 
-Brief test shape:
+- opaque session/trusted-device/email tokens are hash-only in the database;
+- auth levels and lifecycle states are explicit;
+- suspension/disable/recovery/password changes revoke required authority;
+- encrypted TOTP envelopes are owner/method-bound;
+- recovery codes remain hash-only.
 
-```python
-first = client.post("/api/v1/account-requests", json={...})
-duplicate = client.post("/api/v1/account-requests", json={...})
-```
+### Manager lifecycle
 
-Expected:
+- leaders are limited to non-system-admin users in their own team;
+- suspension blocks login without deleting content;
+- reactivation applies the implemented password/MFA reset semantics;
+- manager deletion is hard delete;
+- preserved account-request rows clear nullable links to a deleted user.
 
-- first succeeds
-- duplicate fails with `409 conflict`
+## Provider configuration boundaries
 
-### Sessions and revocation
+STT, LLM, de-identification, clinical NLP, and hallucination-check tests should cover:
 
-Behavior in plain language:
+- team-scoped uniqueness and selection constraints;
+- ready/pending setup status and active/selectable filters;
+- leader selection versus system-admin credential authority;
+- no raw secret or unrestricted Vault reference in API responses;
+- remote HTTPS/local-development HTTP transport rules;
+- provider-specific discovery and model validation;
+- credential replacement/revision promotion and durable cleanup intents;
+- team deletion blockers/cascades/cleanup;
+- no content visibility expansion through provider management.
 
-- the cookie holds an opaque token, not serialized user state
-- the DB stores only the hashed token in `user_sessions`
-- onboarding, pending-MFA, and full sessions are tracked explicitly
-- locking a user revokes all active sessions immediately
+Provider metadata and selection rows must remain separate from owner transcript content.
 
-Brief test shape:
+## Transcript and content boundaries
 
-```python
-user.status = UserStatus.locked
-db_session.commit()
-response = client.get("/api/v1/auth/me")
-```
+### Ownership and retention
 
-Expected:
+- transcript roots store owner/team and server-snapshotted retention;
+- user payloads cannot extend retention;
+- expired roots are filtered by every owner content service before physical cleanup;
+- cross-owner access fails without disclosing content/existence beyond the route contract;
+- system administrators cannot own transcripts.
 
-- request fails with `401`
-- existing session rows are marked revoked
+### Encryption
 
-### Manager suspension and reactivation
+Designated fields must contain versioned ciphertext envelopes in PostgreSQL, not plaintext. Tests should cover:
 
-Behavior in plain language:
+- encrypt/decrypt round trips through service APIs;
+- owner-bound associated data and wrong-owner failure;
+- Vault/key outage and malformed envelope failure;
+- no plaintext fallback;
+- password/account recovery preserving content-key access;
+- deletion of key/content rows according to lifecycle rules.
 
-- `suspended` is a distinct persisted user status
-- manager suspension blocks login without deleting content
-- manager suspension revokes active sessions and trusted-device records immediately
-- leader scope is limited to non-system-admin users in the leader’s own team
-- manager reactivation currently resets the user into password-change onboarding and disables prior MFA setup
+### Ingestion
 
-Brief test shape:
+- source audio uses bounded Vault references for queued processing/retry;
+- job creation and task-dispatch outbox creation are transactional;
+- duplicate task delivery is idempotent/claim-safe;
+- processing stale/deadline reconciliation is deterministic;
+- result text appends in the expected sequence and is encrypted;
+- terminal cleanup clears/durably queues source-audio deletion;
+- a pre-dispatch credential failure does not consume provider quota.
 
-```python
-suspended = client.post(f"/api/v1/users/{member.id}/suspend")
-reactivated = client.post(f"/api/v1/users/{member.id}/reactivate")
-```
+### Generated documents and redaction
 
-Expected:
+- generated content, request snapshots, sections, working-note/dictation snapshots, and redaction/PII data follow encryption/ownership rules;
+- provider requests receive redacted source text;
+- reidentification is owner-side after safe generation parsing;
+- deletion/retention cascades cover all transcript-derived children;
+- audit and task/outbox rows contain metadata only.
 
-- suspend returns `status = suspended`
-- later login attempts fail while suspended
-- reactivate returns `status = active`
-- reactivated user has:
-  - `must_change_password = true`
-  - `onboarding_state = pending_password_change`
-  - `mfa_enabled = false`
+## Durable outbox, quota, and cleanup
 
-### Manager deletion
+Database tests should cover the transaction and concurrency boundaries for:
 
-Behavior in plain language:
-
-- manager delete is a hard-delete path, not a soft-delete path
-- leaders may delete only non-system-admin users in their own team
-- system admins may delete other users across teams
-- self-delete through manager routes is blocked
-- deleting a user removes currently implemented transcript roots and transcript versions immediately
-- account-request rows that point at the deleted user are preserved, but their nullable user references are cleared
+- deterministic task-dispatch IDs and payload mismatch rejection;
+- source row + outbox atomic creation;
+- immediate publish plus one-second Beat fallback;
+- `FOR UPDATE SKIP LOCKED` publication without duplicate broker sends;
+- retry/backoff and terminal failure after `TASK_OUTBOX_MAX_ATTEMPTS`;
+- quota reservation, expansion, submission, settlement, cancellation, and stale deadlines;
+- retention cleanup every 10 seconds;
+- transcript-audio and provider-secret cleanup jobs, live-reference guards, and rollback compensation;
+- deletion helpers that terminalize attempts/remove dispatch rows before source deletion.
 
-Brief test shape:
-
-```python
-deleted = client.delete(f"/api/v1/users/{member.id}")
-```
-
-Expected:
-
-- response is `204`
-- the `users` row is gone
-- owned `transcripts` rows are gone
-- owned `transcript_versions` rows are gone via transcript-root cascade
-- preserved `account_requests` rows have `linked_user_id = null`
-
-### Manager-route auth boundary
-
-Behavior in plain language:
-
-- manager account routes are not public
-- unauthenticated callers cannot suspend, reactivate, or delete users
-- ordinary users cannot use those routes
-- onboarding-only and pending-MFA sessions cannot use those routes
-
-Brief test shape:
-
-```python
-client.post(f"/api/v1/users/{user_id}/suspend")
-client.post(f"/api/v1/users/{user_id}/reactivate")
-client.delete(f"/api/v1/users/{user_id}")
-```
-
-Expected:
-
-- no session cookie returns `401`
-- normal non-manager user returns `403 forbidden`
-- onboarding-only session returns `403 onboarding_incomplete`
-- pending-MFA session returns `403 mfa_required`
-
-### Team STT configuration
-
-Behavior in plain language:
-
-- system admins provision one or more STT config rows per team
-- each team may have at most one active STT selection row
-- the row stores endpoint metadata and a Vault secret reference, never the raw bearer token
-- inspection may fetch the OpenAPI document and infer defaults, but does not persist a row by itself
-- browser inspection must render the inferred values back into the save form in the same response
-- leaders may choose or clear only their own team's active STT selection
-- leaders may not create, update, or delete credential-bearing config rows
-- system admins may create, update, inspect, and delete a selected team's config rows
-- normal users, onboarding sessions, and pending-MFA sessions may not access STT provisioning or selection routes
-- the API returns `has_secret` but does not reveal the bearer token or the raw Vault ref
-- remote non-local endpoints must use `https://`
-- local and RFC1918 development HTTP endpoints are accepted in this first slice
-
-Brief test shape:
-
-```python
-inspection = client.post("/api/v1/stt-configs/inspect", json={...})
-created = client.post("/api/v1/stt-configs", json={...})
-selection = client.post("/api/v1/stt-selection", json={...})
-persisted = db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.id == config_id))
-```
-
-Expected:
-
-- inspection returns inferred request and response fields without storing a row
-- system-admin provisioning succeeds
-- leader selection succeeds only for a provisioned own-team option
-- clearing the team selection removes only the `team_stt_selections` row
-- `fetched.json()["has_secret"] is True`
-- `vault_secret_ref` is present only in the database row, not the response
-- cross-team leader access fails with `403`
-- invalid remote `http://` endpoint fails with `422`
-
-### Team LLM configuration
-
-Behavior in plain language:
-
-- system admins provision one or more LLM config rows per team
-- each team may have at most one active LLM selection row
-- each user may have at most one preferred default-model row
-- the row stores provider metadata and a Vault secret reference, never the raw API key
-- inspection may fetch available OpenAI chat models through the SDK or available Ollama models through `/api/tags`, but does not persist a row by itself
-- leaders may choose or clear only their own team's active LLM selection
-- leaders may not create, update, or delete credential-bearing config rows
-- team LLM selection now persists:
-  - the active provider
-  - a team default model
-  - an allowed-model subset visible to team users
-- normal users may set or clear only their own preferred default model from that allowed-model subset
-- if a saved user preference is no longer allowed for the active team provider, runtime resolution falls back to the team-selected default model
-- normal users, onboarding sessions, and pending-MFA sessions may not access LLM provisioning or team-selection routes
-- the API returns `has_secret` but does not reveal the API key or the raw Vault ref
-- remote non-local endpoints must use `https://`
-- local and RFC1918 development HTTP endpoints are accepted in this first slice
-
-Brief test shape:
-
-```python
-created = client.post("/api/v1/llm-configs", json={...})
-selection = client.post("/api/v1/llm-selection", json={...})
-preference = client.post("/api/v1/llm-preference", json={...})
-persisted = db_session.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == config_id))
-```
-
-Expected:
-
-- system-admin provisioning succeeds
-- leader selection succeeds only for a provisioned own-team option
-- user preference succeeds only for the authenticated user and only for the leader-approved model subset
-- clearing the team selection removes only the `team_llm_selections` row
-- clearing the user preference removes only the `user_llm_preferences` row
-- `created.json()["has_secret"] is True`
-- `vault_secret_ref` is present only in the database row, not the response
-- cross-team leader access fails with `403`
-- invalid remote `http://` endpoint fails with `422`
-
-### User app preferences
-
-Behavior in plain language:
-
-- only normal team users may manage `user_app_preferences`
-- the row stores workflow metadata only, not transcript-derived content
-- favourite/default template and quick-action ids must remain inside the caller's visible owner/team scope
-- stale favourite/default ids are removed lazily if the referenced asset is later deleted or hidden
-- clearing preferences removes only the `user_app_preferences` row
-
-Brief test shape:
-
-```python
-saved = client.post(
-    "/api/v1/app-preferences",
-    json={
-        "favorite_quick_action_ids": [str(team_quick_action.id)],
-        "favorite_template_ids": [str(team_template.id)],
-        "default_quick_action_id": str(team_quick_action.id),
-        "llm_detail_level": "detailed",
-        "preferred_recording_mode": "live_chunked",
-    },
-)
-```
-
-Expected:
-
-- save/get/clear succeed for the authenticated owner only
-- cross-team or hidden asset ids fail with `422`
-- system-admin access fails with `403`
-- deleting a favourited template/quick action causes later reads to return the row without the stale ids
-
-### Transcript start and ingestion mode
-
-Behavior in plain language:
-
-- transcript start creates the root for the current authenticated owner
-- `team_id` is derived from the current user rather than trusted from the request
-- system-admin accounts may not own transcript content
-- the transcript root persists `ingestion_mode` so later capture flows share one contract
-- if omitted, the start flow currently implies `whole_file`
-
-Brief test shape:
-
-```python
-started = client.post(
-    "/api/v1/transcripts/start",
-    json={"title": "Visit note", "ingestion_mode": "live_chunked"},
-)
-```
-
-Expected:
-
-- response is `201`
-- `owner_user_id` matches the logged-in user
-- `team_id` matches the logged-in user's team
-- `ingestion_mode` is persisted and returned
-- system-admin callers get `403`
-
-### Live audio chunk ingestion
-
-Behavior in plain language:
-
-- live chunk uploads are owner-only
-- live chunk uploads are allowed only when the transcript ingestion mode is `live_chunked`
-- the API route queues an ingestion job and returns `202`
-- live chunk processing normalizes uploaded audio before STT submission
-- the worker requires an active team STT selection before provider execution
-- provider-returned text is appended into the current transcript draft only when completed chunks can be applied in order
-- transcript status stays `transcribing`
-
-Brief test shape:
-
-```python
-uploaded = client.post(
-    f"/api/v1/transcripts/{transcript_id}/audio-chunks",
-    files={"audio": ("chunk.webm", b"raw-audio", "audio/webm")},
-    data={"chunk_sequence_no": "1"},
-)
-process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-audio")
-```
+Exception/provider-response text must not be persisted in these metadata tables.
 
-Expected:
+## Import/export and configuration assets
 
-- unauthenticated callers get `401`
-- non-owners get `403`
-- non-`live_chunked` transcripts get `409`
-- duplicate `chunk_sequence_no` gets `409`
-- missing active team STT selection fails in worker processing and marks the job `failed`
-- successful worker processing appends provider text to `current_draft_text_encrypted` in sequence order
+Tests for templates, Quick Actions, Smart Phrases, and preference rows should verify:
 
-### Whole-file ingestion
+- personal ownership and team-scope constraints;
+- normalized unique names/triggers;
+- version-root/active-version invariants;
+- imported bundles cannot supply owner/team/creator/active/version/usage authority;
+- preflight is read-only and confirmation is one transaction;
+- 1 MiB/100-entry bundle limits;
+- audit rows omit uploaded content, prompts, names, expansions, and instructions where the audit contract excludes them.
 
-Behavior in plain language:
-
-- whole-file ingestion is owner-only
-- whole-file ingestion is allowed only when the transcript ingestion mode is `whole_file`
-- the API route queues an ingestion job and returns `202`
-- worker processing normalizes uploaded audio before STT submission
-- the worker requires an active team STT selection before provider execution
-- provider-returned text replaces the current transcript draft for the file-ingestion flow
-- transcript status moves to `ready`
-
-Brief test shape:
-
-```python
-uploaded = client.post(
-    f"/api/v1/transcripts/{transcript_id}/audio-file",
-    files={"audio": ("recording.mp3", b"raw-file-audio", "audio/mpeg")},
-)
-process_transcript_ingestion_job(db_session, job_id=job_id, audio_bytes=b"raw-file-audio")
-```
-
-Expected:
-
-- unauthenticated callers get `401`
-- non-owners get `403`
-- `live_chunked` transcripts get `409`
-- missing active team STT selection fails in worker processing and marks the job `failed`
-- successful worker processing writes provider text into `current_draft_text_encrypted`
-
-### Trusted devices and MFA freshness
-
-Behavior in plain language:
-
-- trusted devices are stored separately from normal sessions
-- the browser cookie stores only an opaque trusted-device token
-- the DB stores only the hashed trusted-device token
-- a trusted device lets a completed user skip TOTP only if the last real MFA verification was within 24 hours
-- using the trusted device without redoing MFA does not extend the freshness window
-- locking a user revokes trusted-device records as well as sessions
-
-Brief test shape:
-
-```python
-from tests.constants import PERMANENT_TEST_PASSWORD
-
-challenge = client.post("/api/v1/auth/mfa/totp", json={"code": code, "remember_device": True})
-client.post("/api/v1/auth/logout")
-login_again = login(client, email="managed@example.com", password=PERMANENT_TEST_PASSWORD)
-```
-
-Expected:
-
-- the first post-onboarding login requires `pending_mfa`
-- the challenge may issue a remembered-browser cookie
-- a fresh trusted device allows a later password login to return `auth_level = full`
-- if `last_mfa_verified_at` is stale, the same browser returns to `pending_mfa`
-
-### MFA and recovery codes
-
-Behavior in plain language:
-
-- TOTP enrollment creates a stored MFA method
-- recovery codes are stored hashed only
-- generated recovery codes are displayed once and never persisted in plaintext
-
-Brief test shape:
-
-```python
-recovery = client.post("/api/v1/onboarding/recovery-codes")
-stored = list(db_session.scalars(select(UserRecoveryCode)))
-```
-
-Expected:
-
-- plaintext codes appear in the response only
-- stored `code_hash` values do not equal the returned codes
-
-### Transcript persistence and version history
-
-Behavior in plain language:
-
-- transcript version commits create new `transcript_versions` rows
-- version numbers increase monotonically
-- owner-only access rules remain intact after the auth rewrite
-
-### Templates and generated documents
-
-Behavior in plain language:
-
-- team templates are configuration roots scoped to one team and managed by team leaders
-- personal templates are configuration roots scoped to one user and managed by that owner
-- each template save creates a new immutable `template_versions` row
-- generated note output is transcript-derived content rooted under the transcript owner and transcript id
-- transcript delete cascades to generated documents
-
-Brief test shape:
-
-```python
-team_template = leader_creates_team_template(...)
-personal_template = owner_creates_personal_template(...)
-generated = owner_generates_note(...)
-deleted = client.delete(f"/api/v1/transcripts/{transcript_id}")
-```
-
-Expected:
-
-- leaders can manage only their own team templates
-- users can manage only their own personal templates
-- leaders can manage only their own team quick actions
-- users can manage only their own personal quick actions
-- note generation creates both a `transcript_versions` snapshot and a `generated_documents` row
-- quick action generation creates both a `transcript_versions` snapshot and a `generated_documents` row linked to a `quick_action_versions` snapshot
-- generated-document rows now also snapshot prompt/provider execution metadata needed to survive later config or source-asset changes
-- generated-document rows now also link to the `redaction_runs` snapshot used for outbound LLM generation
-- `redaction_runs` are created lazily per `transcript_versions` snapshot and reused for later generation actions on the same version
-- `redaction_entities` persist the PHI placeholder mapping needed to validate returned placeholders and re-identify the finished output
-- generation usage metadata is now also persisted into `provider_usage_events` with team/user IDs and token/duration fields when available
-- deleting a template or quick action no longer removes the prompt context needed by already-queued/generated output
-- deleting the transcript removes the generated document immediately
-
-### Provider quota accounting and dispatch
-
-Behavior in plain language:
-
-- four nullable user base limits cover daily/monthly tokens and audio seconds;
-  `NULL` is unlimited, `0` has no base allowance, and a positive grant can
-  enable a zero-base window
-- daily/monthly windows use UTC calendar bounds; unlimited-to-finite activation
-  starts current-window accounting prospectively, while finite edits do not
-  backfill or restart usage
-- daily and monthly reset events are independent; pending accepted reservations
-  remain counted through resets, grant expiry/revocation, and later reductions
-- quota-policy events enforce grant/reset/limit-change shapes, operation
-  idempotency, revocation idempotency, actor/revoker snapshots, and safe
-  deletion foreign keys
-- relative/calendar grant expiry is anchored once to the first accepted operation
-  and remains stable on exact browser retries, including across UTC day/month
-  boundaries; active grants remain independently visible and revocable after
-  they fall outside the bounded latest-50 history
-- provider attempts are metadata-only authoritative quota records, separate
-  from `provider_usage_events` reporting telemetry; all LLM/STT call kinds and
-  retries use them, while synthetic provider tests have no user quota owner
-- owner-row locking permits only one competing reservation; duplicate
-  correlation/attempt reservations return the original row only when immutable
-  payload matches
-- token settlement accepts reported actual totals or conservatively settles an
-  unknown post-dispatch outcome; audio uses server-measured duration; expired
-  unused reservations cancel
-- source, reservation, and deterministic dispatch outbox intent are atomic;
-  publisher retry uses safe error codes and backoff, while workers use an atomic
-  source claim before external provider dispatch
-- source/user/team deletion terminalizes active attempts and removes/cancels
-  matching dispatch metadata without retaining content
-
-Brief test shape:
-
-```python
-attempt = reserve_provider_attempt(..., correlation_id=correlation_id)
-duplicate = reserve_provider_attempt(..., correlation_id=correlation_id)
-dispatch = add_pending_task_dispatch(..., source_id=source.id)
-```
-
-Expected:
-
-- duplicate identical reservation is idempotent; a changed payload returns
-  `409 provider_attempt_idempotency_conflict`
-- quota service internally returns `403 quota_disabled` for a zero effective
-  window and `429 quota_exceeded` for finite exhaustion; the public application
-  error boundary preserves status but maps both to public `quota_exceeded` with
-  safe contact-your-administrator copy and no quota metadata
-- concurrent reservations cannot both exceed same user allowance
-- expired reserved attempts cancel; expired submitted token attempts settle as
-  `unknown` against their conservative reservation; audio settles measured units
-- outbox rows use deterministic task ids, one source intent, locked due-row
-  publication, bounded retry, and queued-source reconciliation after permanent
-  publication failure
-- quota/outbox schema, error metadata, audit metadata, and tests never
-  persist/log transcript, note, prompt, provider response, secret, or Vault
-  reference; free-text reasons exist only in the quota-policy ledger and never
-  enter audit metadata or logs
-
-## Migration coverage
-
-Current migration tests verify:
-
-- `alembic upgrade head` builds the schema from scratch
-- head schema includes:
-  - `account_requests`
-  - `generated_documents`
-  - `quick_actions`
-  - `quick_action_versions`
-  - `template_versions`
-  - `templates`
-  - `user_sessions`
-  - `user_trusted_devices`
-  - `user_mfa_methods`
-  - `user_recovery_codes`
-- `users` now includes:
-  - `full_name`
-  - `must_change_password`
-  - `onboarding_state`
-- head supports `users.status = suspended`
-- normalized uniqueness rules for teams and emails still hold at head
-- head includes nullable non-negative user quota-limit columns plus
-  `user_quota_policy_events`, `provider_attempts`, and `task_dispatch_outbox`
-  with their shape constraints, indexes, uniqueness rules, and deletion FKs
-- quota-accounting downgrade fails closed while any quota limit is populated or
-  any quota-policy, provider-attempt, or dispatch-outbox row exists; it removes
-  the empty schema only after those blockers are cleared
-
-## Rate-limit test isolation
-
-Tests use `TEST_RATE_LIMIT_STORAGE_URL`, not `RATE_LIMIT_STORAGE_URL`.
-
-By default:
-
-- app limiter storage lives in Redis DB `0`
-- test limiter storage lives in Redis DB `15`
-
-Sequential tests flush the test limiter store before and after each database-backed
-test, including migration tests, so counters do not leak between cases. xdist
-workers share that safe test Redis DB but set `RATE_LIMIT_KEY_PREFIX` to their
-stable worker namespace (for example, `openscribe_pytest_gw0`) and delete only
-that namespace with `SCAN`; this preserves other workers' counters. The
-application accepts `RATE_LIMIT_KEY_PREFIX` for this isolation wiring, but it
-defaults to empty so non-test behavior is unchanged.
+## Adding a database test
+
+Use the least powerful fixture/marker that proves the behavior:
+
+1. keep pure validation tests independent of PostgreSQL;
+2. use ordinary `db_session`/`client` rollback isolation for most service/route tests;
+3. use `real_db_connections` only for committed visibility, locks, threads, or live-server behavior;
+4. use migration fixtures only for Alembic/schema-transition assertions;
+5. assert both successful persistence and forbidden/cascade behavior;
+6. never target `DATABASE_URL` or rely on a developer's existing application rows.
+
+## Recovery after an interrupted run
+
+If a test process is killed while holding the global lock, verify no pytest controller/worker remains, then remove only the stale lock file if necessary. The next database-backed test rebuilds its worker schema.
+
+Do not repair failures by pointing `TEST_DATABASE_URL` at the application database or by disabling the equality guard.
+
+## Documentation rule
+
+Database behavior that changes through migrations, constraints, or persistence services must update this document and the closest operational feature document. Dated compliance evidence remains a point-in-time record and is not rewritten to match newer schemas.

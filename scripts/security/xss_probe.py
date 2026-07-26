@@ -9,7 +9,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from html import escape
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -18,9 +18,8 @@ PAYLOADS: tuple[str, ...] = (
     '"><u data-xss-probe="probe">PROBE</u>',
     "'\"><img src=x data-xss-probe=\"img\">",
 )
-
-
 HTML_TAG_RE = re.compile(r"<(script|img|svg|iframe|u)\b", re.IGNORECASE)
+CSRF_COOKIE_NAME = "openscribe_csrf"
 
 
 @dataclass(frozen=True)
@@ -66,6 +65,19 @@ def request_page(client: httpx.Client, base_url: str, path: str) -> httpx.Respon
 
 def post_form(client: httpx.Client, base_url: str, path: str, data: dict[str, str]) -> httpx.Response:
     return client.post(urljoin(base_url, path), data=data, follow_redirects=True)
+
+
+def csrf_headers(client: httpx.Client, base_url: str) -> dict[str, str]:
+    token = client.cookies.get(CSRF_COOKIE_NAME)
+    if not token:
+        raise RuntimeError("authenticated CSRF cookie is unavailable after login")
+    parsed = urlsplit(base_url)
+    if not parsed.scheme or not parsed.netloc:
+        raise RuntimeError("base URL must include scheme and host")
+    return {
+        "Origin": f"{parsed.scheme}://{parsed.netloc}",
+        "X-CSRF-Token": token,
+    }
 
 
 def public_request_access_probe(client: httpx.Client, base_url: str, payload: str) -> ProbeResult:
@@ -116,7 +128,17 @@ def api_login(client: httpx.Client, base_url: str, *, email: str, password: str)
         follow_redirects=True,
     )
     response.raise_for_status()
-    return response.json()
+    payload = response.json()
+    auth_level = payload.get("auth_level")
+    if auth_level != "full":
+        raise RuntimeError(
+            "authenticated XSS suite requires a full session; use a localhost seeded development account without MFA "
+            f"(received auth_level={auth_level!r})"
+        )
+    # Login rotates the session-bound HttpOnly CSRF cookie. httpx can send its
+    # value as the required header even though browser JavaScript cannot read it.
+    csrf_headers(client, base_url)
+    return payload
 
 
 def authenticated_personal_template_probe(
@@ -135,13 +157,23 @@ def authenticated_personal_template_probe(
             "mode": "freeform",
             "is_active": True,
         },
+        headers=csrf_headers(client, base_url),
         follow_redirects=True,
     )
     if create.status_code >= 400:
         return ProbeResult("personal_template_create", False, f"template create failed: {create.status_code}", create.text[:200])
-    response = request_page(client, base_url, "/home")
-    ok, detail = expect_no_html_injection(response.text, payload)
-    return ProbeResult("personal_template_render", ok, detail)
+    template_id = create.json().get("id")
+    try:
+        response = request_page(client, base_url, "/workspace/library/templates")
+        ok, detail = expect_no_html_injection(response.text, payload)
+        return ProbeResult("personal_template_render", ok, detail, evidence=str(template_id) if template_id else None)
+    finally:
+        if template_id:
+            client.delete(
+                urljoin(base_url, f"/api/v1/templates/personal/{template_id}"),
+                headers=csrf_headers(client, base_url),
+                follow_redirects=True,
+            )
 
 
 def authenticated_personal_quick_action_probe(
@@ -159,13 +191,23 @@ def authenticated_personal_quick_action_probe(
             "prompt_text": "Create a follow-up.",
             "is_active": True,
         },
+        headers=csrf_headers(client, base_url),
         follow_redirects=True,
     )
     if create.status_code >= 400:
         return ProbeResult("personal_quick_action_create", False, f"quick action create failed: {create.status_code}", create.text[:200])
-    response = request_page(client, base_url, "/home")
-    ok, detail = expect_no_html_injection(response.text, payload)
-    return ProbeResult("personal_quick_action_render", ok, detail)
+    quick_action_id = create.json().get("id")
+    try:
+        response = request_page(client, base_url, "/workspace/library/quick-actions")
+        ok, detail = expect_no_html_injection(response.text, payload)
+        return ProbeResult("personal_quick_action_render", ok, detail, evidence=str(quick_action_id) if quick_action_id else None)
+    finally:
+        if quick_action_id:
+            client.delete(
+                urljoin(base_url, f"/api/v1/quick-actions/personal/{quick_action_id}"),
+                headers=csrf_headers(client, base_url),
+                follow_redirects=True,
+            )
 
 
 def authenticated_transcript_title_probe(
@@ -176,14 +218,23 @@ def authenticated_transcript_title_probe(
     create = client.post(
         urljoin(base_url, "/api/v1/transcripts/start"),
         json={"title": f"Transcript {payload}"},
+        headers=csrf_headers(client, base_url),
         follow_redirects=True,
     )
     if create.status_code >= 400:
         return ProbeResult("transcript_create", False, f"transcript start failed: {create.status_code}", create.text[:200])
-    transcript_id = create.json()["id"]
-    response = request_page(client, base_url, f"/transcribe?transcript_id={transcript_id}")
-    ok, detail = expect_no_html_injection(response.text, payload)
-    return ProbeResult("transcript_title_render", ok, detail, evidence=str(transcript_id))
+    transcript_id = create.json().get("id")
+    try:
+        response = request_page(client, base_url, f"/workspace?transcript_id={transcript_id}")
+        ok, detail = expect_no_html_injection(response.text, payload)
+        return ProbeResult("transcript_title_render", ok, detail, evidence=str(transcript_id) if transcript_id else None)
+    finally:
+        if transcript_id:
+            client.delete(
+                urljoin(base_url, f"/api/v1/transcripts/{transcript_id}"),
+                headers=csrf_headers(client, base_url),
+                follow_redirects=True,
+            )
 
 
 def run_public_suite(client: httpx.Client, base_url: str) -> list[ProbeResult]:
@@ -237,6 +288,9 @@ def main() -> int:
                 return 2
             results.extend(run_authenticated_suite(client, args.base_url, email=args.email, password=args.password))
         return print_results(results, as_json=args.as_json)
+    except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+        print(f"XSS probe failed: {exc}", file=sys.stderr)
+        return 2
     finally:
         client.close()
 

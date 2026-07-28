@@ -948,7 +948,7 @@ def test_system_admin_can_create_and_finalize_stt_provider_draft(client, db_sess
     make_user(email="admin-stt-draft@example.com", password="password-1", is_system_admin=True)
 
     def fake_get(url, *, headers=None, timeout=None):
-        assert url == "https://api.deepgram.com/v1/models"
+        assert url == "https://api.eu.deepgram.com/v1/models"
         assert headers == {"Authorization": "Token dg-secret"}
         assert timeout == 10.0
         return FakeHttpxResponse(
@@ -1013,7 +1013,7 @@ def test_system_admin_can_replace_stt_draft_credential_without_body_config_id(cl
     seen_tokens = []
 
     def fake_get(url, *, headers=None, timeout=None):
-        assert url == "https://api.deepgram.com/v1/models"
+        assert url == "https://api.eu.deepgram.com/v1/models"
         seen_tokens.append(headers["Authorization"])
         return FakeHttpxResponse({"stt": [{"name": "Nova 3", "canonical_name": "nova-3", "batch": True}]})
 

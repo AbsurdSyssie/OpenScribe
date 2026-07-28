@@ -1,6 +1,6 @@
-import { createGuidedTour } from '../transcribe/tour.js?v=20260728-shared-section-guide';
+import { createGuidedTour } from '../transcribe/tour.js?v=20260728-plain-guides';
 
-const GUIDE_VERSION = 'section-v2';
+const GUIDE_VERSION = 'section-v3';
 
 const SECTION_STEPS = {
   account: [
@@ -50,82 +50,189 @@ const SECTION_STEPS = {
   templates: [
     {
       target: '[data-template-library] .template-library-sidebar__header',
-      title: 'Create a template',
-      body: 'Select New to create a personal template. A template controls the structure and instructions for a clinical note.',
+      title: 'What templates do',
+      body: 'A template tells the AI how you want it to write your note and what information should go where.',
     },
     {
       target: '[data-template-library] section[aria-labelledby="personal-template-heading"]',
       title: 'Personal templates',
-      body: 'You can edit, copy, and delete your personal templates. Only you can use them.',
+      body: 'Personal templates belong to you. You can create, edit, copy, and delete them.',
     },
     {
       target: '[data-template-library] section[aria-labelledby="team-template-heading"]',
       title: 'Team templates',
-      body: 'All team members can use team templates. Members can copy one to Personal. Team leaders can also create and edit team templates.',
+      body: 'Team templates are shared with everyone in your team. You can copy one to Personal. Team leaders can also create and edit them.',
     },
     {
-      target: ['[data-template-editor]', '[data-template-library] .template-library-detail'],
-      title: 'Review the template',
-      body: 'The guide opened the first available template. Review its note mode and instructions. Save only after checking the full template.',
+      target: [
+        '[data-template-editor] input[name="name"]',
+        '[data-template-editor] .template-preview__metadata > div:first-child',
+      ],
+      title: 'Template name',
+      body: 'Use a clear name so people can find the right template when they start a consultation.',
+    },
+    {
+      target: [
+        '[data-template-editor] select[name="mode"]',
+        '[data-template-editor] .template-preview__metadata > div:nth-child(2)',
+      ],
+      title: 'Choose the note type',
+      body: 'Choose an EMIS sectioned note for clinical notes that will go into EMIS. Choose free text for other notes and documents.',
+    },
+    {
+      target: [
+        '[data-template-editor] select[name="mode"]',
+        '[data-template-editor] .template-preview__metadata > div:nth-child(2)',
+      ],
+      title: 'EMIS sectioned notes',
+      body: 'OpenScribe puts each part of the note under the matching EMIS section. This makes the note easier to check and enter into EMIS.',
+    },
+    {
+      target: [
+        '[data-template-editor] select[name="mode"]',
+        '[data-template-editor] .template-preview__metadata > div:nth-child(2)',
+      ],
+      title: 'Free text notes',
+      body: 'Free text writes one continuous note. Use it for anything that does not need to be split into EMIS sections.',
+    },
+    {
+      target: [
+        '[data-template-editor] input[name="description"]',
+        '[data-template-editor] .template-preview__metadata .field--wide',
+      ],
+      title: 'Description',
+      body: 'Write a short reminder of what the template is for. This helps people choose the right one.',
+    },
+    {
+      target: [
+        '[data-template-editor] textarea[name="prompt_text"]',
+        '[data-template-editor] .template-preview__prompt',
+      ],
+      title: 'What should be written',
+      body: 'Give the AI general advice about the note. Say what to include, what to leave out, how detailed it should be, and how you want it worded.',
+    },
+    {
+      target: [
+        '[data-template-editor] [data-template-sections]',
+        '[data-template-editor] select[name="mode"]',
+        '[data-template-editor] .template-preview__metadata > div:nth-child(2)',
+      ],
+      title: 'EMIS section instructions',
+      body: 'For an EMIS note, tell the AI what belongs in each section. Leave a section blank when you do not need it.',
+    },
+    {
+      target: '[data-template-editor] .action-bar',
+      title: 'Save or cancel',
+      body: 'Save when the template is ready. Select Cancel to leave without keeping your changes.',
     },
     {
       target: '[data-template-library] .template-library-utilities',
-      title: 'Import or export',
-      body: 'Import adds templates from a JSON bundle. Export saves selected templates. Never put patient data or credentials in a bundle.',
+      title: 'Import, export, and help',
+      body: 'Import adds templates from a saved file. Export saves selected templates. Help explains how to make a template. Never include patient information or passwords.',
     },
   ],
   'quick-actions': [
     {
       target: '[data-quick-action-library] .template-library-sidebar__header',
-      title: 'Create a quick action',
-      body: 'Select New to save a reusable follow-up instruction, such as a referral letter or patient message.',
+      title: 'What quick actions do',
+      body: 'A quick action tells the AI to create a useful follow-up from the current consultation, such as a letter, summary, message, or task.',
     },
     {
       target: '[data-quick-action-library] section[aria-labelledby="personal-quick-action-heading"]',
       title: 'Personal quick actions',
-      body: 'You can edit, copy, and delete your own quick actions. They appear in Follow Ups for your consultations.',
+      body: 'Personal quick actions belong to you. You can create, edit, copy, and delete them.',
     },
     {
       target: '[data-quick-action-library] section[aria-labelledby="team-quick-action-heading"]',
       title: 'Team quick actions',
-      body: 'Team actions are shared. Members can copy one to Personal. Team leaders can create and edit shared actions.',
+      body: 'Team quick actions are shared with everyone in your team. You can copy one to Personal. Team leaders can also create and edit them.',
     },
     {
-      target: ['[data-quick-action-editor]', '[data-quick-action-library] .template-library-detail'],
-      title: 'Write a clear instruction',
-      body: 'The guide opened the first available quick action. State what it should produce, who it is for, and what it must include or avoid.',
+      target: [
+        '[data-quick-action-editor] input[name="name"]',
+        '[data-quick-action-editor] .quick-action-preview .setting-row',
+      ],
+      title: 'Quick action name',
+      body: 'Use a clear name that says what the action makes, such as Referral letter or Patient message.',
+    },
+    {
+      target: [
+        '[data-quick-action-editor] input[name="description"]',
+        '[data-quick-action-editor] .quick-action-preview .setting-row',
+      ],
+      title: 'Description',
+      body: 'Write a short explanation of when to use the action. This helps people choose the right one.',
+    },
+    {
+      target: [
+        '[data-quick-action-editor] textarea[name="prompt_text"]',
+        '[data-quick-action-editor] .quick-action-preview__text',
+      ],
+      title: 'Quick action text',
+      body: 'Tell the AI what to make, who it is for, what to include, and how it should sound. Keep this general. The consultation supplies the patient details.',
+    },
+    {
+      target: [
+        '[data-quick-action-editor] input[name="is_active"]',
+        '[data-quick-action-editor] .asset-status-pill',
+      ],
+      title: 'Active or inactive',
+      body: 'Active actions appear in Follow Ups. Make an action inactive when you want to keep it but stop using it for now.',
+    },
+    {
+      target: [
+        '[data-quick-action-editor] .action-bar',
+        '[data-quick-action-editor] .quick-action-preview > form',
+      ],
+      title: 'Save or cancel',
+      body: 'Save when the action is ready. Select Cancel to leave without keeping your changes.',
     },
     {
       target: '[data-quick-action-library] .template-library-utilities',
-      title: 'Move saved actions',
-      body: 'Use Import and Export to move quick actions as JSON. Do not include patient data, notes, transcripts, or credentials.',
+      title: 'Import, export, and help',
+      body: 'Import adds quick actions from a saved file. Export saves selected actions. Help explains how to make one. Never include patient information or passwords.',
     },
   ],
   'smart-phrases': [
     {
       target: '[data-smart-phrase-library] .smart-phrase-library-sidebar__header',
-      title: 'Create a smart phrase',
-      body: 'Select New to save reusable wording. Smart phrases are personal to you.',
+      title: 'What smart phrases do',
+      body: 'A smart phrase inserts wording you use often. Smart phrases are personal to you.',
     },
     {
       target: '[data-smart-phrase-search]',
       title: 'Find a phrase',
-      body: 'Search by trigger or expansion text when your library grows.',
+      body: 'Search by its trigger or by words in the saved text.',
+    },
+    {
+      target: '[data-smart-phrase-form] input[name="trigger"]',
+      title: 'Trigger',
+      body: 'The trigger is the short word you type after a slash. Keep it easy to remember.',
+    },
+    {
+      target: '[data-smart-phrase-form] textarea[name="expansion_text"]',
+      title: 'Expansion',
+      body: 'The expansion is the text OpenScribe inserts. Check it before using it in a note.',
+    },
+    {
+      target: '[data-smart-phrase-form] input[name="description"]',
+      title: 'Description',
+      body: 'Add a short reminder of when to use the phrase. This field is optional.',
+    },
+    {
+      target: '[data-smart-phrase-form] .smart-phrase-editor-actions',
+      title: 'Save or cancel',
+      body: 'Save when the phrase is ready. Select Cancel to leave without keeping your changes.',
     },
     {
       target: '[data-smart-phrase-list]',
-      title: 'Use the trigger',
-      body: 'In the note editor, type a slash and the trigger, then press Enter or Tab to insert the expansion.',
-    },
-    {
-      target: ['[data-smart-phrase-form]', '[data-smart-phrase-library] .smart-phrase-library-detail'],
-      title: 'Edit the expansion',
-      body: 'The guide opened the first available phrase. Keep its trigger short and check the wording before using it in a clinical note.',
+      title: 'Use the phrase',
+      body: 'In the note editor, type a slash and the trigger. Press Enter or Tab to insert the saved wording.',
     },
     {
       target: '[data-smart-phrase-library] .smart-phrase-library-utilities',
-      title: 'Import or export phrases',
-      body: 'Bundles help you keep or move phrases. Do not put patient information or other confidential data in them.',
+      title: 'Import, export, and help',
+      body: 'Import adds phrases from a saved file. Export saves selected phrases. Help explains how to make them. Never include patient information or passwords.',
     },
   ],
   'ai-services': [
@@ -265,10 +372,10 @@ if (steps.length) {
     clearGuideQuery();
   }
 
-  const shouldPrepareExample = guideRequested || !hasCompletedGuide();
-  const navigatingToExample = shouldPrepareExample && openFirstLibraryItemForGuide();
+  const shouldPrepareSelection = guideRequested || !hasCompletedGuide();
+  const navigatingToSelection = shouldPrepareSelection && openFirstLibraryItemForGuide();
 
-  if (!navigatingToExample) {
+  if (!navigatingToSelection) {
     const tourOverlay = document.querySelector('[data-tour-overlay]');
     const guideStartButtons = [...document.querySelectorAll('[data-start-guide]')];
     const guide = createGuidedTour({

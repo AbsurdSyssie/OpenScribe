@@ -1,11 +1,15 @@
+import pytest
+
+from app.errors import AppError
 from app.models import GeneratedDocumentGeneratorType, GeneratedDocumentStatus, TemplateMode
+from app.schemas import TranscriptStart
 from app.services.dictations import dictation_effective_text, get_post_consultation_dictation
 from app.services.templates import (
     generated_document_section_text,
     generated_document_text,
     list_generated_documents_for_transcript,
 )
-from app.services.transcripts import transcript_draft_text, working_note_detail
+from app.services.transcripts import start_transcript, transcript_draft_text, working_note_detail
 from app.services.tutorials import (
     TUTORIAL_DICTATION_TEXT,
     TUTORIAL_TEMPLATE_NAME,
@@ -89,6 +93,26 @@ def test_tutorial_consultation_seeds_owner_scoped_synthetic_sources_and_outputs(
 
     repeated = create_scribe_tutorial_consultation(db_session, user)
     assert repeated.id == transcript.id
+
+
+def test_tutorial_consultation_does_not_add_a_second_consultation(
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Tutorial Existing")
+    user = make_user(email="tutorial-existing@example.com", team=team)
+    existing = start_transcript(
+        db_session,
+        user,
+        TranscriptStart(title="Existing consultation"),
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        create_scribe_tutorial_consultation(db_session, user)
+
+    assert exc_info.value.code == "tutorial_consultation_not_empty"
+    assert db_session.get(type(existing), existing.id) is not None
 
 
 def test_tutorial_route_creates_example_and_returns_to_the_workspace(

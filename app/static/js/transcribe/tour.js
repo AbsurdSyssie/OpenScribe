@@ -1,5 +1,6 @@
 const SCRIBE_TOUR_STORAGE_PREFIX = 'openscribe:tour:transcribe:';
-const SCRIBE_WORKFLOW_VERSION = 'workflow-v1';
+const SCRIBE_WORKFLOW_VERSION = 'workflow-v2';
+const TUTORIAL_TEMPLATE_NAME = 'Tutorial sectioned note';
 
 const nextFrame = () => new Promise((resolve) => window.requestAnimationFrame(resolve));
 
@@ -9,6 +10,47 @@ const activateTab = (tabName) => {
     trigger.click();
   }
 };
+
+const clickFirst = (selectors, predicate = () => true) => {
+  for (const selector of selectors) {
+    const match = [...document.querySelectorAll(selector)].find(predicate);
+    if (match) {
+      match.click();
+      return match;
+    }
+  }
+  return null;
+};
+
+const selectTutorialTemplate = () => {
+  const select = document.querySelector('[data-template-select]');
+  if (!select) return;
+  const option = [...select.options].find((item) => item.dataset.templateName === TUTORIAL_TEMPLATE_NAME);
+  if (!option || select.value === option.value) return;
+  select.value = option.value;
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+};
+
+const selectWorkingNote = () => {
+  activateTab('output');
+  selectTutorialTemplate();
+  clickFirst(
+    ['[data-note-document-select]'],
+    (button) => String(button.dataset.documentId || '').startsWith('working:'),
+  );
+};
+
+const selectGeneratedNote = () => {
+  activateTab('output');
+  selectTutorialTemplate();
+  clickFirst(
+    ['[data-note-document-select]'],
+    (button) => !String(button.dataset.documentId || '').startsWith('working:'),
+  );
+};
+
+const showTranscript = () => activateTab('history');
+const showFollowUps = () => activateTab('followups');
 
 const isVisible = (element) => {
   if (!element || element.hidden) return false;
@@ -25,25 +67,24 @@ const findTarget = (target) => {
 };
 
 export function createScribeWorkflowSteps() {
-  const showNote = () => activateTab('output');
-  const showFollowUps = () => activateTab('followups');
-
   return [
     {
       target: '[data-new-session-button]',
-      title: 'Start a new consultation',
-      body: 'Create a new consultation for each consult. Do not add new audio to an old consult.',
+      title: 'Start each consult here',
+      body: 'The guide opened a synthetic example. For real work, create a new consultation for each consult.',
+      prepare: selectWorkingNote,
     },
     {
       target: '[data-template-picker-button]',
       title: 'Choose the note template',
-      body: 'Choose the template before you record. Check it again before you create the note.',
-      prepare: showNote,
+      body: 'Choose the template before you record. This example uses a sectioned note.',
+      prepare: selectWorkingNote,
     },
     {
       target: '[data-tour-target="record-controls"]',
       title: 'Record the consult',
-      body: 'Open the arrow and choose Recorded upload. Select Start recording when the consult begins.',
+      body: 'Choose Recorded upload, then select Start recording. The tutorial contains no audio.',
+      prepare: selectWorkingNote,
     },
     {
       target: [
@@ -51,30 +92,41 @@ export function createScribeWorkflowSteps() {
         '[data-tab-panel="output"] .structured-workspace__body',
       ],
       title: 'Write the working note',
-      body: 'Add brief points here during the consult. The working note stays separate from the transcript.',
-      prepare: showNote,
+      body: 'Add short points during the consult. This synthetic working note shows how sectioned points appear.',
+      prepare: selectWorkingNote,
     },
     {
       target: '[data-record-toggle]',
       title: 'Stop the recording',
-      body: 'Select Stop when the consult ends. Wait while OpenScribe turns the audio into text.',
+      body: 'Select Stop when the consult ends. OpenScribe then turns the batch recording into text.',
+      prepare: selectWorkingNote,
     },
     {
-      target: '[data-dictation-cta]',
+      target: [
+        '[data-active-draft]',
+        '[data-transcript-review-grid]',
+      ],
+      title: 'Review the transcript',
+      body: 'Read the transcript and check key facts. The text shown here is synthetic training material.',
+      prepare: showTranscript,
+    },
+    {
+      target: '[data-dictation-compact]',
       title: 'Add your dictation',
-      body: 'Select Add dictation. Record your summary, then stop and save it.',
+      body: 'Record a short summary after the consult, then stop and save it. This example already has a saved dictation.',
+      prepare: showTranscript,
     },
     {
       target: '[data-template-picker-button]',
       title: 'Check the template',
-      body: 'Make sure the right template is still selected before you create the note.',
-      prepare: showNote,
+      body: 'Make sure the right template is selected before you create the note.',
+      prepare: selectWorkingNote,
     },
     {
       target: '[data-generate-output-form]',
       title: 'Create the note',
-      body: 'Select Create. OpenScribe uses the transcript, working note, and saved dictation.',
-      prepare: showNote,
+      body: 'Select Create. OpenScribe uses the transcript, working note, and saved dictation. The example note is ready to review.',
+      prepare: selectWorkingNote,
     },
     {
       target: [
@@ -83,8 +135,8 @@ export function createScribeWorkflowSteps() {
         '[data-latest-generated-output]',
       ],
       title: 'Edit the note',
-      body: 'Read the whole draft. Edit any line that is wrong, unclear, or in the wrong place.',
-      prepare: showNote,
+      body: 'Read the whole draft. Edit any line that is wrong, unclear, or in the wrong section.',
+      prepare: selectGeneratedNote,
     },
     {
       target: [
@@ -93,13 +145,13 @@ export function createScribeWorkflowSteps() {
       ],
       title: 'Choose, move, and copy lines',
       body: 'Select or clear lines. Drag lines up or down. Copy one section or all selected lines.',
-      prepare: showNote,
+      prepare: selectGeneratedNote,
     },
     {
       target: '[data-tab-trigger="followups"]',
       title: 'Open Follow Ups',
       body: 'Use Follow Ups for letters, messages, tasks, and other text based on this consult.',
-      prepare: showNote,
+      prepare: selectGeneratedNote,
     },
     {
       target: '[data-quick-action-context-input]',
@@ -113,7 +165,7 @@ export function createScribeWorkflowSteps() {
         '[data-quick-action-search]',
       ],
       title: 'Use a quick action if useful',
-      body: 'Choose a quick action to add its saved instructions. Leave it blank for a plain follow-up.',
+      body: 'Choose a quick action to add saved instructions. Leave it blank for a plain follow-up.',
       prepare: showFollowUps,
     },
     {
@@ -128,7 +180,7 @@ export function createScribeWorkflowSteps() {
         '[data-latest-followup-output]',
       ],
       title: 'Make another version',
-      body: 'Select a result from Recent. Change the context or quick action, then select Generate again.',
+      body: 'The example has two results. Select one from Recent, change the request, then select Generate again.',
       prepare: showFollowUps,
     },
   ];
@@ -163,6 +215,26 @@ export function createGuidedTour({
   let renderVersion = 0;
   let previousFocus = null;
   let initialTabName = null;
+  let tutorialConsultationRequested = false;
+
+  const hasActiveTranscript = () => Boolean(document.querySelector('[data-transcript-title-form]'));
+
+  const hasCompletedTour = () => {
+    if (!effectiveStorageKey) return false;
+    try {
+      return window.localStorage.getItem(effectiveStorageKey) === 'done';
+    } catch (_) {
+      return false;
+    }
+  };
+
+  const requestTutorialConsultation = () => {
+    if (tutorialConsultationRequested) return;
+    const form = document.querySelector('[data-tutorial-consultation-form]');
+    if (!form) return;
+    tutorialConsultationRequested = true;
+    form.requestSubmit?.();
+  };
 
   const setScrim = (panel, { top, left, width, height }) => {
     if (!panel) return;
@@ -322,13 +394,7 @@ export function createGuidedTour({
 
   const startTour = ({ force = false } = {}) => {
     if (!tourOverlay || !tourSteps?.length) return;
-    if (!force && effectiveStorageKey) {
-      try {
-        if (window.localStorage.getItem(effectiveStorageKey) === 'done') return;
-      } catch (_) {
-        // The guide still works when browser privacy settings block localStorage.
-      }
-    }
+    if (!force && hasCompletedTour()) return;
 
     previousFocus = document.activeElement;
     initialTabName = document.querySelector('[data-tab-trigger].active')?.dataset.tabTrigger || null;
@@ -340,9 +406,22 @@ export function createGuidedTour({
     void renderTourStep();
   };
 
+  const clearTutorialQuery = () => {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has('tutorial')) return;
+    url.searchParams.delete('tutorial');
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  };
+
   const attach = () => {
     guideStartButtons.forEach((button) => {
-      button.addEventListener('click', () => startTour({ force: true }));
+      button.addEventListener('click', () => {
+        if (isScribeTour && !hasActiveTranscript()) {
+          requestTutorialConsultation();
+          return;
+        }
+        startTour({ force: true });
+      });
     });
 
     tourBackButton?.addEventListener('click', () => {
@@ -388,7 +467,13 @@ export function createGuidedTour({
     });
 
     window.setTimeout(() => {
-      startTour();
+      const tutorialRequested = isScribeTour && new URLSearchParams(window.location.search).get('tutorial') === '1';
+      if (isScribeTour && !hasActiveTranscript()) {
+        if (tutorialRequested || !hasCompletedTour()) requestTutorialConsultation();
+        return;
+      }
+      startTour({ force: tutorialRequested });
+      if (tutorialRequested) clearTutorialQuery();
     }, 500);
   };
 

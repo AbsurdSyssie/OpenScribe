@@ -71,6 +71,10 @@
     }
 
     const isDeepgram = () => presetInput.value === "deepgram";
+    const isDeepgramUrl = (value) => {
+      const normalized = value.trim().toLowerCase();
+      return normalized === EU_BASE_URL || normalized === GLOBAL_BASE_URL;
+    };
 
     const applyRegion = ({ preserveAcknowledgement = false } = {}) => {
       const globalSelected = regionSelect.value === "global";
@@ -86,6 +90,9 @@
       const deepgramSelected = isDeepgram();
       regionField.hidden = !deepgramSelected;
       if (!deepgramSelected) {
+        if (isDeepgramUrl(baseUrlInput.value)) {
+          baseUrlInput.value = "";
+        }
         warning.hidden = true;
         acknowledgement.checked = false;
         acknowledgement.setCustomValidity("");

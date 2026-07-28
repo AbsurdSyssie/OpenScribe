@@ -75,16 +75,25 @@ def test_scribe_guide_reuses_one_role_neutral_workflow():
     assert "export function createScribeWorkflowSteps()" in tour
     assert "isScribeTour ? createScribeWorkflowSteps() : steps" in tour
     assert "openscribe:tour:transcribe:" in tour
-    assert "workflow-v2" in tour
+    assert "workflow-v3" in tour
     assert "viewerRole" not in tour
     assert "activateTab('output')" in tour
     assert "activateTab('history')" in tour
     assert "activateTab('followups')" in tour
     assert "data-tutorial-consultation-form" in tour
     assert "Tutorial sectioned note" in tour
+    assert tour.count("This is a tutorial example.") == 1
+    for stale_copy in (
+        "The guide opened",
+        "This example",
+        "synthetic training material",
+        "already has a saved dictation",
+        "The example has",
+    ):
+        assert stale_copy not in tour
 
     expected_steps = [
-        "Start each consult here",
+        "Tutorial example",
         "Choose the note template",
         "Record the consult",
         "Write the working note",
@@ -113,7 +122,7 @@ def test_workspace_section_guides_cover_personal_library_and_leader_pages():
 
     assert 'workspace/_guide_overlay.html' in page
     assert '/static/css/workspace-guide.css?v=20260728-library-guide-resume' in page
-    assert '/static/js/workspace/section-guide.js?v=20260728-library-guide-resume' in page
+    assert '/static/js/workspace/section-guide.js?v=20260728-plain-guides' in page
     assert 'data-tour-overlay' in overlay
     assert overlay.count('data-tour-scrim=') == 4
     for control in ('data-tour-back', 'data-tour-close-button', 'data-tour-next'):
@@ -135,9 +144,9 @@ def test_workspace_section_guides_cover_personal_library_and_leader_pages():
     for title in (
         'Manage your account',
         'Set your defaults',
-        'Create a template',
-        'Create a quick action',
-        'Create a smart phrase',
+        'What templates do',
+        'What quick actions do',
+        'What smart phrases do',
         'Choose team services',
         'Manage team access',
         'Review access requests',
@@ -145,9 +154,37 @@ def test_workspace_section_guides_cover_personal_library_and_leader_pages():
         assert title in guide
 
     assert 'openscribe:tour:workspace:' in guide
-    assert "GUIDE_VERSION = 'section-v2'" in guide
+    assert "GUIDE_VERSION = 'section-v3'" in guide
     assert '.submit(' not in guide
     assert 'requestSubmit' not in guide
+
+
+def test_library_guides_use_plain_field_by_field_explanations():
+    guide = read("app/static/js/workspace/section-guide.js")
+
+    expected_copy = (
+        'A template tells the AI how you want it to write your note and what information should go where.',
+        'EMIS sectioned notes',
+        'Free text notes',
+        'What should be written',
+        'Give the AI general advice about the note.',
+        'EMIS section instructions',
+        'A quick action tells the AI to create a useful follow-up',
+        'Quick action name',
+        'Quick action text',
+        'Tell the AI what to make, who it is for, what to include, and how it should sound.',
+        'Trigger',
+        'Expansion',
+        'Save or cancel',
+        'Import, export, and help',
+    )
+    for text in expected_copy:
+        assert text in guide
+
+    assert 'The guide opened' not in guide
+    assert 'first available template' not in guide
+    assert 'first available quick action' not in guide
+    assert 'first available phrase' not in guide
 
 
 def test_library_guides_open_first_item_and_resume_after_navigation():

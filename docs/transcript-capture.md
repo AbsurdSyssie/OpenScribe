@@ -48,7 +48,7 @@ The user selects an audio file. The backend:
 
 The browser records locally and submits one or more whole-file parts. It rolls over before the local WAV approaches server upload/duration limits. Parts stay attached to the transcript UUID captured when recording began, so delayed uploads cannot drift to a newly selected consultation.
 
-Only one whole-file ingestion job is actively processed for a transcript at a time. If a rollover part cannot be accepted, capture stops rather than continuing with an undetectable transcript gap.
+Only one whole-file ingestion job is actively processed for a transcript at a time; capture restarts for the same transcript only after that part is accepted. If a rollover part cannot be accepted, capture stops instead of recording later audio and creating an undetectable transcript gap.
 
 ### Live chunked
 

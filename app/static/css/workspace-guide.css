@@ -1,0 +1,106 @@
+.workspace-guide-overlay[hidden] {
+  display: none;
+}
+
+.workspace-guide-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+.workspace-guide-overlay .tour-overlay__scrim-panel {
+  position: fixed;
+  z-index: 1000;
+  background: rgba(15, 23, 42, 0.48);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  pointer-events: auto;
+}
+
+.workspace-guide-overlay .tour-overlay__highlight {
+  position: fixed;
+  z-index: 1001;
+  border: 2px solid var(--accent);
+  border-radius: 0.85rem;
+  box-shadow: 0 0 0 4px rgba(61, 122, 140, 0.18), 0 18px 48px rgba(15, 23, 42, 0.2);
+  pointer-events: none;
+  transition: top 140ms ease, left 140ms ease, width 140ms ease, height 140ms ease;
+}
+
+.workspace-guide-overlay .tour-overlay__card {
+  position: fixed;
+  z-index: 1002;
+  width: min(24rem, calc(100vw - 2rem));
+  padding: 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--card);
+  color: var(--fg);
+  box-shadow: 0 22px 60px rgba(15, 23, 42, 0.24);
+  pointer-events: auto;
+}
+
+.workspace-guide-overlay .tour-overlay__eyebrow {
+  margin-bottom: 0.35rem;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.workspace-guide-overlay .tour-overlay__title {
+  font-size: 1.2rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.workspace-guide-overlay .tour-overlay__body {
+  margin-top: 0.55rem;
+  color: var(--muted);
+  font-size: 0.94rem;
+  line-height: 1.55;
+}
+
+.workspace-guide-overlay .tour-overlay__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.workspace-guide-overlay .tour-overlay__progress {
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.workspace-guide-overlay .tour-overlay__buttons {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+@media (max-width: 560px) {
+  .workspace-guide-overlay .tour-overlay__card {
+    padding: 0.95rem;
+  }
+
+  .workspace-guide-overlay .tour-overlay__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .workspace-guide-overlay .tour-overlay__buttons {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-guide-overlay .tour-overlay__highlight {
+    transition: none;
+  }
+}

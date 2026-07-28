@@ -40,9 +40,9 @@ def test_tutorial_consultation_seeds_owner_scoped_synthetic_sources_and_outputs(
     assert transcript.ingestion_jobs == []
 
     working_note = working_note_detail(db_session, user, transcript_id=transcript.id)
-    assert working_note["mode"].value == "structured"
-    assert working_note["structured_note"]["profile"] == "emis"
-    assert working_note["structured_note"]["sections"]["problem"] == ["Mild headache for three days."]
+    assert working_note.mode.value == "structured"
+    assert working_note.structured_note["profile"] == "emis"
+    assert working_note.structured_note["sections"]["problem"] == ["Mild headache for three days."]
 
     dictation = get_post_consultation_dictation(db_session, user, transcript_id=transcript.id)
     assert dictation is not None
@@ -114,4 +114,5 @@ def test_tutorial_route_creates_example_and_returns_to_the_workspace(
     assert workspace.status_code == 200
     assert TUTORIAL_TRANSCRIPT_TITLE in workspace.text
     assert TUTORIAL_TEMPLATE_NAME in workspace.text
-    assert "Synthetic tutorial" in workspace.text
+    assert "Headache review" in workspace.text
+    assert "Safety-net message" in workspace.text

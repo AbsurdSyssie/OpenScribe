@@ -5,6 +5,16 @@ from urllib.parse import urlparse
 from app.models import SttAdapterKind, SttProviderPreset
 
 
+DEEPGRAM_EU_BASE_URL = "https://api.eu.deepgram.com"
+DEEPGRAM_GLOBAL_BASE_URL = "https://api.deepgram.com"
+DEEPGRAM_HOSTS = frozenset(
+    {
+        urlparse(DEEPGRAM_EU_BASE_URL).hostname,
+        urlparse(DEEPGRAM_GLOBAL_BASE_URL).hostname,
+    }
+)
+
+
 @dataclass(frozen=True)
 class SttProviderPresetDefinition:
     key: str
@@ -45,7 +55,7 @@ STT_PROVIDER_PRESETS: dict[str, SttProviderPresetDefinition] = {
         key=SttProviderPreset.deepgram.value,
         display_name="Deepgram",
         adapter_kind=SttAdapterKind.generic_rest,
-        default_base_url="https://api.deepgram.com",
+        default_base_url=DEEPGRAM_EU_BASE_URL,
         transcribe_path="/v1/listen",
         auth_header_style="token",
         requires_api_key=True,
@@ -55,6 +65,7 @@ STT_PROVIDER_PRESETS: dict[str, SttProviderPresetDefinition] = {
         default_model_name=None,
         default_response_text_path="results.channels.0.alternatives.0.transcript",
         default_extra_form_fields={"smart_format": "true", "mip_opt_out": "true"},
+        help_text="EU routing is the default. The global endpoint requires a separate local compliance assessment.",
     ),
     SttProviderPreset.elevenlabs.value: SttProviderPresetDefinition(
         key=SttProviderPreset.elevenlabs.value,
@@ -117,7 +128,7 @@ def default_stt_config_label(*, provider_display_name: str, team_name: str) -> s
 
 
 def is_deepgram_stt_base_url(base_url: str | None) -> bool:
-    return (urlparse(base_url or "").hostname or "").lower() == "api.deepgram.com"
+    return (urlparse(base_url or "").hostname or "").lower() in DEEPGRAM_HOSTS
 
 
 def infer_stt_provider_preset(
@@ -132,7 +143,7 @@ def infer_stt_provider_preset(
         return SttProviderPreset.openai.value
     if adapter_value == SttAdapterKind.elevenlabs_speech_to_text.value:
         return SttProviderPreset.elevenlabs.value
-    if prefer_known_hosts and host == "api.deepgram.com":
+    if prefer_known_hosts and host in DEEPGRAM_HOSTS:
         return SttProviderPreset.deepgram.value
     if host == "api.elevenlabs.io":
         return SttProviderPreset.elevenlabs.value

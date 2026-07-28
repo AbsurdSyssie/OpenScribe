@@ -264,11 +264,12 @@ def test_transcribe_note_pills_use_compact_24_hour_timestamps():
     actions_js = Path("app/static/js/transcribe/actions.js").read_text()
     transcribe_css = Path("app/static/css/transcribe.css").read_text()
 
-    assert 'document.created_at.strftime("%y-%m-%d %H:%M")' in workspace_template
+    assert 'datetime="{{ document.created_at.isoformat() }}"' in workspace_template
+    assert 'data-note-created-at="{{ document.created_at.isoformat() }}"' in workspace_template
     assert "const formatNoteCreatedAt = (value) => {" in documents_js
-    assert "getUTCFullYear()" in documents_js
-    assert "getUTCHours()" in documents_js
-    assert "getUTCMinutes()" in documents_js
+    assert "getFullYear()" in documents_js
+    assert "getHours()" in documents_js
+    assert "getMinutes()" in documents_js
     assert 'data-note-hover-delete' in workspace_template
     assert "deleteButton.dataset.noteHoverDelete = 'true';" in documents_js
     assert "selectDocumentFromUi('note', documentId)" in actions_js

@@ -23,6 +23,10 @@ The guide shows the services made available by the team leader, usual note lengt
 
 ## My Library
 
+When a Templates, Quick actions, or Smart phrases guide starts without an item open, OpenScribe opens the first available item and then starts the guide. This is navigation only. It does not edit or save the item. If the library is empty, the guide stays on the empty library and explains how to create the first item.
+
+The Import, Export, and Help controls stay at the bottom of the library list. Save and Cancel controls stay at the bottom of the editor while its content scrolls.
+
 ### Templates
 
 The guide explains:

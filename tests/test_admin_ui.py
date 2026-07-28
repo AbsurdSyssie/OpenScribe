@@ -3393,7 +3393,7 @@ def test_admin_stt_deepgram_draft_pages_show_model_dropdown_without_key_field(
     make_user(email="admin-stt-draft-ui@example.com", password="password-1", is_system_admin=True)
 
     def fake_get(url, *, headers=None, timeout=None):
-        assert url == "https://api.deepgram.com/v1/models"
+        assert url == "https://api.eu.deepgram.com/v1/models"
         assert headers == {"Authorization": "Token dg-secret"}
         return FakeHttpxResponse(
             {

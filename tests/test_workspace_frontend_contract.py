@@ -40,6 +40,8 @@ def test_workspace_sidebar_has_required_order_roles_and_recording_markers():
     assert "not current_user.is_system_admin and current_user.team_id" in sidebar
     assert 'href="/home"' not in sidebar
     assert "data-start-guide" in sidebar
+    assert "data-tutorial-consultation-form" in sidebar
+    assert 'action="/transcribe/tutorial"' in sidebar
     assert "data-recording-navigation" in sidebar
     assert 'action="/logout"' in sidebar
 
@@ -71,17 +73,21 @@ def test_scribe_guide_reuses_one_role_neutral_workflow():
     assert "export function createScribeWorkflowSteps()" in tour
     assert "isScribeTour ? createScribeWorkflowSteps() : steps" in tour
     assert "openscribe:tour:transcribe:" in tour
-    assert "workflow-v1" in tour
+    assert "workflow-v2" in tour
     assert "viewerRole" not in tour
     assert "activateTab('output')" in tour
+    assert "activateTab('history')" in tour
     assert "activateTab('followups')" in tour
+    assert "data-tutorial-consultation-form" in tour
+    assert "Tutorial sectioned note" in tour
 
     expected_steps = [
-        "Start a new consultation",
+        "Start each consult here",
         "Choose the note template",
         "Record the consult",
         "Write the working note",
         "Stop the recording",
+        "Review the transcript",
         "Add your dictation",
         "Check the template",
         "Create the note",

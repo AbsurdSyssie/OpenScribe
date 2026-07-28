@@ -28,7 +28,9 @@ The guide:
 - shows the working note, transcript, dictation, note, and follow-ups in order;
 - returns to the tab you started on when you close it.
 
-You can start it again from **Guide** at any time. The tutorial consultation stays in **Recent consultations** until you delete it or retention removes it.
+You can start it again from **Guide** at any time. The tutorial consultation stays in **Recent consultations** until you delete it or retention removes it. The tutorial template and quick action stay in **My Library** until you delete them.
+
+If the user already has consultations but none is open, the guide opens the most recent consultation. It does not add a tutorial consultation.
 
 ## Workflow
 

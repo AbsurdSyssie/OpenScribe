@@ -1,6 +1,6 @@
 import { createGuidedTour } from '../transcribe/tour.js?v=20260728-shared-section-guide';
 
-const GUIDE_VERSION = 'section-v1';
+const GUIDE_VERSION = 'section-v2';
 
 const SECTION_STEPS = {
   account: [
@@ -64,9 +64,9 @@ const SECTION_STEPS = {
       body: 'All team members can use team templates. Members can copy one to Personal. Team leaders can also create and edit team templates.',
     },
     {
-      target: '[data-template-library] .template-library-detail',
+      target: ['[data-template-editor]', '[data-template-library] .template-library-detail'],
       title: 'Review the template',
-      body: 'Select a template to view its instructions and note mode. Save changes only after checking the full template.',
+      body: 'The guide opened the first available template. Review its note mode and instructions. Save only after checking the full template.',
     },
     {
       target: '[data-template-library] .template-library-utilities',
@@ -91,9 +91,9 @@ const SECTION_STEPS = {
       body: 'Team actions are shared. Members can copy one to Personal. Team leaders can create and edit shared actions.',
     },
     {
-      target: '[data-quick-action-library] .template-library-detail',
+      target: ['[data-quick-action-editor]', '[data-quick-action-library] .template-library-detail'],
       title: 'Write a clear instruction',
-      body: 'State what the action should produce, who it is for, and what it must include or avoid.',
+      body: 'The guide opened the first available quick action. State what it should produce, who it is for, and what it must include or avoid.',
     },
     {
       target: '[data-quick-action-library] .template-library-utilities',
@@ -118,9 +118,9 @@ const SECTION_STEPS = {
       body: 'In the note editor, type a slash and the trigger, then press Enter or Tab to insert the expansion.',
     },
     {
-      target: '[data-smart-phrase-library] .smart-phrase-library-detail',
+      target: ['[data-smart-phrase-form]', '[data-smart-phrase-library] .smart-phrase-library-detail'],
       title: 'Edit the expansion',
-      body: 'Keep the trigger short and memorable. Check the inserted wording before using it in a clinical note.',
+      body: 'The guide opened the first available phrase. Keep its trigger short and check the wording before using it in a clinical note.',
     },
     {
       target: '[data-smart-phrase-library] .smart-phrase-library-utilities',
@@ -202,33 +202,105 @@ const SECTION_STEPS = {
   ],
 };
 
+const LIBRARY_GUIDE_CONFIG = {
+  templates: {
+    shell: '[data-template-library]',
+    firstItem: '[data-template-library] .template-library-row__select',
+  },
+  'quick-actions': {
+    shell: '[data-quick-action-library]',
+    firstItem: '[data-quick-action-library] .template-library-row__select',
+  },
+  'smart-phrases': {
+    shell: '[data-smart-phrase-library]',
+    firstItem: '[data-smart-phrase-library] .smart-phrase-library-row__select',
+  },
+};
+
 const section = document.body?.dataset.workspaceSection || '';
 const steps = SECTION_STEPS[section] || [];
+const storageKey = `openscribe:tour:workspace:${section}:${GUIDE_VERSION}`;
+const guideRequested = new URLSearchParams(window.location.search).get('guide') === '1';
+
+const hasCompletedGuide = () => {
+  try {
+    return window.localStorage.getItem(storageKey) === 'done';
+  } catch (_) {
+    return false;
+  }
+};
+
+const resetGuideCompletion = () => {
+  try {
+    window.localStorage.removeItem(storageKey);
+  } catch (_) {
+    // The guide still works when browser privacy settings block localStorage.
+  }
+};
+
+const clearGuideQuery = () => {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has('guide')) return;
+  url.searchParams.delete('guide');
+  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+};
+
+const openFirstLibraryItemForGuide = () => {
+  const config = LIBRARY_GUIDE_CONFIG[section];
+  if (!config) return false;
+  const shell = document.querySelector(config.shell);
+  if (!shell || shell.classList.contains('has-selection')) return false;
+  const firstItem = document.querySelector(config.firstItem);
+  if (!firstItem?.href) return false;
+
+  const url = new URL(firstItem.href, window.location.href);
+  url.searchParams.set('guide', '1');
+  window.location.assign(url.toString());
+  return true;
+};
 
 if (steps.length) {
-  const tourOverlay = document.querySelector('[data-tour-overlay]');
-  const guide = createGuidedTour({
-    dom: {
-      guideStartButtons: [...document.querySelectorAll('[data-start-guide]')],
-      tourOverlay,
-      tourHighlight: tourOverlay?.querySelector('[data-tour-highlight]'),
-      tourCard: tourOverlay?.querySelector('[data-tour-card]'),
-      tourScrims: {
-        top: tourOverlay?.querySelector('[data-tour-scrim="top"]'),
-        right: tourOverlay?.querySelector('[data-tour-scrim="right"]'),
-        bottom: tourOverlay?.querySelector('[data-tour-scrim="bottom"]'),
-        left: tourOverlay?.querySelector('[data-tour-scrim="left"]'),
-      },
-      tourTitle: tourOverlay?.querySelector('[data-tour-title]'),
-      tourBody: tourOverlay?.querySelector('[data-tour-body]'),
-      tourProgress: tourOverlay?.querySelector('[data-tour-progress]'),
-      tourBackButton: tourOverlay?.querySelector('[data-tour-back]'),
-      tourNextButton: tourOverlay?.querySelector('[data-tour-next]'),
-      tourCloseButtons: [...(tourOverlay?.querySelectorAll('[data-tour-close], [data-tour-close-button]') || [])],
-    },
-    steps,
-    storageKey: `openscribe:tour:workspace:${section}:${GUIDE_VERSION}`,
-  });
+  if (guideRequested) {
+    resetGuideCompletion();
+    clearGuideQuery();
+  }
 
-  guide.attach();
+  const shouldPrepareExample = guideRequested || !hasCompletedGuide();
+  const navigatingToExample = shouldPrepareExample && openFirstLibraryItemForGuide();
+
+  if (!navigatingToExample) {
+    const tourOverlay = document.querySelector('[data-tour-overlay]');
+    const guideStartButtons = [...document.querySelectorAll('[data-start-guide]')];
+    const guide = createGuidedTour({
+      dom: {
+        guideStartButtons: [],
+        tourOverlay,
+        tourHighlight: tourOverlay?.querySelector('[data-tour-highlight]'),
+        tourCard: tourOverlay?.querySelector('[data-tour-card]'),
+        tourScrims: {
+          top: tourOverlay?.querySelector('[data-tour-scrim="top"]'),
+          right: tourOverlay?.querySelector('[data-tour-scrim="right"]'),
+          bottom: tourOverlay?.querySelector('[data-tour-scrim="bottom"]'),
+          left: tourOverlay?.querySelector('[data-tour-scrim="left"]'),
+        },
+        tourTitle: tourOverlay?.querySelector('[data-tour-title]'),
+        tourBody: tourOverlay?.querySelector('[data-tour-body]'),
+        tourProgress: tourOverlay?.querySelector('[data-tour-progress]'),
+        tourBackButton: tourOverlay?.querySelector('[data-tour-back]'),
+        tourNextButton: tourOverlay?.querySelector('[data-tour-next]'),
+        tourCloseButtons: [...(tourOverlay?.querySelectorAll('[data-tour-close], [data-tour-close-button]') || [])],
+      },
+      steps,
+      storageKey,
+    });
+
+    guideStartButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        if (openFirstLibraryItemForGuide()) return;
+        guide.startTour({ force: true });
+      });
+    });
+
+    guide.attach();
+  }
 }

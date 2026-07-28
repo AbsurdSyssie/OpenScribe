@@ -83,6 +83,49 @@
   gap: 0.5rem;
 }
 
+/* Keep library controls visible while the list or editor scrolls. */
+.template-library-utilities,
+.smart-phrase-library-utilities {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  box-shadow: 0 -10px 24px rgba(15, 23, 42, 0.06);
+}
+
+.template-library-detail .action-bar,
+.smart-phrase-editor-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  margin-top: 18px;
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  box-shadow: 0 -12px 28px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+@media (min-width: 801px) {
+  .template-library-shell,
+  .smart-phrase-library-shell {
+    height: 100vh;
+    min-height: 0;
+  }
+
+  .template-library-sidebar,
+  .smart-phrase-library-sidebar {
+    height: 100%;
+    max-height: none;
+  }
+
+  .template-library-detail,
+  .smart-phrase-library-detail {
+    height: 100%;
+    overflow-y: auto;
+  }
+}
+
 @media (max-width: 560px) {
   .workspace-guide-overlay .tour-overlay__card {
     padding: 0.95rem;

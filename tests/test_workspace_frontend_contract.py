@@ -40,6 +40,8 @@ def test_workspace_sidebar_has_required_order_roles_and_recording_markers():
     assert "not current_user.is_system_admin and current_user.team_id" in sidebar
     assert 'href="/home"' not in sidebar
     assert "data-start-guide" in sidebar
+    assert "Open page guide" in sidebar
+    assert "active_workspace_section == 'scribe' %}<button type=\"button\" data-start-guide" not in sidebar
     assert "data-tutorial-consultation-form" in sidebar
     assert 'action="/transcribe/tutorial"' in sidebar
     assert "data-recording-navigation" in sidebar
@@ -101,6 +103,51 @@ def test_scribe_guide_reuses_one_role_neutral_workflow():
     ]
     positions = [tour.index(title) for title in expected_steps]
     assert positions == sorted(positions)
+
+
+def test_workspace_section_guides_cover_personal_library_and_leader_pages():
+    page = read("app/templates/workspace.html")
+    overlay = read("app/templates/workspace/_guide_overlay.html")
+    guide = read("app/static/js/workspace/section-guide.js")
+    styles = read("app/static/css/workspace-guide.css")
+
+    assert 'workspace/_guide_overlay.html' in page
+    assert '/static/css/workspace-guide.css?v=20260728-section-guides' in page
+    assert '/static/js/workspace/section-guide.js?v=20260728-section-guides' in page
+    assert 'data-tour-overlay' in overlay
+    assert overlay.count('data-tour-scrim=') == 4
+    for control in ('data-tour-back', 'data-tour-close-button', 'data-tour-next'):
+        assert control in overlay
+    assert 'backdrop-filter: blur(4px)' in styles
+
+    for section in (
+        'account',
+        'preferences',
+        'templates',
+        'quick-actions',
+        'smart-phrases',
+        'ai-services',
+        'team-members',
+        'account-requests',
+    ):
+        assert f"{section}: [" in guide or f"'{section}': [" in guide
+
+    for title in (
+        'Manage your account',
+        'Set your defaults',
+        'Create a template',
+        'Create a quick action',
+        'Create a smart phrase',
+        'Choose team services',
+        'Manage team access',
+        'Review access requests',
+    ):
+        assert title in guide
+
+    assert 'openscribe:tour:workspace:' in guide
+    assert "GUIDE_VERSION = 'section-v1'" in guide
+    assert '.submit(' not in guide
+    assert 'requestSubmit' not in guide
 
 
 def test_settings_module_initializers_are_target_scoped():

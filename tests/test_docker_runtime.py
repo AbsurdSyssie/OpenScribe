@@ -14,7 +14,7 @@ def test_test_dependencies_split_out_of_runtime_requirements() -> None:
     dev = Path("requirements-dev.txt").read_text().splitlines()
 
     assert "-r requirements.txt" in dev
-    for pin in ("pytest==8.3.3", "pytest-xdist==3.6.1"):
+    for pin in ("pytest==9.0.3", "pytest-xdist==3.6.1"):
         assert pin in dev
         assert pin not in runtime
 

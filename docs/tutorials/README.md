@@ -7,11 +7,12 @@ Recommended order:
 1. [Onboarding tutorial](onboarding.md)
 2. [User tutorial](user.md)
 3. [Scribe workflow guide](scribe-workflow-guide.md)
-4. [Team leader tutorial](team-leader.md)
-5. [Admin tutorial](admin.md)
-6. [System admin setup tutorial](system-admin-setup.md)
+4. [Workspace section guides](workspace-section-guides.md)
+5. [Team leader tutorial](team-leader.md)
+6. [Admin tutorial](admin.md)
+7. [System admin setup tutorial](system-admin-setup.md)
 
-The Scribe workflow guide applies to users and team leaders. The team leader tutorial covers only extra authority within the leader's own team. The admin guides cover metadata and settings. They do not grant access to user-owned content.
+The Scribe workflow guide applies to users and team leaders. The workspace section guides cover Account, Preferences, My Library, and the extra Team pages visible to leaders. The team leader tutorial covers only extra authority within the leader's own team. The admin guides cover metadata and settings. They do not grant access to user-owned content.
 
 `/workspace` is the main route for Scribe, Account, Preferences, Library, and leader Team sections. Normal users and team leaders land there after sign-in. Old `GET /home`, `/transcribe`, and `/settings` links redirect to the matching workspace route.
 

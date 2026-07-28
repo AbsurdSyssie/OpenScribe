@@ -36,10 +36,11 @@ The system-administrator wizard can:
 
 1. select a provider preset;
 2. submit endpoint/credential fields required by that preset;
-3. validate credentials and discover models/contracts;
-4. persist an incomplete draft without returning the submitted secret to the browser;
-5. select/confirm a model and finalize the config;
-6. run saved-provider reinspection or a bundled-audio diagnostic later.
+3. for Deepgram, choose the EU endpoint or explicitly acknowledge the compliance warning before using the Global endpoint;
+4. validate credentials and discover models/contracts;
+5. persist an incomplete draft without returning the submitted secret to the browser;
+6. select/confirm a model and finalize the config;
+7. run saved-provider reinspection or a bundled-audio diagnostic later.
 
 ## Provider presets and adapters
 
@@ -81,12 +82,17 @@ Preset and adapter are related but not interchangeable: preset is the management
 
 ### Deepgram
 
+- the branded preset defaults to the EU base URL `https://api.eu.deepgram.com`;
+- the wizard also permits the Global base URL `https://api.deepgram.com`, but requires the administrator to confirm that its use is permitted by applicable data-protection law, controller instructions, contracts, and international-transfer requirements;
+- both supported hosts are recognised as Deepgram and retain the Deepgram-specific request and security rules;
 - credential/catalog inspection uses Deepgram's model endpoint;
 - runtime sends raw audio bytes to `/v1/listen`;
 - model/language/options are query parameters;
 - response extraction uses the saved Deepgram channel/alternative path;
 - `mip_opt_out=true` is mandatory and enforced on save/runtime;
 - raw keys remain Vault-backed.
+
+Selecting the EU endpoint controls routing but is not, by itself, evidence that a deployment satisfies its controller contract, residency terms, retention obligations, or local law. Deployment owners must verify those matters against the purchased Deepgram service and current DPA/order form.
 
 ### ElevenLabs
 
@@ -201,12 +207,13 @@ Before enabling a provider for users:
 
 1. verify Vault KV-v2 and runtime token permissions;
 2. create/inspect the provider without copying credentials into logs;
-3. finalize a supported model/contract;
-4. run the saved diagnostic;
-5. make the config active;
-6. select it for the intended team/purpose;
-7. run an owner file/live capture smoke test;
-8. confirm worker, Beat, quota, and cleanup processes are running;
-9. review provider residency/retention/processing terms separately from technical connectivity.
+3. verify the selected provider region against the controller contract and transfer documentation;
+4. finalize a supported model/contract;
+5. run the saved diagnostic;
+6. make the config active;
+7. select it for the intended team/purpose;
+8. run an owner file/live capture smoke test;
+9. confirm worker, Beat, quota, and cleanup processes are running;
+10. review provider residency/retention/processing terms separately from technical connectivity.
 
 Provider success does not establish regulatory suitability. Deployment owners must separately assess data processing, retention, regional routing, contracts, and consent requirements.

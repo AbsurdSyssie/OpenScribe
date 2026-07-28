@@ -112,8 +112,8 @@ def test_workspace_section_guides_cover_personal_library_and_leader_pages():
     styles = read("app/static/css/workspace-guide.css")
 
     assert 'workspace/_guide_overlay.html' in page
-    assert '/static/css/workspace-guide.css?v=20260728-section-guides' in page
-    assert '/static/js/workspace/section-guide.js?v=20260728-section-guides' in page
+    assert '/static/css/workspace-guide.css?v=20260728-library-guide-resume' in page
+    assert '/static/js/workspace/section-guide.js?v=20260728-library-guide-resume' in page
     assert 'data-tour-overlay' in overlay
     assert overlay.count('data-tour-scrim=') == 4
     for control in ('data-tour-back', 'data-tour-close-button', 'data-tour-next'):
@@ -145,9 +145,39 @@ def test_workspace_section_guides_cover_personal_library_and_leader_pages():
         assert title in guide
 
     assert 'openscribe:tour:workspace:' in guide
-    assert "GUIDE_VERSION = 'section-v1'" in guide
+    assert "GUIDE_VERSION = 'section-v2'" in guide
     assert '.submit(' not in guide
     assert 'requestSubmit' not in guide
+
+
+def test_library_guides_open_first_item_and_resume_after_navigation():
+    guide = read("app/static/js/workspace/section-guide.js")
+
+    assert "const LIBRARY_GUIDE_CONFIG" in guide
+    assert "[data-template-library] .template-library-row__select" in guide
+    assert "[data-quick-action-library] .template-library-row__select" in guide
+    assert "[data-smart-phrase-library] .smart-phrase-library-row__select" in guide
+    assert "shell.classList.contains('has-selection')" in guide
+    assert "url.searchParams.set('guide', '1')" in guide
+    assert "window.location.assign(url.toString())" in guide
+    assert "resetGuideCompletion()" in guide
+    assert "clearGuideQuery()" in guide
+    assert "guideStartButtons: []" in guide
+    assert "guide.startTour({ force: true })" in guide
+
+
+def test_library_action_controls_remain_anchored_during_scroll():
+    styles = read("app/static/css/workspace-guide.css")
+
+    assert ".template-library-utilities," in styles
+    assert ".smart-phrase-library-utilities" in styles
+    assert ".template-library-detail .action-bar," in styles
+    assert ".smart-phrase-editor-actions" in styles
+    assert "position: sticky" in styles
+    assert "bottom: 0" in styles
+    assert ".template-library-detail," in styles
+    assert ".smart-phrase-library-detail" in styles
+    assert "overflow-y: auto" in styles
 
 
 def test_settings_module_initializers_are_target_scoped():

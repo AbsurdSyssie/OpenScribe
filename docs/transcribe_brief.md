@@ -122,6 +122,8 @@ Structured output uses the fixed EMIS JSON contract. Freeform output does not sh
 
 Owners can select/edit ready generated notes. Edits use optimistic concurrency and do not write back into Working note.
 
+The note-selection rail and selected-note metadata show creation times in the browser's local timezone.
+
 Structured note lines can be reordered and selected for copying. Freeform/structured copy controls can enforce the current review/scroll interaction and explain blocked copy through bounded UI feedback.
 
 Copying is a convenience, not verification. The clinician remains responsible for reviewing the content and destination EPR field.

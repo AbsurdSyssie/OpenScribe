@@ -7257,7 +7257,10 @@ def test_user_transcribe_page_renders_generated_document_switchers(
     assert 'document-switcher-item__delete' in page.text
     assert 'data-note-delete' not in page.text
     assert re.search(r'data-note-selector-row[\s\S]*data-note-selector[\s\S]*data-note-hover-delete', page.text)
-    assert re.search(r'Visit summary v2[\s\S]*?ready · \d{2}-\d{2}-\d{2} \d{2}:\d{2}', page.text)
+    assert re.search(
+        r'Visit summary v2[\s\S]*?ready · <time datetime="[^"]+" data-note-created-at="[^"]+">\d{2}-\d{2}-\d{2} \d{2}:\d{2}</time>',
+        page.text,
+    )
     assert "Delete note permanently" in page.text
     assert "Visit summary v2" in page.text
     assert "Visit summary v1" in page.text

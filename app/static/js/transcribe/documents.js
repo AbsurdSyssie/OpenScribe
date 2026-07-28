@@ -122,8 +122,12 @@ export function createDocumentNavigator({
     if (!Number.isFinite(timestamp)) return value;
     const date = new Date(timestamp);
     const pad = (part) => String(part).padStart(2, '0');
-    return `${String(date.getUTCFullYear()).slice(-2)}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`;
+    return `${String(date.getFullYear()).slice(-2)}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
   };
+
+  noteSelector?.querySelectorAll?.('[data-note-created-at]').forEach((node) => {
+    node.textContent = formatNoteCreatedAt(node.dataset.noteCreatedAt);
+  });
 
   const truncateSwitcherLabel = (value, maxWords = 4) => {
     const words = String(value || "").trim().split(/\s+/).filter(Boolean);
@@ -260,7 +264,7 @@ export function createDocumentNavigator({
             <div class="text-sm font-medium text-ink">${escapeHtml(noteDocumentLabel(item))}</div>
             <div class="text-xs text-slate mt-1">${escapeHtml(item.source_template_name || "Note layout output")} · ${escapeHtml(item.model_used || "model not shown")}</div>
           </div>
-          <div class="text-xs text-slate text-right">${escapeHtml(item.status || "")}<br>${escapeHtml(item.created_at || "")}</div>
+          <div class="text-xs text-slate text-right">${escapeHtml(item.status || "")}<br>${escapeHtml(formatNoteCreatedAt(item.created_at))}</div>
         </div>
       `;
       noteHistory.appendChild(card);
@@ -316,7 +320,7 @@ export function createDocumentNavigator({
       noteMeta.textContent = selectedNote?.kind === "working_note"
         ? "Working note · Your own notes used as context for generation."
         : (selectedNote
-          ? `${noteDocumentLabel(selectedNote)} · ${selectedNote.model_used || "model not shown"} · ${selectedNote.status} · ${selectedNote.hallucination_check_bucket || "not_applicable"} · ${selectedNote.created_at}`
+          ? `${noteDocumentLabel(selectedNote)} · ${selectedNote.model_used || "model not shown"} · ${selectedNote.status} · ${selectedNote.hallucination_check_bucket || "not_applicable"} · ${formatNoteCreatedAt(selectedNote.created_at)}`
           : "No note yet.");
     }
     renderDocumentSelector({

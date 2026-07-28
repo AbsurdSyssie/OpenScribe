@@ -1,6 +1,111 @@
+import os
 import subprocess
 import textwrap
 from pathlib import Path
+
+
+def test_note_selection_rail_formats_created_at_in_browser_timezone(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    runner = tmp_path / "note_created_at_runner.mjs"
+    runner.write_text(
+        textwrap.dedent(
+            """
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import vm from 'node:vm';
+
+            const sourcePath = __SOURCE_PATH__;
+            const source = fs.readFileSync(sourcePath, 'utf8')
+              .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';", '')
+              .replaceAll('export const ', 'var ')
+              .replace('export function workingNoteToEditorDocument', 'function workingNoteToEditorDocument')
+              .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
+            const makeElement = () => ({
+              dataset: {},
+              hidden: false,
+              innerHTML: '',
+              textContent: '',
+              children: [],
+              append(...children) { this.children.push(...children); },
+              appendChild(child) { this.children.push(child); },
+              setAttribute(name, value) { this[name] = value; },
+            });
+            const fakeDocument = {
+              activeElement: null,
+              createElement: () => makeElement(),
+              dispatchEvent: () => {},
+              querySelector: () => null,
+            };
+            const sandbox = {
+              Array,
+              Boolean,
+              Date,
+              Map,
+              Number,
+              String,
+              window: { document: fakeDocument },
+            };
+            sandbox.globalThis = sandbox;
+            vm.createContext(sandbox);
+            vm.runInContext(source, sandbox, { filename: sourcePath });
+
+            const noteMeta = makeElement();
+            const noteSelector = makeElement();
+            const initialTimestamp = makeElement();
+            initialTimestamp.dataset.noteCreatedAt = '2026-07-28T14:00:00+00:00';
+            initialTimestamp.textContent = '26-07-28 14:00';
+            noteSelector.querySelectorAll = () => [initialTimestamp];
+            const navigator = sandbox.createDocumentNavigator({
+              dom: {
+                latestGeneratedOutput: makeElement(),
+                noteMeta,
+                noteSelector,
+                noteSelectorCount: makeElement(),
+                noteSelectorWrap: makeElement(),
+              },
+              helpers: {
+                escapeHtml: (value) => String(value || ''),
+                refreshIcons: () => {},
+                renderGeneratedOutput: () => {},
+                renderRedactionDebugPanel: () => {},
+              },
+              getState: () => ({
+                hasActiveTranscript: false,
+                selectedNoteDocumentId: 'note-1',
+                workspaceNoteDocuments: [{
+                  id: 'note-1',
+                  created_at: '2026-07-28T14:00:00+00:00',
+                  kind: 'generated_note',
+                  status: 'ready',
+                  title: 'Consultation note',
+                }, {
+                  id: 'note-2',
+                  created_at: '2026-01-28T14:00:00+00:00',
+                  kind: 'generated_note',
+                  status: 'ready',
+                  title: 'Winter consultation note',
+                }],
+                workspaceStructuredContext: {},
+              }),
+              setState: () => {},
+            });
+
+            assert.equal(initialTimestamp.textContent, '26-07-28 15:00');
+            navigator.renderSelectedNote();
+
+            assert.match(noteSelector.children[0].children[0].innerHTML, /26-07-28 15:00/);
+            assert.match(noteSelector.children[1].children[0].innerHTML, /26-01-28 14:00/);
+            assert.match(noteMeta.textContent, /26-07-28 15:00/);
+            """
+        ).replace(
+            "__SOURCE_PATH__",
+            repr(str(root / "app" / "static" / "js" / "transcribe" / "documents.js")),
+        ),
+        encoding="utf-8",
+    )
+
+    env = {**os.environ, "TZ": "Europe/London"}
+    subprocess.run(["node", str(runner)], check=True, cwd=root, env=env)
 
 
 def test_document_navigator_clears_stale_note_editor_when_note_selection_becomes_empty(tmp_path):

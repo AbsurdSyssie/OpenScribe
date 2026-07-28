@@ -420,7 +420,7 @@ data-document-kind="note"
 title="{{ document.title }}">
 {% set note_words = document.title.split() %}
 <span class="document-switcher-label">{{ note_words[:4]|join(' ') }}{% if note_words|length > 4 %}…{% endif %}</span>
-<span class="document-switcher-meta">{{ document.status.value }} · {{ document.created_at.strftime("%y-%m-%d %H:%M") }}</span>
+<span class="document-switcher-meta">{{ document.status.value }} · <time datetime="{{ document.created_at.isoformat() }}" data-note-created-at="{{ document.created_at.isoformat() }}">{{ document.created_at.strftime("%y-%m-%d %H:%M") }}</time></span>
 </button>
 <button type="button" class="document-switcher-item__delete" data-note-hover-delete data-document-id="{{ document.id }}" aria-label="Delete note permanently" title="Delete note permanently">
 <i class="w-3.5 h-3.5" data-lucide="trash-2" aria-hidden="true"></i>

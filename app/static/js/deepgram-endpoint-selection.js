@@ -70,9 +70,11 @@
         "Managed STT with EU routing by default; Global routing requires a compliance confirmation.";
     }
 
+    const normaliseBaseUrl = (value) =>
+      value.trim().replace(/\/+$/, "").toLowerCase();
     const isDeepgram = () => presetInput.value === "deepgram";
     const isDeepgramUrl = (value) => {
-      const normalized = value.trim().toLowerCase();
+      const normalized = normaliseBaseUrl(value);
       return normalized === EU_BASE_URL || normalized === GLOBAL_BASE_URL;
     };
 
@@ -100,7 +102,7 @@
       }
 
       regionSelect.value =
-        baseUrlInput.value.trim().toLowerCase() === GLOBAL_BASE_URL ? "global" : "eu";
+        normaliseBaseUrl(baseUrlInput.value) === GLOBAL_BASE_URL ? "global" : "eu";
       applyRegion({ preserveAcknowledgement: true });
     };
 

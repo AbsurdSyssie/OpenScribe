@@ -40,6 +40,6 @@
   {% if active_workspace_section != 'scribe' %}{% include "workspace/_guide_overlay.html" %}<form id="new-session-form" method="post" action="{{ new_consultation_url|default('/transcribe/sessions') }}" hidden><input type="hidden" name="ingestion_mode" value="{{ preferred_recording_mode or 'whole_file' }}"></form>{% endif %}
   {% if active_workspace_section == 'scribe' %}{% include "transcribe/_shell_extras.html" %}{% else %}<script src="/static/js/generated-password.js?v=20260712-infield-controls"></script>{% include "_template_editor_script.html" %}{% include "_csrf_script.html" %}{% endif %}
   <script type="module" src="/static/js/workspace/app.js?v=20260719-sidebar-visual-fix"></script>
-  {% if active_workspace_section != 'scribe' %}<script type="module" src="/static/js/workspace/section-guide.js?v=20260728-library-guide-resume"></script><script type="module" src="/static/js/settings/app.js?v=20260724-portability-guards"></script>{% endif %}
+  {% if active_workspace_section != 'scribe' %}<script type="module" src="/static/js/workspace/section-guide.js?v=20260728-plain-guides"></script><script type="module" src="/static/js/settings/app.js?v=20260724-portability-guards"></script>{% endif %}
   {% if active_workspace_section == 'smart-phrases' %}<script type="module" src="/static/js/settings/smart-phrases.js?v=20260718-library-editor"></script>{% endif %}
 </body></html>

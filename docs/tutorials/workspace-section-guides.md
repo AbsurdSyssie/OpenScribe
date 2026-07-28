@@ -29,22 +29,25 @@ The Import, Export, and Help controls stay at the bottom of the library list. Sa
 
 ### Templates
 
-The guide explains:
+The guide uses plain language to explain:
 
-- creating a personal template;
-- the difference between personal and team templates;
-- copying a team template to Personal;
-- the extra edit controls available to team leaders;
-- reviewing template instructions and note mode;
-- importing and exporting JSON bundles safely.
+- that a template tells the AI how to write a note and what information goes where;
+- personal and team templates;
+- the template name;
+- EMIS sectioned notes;
+- free text notes;
+- the description;
+- the general **What should be written** instructions;
+- instructions for each EMIS section;
+- Save, Cancel, Import, Export, and Help.
 
 ### Quick actions
 
-The guide explains personal and team quick actions, how to write a clear reusable instruction, and how to import or export actions without putting confidential data in a bundle.
+The guide explains that a quick action tells the AI to create a follow-up from the current consultation. It covers personal and team actions, the name, description, instruction text, active status, Save, Cancel, Import, Export, and Help.
 
 ### Smart phrases
 
-The guide explains how to create and search personal phrases, use slash triggers in the note editor, review inserted wording, and import or export phrase bundles.
+The guide explains that a smart phrase inserts wording the user often needs. It covers search, the slash trigger, the inserted text, the optional description, Save, Cancel, Import, Export, and Help.
 
 ## Team leader pages
 

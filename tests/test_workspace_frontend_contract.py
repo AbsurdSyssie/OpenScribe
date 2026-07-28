@@ -66,6 +66,37 @@ def test_media_controller_emits_authoritative_workspace_recording_events():
     assert "openscribe:recording-${state}" in media
 
 
+def test_scribe_guide_reuses_one_role_neutral_workflow():
+    tour = read("app/static/js/transcribe/tour.js")
+    assert "export function createScribeWorkflowSteps()" in tour
+    assert "isScribeTour ? createScribeWorkflowSteps() : steps" in tour
+    assert "openscribe:tour:transcribe:" in tour
+    assert "workflow-v1" in tour
+    assert "viewerRole" not in tour
+    assert "activateTab('output')" in tour
+    assert "activateTab('followups')" in tour
+
+    expected_steps = [
+        "Start a new consultation",
+        "Choose the note template",
+        "Record the consult",
+        "Write the working note",
+        "Stop the recording",
+        "Add your dictation",
+        "Check the template",
+        "Create the note",
+        "Edit the note",
+        "Choose, move, and copy lines",
+        "Open Follow Ups",
+        "Add context",
+        "Use a quick action if useful",
+        "Generate the follow-up",
+        "Make another version",
+    ]
+    positions = [tour.index(title) for title in expected_steps]
+    assert positions == sorted(positions)
+
+
 def test_settings_module_initializers_are_target_scoped():
     script = read("app/static/js/settings/app.js")
     for marker in ("[data-confirm-submit]", "[data-service-toggle]", "[data-stt-selection-form]", "[data-llm-selection-form]", "[data-dirty-guard]"):

@@ -1,5 +1,5 @@
 const SCRIBE_TOUR_STORAGE_PREFIX = 'openscribe:tour:transcribe:';
-const SCRIBE_WORKFLOW_VERSION = 'workflow-v2';
+const SCRIBE_WORKFLOW_VERSION = 'workflow-v3';
 const TUTORIAL_TEMPLATE_NAME = 'Tutorial sectioned note';
 
 const nextFrame = () => new Promise((resolve) => window.requestAnimationFrame(resolve));
@@ -70,20 +70,20 @@ export function createScribeWorkflowSteps() {
   return [
     {
       target: '[data-new-session-button]',
-      title: 'Start each consult here',
-      body: 'The guide opened a synthetic example. For real work, create a new consultation for each consult.',
+      title: 'Tutorial example',
+      body: 'This is a tutorial example. For real work, select New consultation for each consult.',
       prepare: selectWorkingNote,
     },
     {
       target: '[data-template-picker-button]',
       title: 'Choose the note template',
-      body: 'Choose the template before you record. This example uses a sectioned note.',
+      body: 'Choose the template before you record. The template tells the AI how to write the note and what information should go where.',
       prepare: selectWorkingNote,
     },
     {
       target: '[data-tour-target="record-controls"]',
       title: 'Record the consult',
-      body: 'Choose Recorded upload, then select Start recording. The tutorial contains no audio.',
+      body: 'Choose Recorded upload, then select Start recording.',
       prepare: selectWorkingNote,
     },
     {
@@ -92,13 +92,13 @@ export function createScribeWorkflowSteps() {
         '[data-tab-panel="output"] .structured-workspace__body',
       ],
       title: 'Write the working note',
-      body: 'Add short points during the consult. This synthetic working note shows how sectioned points appear.',
+      body: 'Add short points during the consult. Put each point in the section where it belongs.',
       prepare: selectWorkingNote,
     },
     {
       target: '[data-record-toggle]',
       title: 'Stop the recording',
-      body: 'Select Stop when the consult ends. OpenScribe then turns the batch recording into text.',
+      body: 'Select Stop when the consult ends. OpenScribe then turns the recording into text.',
       prepare: selectWorkingNote,
     },
     {
@@ -107,13 +107,13 @@ export function createScribeWorkflowSteps() {
         '[data-transcript-review-grid]',
       ],
       title: 'Review the transcript',
-      body: 'Read the transcript and check key facts. The text shown here is synthetic training material.',
+      body: 'Read the transcript and check names, dates, medicines, and other key facts.',
       prepare: showTranscript,
     },
     {
       target: '[data-dictation-compact]',
       title: 'Add your dictation',
-      body: 'Record a short summary after the consult, then stop and save it. This example already has a saved dictation.',
+      body: 'Record any extra details after the consult, then stop and save the dictation.',
       prepare: showTranscript,
     },
     {
@@ -125,7 +125,7 @@ export function createScribeWorkflowSteps() {
     {
       target: '[data-generate-output-form]',
       title: 'Create the note',
-      body: 'In normal use, select Create. OpenScribe uses the transcript, working note, and saved dictation. The example note is already ready.',
+      body: 'Select Create. OpenScribe uses the transcript, working note, dictation, and chosen template.',
       prepare: selectWorkingNote,
     },
     {
@@ -171,7 +171,7 @@ export function createScribeWorkflowSteps() {
     {
       target: '[data-run-quick-action-trigger]',
       title: 'Generate the follow-up',
-      body: 'In normal use, select Generate. OpenScribe uses the transcript and the context you added.',
+      body: 'Select Generate. OpenScribe uses the transcript and the context you added.',
       prepare: showFollowUps,
     },
     {
@@ -180,7 +180,7 @@ export function createScribeWorkflowSteps() {
         '[data-latest-followup-output]',
       ],
       title: 'Make another version',
-      body: 'The example has two results. Select one from Recent, change the request, then select Generate again.',
+      body: 'Select a result from Recent, change the request, then select Generate again.',
       prepare: showFollowUps,
     },
   ];

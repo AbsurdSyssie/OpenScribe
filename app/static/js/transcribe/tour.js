@@ -125,7 +125,7 @@ export function createScribeWorkflowSteps() {
     {
       target: '[data-generate-output-form]',
       title: 'Create the note',
-      body: 'Select Create. OpenScribe uses the transcript, working note, and saved dictation. The example note is ready to review.',
+      body: 'In normal use, select Create. OpenScribe uses the transcript, working note, and saved dictation. The example note is already ready.',
       prepare: selectWorkingNote,
     },
     {
@@ -171,7 +171,7 @@ export function createScribeWorkflowSteps() {
     {
       target: '[data-run-quick-action-trigger]',
       title: 'Generate the follow-up',
-      body: 'Select Generate. OpenScribe uses the transcript and the context you added.',
+      body: 'In normal use, select Generate. OpenScribe uses the transcript and the context you added.',
       prepare: showFollowUps,
     },
     {
@@ -218,6 +218,7 @@ export function createGuidedTour({
   let tutorialConsultationRequested = false;
 
   const hasActiveTranscript = () => Boolean(document.querySelector('[data-transcript-title-form]'));
+  const recentConsultationLink = () => document.querySelector('[data-session-link]');
 
   const hasCompletedTour = () => {
     if (!effectiveStorageKey) return false;
@@ -233,7 +234,24 @@ export function createGuidedTour({
     const form = document.querySelector('[data-tutorial-consultation-form]');
     if (!form) return;
     tutorialConsultationRequested = true;
-    form.requestSubmit?.();
+    if (typeof form.requestSubmit === 'function') form.requestSubmit();
+    else form.submit();
+  };
+
+  const openRecentConsultationForTour = () => {
+    const link = recentConsultationLink();
+    if (!link?.href) return false;
+    const url = new URL(link.href, window.location.href);
+    url.searchParams.set('tutorial', '1');
+    window.location.assign(url.toString());
+    return true;
+  };
+
+  const openConsultationForTour = () => {
+    if (hasActiveTranscript()) return true;
+    if (openRecentConsultationForTour()) return false;
+    requestTutorialConsultation();
+    return false;
   };
 
   const setScrim = (panel, { top, left, width, height }) => {
@@ -395,6 +413,7 @@ export function createGuidedTour({
   const startTour = ({ force = false } = {}) => {
     if (!tourOverlay || !tourSteps?.length) return;
     if (!force && hasCompletedTour()) return;
+    if (isScribeTour && !openConsultationForTour()) return;
 
     previousFocus = document.activeElement;
     initialTabName = document.querySelector('[data-tab-trigger].active')?.dataset.tabTrigger || null;
@@ -415,13 +434,7 @@ export function createGuidedTour({
 
   const attach = () => {
     guideStartButtons.forEach((button) => {
-      button.addEventListener('click', () => {
-        if (isScribeTour && !hasActiveTranscript()) {
-          requestTutorialConsultation();
-          return;
-        }
-        startTour({ force: true });
-      });
+      button.addEventListener('click', () => startTour({ force: true }));
     });
 
     tourBackButton?.addEventListener('click', () => {
@@ -466,15 +479,11 @@ export function createGuidedTour({
       if (!tourOverlay?.hidden) void renderTourStep();
     });
 
+    const tutorialRequested = isScribeTour && new URLSearchParams(window.location.search).get('tutorial') === '1';
     window.setTimeout(() => {
-      const tutorialRequested = isScribeTour && new URLSearchParams(window.location.search).get('tutorial') === '1';
-      if (isScribeTour && !hasActiveTranscript()) {
-        if (tutorialRequested || !hasCompletedTour()) requestTutorialConsultation();
-        return;
-      }
       startTour({ force: tutorialRequested });
-      if (tutorialRequested) clearTutorialQuery();
-    }, 500);
+      if (tutorialRequested && hasActiveTranscript()) clearTutorialQuery();
+    }, tutorialRequested ? 0 : 500);
   };
 
   return {

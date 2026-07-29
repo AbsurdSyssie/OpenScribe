@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
+from ..default_assets import PRIMARY_TEMPLATE_NAME
 from ..db import SessionLocal
 from ..errors import AppError
 from ..models import (
@@ -165,6 +166,11 @@ def _order_assets_by_preferences(assets, favorite_ids: list[str] | None, default
         assets,
         key=lambda asset: (
             0 if default_id and str(asset.id) == default_id else 1,
+            0
+            if not default_id
+            and str(getattr(asset, "name", "")).lower()
+            == PRIMARY_TEMPLATE_NAME.lower()
+            else 1,
             0 if str(asset.id) in favorite_position else 1,
             favorite_position.get(str(asset.id), 999),
             str(getattr(asset, "name", "")).lower(),

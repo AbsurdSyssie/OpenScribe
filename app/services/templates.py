@@ -11,12 +11,13 @@ from uuid import UUID, uuid4
 import httpx
 from fastapi import Request
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
 
 from app.errors import AppError
+from app.default_assets import PRIMARY_TEMPLATE_NAME
 from app.models import (
     GeneratedDocument,
     GeneratedDocumentSection,
@@ -689,7 +690,19 @@ def list_available_templates_for_user(db: Session, actor: User) -> list[PromptTe
                     | ((PromptTemplate.scope == TemplateScope.team) & (PromptTemplate.team_id == actor.team_id))
                 ),
             )
-            .order_by(PromptTemplate.scope.asc(), PromptTemplate.updated_at.desc(), PromptTemplate.id.desc())
+            .order_by(
+                PromptTemplate.scope.asc(),
+                case(
+                    (
+                        func.lower(PromptTemplate.name)
+                        == PRIMARY_TEMPLATE_NAME.lower(),
+                        0,
+                    ),
+                    else_=1,
+                ),
+                PromptTemplate.updated_at.desc(),
+                PromptTemplate.id.desc(),
+            )
         )
     )
 
@@ -1243,14 +1256,31 @@ def upsert_personal_quick_action(db: Session, actor: User, payload: QuickActionU
     return quick_action
 
 
-def delete_team_template(db: Session, actor: User, *, template_id: UUID) -> None:
-    template = _resolve_team_template_for_management(db, actor, template_id=template_id)
-    version_ids = list(db.scalars(select(PromptTemplateVersion.id).where(PromptTemplateVersion.template_id == template.id)))
+def _detach_generated_documents_from_template(
+    db: Session, *, template_id: UUID
+) -> None:
+    version_ids = list(
+        db.scalars(
+            select(PromptTemplateVersion.id).where(
+                PromptTemplateVersion.template_id == template_id
+            )
+        )
+    )
     if version_ids:
-        for document in db.scalars(select(GeneratedDocument).where(GeneratedDocument.template_version_id.in_(version_ids))):
+        documents = db.scalars(
+            select(GeneratedDocument).where(
+                GeneratedDocument.template_version_id.in_(version_ids)
+            )
+        )
+        for document in documents:
             document.template_version_id = None
             db.add(document)
         db.flush()
+
+
+def delete_team_template(db: Session, actor: User, *, template_id: UUID) -> None:
+    template = _resolve_team_template_for_management(db, actor, template_id=template_id)
+    _detach_generated_documents_from_template(db, template_id=template.id)
     db.delete(template)
     db.commit()
     record_security_event(db, action="template_deleted", actor=actor, team_id=actor.team_id, details={"category": "template", "outcome": "success", "object_type": "prompt_template", "object_id": str(template_id), "scope": TemplateScope.team.value})
@@ -1258,12 +1288,7 @@ def delete_team_template(db: Session, actor: User, *, template_id: UUID) -> None
 
 def delete_personal_template(db: Session, actor: User, *, template_id: UUID) -> None:
     template = _resolve_personal_template_for_management(db, actor, template_id=template_id)
-    version_ids = list(db.scalars(select(PromptTemplateVersion.id).where(PromptTemplateVersion.template_id == template.id)))
-    if version_ids:
-        for document in db.scalars(select(GeneratedDocument).where(GeneratedDocument.template_version_id.in_(version_ids))):
-            document.template_version_id = None
-            db.add(document)
-        db.flush()
+    _detach_generated_documents_from_template(db, template_id=template.id)
     db.delete(template)
     db.commit()
     record_security_event(db, action="template_deleted", actor=actor, team_id=actor.team_id, details={"category": "template", "outcome": "success", "object_type": "prompt_template", "object_id": str(template_id), "scope": TemplateScope.user.value})

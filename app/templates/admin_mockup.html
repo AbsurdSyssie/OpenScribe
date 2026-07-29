@@ -5308,7 +5308,25 @@
           const form = document.getElementById("llm-wizard-form"), value = (name) => form.elements.namedItem(name)?.value.trim() || undefined;
           try {
             const googleCredential = await llmServiceAccountJson();
-            const result = await apiJson("/api/v1/llm-configs/drafts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ team_id: value("team_id"), provider_preset: value("provider_preset"), label: value("label") || null, base_url: value("base_url"), bedrock_region: value("bedrock_region") || null, bearer_token: value("bearer_token") || null, revision_of_config_id: value("revision_of_config_id") || null, google_project_id: value("google_project_id") || null, google_location: value("google_location") || null, google_auth_method: value("google_auth_method") || null, google_service_account_json: googleCredential, capacity_mode: value("capacity_mode") || "auto" }) });
+            const payload = {
+              team_id: value("team_id"),
+              provider_preset: value("provider_preset"),
+              label: value("label") || null,
+              base_url: value("base_url"),
+              bedrock_region: value("bedrock_region") || null,
+              bearer_token: value("bearer_token") || null,
+              revision_of_config_id: value("revision_of_config_id") || null,
+            };
+            if (llmProvider === "Gemini Enterprise") {
+              Object.assign(payload, {
+                google_project_id: value("google_project_id") || null,
+                google_location: value("google_location") || null,
+                google_auth_method: value("google_auth_method") || null,
+                google_service_account_json: googleCredential,
+                capacity_mode: value("capacity_mode") || "auto",
+              });
+            }
+            const result = await apiJson("/api/v1/llm-configs/drafts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
             llmDraftId = result.config.id;
             document.getElementById("llm-draft-id").value = llmDraftId;
             document.getElementById("llm-api-key").value = "";

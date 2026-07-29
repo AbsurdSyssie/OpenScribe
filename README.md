@@ -7,6 +7,7 @@ Start with the [documentation index](docs/README.md), which separates maintained
 Primary references:
 
 - setup and local run: [docs/setup.md](docs/setup.md)
+- local evaluator demo: [docs/local-demo.md](docs/local-demo.md)
 - persistent Docker runtime: [docs/docker.md](docs/docker.md)
 - environment variables: [docs/environment.md](docs/environment.md)
 - authentication and account recovery: [docs/auth.md](docs/auth.md), [docs/account_recovery_brief.md](docs/account_recovery_brief.md)
@@ -36,6 +37,17 @@ Primary references:
 Successful normal-user and team-leader login lands directly on `/workspace`. Legacy `GET /home`, `/transcribe`, and `/settings` links redirect into canonical `/workspace` routes; `/home` is no longer a separately rendered landing page. The former `/transcribe-claude`, `/transcribe-glm-2`, and `/transcriber_col_changes` prototype routes have been removed. `/workspace` is the only Scribe product surface.
 
 ## Quick start
+
+For a localhost-only evaluator demo with fixed accounts and isolated persistent data:
+
+```bash
+docker compose -f docker-compose.demo.yml up -d --build --wait
+```
+
+Open `http://127.0.0.1:8080`. Read [docs/local-demo.md](docs/local-demo.md) for the account details, provider walkthrough, update steps, and full reset command.
+
+The demo and fresh full installs share the built-in Template and Quick Action
+catalogue. `Daily Driver` is the starting Template until a user chooses another.
 
 For host-based development with live reload:
 

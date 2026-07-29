@@ -81,7 +81,16 @@ from app.models import (
     UserQuotaReasonCode,
     utcnow,
 )
-from app.services.default_assets import BUILTIN_DEFAULT_QUICK_ACTIONS, BUILTIN_DEFAULT_TEMPLATE, ensure_builtin_team_assets, import_team_assets_to_defaults
+from app.services.default_assets import (
+    BUILTIN_DEFAULT_QUICK_ACTIONS,
+    BUILTIN_DEFAULT_TEMPLATE,
+    BUILTIN_DEFAULT_TEMPLATES,
+    _LEGACY_BUILTIN_QUICK_ACTIONS,
+    _LEGACY_BUILTIN_TEMPLATE,
+    ensure_builtin_default_assets,
+    ensure_builtin_team_assets,
+    import_team_assets_to_defaults,
+)
 from app.services.admin import admin_usage_overview
 from app.services.content_crypto import is_encrypted_envelope
 from app.services.dictations import update_post_consultation_dictation
@@ -3147,6 +3156,9 @@ def test_admin_workspace_provider_redesign_has_explicit_safe_actions(client, db_
     assert 'apiJson("/api/v1/llm-configs/drafts"' in llm_page.text
     assert 'revision_of_config_id: value("revision_of_config_id") || null' in markup
     assert 'bearer_token: value("bearer_token") || null' in markup
+    assert 'if (llmProvider === "Gemini Enterprise")' in llm_page.text
+    assert 'google_auth_method: value("google_auth_method") || null' in llm_page.text
+    assert "body: JSON.stringify(payload)" in llm_page.text
     assert "/api/v1/stt-configs/${encodeURIComponent(sttDraftId)}/finalize" in stt_page.text
     assert "/api/v1/llm-configs/${encodeURIComponent(llmDraftId)}/finalize" in llm_page.text
     assert "result.available_model_options" in markup
@@ -7611,9 +7623,27 @@ def test_admin_team_creation_seeds_builtin_assets_when_defaults_empty(client, db
     assert created.status_code == 303
     team = db_session.scalar(select(Team).where(Team.name == "Builtin Clinic"))
     assert team is not None
-    template = db_session.scalar(select(PromptTemplate).where(PromptTemplate.team_id == team.id, PromptTemplate.name == BUILTIN_DEFAULT_TEMPLATE["name"]))
-    assert template is not None
-    version = db_session.scalar(select(PromptTemplateVersion).where(PromptTemplateVersion.template_id == template.id))
+    templates = list(
+        db_session.scalars(
+            select(PromptTemplate).where(PromptTemplate.team_id == team.id)
+        )
+    )
+    assert {template.name for template in templates} == {
+        built_in["name"] for built_in in BUILTIN_DEFAULT_TEMPLATES
+    }
+    assert "Sectioned EMIS note" not in {
+        template.name for template in templates
+    }
+    template = next(
+        template
+        for template in templates
+        if template.name == BUILTIN_DEFAULT_TEMPLATE["name"]
+    )
+    version = db_session.scalar(
+        select(PromptTemplateVersion).where(
+            PromptTemplateVersion.template_id == template.id
+        )
+    )
     assert version is not None
     assert version.mode is TemplateMode.structured
     assert [section["section_key"] for section in version.config_json["sections"]] == [
@@ -7639,9 +7669,379 @@ def test_builtin_team_asset_seed_is_idempotent(db_session, make_team, make_user)
     ensure_builtin_team_assets(db_session, team=team, actor=leader)
     db_session.commit()
 
-    assert db_session.scalar(select(func.count()).select_from(PromptTemplate).where(PromptTemplate.team_id == team.id, PromptTemplate.name == BUILTIN_DEFAULT_TEMPLATE["name"])) == 1
+    assert db_session.scalar(
+        select(func.count())
+        .select_from(PromptTemplate)
+        .where(PromptTemplate.team_id == team.id)
+    ) == len(BUILTIN_DEFAULT_TEMPLATES)
+    for built_in in BUILTIN_DEFAULT_TEMPLATES:
+        assert db_session.scalar(
+            select(func.count())
+            .select_from(PromptTemplate)
+            .where(
+                PromptTemplate.team_id == team.id,
+                PromptTemplate.name == built_in["name"],
+            )
+        ) == 1
     for built_in in BUILTIN_DEFAULT_QUICK_ACTIONS:
         assert db_session.scalar(select(func.count()).select_from(QuickAction).where(QuickAction.team_id == team.id, QuickAction.name == built_in["name"])) == 1
+
+
+def test_builtin_team_asset_upgrade_retires_old_template_and_replaces_old_actions(
+    db_session,
+    make_team,
+    make_user,
+    make_template,
+    make_quick_action,
+):
+    team = make_team(name="Builtin Upgrade Clinic")
+    leader = make_user(
+        email="builtin-upgrade-leader@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.leader,
+    )
+    old_template = make_template(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Sectioned EMIS note",
+        description=_LEGACY_BUILTIN_TEMPLATE["description"],
+        prompt_text=_LEGACY_BUILTIN_TEMPLATE["prompt_text"],
+        mode=_LEGACY_BUILTIN_TEMPLATE["mode"],
+        config_json=_LEGACY_BUILTIN_TEMPLATE["config_json"],
+    )
+    transcript = Transcript(
+        owner_user_id=leader.id,
+        team_id=team.id,
+        title="Existing note",
+        current_draft_text_encrypted="Synthetic transcript.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="Synthetic transcript.",
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    generated_document = GeneratedDocument(
+        owner_user_id=leader.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        generator_type=GeneratedDocumentGeneratorType.template,
+        template_version_id=old_template.versions[-1].id,
+        source_template_name=old_template.name,
+        prompt_snapshot_text=_LEGACY_BUILTIN_TEMPLATE["prompt_text"],
+        status=GeneratedDocumentStatus.ready,
+        title="Existing generated note",
+        document_mode=TemplateMode.freeform,
+        original_output_text_encrypted="Synthetic generated note.",
+        edited_output_text_encrypted="Synthetic generated note.",
+        retention_expires_at=transcript.retention_expires_at,
+    )
+    db_session.add(generated_document)
+    db_session.commit()
+    referral = make_quick_action(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Referral letter",
+        description=_LEGACY_BUILTIN_QUICK_ACTIONS["Referral letter"]["description"],
+        prompt_text=_LEGACY_BUILTIN_QUICK_ACTIONS["Referral letter"]["prompt_text"],
+    )
+
+    ensure_builtin_team_assets(db_session, team=team, actor=leader)
+    db_session.commit()
+
+    assert db_session.scalar(
+        select(PromptTemplate).where(
+            PromptTemplate.team_id == team.id,
+            PromptTemplate.name == "Sectioned EMIS note",
+        )
+    ) is None
+    db_session.refresh(generated_document)
+    assert generated_document.template_version_id is None
+    assert generated_document.source_template_name == "Sectioned EMIS note"
+    assert (
+        generated_document.prompt_snapshot_text
+        == _LEGACY_BUILTIN_TEMPLATE["prompt_text"]
+    )
+    assert generated_document.edited_output_text_encrypted == "Synthetic generated note."
+    referral_versions = list(
+        db_session.scalars(
+            select(QuickActionVersion)
+            .where(QuickActionVersion.quick_action_id == referral.id)
+            .order_by(QuickActionVersion.version_no)
+        )
+    )
+    expected = next(
+        item
+        for item in BUILTIN_DEFAULT_QUICK_ACTIONS
+        if item["name"] == "Referral letter"
+    )
+    assert len(referral_versions) == 2
+    assert referral_versions[-1].prompt_text == expected["prompt_text"]
+
+
+def test_builtin_team_asset_upgrade_preserves_customized_retired_template(
+    db_session,
+    make_team,
+    make_user,
+    make_template,
+):
+    team = make_team(name="Customized Builtin Upgrade Clinic")
+    leader = make_user(
+        email="customized-builtin-upgrade-leader@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.leader,
+    )
+    customized = make_template(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Sectioned EMIS note",
+        prompt_text="Keep this team-written prompt.",
+    )
+
+    ensure_builtin_team_assets(db_session, team=team, actor=leader)
+    db_session.commit()
+
+    assert db_session.get(PromptTemplate, customized.id) is not None
+
+
+def test_builtin_team_asset_upgrade_preserves_description_only_customizations(
+    db_session,
+    make_team,
+    make_user,
+    make_template,
+    make_quick_action,
+):
+    team = make_team(name="Description Customized Builtin Clinic")
+    leader = make_user(
+        email="description-customized-builtin@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.leader,
+    )
+    template = make_template(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Sectioned EMIS note",
+        description="Keep this team-written description.",
+        prompt_text=_LEGACY_BUILTIN_TEMPLATE["prompt_text"],
+        mode=_LEGACY_BUILTIN_TEMPLATE["mode"],
+        config_json=_LEGACY_BUILTIN_TEMPLATE["config_json"],
+    )
+    quick_action = make_quick_action(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Referral letter",
+        description="Keep this team-written referral description.",
+        prompt_text=_LEGACY_BUILTIN_QUICK_ACTIONS["Referral letter"]["prompt_text"],
+    )
+
+    ensure_builtin_team_assets(db_session, team=team, actor=leader)
+    db_session.commit()
+
+    assert db_session.get(PromptTemplate, template.id) is not None
+    assert template.description == "Keep this team-written description."
+    assert quick_action.description == "Keep this team-written referral description."
+    assert len(quick_action.versions) == 1
+
+
+def test_builtin_team_asset_upgrade_preserves_assets_with_edit_history(
+    db_session,
+    make_team,
+    make_user,
+    make_template,
+    make_quick_action,
+):
+    team = make_team(name="Reverted Builtin Clinic")
+    leader = make_user(
+        email="reverted-builtin@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.leader,
+    )
+    template = make_template(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Sectioned EMIS note",
+        description=_LEGACY_BUILTIN_TEMPLATE["description"],
+        prompt_text=_LEGACY_BUILTIN_TEMPLATE["prompt_text"],
+        mode=_LEGACY_BUILTIN_TEMPLATE["mode"],
+        config_json=_LEGACY_BUILTIN_TEMPLATE["config_json"],
+    )
+    quick_action = make_quick_action(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Referral letter",
+        description=_LEGACY_BUILTIN_QUICK_ACTIONS["Referral letter"]["description"],
+        prompt_text=_LEGACY_BUILTIN_QUICK_ACTIONS["Referral letter"]["prompt_text"],
+    )
+    db_session.add(
+        PromptTemplateVersion(
+            template_id=template.id,
+            version_no=2,
+            mode=_LEGACY_BUILTIN_TEMPLATE["mode"],
+            prompt_text=_LEGACY_BUILTIN_TEMPLATE["prompt_text"],
+            config_json=_LEGACY_BUILTIN_TEMPLATE["config_json"],
+            created_by_user_id=leader.id,
+        )
+    )
+    db_session.add(
+        QuickActionVersion(
+            quick_action_id=quick_action.id,
+            version_no=2,
+            mode=TemplateMode.freeform,
+            prompt_text=_LEGACY_BUILTIN_QUICK_ACTIONS["Referral letter"]["prompt_text"],
+            created_by_user_id=leader.id,
+        )
+    )
+    db_session.commit()
+
+    ensure_builtin_team_assets(db_session, team=team, actor=leader)
+    db_session.commit()
+
+    assert db_session.get(PromptTemplate, template.id) is not None
+    assert len(template.versions) == 2
+    assert len(quick_action.versions) == 2
+
+
+def test_builtin_default_asset_upgrade_preserves_description_customizations(
+    db_session,
+    make_user,
+    make_default_template,
+    make_default_quick_action,
+):
+    admin = make_user(
+        email="customized-default-assets@example.com",
+        password="password-1",
+        is_system_admin=True,
+    )
+    template = make_default_template(
+        actor=admin,
+        name="Sectioned EMIS note",
+        description="Keep this administrator-written description.",
+        prompt_text=_LEGACY_BUILTIN_TEMPLATE["prompt_text"],
+        mode=_LEGACY_BUILTIN_TEMPLATE["mode"],
+        config_json=_LEGACY_BUILTIN_TEMPLATE["config_json"],
+    )
+    quick_action = make_default_quick_action(
+        actor=admin,
+        name="Referral letter",
+        description="Keep this administrator-written referral description.",
+        prompt_text=_LEGACY_BUILTIN_QUICK_ACTIONS["Referral letter"]["prompt_text"],
+    )
+
+    ensure_builtin_default_assets(db_session, admin)
+    db_session.commit()
+
+    assert db_session.get(DefaultPromptTemplate, template.id) is not None
+    assert template.description == "Keep this administrator-written description."
+    assert (
+        quick_action.description
+        == "Keep this administrator-written referral description."
+    )
+    assert len(quick_action.versions) == 1
+
+
+def test_builtin_team_asset_upgrade_defers_retirement_during_generation(
+    db_session,
+    make_team,
+    make_user,
+    make_template,
+):
+    team = make_team(name="Active Builtin Upgrade Clinic")
+    leader = make_user(
+        email="active-builtin-upgrade-leader@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.leader,
+    )
+    old_template = make_template(
+        scope=TemplateScope.team,
+        team=team,
+        actor=leader,
+        name="Sectioned EMIS note",
+        description=_LEGACY_BUILTIN_TEMPLATE["description"],
+        prompt_text=_LEGACY_BUILTIN_TEMPLATE["prompt_text"],
+        mode=_LEGACY_BUILTIN_TEMPLATE["mode"],
+        config_json=_LEGACY_BUILTIN_TEMPLATE["config_json"],
+    )
+    transcript = Transcript(
+        owner_user_id=leader.id,
+        team_id=team.id,
+        title="Queued note",
+        current_draft_text_encrypted="Synthetic transcript.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="Synthetic transcript.",
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    db_session.add(
+        GeneratedDocument(
+            owner_user_id=leader.id,
+            team_id=team.id,
+            transcript_id=transcript.id,
+            transcript_version_id=transcript_version.id,
+            generator_type=GeneratedDocumentGeneratorType.template,
+            template_version_id=old_template.versions[-1].id,
+            source_template_name=old_template.name,
+            prompt_snapshot_text=_LEGACY_BUILTIN_TEMPLATE["prompt_text"],
+            status=GeneratedDocumentStatus.queued,
+            title="Queued generated note",
+            document_mode=TemplateMode.structured,
+            original_output_text_encrypted="",
+            edited_output_text_encrypted="",
+            retention_expires_at=transcript.retention_expires_at,
+        )
+    )
+    db_session.commit()
+
+    ensure_builtin_team_assets(db_session, team=team, actor=leader)
+    db_session.commit()
+
+    assert db_session.get(PromptTemplate, old_template.id) is not None
+
+
+def test_builtin_asset_catalog_is_embedded_and_valid() -> None:
+    assert not Path("app/default_assets/templates.json").exists()
+    assert not Path("app/default_assets/quick_actions.json").exists()
+    assert BUILTIN_DEFAULT_TEMPLATE["name"] == "Daily Driver"
+    assert {item["name"] for item in BUILTIN_DEFAULT_TEMPLATES} == {
+        "Daily Driver",
+        "GP Note",
+        "GLP1 Review",
+        "Depression",
+        "Dictation cleaner",
+    }
+    assert {item["name"] for item in BUILTIN_DEFAULT_QUICK_ACTIONS} == {
+        "Physio Referral",
+        "Referral letter",
+        "Patient follow-up message",
+    }
 
 
 def test_admin_page_can_delete_team_and_owned_records(

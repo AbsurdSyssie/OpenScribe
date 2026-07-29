@@ -6,6 +6,28 @@ OpenScribe is privacy-sensitive and architecture-sensitive.
 
 Preserve established ownership, content-access, deletion, retention, encryption, provider, authentication, quota/outbox, and structured-output contracts. Do not silently redesign them.
 
+
+Make use of orwells rules when writing documentation or something for the user.
+
+A scrupulous writer, in every sentence that he writes, will ask himself at least four questions, thus:
+
+What am I trying to say?
+What words will express it?
+What image or idiom will make it clearer?
+Is this image fresh enough to have an effect?
+And he will probably ask himself two more:
+
+Could I put it more shortly?
+Have I said anything that is avoidably ugly?
+One can often be in doubt about the effect of a word or a phrase, and one needs rules that one can rely on when instinct fails. I think the following rules will cover most cases:
+
+Never use a metaphor, simile, or other figure of speech which you are used to seeing in print.
+Never use a long word where a short one will do.
+If it is possible to cut a word out, always cut it out.
+Never use the passive where you can use the active.
+Never use a foreign phrase, a scientific word, or a jargon word if you can think of an everyday English equivalent.
+Break any of these rules sooner than say anything outright barbarous.
+
 ## Sources of truth
 
 Not every Markdown file describes current behavior. Files named `plan`, `brief`, `roadmap`, `todo`, `design`, or similar can be historical or partially implemented.

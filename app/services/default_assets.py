@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
@@ -5,12 +6,19 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.default_assets import PRIMARY_TEMPLATE_NAME, RETIRED_TEMPLATE_NAMES
+from app.default_assets.catalog import (
+    BUILTIN_QUICK_ACTION_BUNDLE,
+    BUILTIN_TEMPLATE_BUNDLE,
+)
 from app.errors import AppError
 from app.models import (
     DefaultPromptTemplate,
     DefaultPromptTemplateVersion,
     DefaultQuickAction,
     DefaultQuickActionVersion,
+    GeneratedDocument,
+    GeneratedDocumentStatus,
     PromptTemplate,
     PromptTemplateVersion,
     QuickAction,
@@ -21,9 +29,14 @@ from app.models import (
     User,
 )
 from app.normalization import normalize_team_name_key
-from app.schemas.templates import DefaultPromptTemplateUpsert, DefaultQuickActionUpsert
+from app.schemas.templates import (
+    DefaultPromptTemplateUpsert,
+    DefaultQuickActionUpsert,
+)
+from app.services.quick_action_io import parse_quick_action_bundle
 from app.services.security_audit import record_security_event
 from app.services.templates import (
+    _detach_generated_documents_from_template,
     _latest_quick_action_version,
     _latest_template_version,
     _serialize_asset_name,
@@ -31,41 +44,152 @@ from app.services.templates import (
     _serialize_template_config,
     _split_duplicate_asset_name,
     _template_version_config,
+    parse_template_bundle,
 )
 
 
-BUILTIN_DEFAULT_TEMPLATE = {
+def _load_builtin_templates() -> tuple[dict[str, object], ...]:
+    entries, warnings, issues = parse_template_bundle(
+        json.dumps(BUILTIN_TEMPLATE_BUNDLE).encode("utf-8")
+    )
+    if warnings or any(issues) or any(entry is None for entry in entries):
+        raise RuntimeError("The built-in Template catalogue is invalid.")
+    names = [entry.name.strip().lower() for entry in entries if entry is not None]
+    if len(names) != len(set(names)) or PRIMARY_TEMPLATE_NAME.lower() not in names:
+        raise RuntimeError("The built-in Template catalogue has invalid names.")
+    templates = []
+    for entry in entries:
+        assert entry is not None
+        config = (
+            entry.latest_version.config_json.model_dump(mode="json")
+            if entry.latest_version.config_json is not None
+            else None
+        )
+        templates.append(
+            {
+                "name": entry.name,
+                "description": entry.description,
+                "prompt_text": entry.latest_version.prompt_text,
+                "mode": entry.latest_version.mode,
+                "config_json": config,
+            }
+        )
+    templates.sort(key=lambda item: item["name"] == PRIMARY_TEMPLATE_NAME)
+    return tuple(templates)
+
+
+def _load_builtin_quick_actions() -> tuple[dict[str, object], ...]:
+    entries, warnings, issues = parse_quick_action_bundle(
+        json.dumps(BUILTIN_QUICK_ACTION_BUNDLE).encode("utf-8")
+    )
+    if warnings or any(issues) or any(entry is None for entry in entries):
+        raise RuntimeError("The built-in Quick Action catalogue is invalid.")
+    names = [entry.name.strip().lower() for entry in entries if entry is not None]
+    if len(names) != len(set(names)):
+        raise RuntimeError("The built-in Quick Action catalogue has duplicate names.")
+    return tuple(
+        {
+            "name": entry.name,
+            "description": entry.description,
+            "prompt_text": entry.latest_version.prompt_text,
+        }
+        for entry in entries
+        if entry is not None
+    )
+
+
+BUILTIN_DEFAULT_TEMPLATES = _load_builtin_templates()
+BUILTIN_DEFAULT_TEMPLATE = next(
+    template
+    for template in BUILTIN_DEFAULT_TEMPLATES
+    if template["name"] == PRIMARY_TEMPLATE_NAME
+)
+BUILTIN_DEFAULT_QUICK_ACTIONS = _load_builtin_quick_actions()
+
+_LEGACY_BUILTIN_TEMPLATE = {
     "name": "Sectioned EMIS note",
     "description": "Starter structured consultation note for EMIS transfer.",
-    "prompt_text": "Write a concise EMIS-ready consultation note from the provided clinical sources. Include only clinically supported information and omit empty sections.",
+    "prompt_text": (
+        "Write a concise EMIS-ready consultation note from the provided clinical "
+        "sources. Include only clinically supported information and omit empty "
+        "sections."
+    ),
     "mode": TemplateMode.structured,
     "config_json": {
         "profile": "emis",
         "sections": [
-            {"section_key": "problem", "instruction": "Summarise presenting problems and diagnoses.", "section_order": 1},
-            {"section_key": "history", "instruction": "Summarise relevant history, symptoms, and timeline.", "section_order": 2},
-            {"section_key": "family_history", "instruction": "Include relevant family history only when mentioned.", "section_order": 3},
-            {"section_key": "social_history", "instruction": "Include relevant social context, occupation, smoking, alcohol, and support details only when mentioned.", "section_order": 4},
-            {"section_key": "examination", "instruction": "Summarise examination findings and observations.", "section_order": 5},
-            {"section_key": "comment", "instruction": "Summarise assessment, safety-netting, and plan narrative.", "section_order": 6},
-            {"section_key": "tasks", "instruction": "List agreed actions, referrals, prescriptions, and follow-up tasks.", "section_order": 7},
-            {"section_key": "investigations", "instruction": "List investigations ordered, reviewed, or discussed.", "section_order": 8},
+            {
+                "section_key": "problem",
+                "instruction": "Summarise presenting problems and diagnoses.",
+                "section_order": 1,
+            },
+            {
+                "section_key": "history",
+                "instruction": "Summarise relevant history, symptoms, and timeline.",
+                "section_order": 2,
+            },
+            {
+                "section_key": "family_history",
+                "instruction": "Include relevant family history only when mentioned.",
+                "section_order": 3,
+            },
+            {
+                "section_key": "social_history",
+                "instruction": (
+                    "Include relevant social context, occupation, smoking, alcohol, "
+                    "and support details only when mentioned."
+                ),
+                "section_order": 4,
+            },
+            {
+                "section_key": "examination",
+                "instruction": "Summarise examination findings and observations.",
+                "section_order": 5,
+            },
+            {
+                "section_key": "comment",
+                "instruction": (
+                    "Summarise assessment, safety-netting, and plan narrative."
+                ),
+                "section_order": 6,
+            },
+            {
+                "section_key": "tasks",
+                "instruction": (
+                    "List agreed actions, referrals, prescriptions, and follow-up "
+                    "tasks."
+                ),
+                "section_order": 7,
+            },
+            {
+                "section_key": "investigations",
+                "instruction": (
+                    "List investigations ordered, reviewed, or discussed."
+                ),
+                "section_order": 8,
+            },
         ],
     },
 }
 
-BUILTIN_DEFAULT_QUICK_ACTIONS = (
-    {
-        "name": "Patient follow-up message",
+_LEGACY_BUILTIN_QUICK_ACTIONS = {
+    "Patient follow-up message": {
         "description": "Draft a short patient-facing follow-up message.",
-        "prompt_text": "Draft a concise patient-facing follow-up message from the consultation. Use clear language, include agreed next steps, and avoid adding information not present in the transcript or note. Reading age of 10. Very short, for SMS.",
+        "prompt_text": (
+            "Draft a concise patient-facing follow-up message from the consultation. "
+            "Use clear language, include agreed next steps, and avoid adding information "
+            "not present in the transcript or note. Reading age of 10. Very short, for SMS."
+        ),
     },
-    {
-        "name": "Referral letter",
+    "Referral letter": {
         "description": "Draft a referral letter from the consultation.",
-        "prompt_text": "Draft a referral letter using the consultation context. Include reason for referral, relevant history, examination, investigations, current plan, and requested action. Do not invent details.",
+        "prompt_text": (
+            "Draft a referral letter using the consultation context. Include reason for "
+            "referral, relevant history, examination, investigations, current plan, and "
+            "requested action. Do not invent details."
+        ),
     },
-)
+}
 
 
 @dataclass(slots=True)
@@ -211,13 +335,199 @@ def _team_quick_action_exists(db: Session, *, team: Team, name: str) -> bool:
     )
 
 
+def _default_quick_action_by_name(
+    db: Session, *, name: str
+) -> DefaultQuickAction | None:
+    return db.scalar(
+        select(DefaultQuickAction)
+        .where(func.lower(DefaultQuickAction.name) == name.strip().lower())
+        .limit(1)
+    )
+
+
+def _team_quick_action_by_name(
+    db: Session, *, team: Team, name: str
+) -> QuickAction | None:
+    return db.scalar(
+        select(QuickAction)
+        .where(
+            QuickAction.scope == TemplateScope.team,
+            QuickAction.team_id == team.id,
+            func.lower(QuickAction.name) == name.strip().lower(),
+        )
+        .limit(1)
+    )
+
+
+def _upgrade_legacy_default_quick_action(
+    db: Session,
+    *,
+    quick_action: DefaultQuickAction,
+    built_in: dict[str, object],
+    actor: User,
+) -> None:
+    legacy = _LEGACY_BUILTIN_QUICK_ACTIONS.get(quick_action.name)
+    if (
+        legacy is None
+        or not quick_action.is_active
+        or quick_action.description != legacy["description"]
+    ):
+        return
+    latest = _latest_default_quick_action_version(
+        db, quick_action_id=quick_action.id
+    )
+    version_count = db.scalar(
+        select(func.count())
+        .select_from(DefaultQuickActionVersion)
+        .where(
+            DefaultQuickActionVersion.default_quick_action_id == quick_action.id
+        )
+    )
+    if (
+        version_count != 1
+        or latest.mode is not TemplateMode.freeform
+        or latest.prompt_text != legacy["prompt_text"]
+    ):
+        return
+    quick_action.description = built_in["description"]
+    db.add(quick_action)
+    db.add(
+        DefaultQuickActionVersion(
+            id=uuid4(),
+            default_quick_action_id=quick_action.id,
+            version_no=_next_default_quick_action_version_no(
+                db, quick_action_id=quick_action.id
+            ),
+            mode=TemplateMode.freeform,
+            prompt_text=built_in["prompt_text"],
+            created_by_user_id=actor.id,
+        )
+    )
+
+
+def _upgrade_legacy_team_quick_action(
+    db: Session,
+    *,
+    quick_action: QuickAction,
+    built_in: dict[str, object],
+    actor: User,
+) -> None:
+    legacy = _LEGACY_BUILTIN_QUICK_ACTIONS.get(quick_action.name)
+    if (
+        legacy is None
+        or not quick_action.is_active
+        or quick_action.description != legacy["description"]
+    ):
+        return
+    latest = _latest_quick_action_version(db, quick_action_id=quick_action.id)
+    version_count = db.scalar(
+        select(func.count())
+        .select_from(QuickActionVersion)
+        .where(QuickActionVersion.quick_action_id == quick_action.id)
+    )
+    if (
+        version_count != 1
+        or latest.mode is not TemplateMode.freeform
+        or latest.prompt_text != legacy["prompt_text"]
+    ):
+        return
+    quick_action.description = built_in["description"]
+    db.add(quick_action)
+    db.add(
+        QuickActionVersion(
+            id=uuid4(),
+            quick_action_id=quick_action.id,
+            version_no=latest.version_no + 1,
+            mode=TemplateMode.freeform,
+            prompt_text=built_in["prompt_text"],
+            created_by_user_id=actor.id,
+        )
+    )
+
+
+def _retire_default_templates(db: Session) -> None:
+    retired_names = {name.lower() for name in RETIRED_TEMPLATE_NAMES}
+    for template in db.scalars(select(DefaultPromptTemplate)):
+        if template.name.strip().lower() not in retired_names:
+            continue
+        latest = _latest_default_template_version(db, template_id=template.id)
+        version_count = db.scalar(
+            select(func.count())
+            .select_from(DefaultPromptTemplateVersion)
+            .where(
+                DefaultPromptTemplateVersion.default_template_id == template.id
+            )
+        )
+        if (
+            template.is_active
+            and template.description == _LEGACY_BUILTIN_TEMPLATE["description"]
+            and version_count == 1
+            and latest.prompt_text == _LEGACY_BUILTIN_TEMPLATE["prompt_text"]
+            and latest.mode is _LEGACY_BUILTIN_TEMPLATE["mode"]
+            and latest.config_json == _LEGACY_BUILTIN_TEMPLATE["config_json"]
+        ):
+            db.delete(template)
+    db.flush()
+
+
+def _retire_team_templates(db: Session, *, team: Team) -> None:
+    retired_names = {name.lower() for name in RETIRED_TEMPLATE_NAMES}
+    for template in db.scalars(
+        select(PromptTemplate).where(
+            PromptTemplate.scope == TemplateScope.team,
+            PromptTemplate.team_id == team.id,
+        )
+    ):
+        if template.name.strip().lower() not in retired_names:
+            continue
+        latest = _latest_template_version(db, template_id=template.id)
+        version_count = db.scalar(
+            select(func.count())
+            .select_from(PromptTemplateVersion)
+            .where(PromptTemplateVersion.template_id == template.id)
+        )
+        if (
+            not template.is_active
+            or template.description != _LEGACY_BUILTIN_TEMPLATE["description"]
+            or version_count != 1
+            or latest.prompt_text != _LEGACY_BUILTIN_TEMPLATE["prompt_text"]
+            or latest.mode is not _LEGACY_BUILTIN_TEMPLATE["mode"]
+            or latest.config_json != _LEGACY_BUILTIN_TEMPLATE["config_json"]
+        ):
+            continue
+        version_ids = select(PromptTemplateVersion.id).where(
+            PromptTemplateVersion.template_id == template.id
+        )
+        active_document_id = db.scalar(
+            select(GeneratedDocument.id)
+            .where(
+                GeneratedDocument.template_version_id.in_(version_ids),
+                GeneratedDocument.status.in_(
+                    (
+                        GeneratedDocumentStatus.queued,
+                        GeneratedDocumentStatus.processing,
+                    )
+                ),
+            )
+            .limit(1)
+        )
+        if active_document_id is not None:
+            continue
+        _detach_generated_documents_from_template(db, template_id=template.id)
+        db.delete(template)
+    db.flush()
+
+
 def ensure_builtin_default_assets(db: Session, actor: User) -> None:
     _require_system_admin(actor)
-    if not _default_template_exists(db, name=BUILTIN_DEFAULT_TEMPLATE["name"]):
+    _retire_default_templates(db)
+    for built_in in BUILTIN_DEFAULT_TEMPLATES:
+        if _default_template_exists(db, name=built_in["name"]):
+            continue
         template = DefaultPromptTemplate(
             id=uuid4(),
-            name=BUILTIN_DEFAULT_TEMPLATE["name"],
-            description=BUILTIN_DEFAULT_TEMPLATE["description"],
+            name=built_in["name"],
+            description=built_in["description"],
             is_active=True,
             created_by_user_id=actor.id,
         )
@@ -228,15 +538,19 @@ def ensure_builtin_default_assets(db: Session, actor: User) -> None:
                 id=uuid4(),
                 default_template_id=template.id,
                 version_no=1,
-                mode=BUILTIN_DEFAULT_TEMPLATE["mode"],
-                prompt_text=BUILTIN_DEFAULT_TEMPLATE["prompt_text"],
-                config_json=BUILTIN_DEFAULT_TEMPLATE["config_json"],
+                mode=built_in["mode"],
+                prompt_text=built_in["prompt_text"],
+                config_json=built_in["config_json"],
                 created_by_user_id=actor.id,
             )
         )
 
     for built_in in BUILTIN_DEFAULT_QUICK_ACTIONS:
-        if _default_quick_action_exists(db, name=built_in["name"]):
+        existing = _default_quick_action_by_name(db, name=built_in["name"])
+        if existing is not None:
+            _upgrade_legacy_default_quick_action(
+                db, quick_action=existing, built_in=built_in, actor=actor
+            )
             continue
         quick_action = DefaultQuickAction(
             id=uuid4(),
@@ -260,14 +574,17 @@ def ensure_builtin_default_assets(db: Session, actor: User) -> None:
 
 
 def ensure_builtin_team_assets(db: Session, *, team: Team, actor: User) -> None:
-    if not _team_template_exists(db, team=team, name=BUILTIN_DEFAULT_TEMPLATE["name"]):
+    _retire_team_templates(db, team=team)
+    for built_in in BUILTIN_DEFAULT_TEMPLATES:
+        if _team_template_exists(db, team=team, name=built_in["name"]):
+            continue
         template = PromptTemplate(
             id=uuid4(),
             scope=TemplateScope.team,
             owner_user_id=None,
             team_id=team.id,
-            name=BUILTIN_DEFAULT_TEMPLATE["name"],
-            description=BUILTIN_DEFAULT_TEMPLATE["description"],
+            name=built_in["name"],
+            description=built_in["description"],
             is_active=True,
             created_by_user_id=actor.id,
         )
@@ -278,15 +595,21 @@ def ensure_builtin_team_assets(db: Session, *, team: Team, actor: User) -> None:
                 id=uuid4(),
                 template_id=template.id,
                 version_no=1,
-                mode=BUILTIN_DEFAULT_TEMPLATE["mode"],
-                prompt_text=BUILTIN_DEFAULT_TEMPLATE["prompt_text"],
-                config_json=BUILTIN_DEFAULT_TEMPLATE["config_json"],
+                mode=built_in["mode"],
+                prompt_text=built_in["prompt_text"],
+                config_json=built_in["config_json"],
                 created_by_user_id=actor.id,
             )
         )
 
     for built_in in BUILTIN_DEFAULT_QUICK_ACTIONS:
-        if _team_quick_action_exists(db, team=team, name=built_in["name"]):
+        existing = _team_quick_action_by_name(
+            db, team=team, name=built_in["name"]
+        )
+        if existing is not None:
+            _upgrade_legacy_team_quick_action(
+                db, quick_action=existing, built_in=built_in, actor=actor
+            )
             continue
         quick_action = QuickAction(
             id=uuid4(),
@@ -573,8 +896,12 @@ def import_team_assets_to_defaults(db: Session, actor: User, *, source_team_name
 
 def seed_team_default_assets(db: Session, *, team: Team, actor: User) -> None:
     _require_system_admin(actor)
+    _retire_team_templates(db, team=team)
     default_templates = list(db.scalars(select(DefaultPromptTemplate).where(DefaultPromptTemplate.is_active.is_(True)).order_by(DefaultPromptTemplate.updated_at.asc(), DefaultPromptTemplate.id.asc())))
+    default_templates.sort(key=lambda template: template.name == PRIMARY_TEMPLATE_NAME)
     for default_template in default_templates:
+        if _team_template_exists(db, team=team, name=default_template.name):
+            continue
         latest_version = _latest_default_template_version(db, template_id=default_template.id)
         template = PromptTemplate(
             id=uuid4(),
@@ -602,6 +929,8 @@ def seed_team_default_assets(db: Session, *, team: Team, actor: User) -> None:
 
     default_quick_actions = list(db.scalars(select(DefaultQuickAction).where(DefaultQuickAction.is_active.is_(True)).order_by(DefaultQuickAction.updated_at.asc(), DefaultQuickAction.id.asc())))
     for default_quick_action in default_quick_actions:
+        if _team_quick_action_exists(db, team=team, name=default_quick_action.name):
+            continue
         latest_version = _latest_default_quick_action_version(db, quick_action_id=default_quick_action.id)
         quick_action = QuickAction(
             id=uuid4(),

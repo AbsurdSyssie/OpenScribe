@@ -129,12 +129,22 @@ When resetting/revoking quotas, understand the active reservation/attempt lifecy
 
 System administrators manage global default Templates and Quick Actions. Team leaders manage own-team assets.
 
+- A fresh bootstrap creates the built-in default catalogue.
+- New teams receive independent copies of the active defaults.
+- The built-in Templates are `Daily Driver`, `GP Note`, `GLP1 Review`,
+  `Depression`, and `Dictation cleaner`.
+- `Daily Driver` is the starting Template until a user chooses another default.
+- The built-in Quick Actions are `Physio Referral`, `Referral letter`, and
+  `Patient follow-up message`.
 - Keep reusable instructions generic and patient-free.
 - Use synthetic examples.
 - Validate structured EMIS section keys and required instructions.
 - Review active/version behavior after edits.
 - Imported bundle metadata must not become ownership/team/version/creator authority.
 - Mark output as draft requiring clinician review where appropriate.
+
+Changing a global default does not rewrite an existing team's copy. This keeps
+team edits and version history independent.
 
 ## Security audit
 

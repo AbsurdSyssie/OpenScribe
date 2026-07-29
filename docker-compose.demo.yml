@@ -1,0 +1,169 @@
+name: openscribe-demo
+
+x-openscribe-environment: &openscribe-environment
+  APP_ENV: local
+  APP_HOST: 0.0.0.0
+  APP_PORT: 8080
+  APP_PUBLIC_URL: http://127.0.0.1:8080
+  CONTAINER_APP_PORT: 8080
+  CSRF_SECRET: "${CSRF_SECRET:-}"
+  SECRET_KEY: "${SECRET_KEY:-}"
+  CSRF_SECRET_VAULT_REF: "${CSRF_SECRET_VAULT_REF:-}"
+  COOKIE_SECURE_MODE: auto
+  HSTS_SOURCE: app
+  PUBLIC_API_DOCS: "true"
+  TRUST_FORWARDED_ORIGIN_HEADERS: "false"
+  AUDIT_TRUST_X_FORWARDED_FOR: "false"
+  AUDIT_TRUST_CLOUDFLARE: "false"
+  AUDIT_SUBJECT_HASH_SECRET: "${AUDIT_SUBJECT_HASH_SECRET:-}"
+  PROVIDER_CREDENTIAL_FINGERPRINT_SECRET: "${PROVIDER_CREDENTIAL_FINGERPRINT_SECRET:-}"
+  DATABASE_URL: postgresql+psycopg://ambient:ambient@postgres:5432/ambient_scribe
+  RATE_LIMIT_STORAGE_URL: redis://redis:6379/0
+  RATE_LIMIT_KEY_PREFIX: "${RATE_LIMIT_KEY_PREFIX:-}"
+  CELERY_BROKER_URL: redis://redis:6379/2
+  CELERY_RESULT_BACKEND: redis://redis:6379/2
+  CELERY_LOG_LEVEL: "${CELERY_LOG_LEVEL:-INFO}"
+  CELERY_TASK_ALWAYS_EAGER: "false"
+  TASK_OUTBOX_MAX_ATTEMPTS: "${TASK_OUTBOX_MAX_ATTEMPTS:-10}"
+  VAULT_ADDR: http://vault:8200
+  VAULT_TOKEN_FILE: /app/.local/vault/root-token
+  VAULT_KV_MOUNT: "${VAULT_KV_MOUNT:-secret}"
+  VAULT_TRANSIT_MOUNT: "${VAULT_TRANSIT_MOUNT:-transit}"
+  VAULT_USER_CONTENT_KEK_KEY_NAME: "${VAULT_USER_CONTENT_KEK_KEY_NAME:-openscribe-user-content-kek}"
+  LOCAL_VAULT_WAIT_TIMEOUT_SECONDS: "${LOCAL_VAULT_WAIT_TIMEOUT_SECONDS:-90}"
+  LOCAL_VAULT_WAIT_RETRY_INTERVAL_SECONDS: "${LOCAL_VAULT_WAIT_RETRY_INTERVAL_SECONDS:-1}"
+  MAIL_TRANSPORT: disabled
+  MAIL_FROM_ADDRESS: no-reply@example.com
+  MAIL_FROM_NAME: OpenScribe
+  MAIL_REPLY_TO: ""
+  RESEND_API_KEY: ""
+  RESEND_API_KEY_VAULT_REF: ""
+  LIVE_CHUNK_UPLOAD_RATE_LIMIT: "${LIVE_CHUNK_UPLOAD_RATE_LIMIT:-1/second}"
+  WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT: "${WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT:-1/5 seconds}"
+  WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT: "${WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT:-100/day}"
+  LLM_GENERATION_BURST_RATE_LIMIT: "${LLM_GENERATION_BURST_RATE_LIMIT:-20/3 minutes}"
+  LLM_GENERATION_DAILY_RATE_LIMIT: "${LLM_GENERATION_DAILY_RATE_LIMIT:-200/day}"
+  LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS: "${LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS:-3600}"
+  WHOLE_FILE_HOURLY_UPLOAD_BYTES: "${WHOLE_FILE_HOURLY_UPLOAD_BYTES:-209715200}"
+  WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS: "${WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS:-14400}"
+  MAX_RETENTION_DAYS: "${MAX_RETENTION_DAYS:-90}"
+  WHOLE_FILE_MAX_UPLOAD_BYTES: "${WHOLE_FILE_MAX_UPLOAD_BYTES:-209715200}"
+  WHOLE_FILE_MAX_DURATION_SECONDS: "${WHOLE_FILE_MAX_DURATION_SECONDS:-14400}"
+  AUDIO_FFPROBE_TIMEOUT_SECONDS: "${AUDIO_FFPROBE_TIMEOUT_SECONDS:-15}"
+  AUDIO_FFMPEG_TIMEOUT_SECONDS: "${AUDIO_FFMPEG_TIMEOUT_SECONDS:-1800}"
+  STT_TRANSCRIPTION_TIMEOUT_SECONDS: "${STT_TRANSCRIPTION_TIMEOUT_SECONDS:-14400}"
+  LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS: "${LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS:-600}"
+  INGESTION_RESERVATION_VALIDITY_SECONDS: "${INGESTION_RESERVATION_VALIDITY_SECONDS:-900}"
+  INGESTION_PROVIDER_DEADLINE_SECONDS: "${INGESTION_PROVIDER_DEADLINE_SECONDS:-14700}"
+  GENERATION_WAIT_FOR_TRANSCRIPT_TIMEOUT_SECONDS: "${GENERATION_WAIT_FOR_TRANSCRIPT_TIMEOUT_SECONDS:-120}"
+  ENABLE_GEMINI_ENTERPRISE_PROVIDER: "${ENABLE_GEMINI_ENTERPRISE_PROVIDER:-true}"
+  DOCKER_SEED_TEST_ACCOUNTS: "false"
+  CELERY_WORKER_CONCURRENCY: "${CELERY_WORKER_CONCURRENCY:-1}"
+  CONTAINER_STARTUP_TIMEOUT_SECONDS: "${CONTAINER_STARTUP_TIMEOUT_SECONDS:-90}"
+  FORWARDED_ALLOW_IPS: 127.0.0.1
+  HALLUCINATION_CHECK_DEBUG_UI: "0"
+  DEMO_TEAM_NAME: OpenScribe Demo Team
+  DEMO_PASSWORD: OpenScribeLocal27
+  DEMO_ADMIN_EMAIL: admin@openscribe.local
+  DEMO_LEADER_EMAIL: leader@openscribe.local
+  DEMO_CLINICIAN_EMAIL: clinician@openscribe.local
+
+x-openscribe-volumes: &openscribe-volumes
+  - vault_bootstrap:/app/.local/vault
+  - demo_state:/app/.local/demo
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ambient_scribe
+      POSTGRES_USER: ambient
+      POSTGRES_PASSWORD: ambient
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ambient -d ambient_scribe"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  vault:
+    image: hashicorp/vault:1.17
+    restart: unless-stopped
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - ./docker/vault/local.hcl:/vault/config/local.hcl:ro
+      - vault_data:/vault/file
+    command: vault server -config=/vault/config/local.hcl
+    healthcheck:
+      test: ["CMD-SHELL", "VAULT_ADDR=http://127.0.0.1:8200 vault status >/dev/null 2>&1 || test $$? -eq 2"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  openscribe:
+    build:
+      context: .
+    image: openscribe-demo:local
+    restart: unless-stopped
+    init: true
+    environment: *openscribe-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes: *openscribe-volumes
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+
+  seed-demo:
+    image: openscribe-demo:local
+    restart: "no"
+    environment:
+      <<: *openscribe-environment
+      DEMO_BOOTSTRAP_ENABLED: "true"
+    depends_on:
+      openscribe:
+        condition: service_healthy
+    volumes: *openscribe-volumes
+    security_opt:
+      - no-new-privileges:true
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        chown openscribe:openscribe /app/.local/demo
+        exec gosu openscribe python scripts/seed_demo.py
+
+volumes:
+  postgres_data:
+  redis_data:
+  vault_data:
+  vault_bootstrap:
+  demo_state:

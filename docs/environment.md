@@ -136,6 +136,22 @@ Google SDK identity is configured through standard Google variables rather than 
 
 See [docker.md](docker.md) for migration, startup, persistence, backup, and reverse-proxy instructions.
 
+## Local demo bootstrap
+
+The isolated demo Compose file sets these values. They are not normal deployment settings.
+
+| Variable | Demo value | Purpose |
+| --- | --- | --- |
+| `DEMO_TEAM_NAME` | `OpenScribe Demo Team` | Name of the seeded team. |
+| `DEMO_ADMIN_EMAIL` | `admin@openscribe.local` | Fixed system-administrator login. |
+| `DEMO_LEADER_EMAIL` | `leader@openscribe.local` | Fixed team-leader login. |
+| `DEMO_CLINICIAN_EMAIL` | `clinician@openscribe.local` | Fixed clinician login and owner of the synthetic consultation. |
+| `DEMO_PASSWORD` | `OpenScribeLocal27` | Fixed password for all three local accounts. |
+| `DEMO_BOOTSTRAP_ENABLED` | `true` | Explicitly permits the demo seed. The demo Compose file sets this only for its one-shot seed service. |
+| `DEMO_BOOTSTRAP_MARKER` | `/app/.local/demo/bootstrap-complete` | Optional marker path used by tests or alternate local packaging. The demo Compose file uses the default path in its seed-state volume. |
+
+The seed refuses to run unless `APP_ENV` is local or development and `DEMO_BOOTSTRAP_ENABLED` is true. The demo Compose file supplies both values, so its normal start command needs no extra flags. The seed writes its marker only after accounts, encrypted synthetic content, Presidio redaction, and the example draft succeed. The marker records the seeded team ID. Later starts confirm that the marker belongs to the current PostgreSQL data set, then leave the database unchanged. See [local-demo.md](local-demo.md).
+
 ## Host development only
 
 These variables are consumed by `start-dev.sh` and are not application runtime policy:

@@ -1749,6 +1749,7 @@ def create_bootstrap_admin(db: Session, *, email: str, password: str) -> User:
     try:
         db.flush()
         ensure_user_dek(db, user=user)
+        ensure_builtin_default_assets(db, user)
         db.commit()
     except IntegrityError as exc:
         db.rollback()

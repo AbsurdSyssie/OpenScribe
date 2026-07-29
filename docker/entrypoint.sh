@@ -5,6 +5,9 @@ set -euo pipefail
 if [[ "$(id -u)" -eq 0 ]]; then
   mkdir -p /app/.local/vault
   chown -R openscribe:openscribe /app/.local/vault
+  if [[ -d /app/.local/demo ]]; then
+    chown -R openscribe:openscribe /app/.local/demo
+  fi
   exec gosu openscribe "$0" "$@"
 fi
 

@@ -40,6 +40,24 @@ def test_followup_redesign_orders_default_then_favorites_then_name():
     assert [asset.id for asset in ordered] == ["c", "d", "b", "a"]
 
 
+def test_daily_driver_is_default_until_user_chooses_another_template():
+    assets = [
+        SimpleNamespace(id="custom", name="A personal note"),
+        SimpleNamespace(id="daily", name="Daily Driver"),
+        SimpleNamespace(id="gp", name="GP Note"),
+    ]
+
+    automatic = _order_assets_by_preferences(
+        assets, favorite_ids=["custom"], default_id=None
+    )
+    explicit = _order_assets_by_preferences(
+        assets, favorite_ids=["daily"], default_id="gp"
+    )
+
+    assert [asset.id for asset in automatic] == ["daily", "custom", "gp"]
+    assert [asset.id for asset in explicit] == ["gp", "daily", "custom"]
+
+
 def test_followup_redesign_preserves_required_hooks():
     workspace_template = Path("app/templates/transcribe/_workspace.html").read_text()
     transcribe_css = Path("app/static/css/transcribe.css").read_text()

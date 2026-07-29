@@ -36,5 +36,12 @@ AGENTS.md
 brief.md
 CONTEXT.md
 
-.codex
-.agents
+.codex/
+.agents/
+.claude/
+.codebuddy/
+.gemini/
+.qoder/
+.mcp.json
+.code-review-graph/
+/evaluate/

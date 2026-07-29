@@ -1,0 +1,2 @@
+PRIMARY_TEMPLATE_NAME = "Daily Driver"
+RETIRED_TEMPLATE_NAMES = ("Sectioned EMIS note",)

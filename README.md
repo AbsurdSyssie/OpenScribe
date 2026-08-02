@@ -1,5 +1,52 @@
 # OpenScribe
 
+**An open-source clinical scribe for UK healthcare organisations.**
+
+OpenScribe lets organisations host their own secure Ambient Voice Technology
+(AVT) service for many users and teams. It combines the familiar features of
+commercial scribes with greater control over providers, data, and clinical
+workflows.
+
+## Why OpenScribe?
+
+### Notes shaped for your record
+
+Generate structured notes under familiar EPR headings. OpenScribe currently
+includes an EMIS-aligned profile, so notes arrive in a form that is easy to
+review and transfer.
+
+### Cut the AI-isms
+
+Review notes line by line in a purpose-built editor. Edit, reorder, or leave
+out unwanted statements, then copy only the useful parts into the patient
+record.
+
+### Tell it what mattered
+
+After the consultation, record or type a short dictation to highlight key
+details and guide how the final note should be written.
+
+### Choose your own AI
+
+Connect local or hosted speech-recognition and language-model services.
+Organisations control the credentials and available providers; teams choose
+from the services approved for them.
+
+### One service, many teams
+
+Run multiple clinical teams and users on one deployment. Teams can share
+templates while clinicians retain their own templates, preferences, and
+consultation history.
+
+### Private clinical content
+
+Administrators can manage users, teams, providers, retention, and usage
+without being able to read clinicians' consultation content.
+
+Transcripts, dictation, notes, and other designated clinical content are
+encrypted with per-user keys. Provider credentials are held separately in
+Vault.
+
 ## Documentation
 
 Start with the [documentation index](docs/README.md), which separates maintained current references from implemented design history, future roadmaps, and dated compliance evidence.

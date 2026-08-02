@@ -1,3 +1,36 @@
+export function formatSessionRailCreatedAt(value) {
+  if (!value) return '';
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  return new Intl.DateTimeFormat('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(new Date(timestamp));
+}
+
+export function sessionRailGroup(value) {
+  const timestamp = Date.parse(value || '');
+  if (!Number.isFinite(timestamp)) {
+    return { dateKey: 'unknown', dateLabel: 'Earlier', period: 'afternoon' };
+  }
+  const date = new Date(timestamp);
+  const dateKey = [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-');
+  return {
+    dateKey,
+    dateLabel: new Intl.DateTimeFormat('en-GB', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    }).format(date),
+    period: date.getHours() < 12 ? 'morning' : 'afternoon',
+  };
+}
+
 export function keepSessionRailItemVisible({ scrollContainer, item, inset = 12, behavior = 'smooth' }) {
   if (!scrollContainer || !item) return null;
   const itemRect = item.getBoundingClientRect();

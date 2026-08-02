@@ -195,7 +195,7 @@ def test_generation_loading_replaces_plain_text_placeholders():
     assert "generationLoadingHtml({ label: 'follow-up'" in app_js
     assert "structured.js?v=20260718-note-pill-datetime" in app_js
     assert "documents.js?v=20260718-note-pill-datetime" in app_js
-    assert "/static/js/transcribe/app.js?v=20260720-concurrent-followup" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260730-local-time" in shell_extras
     assert ".note-generation-loading" in transcribe_css
     assert "@keyframes note-generation-orbit" in transcribe_css
     assert 'data-transcription-loading' in workspace_template

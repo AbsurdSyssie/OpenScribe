@@ -1,6 +1,50 @@
+import os
 import subprocess
 import textwrap
 from pathlib import Path
+
+
+def test_session_rail_formats_and_groups_timestamps_in_browser_timezone(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    runner = tmp_path / "session_rail_timezone_runner.mjs"
+    runner.write_text(
+        textwrap.dedent(
+            """
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import vm from 'node:vm';
+
+            const sourcePath = __SOURCE_PATH__;
+            const source = fs.readFileSync(sourcePath, 'utf8')
+              .replaceAll('export function ', 'function ');
+            const sandbox = { Date, Intl, Number };
+            sandbox.globalThis = sandbox;
+            vm.createContext(sandbox);
+            vm.runInContext(source, sandbox, { filename: sourcePath });
+
+            assert.equal(
+              sandbox.formatSessionRailCreatedAt('2026-07-19T12:00:00+00:00'),
+              '13:00',
+            );
+            assert.equal(
+              sandbox.formatSessionRailCreatedAt('2026-01-19T12:00:00+00:00'),
+              '12:00',
+            );
+            assert.deepEqual(
+              JSON.parse(JSON.stringify(sandbox.sessionRailGroup('2026-07-19T23:30:00+00:00'))),
+              {
+                dateKey: '2026-07-20',
+                dateLabel: '20/07/2026',
+                period: 'morning',
+              },
+            );
+            """
+        ).replace("__SOURCE_PATH__", repr(str(root / "app/static/js/transcribe/sessionRail.js"))),
+        encoding="utf-8",
+    )
+
+    env = {**os.environ, "TZ": "Europe/London"}
+    subprocess.run(["node", str(runner)], check=True, cwd=root, env=env)
 
 
 def test_session_rail_preserves_visible_item_and_nudges_clipped_items(tmp_path):

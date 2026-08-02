@@ -10,7 +10,13 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
 import { csrfFetch } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
-import { keepSessionRailItemVisible, reconcileSessionRailItems, sortSessionRailItems } from './sessionRail.js?v=20260719-preserve-loaded';
+import {
+  formatSessionRailCreatedAt,
+  keepSessionRailItemVisible,
+  reconcileSessionRailItems,
+  sessionRailGroup,
+  sortSessionRailItems,
+} from './sessionRail.js?v=20260730-local-time';
 
       const bootstrap = readTranscribeBootstrap();
       const shell = document.querySelector('[data-workspace-endpoint]');
@@ -2642,20 +2648,6 @@ let statusDetailsHideTimer = null;
         window.refreshLucideIcons?.(node);
       };
 
-      const formatSidebarCreatedAt = (value) => {
-        if (!value) return '';
-        const timestamp = Date.parse(value);
-        if (!Number.isFinite(timestamp)) return value;
-        return new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'UTC' }).format(new Date(timestamp));
-      };
-
-      const sidebarSessionGroup = (value) => {
-        const timestamp = Date.parse(value || '');
-        if (!Number.isFinite(timestamp)) return { dateKey: 'unknown', dateLabel: 'Earlier', period: 'afternoon' };
-        const date = new Date(timestamp);
-        return { dateKey: date.toISOString().slice(0, 10), dateLabel: new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'UTC' }).format(date), period: date.getUTCHours() < 12 ? 'morning' : 'afternoon' };
-      };
-
       const createSidebarDateDivider = (label) => {
         const divider = document.createElement('div');
         divider.className = 'session-date-divider';
@@ -2713,7 +2705,7 @@ let statusDetailsHideTimer = null;
 
         const createdAt = document.createElement('span');
         createdAt.className = 'text-xs text-slate';
-        createdAt.textContent = formatSidebarCreatedAt(item.created_at);
+        createdAt.textContent = formatSessionRailCreatedAt(item.created_at);
 
         const status = document.createElement('span');
         status.dataset.sidebarStatus = item.id;
@@ -2803,7 +2795,7 @@ let statusDetailsHideTimer = null;
         sessionRailItems.forEach((item) => {
           if (!item?.id) return;
           seenIds.add(String(item.id));
-          const group = sidebarSessionGroup(item.created_at);
+          const group = sessionRailGroup(item.created_at);
           if (group.dateKey !== previousDateKey) {
             fragment.append(createSidebarDateDivider(group.dateLabel));
             previousDateKey = group.dateKey;

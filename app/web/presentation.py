@@ -63,6 +63,7 @@ from ..schemas import (
 from ..llm_provider_defaults import DEFAULT_BEDROCK_CHAT_REGION, bedrock_region_from_base_url
 from ..services.admin import (
     admin_usage_overview as admin_usage_overview_service,
+    bootstrap_admin_is_configured,
     list_manageable_account_requests as list_manageable_account_requests_service,
     list_manageable_users as list_manageable_users_service,
     list_teams as list_teams_service,
@@ -824,7 +825,7 @@ def render_auth_page(
 ):
     context = {
         "request": request,
-        "bootstrap_allowed": user_count_service(db) == 0,
+        "bootstrap_allowed": bootstrap_admin_is_configured() and user_count_service(db) == 0,
         "password_reset_email_enabled": email_password_reset_enabled_service(),
         "message": message,
         "message_kind": message_kind,

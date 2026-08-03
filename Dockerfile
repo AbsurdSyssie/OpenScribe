@@ -16,9 +16,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
-RUN python -m pip install --upgrade pip \
-    && python -m pip install -r requirements.txt \
-    && python -m spacy download en_core_web_sm
+RUN python -m pip install -r requirements.txt
 
 COPY alembic.ini ./
 COPY alembic ./alembic

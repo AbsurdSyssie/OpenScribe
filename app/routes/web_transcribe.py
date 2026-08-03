@@ -110,6 +110,11 @@ def home_upload_transcript_file(
         )
 
     try:
+        audio_bytes = read_whole_file_upload(upload=audio)
+    except AppError as exc:
+        return _transcribe_redirect_response(message=exc.message, message_kind="error")
+
+    try:
         active_team_stt_selection_service(db, team_id=context.user.team_id)
     except AppError as exc:
         if exc.code == "business_rule_violation":
@@ -128,7 +133,6 @@ def home_upload_transcript_file(
                 message_kind="error",
             )
         return _transcribe_redirect_response(message=exc.message, message_kind="error")
-    audio_bytes = audio.file.read()
     try:
         enforce_whole_file_upload_size(audio_bytes=audio_bytes)
         transcript = start_transcript_service(
@@ -186,6 +190,15 @@ def transcribe_upload_transcript_file(
         )
 
     try:
+        audio_bytes = read_whole_file_upload(upload=audio)
+    except AppError as exc:
+        return _transcribe_redirect_response(
+            message=exc.message,
+            message_kind="error",
+            queued_transcript_id=UUID(transcript_id) if transcript_id else None,
+        )
+
+    try:
         active_team_stt_selection_service(db, team_id=context.user.team_id)
     except AppError as exc:
         if exc.code == "business_rule_violation":
@@ -205,7 +218,6 @@ def transcribe_upload_transcript_file(
                 queued_transcript_id=UUID(transcript_id) if transcript_id else None,
             )
         return _transcribe_redirect_response(message=exc.message, message_kind="error")
-    audio_bytes = audio.file.read()
     try:
         enforce_whole_file_upload_size(audio_bytes=audio_bytes)
         if not transcript_id:
@@ -308,7 +320,7 @@ def transcribe_upload_dictation_file(
             db,
             context.user,
             transcript_id=transcript_id,
-            audio_bytes=audio.file.read(),
+            audio_bytes=read_whole_file_upload(upload=audio),
             filename=audio.filename or "audio.bin",
         )
         detail = dictation_detail_response(db, dictation=dictation)

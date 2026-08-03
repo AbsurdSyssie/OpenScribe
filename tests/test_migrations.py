@@ -108,6 +108,10 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
     audit_indexes = {index["name"] for index in inspect(engine).get_indexes("security_audit_events")}
     assert "ix_security_audit_events_created_at" in audit_indexes
     inspector = inspect(engine)
+    account_request_indexes = {index["name"]: index for index in inspector.get_indexes("account_requests")}
+    pending_request_index = account_request_indexes["uq_account_requests_pending_email_team"]
+    assert pending_request_index["unique"] is True
+    assert "status = 'pending'" in pending_request_index["dialect_options"]["postgresql_where"]
     for table in ("team_stt_configs", "team_llm_configs"):
         assert "revision_of_config_id" in {column["name"] for column in inspector.get_columns(table)}
         indexes = {index["name"]: index for index in inspector.get_indexes(table)}

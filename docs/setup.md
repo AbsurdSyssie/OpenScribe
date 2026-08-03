@@ -18,11 +18,10 @@ cp .env.example .env
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
-python -m spacy download en_core_web_sm
 ./start-dev.sh
 ```
 
-`requirements-dev.txt` includes the runtime dependencies plus test tools. The persistent Docker image installs `requirements.txt` only.
+`requirements-dev.txt` includes the runtime dependencies plus test tools. The requirements install the pinned `en_core_web_sm` model wheel; do not run a separate `spacy download` command. The persistent Docker image installs `requirements.txt` only.
 
 `start-dev.sh`:
 
@@ -74,11 +73,12 @@ Full normal-user and team-leader login lands on `/workspace`. Legacy `GET /home`
 When the database has no users:
 
 1. open `/login`;
-2. create the first system administrator through the bootstrap form;
-3. complete password/TOTP onboarding;
-4. use `/admin` to create teams and provision provider metadata.
+2. in production, set `BOOTSTRAP_ADMIN_TOKEN` in deployment secret storage and enter its value in the bootstrap form;
+3. create the first system administrator through the bootstrap form;
+4. complete password/TOTP onboarding;
+5. use `/admin` to create teams and provision provider metadata.
 
-After any user exists, bootstrap is disabled. Other users are created by managers or from approved account requests. See [auth.md](auth.md).
+After any user exists, bootstrap is disabled. Creation takes a database transaction advisory lock and rechecks the user count, so concurrent first-admin requests cannot both succeed. Other users are created by managers or from approved account requests. See [auth.md](auth.md).
 
 ## Development accounts
 
@@ -167,6 +167,8 @@ Default whole-file safeguards:
 - ffprobe timeout: 15 seconds;
 - ffmpeg timeout: 1,800 seconds;
 - synchronous STT timeout: 14,400 seconds.
+
+Each live chunk is limited to 24 MiB. The application uses bounded upload readers, but a public proxy/CDN must also set request-body caps so it rejects oversized bodies before forwarding them.
 
 All values and variable names are in [environment.md](environment.md). Provider/accounting quotas can reject work before these transport limits.
 

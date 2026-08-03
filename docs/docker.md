@@ -20,7 +20,7 @@ This preserves the current local architecture. It is not a production reference 
 
 ```bash
 cp .env.example .env
-# Review APP_PUBLIC_URL, secrets, mail, proxy trust, and Docker settings.
+# Review APP_PUBLIC_URL, ALLOWED_HOSTS, BOOTSTRAP_ADMIN_TOKEN, secrets, mail, proxy trust, and Docker settings.
 docker compose --profile runtime up -d --build
 ```
 
@@ -178,14 +178,19 @@ A host reverse proxy can connect to loopback. When a proxy in another container/
 Configure all relevant boundaries independently:
 
 - `APP_PUBLIC_URL` = public HTTPS origin;
+- `ALLOWED_HOSTS` = exact public hostnames, with no wildcard. If the edge redirects `www` to the canonical host, list only the canonical host; otherwise list both exact hosts;
+- `APP_HEALTHCHECK_HOST` = one exact `ALLOWED_HOSTS` entry, normally the canonical public hostname. Compose sends this Host header to the loopback health endpoint rather than weakening host validation for localhost;
 - `APP_ENV=production`;
 - `COOKIE_SECURE_MODE=always`;
+- `BOOTSTRAP_ADMIN_TOKEN` = a deployment secret available only until the first system administrator is created;
 - one HSTS owner through `HSTS_SOURCE`;
 - `FORWARDED_ALLOW_IPS` = actual trusted proxy addresses accepted by Uvicorn;
 - `TRUST_FORWARDED_ORIGIN_HEADERS=true` only when that proxy sanitizes forwarded host/proto and direct origin access is blocked;
 - `AUDIT_TRUST_X_FORWARDED_FOR`/`AUDIT_TRUST_CLOUDFLARE` only for the expected sanitizing proxy/CDN path.
+- `RATE_LIMIT_TRUST_CLOUDFLARE=true` only after Cloudflare is the sole route to the origin and overwrites `CF-Connecting-IP`; use `RATE_LIMIT_TRUST_X_FORWARDED_FOR=true` only for an equivalent trusted proxy that overwrites `X-Forwarded-For`. Cloudflare takes precedence when both are true.
+- request-body limits at the reverse proxy/CDN that match or are lower than the application upload limits, including the 24 MiB live-chunk limit.
 
-These switches are separate. Trusting Uvicorn forwarded headers does not automatically trust them for CSRF origin reconstruction or audit client IP.
+These switches are separate. Trusting Uvicorn forwarded headers does not automatically trust them for CSRF origin reconstruction, audit client IP, or rate-limit client IP.
 
 Do not use `FORWARDED_ALLOW_IPS=*` on an origin that is directly reachable.
 
@@ -252,3 +257,14 @@ Before clinical production:
 - coordinate PostgreSQL/Vault backup and restore drills;
 - monitor web, worker, Beat, database, Redis, Vault, retention, source-audio cleanup, provider-secret cleanup, and quota/outbox lifecycle;
 - establish deployment secret rotation, audit review, recovery, and destructive deletion procedures.
+
+## Operator actions still required
+
+The application changes do not complete edge or supply-chain work. Before relying on the related controls:
+
+- restrict origin access and confirm Cloudflare overwrites client-IP headers before enabling `RATE_LIMIT_TRUST_CLOUDFLARE`;
+- add Cloudflare WAF rate rules for public abuse paths;
+- set and test proxy/CDN request-body limits;
+- redirect `www` to the canonical host and remove wildcard DNS records that are not needed;
+- lock container image references by digest and dependency artifacts by full hashes; this work remains open;
+- use the current password-reset behaviour as implemented. A durable asynchronous mail design is still needed if stronger response-timing uniformity is required.

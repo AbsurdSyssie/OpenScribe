@@ -103,11 +103,10 @@ cp .env.example .env
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
-python -m spacy download en_core_web_sm
 ./start-dev.sh
 ```
 
-The development requirements include the runtime set plus test tools. The Docker image installs `requirements.txt` only.
+The development requirements include the runtime set plus test tools. They also install the pinned `en_core_web_sm` model wheel. The Docker image installs `requirements.txt` only.
 
 For a persistent restartable Docker runtime:
 
@@ -120,7 +119,7 @@ curl --fail http://127.0.0.1:8080/health
 
 The persistent profile stores PostgreSQL, Redis, Vault, and Vault bootstrap state in named volumes. It initializes/unseals Vault, applies migrations, and supervises the web server, one Celery worker, and Celery Beat whenever the application container starts. Beat publishes pending task-dispatch rows every second and runs retention, transcript-audio cleanup, provider-secret cleanup, and quota lifecycle processing every 10 seconds. Read [docs/docker.md](docs/docker.md) before migrating an existing `start-dev.sh` instance or exposing the service beyond localhost.
 
-Local `.env` should include `APP_ENV=local` and `COOKIE_SECURE_MODE=auto`. The application defaults to production behavior when no environment selector is set. Production must use `APP_ENV=production`, `COOKIE_SECURE_MODE=always`, an explicit or Vault-backed stable CSRF secret, intentional proxy trust, and exactly one HSTS owner through `HSTS_SOURCE`.
+Local `.env` should include `APP_ENV=local` and `COOKIE_SECURE_MODE=auto`. The application defaults to production behavior when no environment selector is set. Production must use `APP_ENV=production`, `COOKIE_SECURE_MODE=always`, an exact `ALLOWED_HOSTS` list (no wildcards), `BOOTSTRAP_ADMIN_TOKEN` before creating the first admin, an explicit or Vault-backed stable CSRF secret, intentional proxy trust, and exactly one HSTS owner through `HSTS_SOURCE`. See [docs/environment.md](docs/environment.md) and [docs/docker.md](docs/docker.md).
 
 `./start-dev.sh` bootstraps a persistent local Vault, stores local root-token and unseal material under `.local/vault/`, and seeds localhost-only test accounts by default. It keeps FastAPI, PostgreSQL, Redis, and Vault localhost-only unless remote binding and service exposure are enabled explicitly.
 

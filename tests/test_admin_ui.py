@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import timedelta
 from html.parser import HTMLParser
@@ -115,6 +116,16 @@ class FakeHttpxResponse:
     def __init__(self, payload: dict, status_code: int = 200):
         self._payload = payload
         self.status_code = status_code
+        self.headers = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def iter_bytes(self):
+        return iter([json.dumps(self._payload).encode("utf-8")])
 
     def json(self):
         return self._payload
@@ -179,11 +190,13 @@ def stub_stt_health_checks(monkeypatch):
     return None
 
 
-def test_login_page_exposes_bootstrap_when_database_is_empty(client):
+def test_login_page_exposes_bootstrap_when_database_is_empty(client, monkeypatch):
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_TOKEN", "synthetic-bootstrap-credential")
     page = client.get("/login")
 
     assert page.status_code == 200
     assert 'action="/bootstrap/system-admin"' in page.text
+    assert 'name="bootstrap_token"' in page.text
     assert 'action="/transcribe/sessions"' not in page.text
     assert 'action="/transcribe/sessions/start"' not in page.text
     assert "Create the first system admin" in page.text
@@ -235,10 +248,25 @@ def test_dev_seed_account_browser_login_is_restricted_to_localhost(client, make_
     assert "Dev test accounts are available only from localhost" in response.text
 
 
-def test_bootstrap_system_admin_gets_dek_and_browser_totp_enrollment_uses_encrypted_secret(client, db_session):
+def test_production_login_hides_unconfigured_bootstrap(client, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("BOOTSTRAP_ADMIN_TOKEN", raising=False)
+
+    page = client.get("/login")
+
+    assert page.status_code == 200
+    assert 'action="/bootstrap/system-admin"' not in page.text
+
+
+def test_bootstrap_system_admin_gets_dek_and_browser_totp_enrollment_uses_encrypted_secret(client, db_session, monkeypatch):
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_TOKEN", "synthetic-bootstrap-credential")
     bootstrap_response = client.post(
         "/bootstrap/system-admin",
-        data={"email": "admin@example.com", "password": "AdminPassword123"},
+        data={
+            "email": "admin@example.com",
+            "password": "AdminPassword123",
+            "bootstrap_token": "synthetic-bootstrap-credential",
+        },
         follow_redirects=False,
     )
     assert bootstrap_response.status_code == 303
@@ -272,6 +300,22 @@ def test_bootstrap_system_admin_gets_dek_and_browser_totp_enrollment_uses_encryp
     verify = client.post("/onboarding/totp/verify", data={"code": pyotp.TOTP(secret_match.group(1)).now()})
     assert verify.status_code == 200
     assert "Recovery codes" in verify.text
+
+
+def test_bootstrap_system_admin_rejects_wrong_deployment_credential(client, db_session, monkeypatch):
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_TOKEN", "correct-synthetic-bootstrap-credential")
+
+    response = client.post(
+        "/bootstrap/system-admin",
+        data={
+            "email": "attacker@example.com",
+            "password": "AdminPassword123",
+            "bootstrap_token": "wrong-synthetic-bootstrap-credential",
+        },
+    )
+
+    assert response.status_code == 403
+    assert db_session.scalar(select(User).where(User.email == "attacker@example.com")) is None
 
 
 def test_non_admin_login_redirects_to_workspace_and_leader_sees_review_tools(
@@ -1546,6 +1590,16 @@ def test_admin_deidentification_inspect_does_not_render_bearer_token(
 
     class FakeResponse:
         status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_bytes(self):
+            return iter([json.dumps(self.json()).encode("utf-8")])
 
         def json(self):
             return {
@@ -1554,14 +1608,15 @@ def test_admin_deidentification_inspect_does_not_render_bearer_token(
                 ],
             }
 
-    def fake_post(url, *, json, headers, timeout):
+    def fake_stream(method, url, *, json, headers, timeout):
+        assert method == "POST"
         captured["url"] = url
         captured["json"] = json
         captured["headers"] = headers
         captured["timeout"] = timeout
         return FakeResponse()
 
-    monkeypatch.setattr("app.services.deidentification.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.deidentification.httpx.stream", fake_stream)
 
     client.post(
         "/login",
@@ -3404,7 +3459,8 @@ def test_admin_stt_deepgram_draft_pages_show_model_dropdown_without_key_field(
     team = make_team(name="Clinic STT Draft UI")
     make_user(email="admin-stt-draft-ui@example.com", password="password-1", is_system_admin=True)
 
-    def fake_get(url, *, headers=None, timeout=None):
+    def fake_stream(method, url, *, headers=None, timeout=None):
+        assert method == "GET"
         assert url == "https://api.eu.deepgram.com/v1/models"
         assert headers == {"Authorization": "Token dg-secret"}
         return FakeHttpxResponse(
@@ -3416,7 +3472,7 @@ def test_admin_stt_deepgram_draft_pages_show_model_dropdown_without_key_field(
             }
         )
 
-    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_stream)
 
     client.post("/login", data={"email": "admin-stt-draft-ui@example.com", "password": "password-1"}, follow_redirects=False)
     created = client.post(
@@ -3699,6 +3755,54 @@ def test_user_home_can_queue_file_transcription_and_see_recent_transcript(client
     dispatch = db_session.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_id == job.id))
     assert dispatch is not None and dispatch.state is TaskDispatchState.pending
     assert job.celery_task_id == str(dispatch.task_id)
+
+
+def test_browser_whole_file_upload_rejects_oversized_payload_before_queueing(client, monkeypatch, make_team, make_user, make_stt_config, make_stt_selection):
+    team = make_team(name="Browser bounded whole-file upload")
+    admin = make_user(email="browser-bounded-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="browser-bounded-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=leader)
+    owner = make_user(email="browser-bounded-owner@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    monkeypatch.setattr("app.services.audio.WHOLE_FILE_MAX_UPLOAD_BYTES", 4)
+    queue_calls = []
+    monkeypatch.setattr("app.routes.web_transcribe.queue_audio_file_ingestion", lambda **kwargs: queue_calls.append(kwargs))
+    monkeypatch.setattr(
+        "app.routes.web_transcribe.active_team_stt_selection_service",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("STT selection must not run for an oversized upload")),
+    )
+
+    client.post("/login", data={"email": owner.email, "password": "password-3"}, follow_redirects=False)
+    response = client.post(
+        "/home/transcripts/upload",
+        data={"title": "Oversized upload"},
+        files={"audio": ("recording.wav", b"12345", "audio/wav")},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "Audio+file+exceeds+the+current+maximum+upload+size" in response.headers["location"]
+    assert queue_calls == []
+
+
+def test_browser_dictation_upload_rejects_oversized_payload_before_service(client, monkeypatch, make_team, make_user):
+    team = make_team(name="Browser bounded dictation upload")
+    owner = make_user(email="browser-dictation-owner@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    monkeypatch.setattr("app.services.audio.WHOLE_FILE_MAX_UPLOAD_BYTES", 4)
+    service_calls = []
+    monkeypatch.setattr("app.routes.web_transcribe.append_post_consultation_dictation_audio", lambda **kwargs: service_calls.append(kwargs))
+
+    client.post("/login", data={"email": owner.email, "password": "password-1"}, follow_redirects=False)
+    response = client.post(
+        "/transcribe/dictation/upload",
+        data={"transcript_id": "00000000-0000-0000-0000-000000000000"},
+        files={"audio": ("dictation.wav", b"12345", "audio/wav")},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "Audio+file+exceeds+the+current+maximum+upload+size" in response.headers["location"]
+    assert service_calls == []
 
 
 def test_browser_transcribe_upload_shares_rate_limit_bucket_with_api_route(

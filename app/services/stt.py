@@ -1,6 +1,7 @@
 import io
 import hashlib
 import hmac
+import json
 import logging
 import os
 from datetime import timedelta
@@ -43,14 +44,17 @@ from app.services.vault import delete_team_stt_bearer_token, read_team_stt_beare
 from app.services.provider_secret_cleanup import queue_orphan_provider_secret_after_rollback, queue_provider_secret_cleanup
 from app.services.quotas import mark_provider_attempt_submitted, reserve_provider_attempt, settle_provider_attempt_audio
 from app.services.provider_errors import safe_provider_error_code
+from app.provider_url_security import require_safe_provider_url
 from app.services.audio import normalized_wav_duration_seconds
 from app.services.provider_inspection import (
+    ProviderResponseTooLargeError,
     dereference_openapi_document,
     display_default_from_schema_property,
     extract_json_path,
     fetch_openapi_document,
     operation_request_schema,
     operation_response_schema,
+    read_limited_httpx_response,
 )
 
 
@@ -81,8 +85,13 @@ logger = logging.getLogger("openscribe.stt")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STT_SAMPLE_PATH = REPO_ROOT / "tests" / "MoreOrLess.wav"
 STT_TRANSCRIPTION_TIMEOUT_SECONDS = float(os.getenv("STT_TRANSCRIPTION_TIMEOUT_SECONDS", str(4 * 60 * 60)))
+STT_MODEL_DISCOVERY_MAX_RESPONSE_BYTES = 1024 * 1024
+STT_PROVIDER_ERROR_RESPONSE_MAX_BYTES = 64 * 1024
+STT_TRANSCRIPTION_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
 SYNC_STT_RESERVATION_GRACE_SECONDS = 60
 _STT_CREDENTIAL_UNRESOLVED = object()
+_STT_PROVIDER_ERROR_CODE_UNREAD = object()
+_STT_PROVIDER_ERROR_CODE_ATTRIBUTE = "_openscribe_stt_provider_error_code"
 
 
 def _record_stt_audit(db: Session, *, action: str, actor: User, team_id: UUID, config_id: UUID | None = None, outcome: str = "success", **details: Any) -> None:
@@ -647,6 +656,7 @@ def _candidate_stt_openapi_paths(openapi_path: str | None) -> list[str]:
 
 
 def _list_openai_transcription_models(*, api_key: str, base_url: str) -> list[str]:
+    require_safe_provider_url(base_url)
     try:
         client = OpenAI(api_key=api_key, base_url=base_url)
         models_page = client.models.list()
@@ -669,13 +679,16 @@ def _list_openai_transcription_models(*, api_key: str, base_url: str) -> list[st
 
 
 def _list_deepgram_stt_models(*, api_key: str, base_url: str) -> list[str]:
+    require_safe_provider_url(base_url)
     try:
-        response = httpx.get(
+        with httpx.stream(
+            "GET",
             f"{base_url.rstrip('/')}/v1/models",
             headers={"Authorization": f"Token {api_key}"},
             timeout=10.0,
-        )
-        response.raise_for_status()
+        ) as response:
+            response.raise_for_status()
+            payload = json.loads(read_limited_httpx_response(response, max_bytes=STT_MODEL_DISCOVERY_MAX_RESPONSE_BYTES))
     except httpx.HTTPStatusError as exc:
         status_code = exc.response.status_code if exc.response is not None else None
         if status_code in {401, 403}:
@@ -698,9 +711,13 @@ def _list_deepgram_stt_models(*, api_key: str, base_url: str) -> list[str]:
             "Could not reach Deepgram model discovery",
             {"provider_error_code": _safe_http_error_details(exc).get("provider_error_code")},
         ) from exc
-
-    try:
-        payload = response.json()
+    except ProviderResponseTooLargeError as exc:
+        raise AppError(
+            502,
+            "stt_inspection_failed",
+            "Deepgram model discovery response exceeded the permitted size",
+            {"provider_error_code": "response_too_large"},
+        ) from exc
     except ValueError as exc:
         raise AppError(502, "stt_inspection_failed", "Deepgram model discovery returned invalid JSON") from exc
 
@@ -721,13 +738,16 @@ def _list_deepgram_stt_models(*, api_key: str, base_url: str) -> list[str]:
 
 
 def _list_elevenlabs_stt_models(*, api_key: str, base_url: str) -> list[str]:
+    require_safe_provider_url(base_url)
     try:
-        response = httpx.get(
+        with httpx.stream(
+            "GET",
             f"{base_url.rstrip('/')}/v1/models",
             headers={"xi-api-key": api_key},
             timeout=10.0,
-        )
-        response.raise_for_status()
+        ) as response:
+            response.raise_for_status()
+            payload = json.loads(read_limited_httpx_response(response, max_bytes=STT_MODEL_DISCOVERY_MAX_RESPONSE_BYTES))
     except httpx.HTTPStatusError as exc:
         status_code = exc.response.status_code if exc.response is not None else None
         if status_code in {401, 403}:
@@ -745,9 +765,13 @@ def _list_elevenlabs_stt_models(*, api_key: str, base_url: str) -> list[str]:
             "Could not reach ElevenLabs model discovery",
             {"provider_error_code": _safe_http_error_details(exc).get("provider_error_code")},
         ) from exc
-
-    try:
-        payload = response.json()
+    except ProviderResponseTooLargeError as exc:
+        raise AppError(
+            502,
+            "stt_inspection_failed",
+            "ElevenLabs model discovery response exceeded the permitted size",
+            {"provider_error_code": "response_too_large"},
+        ) from exc
     except ValueError as exc:
         raise AppError(502, "stt_inspection_failed", "ElevenLabs model discovery returned invalid JSON") from exc
 
@@ -965,6 +989,7 @@ def ensure_stt_service_healthy(
 ) -> None:
     if adapter_kind is SttAdapterKind.openai_cloud or not healthcheck_url:
         return
+    require_safe_provider_url(healthcheck_url)
     headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
     try:
         response = httpx.get(healthcheck_url, headers=headers, timeout=5.0)
@@ -1100,6 +1125,7 @@ def check_selected_stt_health(
         return _filter_stt_health_payload(payload, include_details=include_details)
 
     health_url = f"{config.base_url.rstrip('/')}/health"
+    require_safe_provider_url(health_url)
     try:
         bearer_token = _read_saved_stt_bearer_token(team_id=actor.team_id, config=config)
     except AppError:
@@ -1205,8 +1231,10 @@ def _provider_error_code_from_response(response: httpx.Response | None) -> str |
     if response is None:
         return None
     try:
-        payload = response.json()
-    except ValueError:
+        payload = json.loads(read_limited_httpx_response(response, max_bytes=STT_PROVIDER_ERROR_RESPONSE_MAX_BYTES))
+    except ProviderResponseTooLargeError:
+        return "response_too_large"
+    except (ValueError, httpx.StreamError):
         return None
     if not isinstance(payload, dict):
         return None
@@ -1229,6 +1257,37 @@ def _provider_error_code_from_response(response: httpx.Response | None) -> str |
     return None
 
 
+def _raise_for_stt_stream_status(response: httpx.Response) -> None:
+    """Raise HTTP status failures after safely reading their bounded body."""
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        # The stream closes before the surrounding error handler runs. Capture
+        # only a safe error code now, while its body remains readable.
+        setattr(exc, _STT_PROVIDER_ERROR_CODE_ATTRIBUTE, _provider_error_code_from_response(response))
+        raise
+
+
+def _read_stt_transcription_response(
+    response: httpx.Response,
+    *,
+    invalid_json_message: str,
+) -> Any:
+    try:
+        response_body = read_limited_httpx_response(response, max_bytes=STT_TRANSCRIPTION_RESPONSE_MAX_BYTES)
+    except ProviderResponseTooLargeError as exc:
+        raise AppError(
+            502,
+            "stt_response_invalid",
+            "STT provider response exceeded the permitted size",
+            {"provider_error_code": "response_too_large"},
+        ) from exc
+    try:
+        return json.loads(response_body)
+    except ValueError as exc:
+        raise AppError(502, "stt_response_invalid", invalid_json_message) from exc
+
+
 def _safe_http_error_details(exc: httpx.HTTPError) -> dict[str, Any]:
     request = getattr(exc, "request", None)
     response = getattr(exc, "response", None)
@@ -1244,7 +1303,10 @@ def _safe_http_error_details(exc: httpx.HTTPError) -> dict[str, Any]:
     elif isinstance(exc, httpx.ConnectError):
         details["provider_error_code"] = "connection_error"
     elif isinstance(exc, httpx.HTTPStatusError):
-        details["provider_error_code"] = _provider_error_code_from_response(response) or "http_status_error"
+        provider_error_code = getattr(exc, _STT_PROVIDER_ERROR_CODE_ATTRIBUTE, _STT_PROVIDER_ERROR_CODE_UNREAD)
+        if provider_error_code is _STT_PROVIDER_ERROR_CODE_UNREAD:
+            provider_error_code = _provider_error_code_from_response(response)
+        details["provider_error_code"] = provider_error_code or "http_status_error"
     else:
         details["provider_error_code"] = "http_error"
     return details
@@ -1273,6 +1335,7 @@ def _transcribe_via_http(
     segment_end_field: str | None = None,
     segment_speaker_field: str | None = None,
 ) -> str:
+    require_safe_provider_url(base_url)
     url = f"{base_url.rstrip('/')}{transcribe_path}"
     resolved_provider_preset = resolve_stt_provider_preset(provider_preset, adapter_kind or SttAdapterKind.generic_rest, base_url)
     if adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
@@ -1339,14 +1402,34 @@ def _transcribe_via_http(
                 headers["xi-api-key"] = bearer_token
             elif not preset or preset.auth_header_style == "bearer":
                 headers["Authorization"] = f"Bearer {bearer_token}"
-        response = httpx.post(
+        with httpx.stream(
+            "POST",
             url,
             headers=headers,
             data=form_fields,
             files={file_field_name: (filename, audio_bytes, content_type)},
             timeout=STT_TRANSCRIPTION_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
+        ) as response:
+            _raise_for_stt_stream_status(response)
+            try:
+                payload = _read_stt_transcription_response(
+                    response,
+                    invalid_json_message="STT provider response was not valid JSON",
+                )
+            except AppError as exc:
+                if exc.code == "stt_response_invalid":
+                    logger.warning(
+                        "stt_http_response_invalid_json",
+                        extra={
+                            "stt_transport": {
+                                "method": "POST",
+                                "url": _sanitize_logged_url(url),
+                                "status_code": response.status_code,
+                                "response_text_path": response_text_path,
+                            }
+                        },
+                    )
+                raise
     except httpx.HTTPError as exc:
         logger.warning(
             "stt_http_request_failed",
@@ -1363,21 +1446,6 @@ def _transcribe_via_http(
             },
         )
         raise _translate_http_stt_error(exc) from exc
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        logger.warning(
-            "stt_http_response_invalid_json",
-            extra={
-                "stt_transport": {
-                    "method": "POST",
-                    "url": _sanitize_logged_url(url),
-                    "status_code": response.status_code,
-                    "response_text_path": response_text_path,
-                }
-            },
-        )
-        raise AppError(502, "stt_response_invalid", "STT provider response was not valid JSON") from exc
     return _format_timestamped_transcript_payload_with_segments(
         payload,
         response_text_path=response_text_path,
@@ -1409,14 +1477,19 @@ def _transcribe_via_elevenlabs_speech_to_text(
         data["language_code"] = language
 
     try:
-        response = httpx.post(
+        with httpx.stream(
+            "POST",
             url,
             headers={"xi-api-key": api_key},
             data=data,
             files={"file": (filename, audio_bytes, content_type or "application/octet-stream")},
             timeout=STT_TRANSCRIPTION_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
+        ) as response:
+            _raise_for_stt_stream_status(response)
+            payload = _read_stt_transcription_response(
+                response,
+                invalid_json_message="ElevenLabs response was not valid JSON",
+            )
     except httpx.HTTPError as exc:
         logger.warning(
             "stt_elevenlabs_request_failed",
@@ -1431,11 +1504,6 @@ def _transcribe_via_elevenlabs_speech_to_text(
             },
         )
         raise _translate_http_stt_error(exc) from exc
-
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise AppError(502, "stt_response_invalid", "ElevenLabs response was not valid JSON") from exc
 
     return _format_timestamped_transcript_payload_with_segments(
         payload,
@@ -1490,7 +1558,8 @@ def _transcribe_via_deepgram(
         params["language"] = language
 
     try:
-        response = httpx.post(
+        with httpx.stream(
+            "POST",
             url,
             headers={
                 "Authorization": f"Token {bearer_token}",
@@ -1499,8 +1568,12 @@ def _transcribe_via_deepgram(
             params=params,
             content=audio_bytes,
             timeout=STT_TRANSCRIPTION_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
+        ) as response:
+            _raise_for_stt_stream_status(response)
+            payload = _read_stt_transcription_response(
+                response,
+                invalid_json_message="Deepgram response was not valid JSON",
+            )
     except httpx.HTTPError as exc:
         logger.warning(
             "stt_deepgram_request_failed",
@@ -1515,11 +1588,6 @@ def _transcribe_via_deepgram(
             },
         )
         raise _translate_http_stt_error(exc) from exc
-
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise AppError(502, "stt_response_invalid", "Deepgram response was not valid JSON") from exc
 
     return _format_timestamped_transcript_payload_with_segments(
         payload,
@@ -1542,6 +1610,7 @@ def _transcribe_via_openai_cloud(
     audio_bytes: bytes,
     filename: str,
 ) -> str:
+    require_safe_provider_url(base_url)
     # Provider-attempt accounting is one row per outbound request. Disable SDK
     # retries so an implicit retry cannot consume provider capacity unrecorded.
     client = OpenAI(api_key=bearer_token, base_url=base_url, timeout=STT_TRANSCRIPTION_TIMEOUT_SECONDS, max_retries=0)

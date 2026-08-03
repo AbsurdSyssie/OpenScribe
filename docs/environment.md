@@ -12,7 +12,7 @@ The persistent Compose runtime replaces only addresses that must use Docker serv
 - Prefer `APP_ENV`; `ENVIRONMENT` and `ENV` are compatibility fallbacks.
 - Prefer `CSRF_SECRET`; `SECRET_KEY` is a compatibility alias. `APP_SECRET_KEY` is not used.
 - Production must not use local Compose credentials, local Vault root tokens, seeded test accounts, or development fallback secrets.
-- Proxy trust settings are independent: Uvicorn forwarded-header trust, CSRF origin reconstruction, and audit client-IP trust must each be configured deliberately.
+- Proxy trust settings are independent: Uvicorn forwarded-header trust, CSRF origin reconstruction, audit client-IP trust, and rate-limit client-IP trust must each be configured deliberately.
 
 ## Application and HTTP
 
@@ -23,6 +23,9 @@ The persistent Compose runtime replaces only addresses that must use Docker serv
 | `APP_HOST` | `127.0.0.1` in host tooling | Host bind used by `start-dev.sh`. Compose binds the container internally to `0.0.0.0`. |
 | `APP_PORT` | `8080` | Host development port and Docker-published port. The application container listens on internal port `8080`. |
 | `APP_PUBLIC_URL` | `http://127.0.0.1:8080` in local configuration | Canonical browser URL used in generated links and transactional email. |
+| `ALLOWED_HOSTS` | unset | Comma-separated hostnames accepted by Trusted Host middleware. In production, use exact public hosts only; wildcards are rejected. If unset, production uses the hostname from `APP_PUBLIC_URL`; startup fails if it cannot derive one. Non-production allows all hosts for local tooling. |
+| `APP_HEALTHCHECK_HOST` | `127.0.0.1` locally | Host header sent by the Compose health check. In production it must equal one exact `ALLOWED_HOSTS` entry, normally the canonical public hostname. It does not create an additional allowed host. |
+| `BOOTSTRAP_ADMIN_TOKEN` | unset | Deployment credential required to create the first system administrator in production. Keep it in deployment secret storage, not source control. Production hides/disables bootstrap when it is unset. |
 | `CSRF_SECRET` | unset | Preferred explicit CSRF signing secret. Required in production unless stable Vault bootstrap is available. |
 | `SECRET_KEY` | unset | Compatibility alias used by CSRF, audit hashing, and provider fingerprint fallback chains. Do not set it differently from `CSRF_SECRET`. |
 | `CSRF_SECRET_VAULT_REF` | unset | Optional Vault KV reference for the platform CSRF secret. The default logical reference is `secret:openscribe/platform/csrf`. |
@@ -32,9 +35,11 @@ The persistent Compose runtime replaces only addresses that must use Docker serv
 | `TRUST_FORWARDED_ORIGIN_HEADERS` | `false` | Allows CSRF origin checks to reconstruct the expected origin from sanitized `X-Forwarded-Proto` and `X-Forwarded-Host`. Enable only when a trusted proxy is the sole route to the origin. |
 | `AUDIT_TRUST_X_FORWARDED_FOR` | `false` | Trust the first sanitized `X-Forwarded-For` address for audit metadata. |
 | `AUDIT_TRUST_CLOUDFLARE` | `false` | Trust Cloudflare's client-IP header for audit metadata. |
+| `RATE_LIMIT_TRUST_X_FORWARDED_FOR` | `false` | Use the first valid `X-Forwarded-For` address for IP-keyed rate limits when Cloudflare trust is not enabled. |
+| `RATE_LIMIT_TRUST_CLOUDFLARE` | `false` | Use a valid `CF-Connecting-IP` for IP-keyed rate limits. This takes precedence over `RATE_LIMIT_TRUST_X_FORWARDED_FOR`. |
 | `AUDIT_SUBJECT_HASH_SECRET` | unset | Dedicated HMAC key for hashing login/reset subjects in audit events. When unset, code falls back to `SECRET_KEY`, `CSRF_SECRET`, or the stable Vault-backed CSRF secret. A dedicated production value reduces key reuse. |
 
-`FORWARDED_ALLOW_IPS`, documented under Docker, controls which proxy addresses Uvicorn trusts. It does not by itself enable the CSRF or audit trust switches above.
+`FORWARDED_ALLOW_IPS`, documented under Docker, controls which proxy addresses Uvicorn trusts. It does not by itself enable the CSRF, audit, or rate-limit trust switches above. Enable a rate-limit trust switch only after the named proxy/CDN is the sole route to the origin and overwrites that header. Otherwise a direct caller can choose another client's rate-limit bucket.
 
 ## Database, Redis, Celery, and durable dispatch
 
@@ -105,6 +110,7 @@ Authentication limits are fixed in code: login `5/5 minutes`, MFA `10/10 minutes
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `WHOLE_FILE_MAX_UPLOAD_BYTES` | `209715200` | Maximum individual upload size (200 MiB). |
+| `LIVE_CHUNK_MAX_UPLOAD_BYTES` | `25165824` | Maximum individual live audio chunk (24 MiB). The browser rolls WAV chunks at 22 MiB and retains transport margin. |
 | `WHOLE_FILE_MAX_DURATION_SECONDS` | `14400` | Maximum normalized individual duration (4 hours). |
 | `AUDIO_FFPROBE_TIMEOUT_SECONDS` | `15` | Audio duration probe timeout. |
 | `AUDIO_FFMPEG_TIMEOUT_SECONDS` | `1800` | Audio normalization timeout. |
@@ -116,6 +122,8 @@ Authentication limits are fixed in code: login `5/5 minutes`, MFA `10/10 minutes
 
 The Docker image installs `ffmpeg` and `ffprobe`; both are required for whole-file inspection and normalization.
 
+Application readers reject uploads beyond these limits without building an unbounded in-process buffer. Configure a matching request-body limit at the reverse proxy/CDN as well, because it receives the request before the application.
+
 ## Provider rollout controls
 
 | Variable | Default | Purpose |
@@ -123,6 +131,10 @@ The Docker image installs `ffmpeg` and `ffprobe`; both are required for whole-fi
 | `ENABLE_GEMINI_ENTERPRISE_PROVIDER` | `true` | When false, hides and rejects new Gemini Enterprise setup. Existing persisted Gemini configs remain available to authorized runtime paths. |
 
 Google SDK identity is configured through standard Google variables rather than OpenScribe secrets. Do not place credential JSON in `.env`. For the optional Docker ADC override, set `GOOGLE_ADC_HOST_FILE` in the host shell and include `docker-compose.adc.yml`; it mounts one file read-only and sets `GOOGLE_APPLICATION_CREDENTIALS` inside the container. See [docker.md](docker.md) and [gemini-enterprise-setup.md](gemini-enterprise-setup.md).
+
+## Dependency installation
+
+`requirements.txt` pins the runtime `python-multipart` and `idna` versions and installs the pinned `en_core_web_sm` 3.8.0 wheel directly. Do not run a separate `spacy download` command after installing requirements. The Docker smoke workflow runs `pip-audit` against `requirements.txt`.
 
 ## Persistent Docker runtime
 

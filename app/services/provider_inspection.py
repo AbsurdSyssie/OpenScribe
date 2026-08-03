@@ -11,6 +11,38 @@ from prance import ResolvingParser
 from prance.util.resolver import RESOLVE_INTERNAL
 
 from app.errors import AppError
+from app.provider_url_security import require_safe_provider_url
+
+OPENAPI_DOCUMENT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+
+
+class ProviderResponseTooLargeError(ValueError):
+    """Raised before an untrusted provider response exceeds its memory budget."""
+
+
+def response_content_length_exceeds(response: httpx.Response, *, max_bytes: int) -> bool:
+    raw_content_length = response.headers.get("content-length")
+    if raw_content_length is None:
+        return False
+    try:
+        return int(raw_content_length) > max_bytes
+    except ValueError:
+        return False
+
+
+def read_limited_httpx_response(response: httpx.Response, *, max_bytes: int) -> bytes:
+    """Read an HTTP response without retaining more than ``max_bytes`` in memory."""
+    if response_content_length_exceeds(response, max_bytes=max_bytes):
+        raise ProviderResponseTooLargeError("provider response exceeds configured limit")
+
+    chunks: list[bytes] = []
+    total_bytes = 0
+    for chunk in response.iter_bytes():
+        total_bytes += len(chunk)
+        if total_bytes > max_bytes:
+            raise ProviderResponseTooLargeError("provider response exceeds configured limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def fetch_openapi_document(
@@ -20,14 +52,15 @@ def fetch_openapi_document(
     bearer_token: str | None,
     timeout_seconds: float = 10.0,
 ) -> tuple[dict[str, Any], str]:
+    require_safe_provider_url(base_url)
     headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
     for path in candidate_paths:
         normalized_path = path if path.startswith("/") else f"/{path}"
         url = urljoin(f"{base_url.rstrip('/')}/", normalized_path.lstrip("/"))
         try:
-            response = httpx.get(url, headers=headers, timeout=timeout_seconds)
-            response.raise_for_status()
-            payload = response.json()
+            with httpx.stream("GET", url, headers=headers, timeout=timeout_seconds) as response:
+                response.raise_for_status()
+                payload = json.loads(read_limited_httpx_response(response, max_bytes=OPENAPI_DOCUMENT_MAX_RESPONSE_BYTES))
         except httpx.HTTPStatusError as exc:
             if exc.response is not None and exc.response.status_code in {401, 403}:
                 raise AppError(401, "unauthorized", "OpenAPI document rejected the provided credentials") from exc

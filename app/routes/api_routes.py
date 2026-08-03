@@ -297,10 +297,11 @@ def api_trusted_device_status(request: Request, context: AuthenticatedContext = 
     return TrustedDeviceStatusResponse(trusted=device is not None, requires_mfa=True, freshness_expires_at=trusted_device_fresh_until(device) if device else None)
 
 
-@api.post("/account-requests", response_model=AccountRequestDetail, status_code=status.HTTP_201_CREATED, responses=error_responses)
+@api.post("/account-requests", response_model=GenericMessageResponse, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
 @ACCOUNT_REQUEST_RATE_LIMIT
 def create_account_request(request: Request, payload: AccountRequestCreate, db: Session = Depends(get_db)):
-    return create_account_request_service(db, payload)
+    create_account_request_service(db, payload)
+    return GenericMessageResponse(message="If the request is eligible, it has been submitted for review.")
 
 
 @api.get("/account-requests", response_model=list[AccountRequestListItem], responses=error_responses)
@@ -1416,7 +1417,7 @@ def upload_transcript_audio_chunk(
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
-    audio_bytes = audio.file.read()
+    audio_bytes = read_live_chunk_upload(upload=audio)
     transcript, job = queue_audio_chunk_ingestion(
         db,
         context.user,
@@ -1443,7 +1444,7 @@ def upload_transcript_audio_file(
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
-    audio_bytes = audio.file.read()
+    audio_bytes = read_whole_file_upload(upload=audio)
     enforce_whole_file_upload_size(audio_bytes=audio_bytes)
     transcript, job = queue_audio_file_ingestion(
         db,
@@ -1524,7 +1525,7 @@ def preview_transcript_dictation_audio_file(
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
-    audio_bytes = audio.file.read()
+    audio_bytes = read_whole_file_upload(upload=audio)
     text = transcribe_post_consultation_dictation_audio(
         db,
         context.user,
@@ -1549,7 +1550,7 @@ def preview_quick_action_context_audio_file(
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
-    audio_bytes = audio.file.read()
+    audio_bytes = read_whole_file_upload(upload=audio)
     text = transcribe_prompt_context_audio(
         db,
         context.user,
@@ -1575,7 +1576,7 @@ def upload_transcript_dictation_audio_file(
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
-    audio_bytes = audio.file.read()
+    audio_bytes = read_whole_file_upload(upload=audio)
     dictation = append_post_consultation_dictation_audio(
         db,
         context.user,

@@ -544,6 +544,15 @@ class UserEncryptionKey(Base):
 
 class AccountRequest(Base):
     __tablename__ = "account_requests"
+    __table_args__ = (
+        Index(
+            "uq_account_requests_pending_email_team",
+            "requested_email",
+            "requested_team_name_key",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     requested_name: Mapped[str] = mapped_column(String(255), nullable=False)

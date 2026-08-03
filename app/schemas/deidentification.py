@@ -1,5 +1,4 @@
 from datetime import datetime
-import ipaddress
 from typing import Any
 from uuid import UUID
 from urllib.parse import urlparse
@@ -7,6 +6,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 from app.models import DeidentificationAdapterKind, DeidentificationAuthMode
+from app.provider_url_security import provider_host_is_local
 
 
 SECRET_HEADER_NAMES = {
@@ -41,14 +41,7 @@ def _validate_deidentification_base_url(value: str) -> str:
     if not parsed.netloc:
         raise ValueError("De-identification base URL must include a host")
     host = (parsed.hostname or "").lower()
-    is_localish = host == "localhost"
-    if not is_localish:
-        try:
-            ip = ipaddress.ip_address(host)
-        except ValueError:
-            ip = None
-        if ip is not None:
-            is_localish = ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
+    is_localish = provider_host_is_local(host)
     if parsed.scheme != "https" and not is_localish:
         raise ValueError("Remote de-identification endpoints must use https")
     return value.rstrip("/")

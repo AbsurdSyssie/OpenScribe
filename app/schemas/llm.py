@@ -1,5 +1,4 @@
 from datetime import datetime
-import ipaddress
 import json
 import re
 from typing import Literal
@@ -10,6 +9,7 @@ from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_va
 
 from app.llm_provider_defaults import normalize_bedrock_region
 from app.models import LlmAdapterKind, LlmAuthMode, LlmConfigSetupStatus, LlmProviderPreset
+from app.provider_url_security import provider_host_is_local
 
 
 GoogleAuthMethod = Literal["application_default", "service_account_json"]
@@ -169,14 +169,7 @@ def _validate_llm_base_url(value: str) -> str:
     if not parsed.netloc:
         raise ValueError("LLM base URL must include a host")
     host = (parsed.hostname or "").lower()
-    is_localish = host == "localhost"
-    if not is_localish:
-        try:
-            ip = ipaddress.ip_address(host)
-        except ValueError:
-            ip = None
-        if ip is not None:
-            is_localish = ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
+    is_localish = provider_host_is_local(host)
     if parsed.scheme != "https" and not is_localish:
         raise ValueError("Remote LLM endpoints must use https")
     return value.rstrip("/")

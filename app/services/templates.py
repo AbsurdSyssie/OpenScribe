@@ -73,6 +73,7 @@ from app.services.llm_adapters.gemini_enterprise import (
     gemini_request_snapshot,
 )
 from app.services.llm_credentials import resolve_llm_runtime_credential
+from app.provider_url_security import require_safe_provider_url
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
 from app.services.dictations import dictation_effective_text, get_post_consultation_dictation
 from app.services.redaction import (
@@ -106,6 +107,7 @@ from app.services.quotas import (
 from app.services.task_outbox import add_pending_task_dispatch, try_publish_task_dispatch_safely
 from app.services.vault import read_team_llm_bearer_token
 from app.services.provider_errors import safe_provider_error_code
+from app.services.provider_inspection import response_content_length_exceeds
 from app.services.quota_lifecycle import (
     delete_dispatches_for_sources,
     terminalize_attempts_for_generated_document,
@@ -145,6 +147,9 @@ NOTE_GENERATION_LENGTH_EDIT_CAPS = {
     "long": 100,
 }
 GPT_OSS_CHECKER_MIN_COMPLETION_TOKENS = 4000
+OLLAMA_STREAM_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+OLLAMA_STREAM_MAX_FRAGMENTS = 10_000
+OLLAMA_STREAM_RAW_CHUNK_BYTES = 64 * 1024
 
 
 class GeneratedDocumentWaitingForTranscript(Exception):
@@ -2296,6 +2301,7 @@ def _generate_freeform_output_openai(
     base_url: str,
     request_body: dict[str, object],
 ) -> tuple[str, GenerationUsage]:
+    require_safe_provider_url(base_url)
     started = time.perf_counter()
     try:
         # One durable ProviderAttempt must map to exactly one outbound request.
@@ -2348,10 +2354,43 @@ def _generate_freeform_output_ollama(
     bearer_token: str | None,
     request_body: dict[str, object],
 ) -> tuple[str, GenerationUsage]:
+    require_safe_provider_url(base_url)
     headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
     started = time.perf_counter()
     generated_parts: list[str] = []
     final_payload: dict[str, object] | None = None
+    response_bytes = 0
+    response_fragments = 0
+
+    def consume_frame(raw_frame: bytes) -> bool:
+        nonlocal final_payload, response_fragments
+        response_fragments += 1
+        if response_fragments > OLLAMA_STREAM_MAX_FRAGMENTS:
+            raise AppError(
+                502,
+                "llm_provider_bad_response",
+                "The LLM provider response exceeded the permitted size",
+                {"provider_error_code": "response_too_large"},
+            )
+        if not raw_frame.strip():
+            return False
+        payload = json.loads(raw_frame)
+        if not isinstance(payload, dict):
+            raise AppError(
+                502,
+                "llm_provider_bad_response",
+                "The LLM provider returned an unreadable response",
+                {"provider_error_code": "invalid_json"},
+            )
+        message = payload.get("message", {})
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str) and content:
+            generated_parts.append(content)
+        if payload.get("done") is True:
+            final_payload = payload
+            return True
+        return False
+
     try:
         with httpx.stream(
             "POST",
@@ -2361,24 +2400,43 @@ def _generate_freeform_output_ollama(
             timeout=httpx.Timeout(connect=10.0, read=300.0, write=60.0, pool=60.0),
         ) as response:
             response.raise_for_status()
-            for raw_line in response.iter_lines():
-                if not raw_line:
-                    continue
-                payload = json.loads(raw_line)
-                if not isinstance(payload, dict):
+            if response_content_length_exceeds(response, max_bytes=OLLAMA_STREAM_MAX_RESPONSE_BYTES):
+                raise AppError(
+                    502,
+                    "llm_provider_bad_response",
+                    "The LLM provider response exceeded the permitted size",
+                    {"provider_error_code": "response_too_large"},
+                )
+            pending_frame = bytearray()
+            stream_complete = False
+            for raw_chunk in response.iter_raw(chunk_size=OLLAMA_STREAM_RAW_CHUNK_BYTES):
+                if not isinstance(raw_chunk, bytes):
                     raise AppError(
                         502,
                         "llm_provider_bad_response",
                         "The LLM provider returned an unreadable response",
                         {"provider_error_code": "invalid_json"},
                     )
-                message = payload.get("message", {})
-                content = message.get("content") if isinstance(message, dict) else None
-                if isinstance(content, str) and content:
-                    generated_parts.append(content)
-                if payload.get("done") is True:
-                    final_payload = payload
+                response_bytes += len(raw_chunk)
+                if response_bytes > OLLAMA_STREAM_MAX_RESPONSE_BYTES:
+                    raise AppError(
+                        502,
+                        "llm_provider_bad_response",
+                        "The LLM provider response exceeded the permitted size",
+                        {"provider_error_code": "response_too_large"},
+                    )
+                pending_frame.extend(raw_chunk)
+                while b"\n" in pending_frame:
+                    newline_index = pending_frame.index(b"\n")
+                    raw_frame = bytes(pending_frame[:newline_index])
+                    del pending_frame[: newline_index + 1]
+                    if consume_frame(raw_frame):
+                        stream_complete = True
+                        break
+                if stream_complete:
                     break
+            if not stream_complete and pending_frame:
+                consume_frame(bytes(pending_frame))
     except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover
         if isinstance(exc, ValueError):
             raise AppError(

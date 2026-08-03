@@ -10,7 +10,7 @@ This document describes the implemented authentication, onboarding, account reco
 - Login uses email and password.
 - Completed MFA-enabled accounts normally require a TOTP challenge after password verification.
 - A fresh trusted-device record can skip the TOTP challenge only after a successful password login.
-- The first system administrator can be created only while the database contains zero users.
+- The first system administrator can be created only while the database contains zero users. Production also requires `BOOTSTRAP_ADMIN_TOKEN`; the submitted deployment credential must match it.
 - Normal managed accounts are created by a leader/system administrator or from an approved account request.
 
 ## Browser destinations
@@ -23,7 +23,7 @@ This document describes the implemented authentication, onboarding, account reco
 
 ## Account requests and managed creation
 
-Anonymous users can submit `/request-access` with name, email, requested team, and optional details. Pending requests are deduplicated by normalized email and normalized requested team name, and an existing user blocks a new request for that email.
+Anonymous users can submit `/request-access` with name, email, requested team, and optional details. Pending requests are deduplicated by normalized email and normalized requested team name, including a database partial unique index for concurrent submissions, and an existing user blocks a new request for that email. The public API always returns the same `202 Accepted` status and response body for a new request, a duplicate pending request, or an existing user. Durable asynchronous handling would be required to make processing time fully uniform as well.
 
 Management scope:
 
@@ -49,6 +49,8 @@ New and re-enrolled TOTP seeds are stored as AES-GCM envelopes under the owning 
 Recovery codes are stored as one-way hashes and cannot be recovered from database state.
 
 ## Login and MFA
+
+Login verifies the submitted password against Argon2id work even when the email does not match a user. Unknown and invalid credentials still receive the same `401` response. This reduces the timing signal for account enumeration; it does not replace rate limiting.
 
 For an onboarded account:
 
@@ -196,6 +198,8 @@ Configurable provider-call limits:
 - LLM generations per day: `LLM_GENERATION_DAILY_RATE_LIMIT`, default `200/day`.
 
 Authenticated upload/generation limits key to the resolved user where possible, with a hashed-session or client-IP fallback. Browser and JSON variants sharing a limiter scope consume the same bucket. See [environment.md](environment.md) for all quota and duration controls.
+
+For IP-keyed limits, proxy headers are ignored by default. `RATE_LIMIT_TRUST_CLOUDFLARE=true` uses a valid `CF-Connecting-IP`; otherwise `RATE_LIMIT_TRUST_X_FORWARDED_FOR=true` uses the first valid `X-Forwarded-For` address. If neither trusted value is valid, OpenScribe uses the socket peer. Enable either setting only after the proxy/CDN is the sole route to the origin and overwrites the matching header. See [security.md](security.md).
 
 ## Authorization response behavior
 

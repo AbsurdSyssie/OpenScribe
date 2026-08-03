@@ -37,10 +37,20 @@ def test_runtime_requirements_keep_provider_inspection_libraries() -> None:
         assert package in runtime
 
 
+def test_runtime_requirements_pin_multipart_idna_and_spacy_model() -> None:
+    runtime = Path("requirements.txt").read_text()
+
+    assert "python-multipart==0.0.32" in runtime
+    assert "idna==3.18" in runtime
+    assert "en_core_web_sm-3.8.0-py3-none-any.whl" in runtime
+
+
 def test_runtime_image_installs_only_runtime_requirements() -> None:
     dockerfile = Path("Dockerfile").read_text()
 
     assert "pip install -r requirements.txt" in dockerfile
+    assert "pip install --upgrade pip" not in dockerfile
+    assert "spacy download" not in dockerfile
     assert "requirements-dev.txt" not in dockerfile
 
 

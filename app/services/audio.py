@@ -6,13 +6,17 @@ import wave
 from dataclasses import dataclass
 from pathlib import Path
 
+from fastapi import UploadFile
+
 from app.errors import AppError
 
 
 WHOLE_FILE_MAX_UPLOAD_BYTES = int(os.getenv("WHOLE_FILE_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
+LIVE_CHUNK_MAX_UPLOAD_BYTES = int(os.getenv("LIVE_CHUNK_MAX_UPLOAD_BYTES", str(24 * 1024 * 1024)))
 WHOLE_FILE_MAX_DURATION_SECONDS = int(os.getenv("WHOLE_FILE_MAX_DURATION_SECONDS", str(4 * 60 * 60)))
 AUDIO_FFPROBE_TIMEOUT_SECONDS = float(os.getenv("AUDIO_FFPROBE_TIMEOUT_SECONDS", "15"))
 AUDIO_FFMPEG_TIMEOUT_SECONDS = float(os.getenv("AUDIO_FFMPEG_TIMEOUT_SECONDS", "1800"))
+UPLOAD_READ_CHUNK_BYTES = 64 * 1024
 
 
 @dataclass(slots=True)
@@ -20,6 +24,32 @@ class NormalizedAudio:
     filename: str
     content_type: str
     data: bytes
+
+
+def read_bounded_upload_file(*, upload: UploadFile, max_bytes: int) -> bytes:
+    """Read an upload into a bounded buffer, rejecting the first byte over its cap."""
+    audio_data = bytearray()
+    while True:
+        remaining = max(0, max_bytes - len(audio_data))
+        chunk = upload.file.read(min(UPLOAD_READ_CHUNK_BYTES, remaining + 1))
+        if not chunk:
+            return bytes(audio_data)
+        if len(chunk) > remaining:
+            raise AppError(
+                413,
+                "payload_too_large",
+                "Audio file exceeds the current maximum upload size",
+                {"field": "audio", "max_bytes": max_bytes},
+            )
+        audio_data.extend(chunk)
+
+
+def read_whole_file_upload(*, upload: UploadFile) -> bytes:
+    return read_bounded_upload_file(upload=upload, max_bytes=WHOLE_FILE_MAX_UPLOAD_BYTES)
+
+
+def read_live_chunk_upload(*, upload: UploadFile) -> bytes:
+    return read_bounded_upload_file(upload=upload, max_bytes=LIVE_CHUNK_MAX_UPLOAD_BYTES)
 
 
 def enforce_whole_file_upload_size(*, audio_bytes: bytes) -> None:

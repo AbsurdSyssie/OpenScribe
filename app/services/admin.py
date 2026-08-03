@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
+from app.cookie_security import app_environment
 from app.errors import AppError
 from app.models import (
     AccountRequest,
@@ -1362,7 +1363,6 @@ def _log_account_lifecycle_event(*, db: Session, actor: User, target: User, even
             "actor_is_system_admin": actor.is_system_admin,
             "actor_team_id": str(actor.team_id) if actor.team_id else None,
             "target_user_id": str(target.id),
-            "target_email": target.email,
             "target_team_id": str(target.team_id) if target.team_id else None,
             "target_team_role": target.team_role.value if target.team_role else None,
             "target_status": target.status.value,
@@ -1731,22 +1731,43 @@ def user_count(db: Session) -> int:
     return db.scalar(select(func.count(User.id))) or 0
 
 
-def create_bootstrap_admin(db: Session, *, email: str, password: str) -> User:
-    validate_password_strength(password)
-    payload = UserCreate(
-        email=email,
-        temporary_password=password,
-        is_system_admin=True,
-        mfa_required=True,
-    )
-    user = _create_user_record(
-        db,
-        payload,
-        actor=None,
-        onboarding_state=UserOnboardingState.pending_totp_enrollment,
-    )
-    user.must_change_password = False
+BOOTSTRAP_ADMIN_LOCK_KEY = 5_802_001_202_608_03
+
+
+def bootstrap_admin_is_configured() -> bool:
+    return bool(os.getenv("BOOTSTRAP_ADMIN_TOKEN", "").strip()) or app_environment() not in {"production", "prod"}
+
+
+def _verify_bootstrap_admin_token(submitted_token: str | None) -> None:
+    configured_token = os.getenv("BOOTSTRAP_ADMIN_TOKEN", "").strip()
+    if not configured_token:
+        if app_environment() in {"production", "prod"}:
+            raise AppError(403, "forbidden", "System-administrator bootstrap is not configured")
+        return
+    if not submitted_token or not secrets.compare_digest(submitted_token, configured_token):
+        raise AppError(403, "forbidden", "System-administrator bootstrap credential is invalid")
+
+
+def create_bootstrap_admin(db: Session, *, email: str, password: str, bootstrap_token: str | None = None) -> User:
+    _verify_bootstrap_admin_token(bootstrap_token)
     try:
+        db.execute(select(func.pg_advisory_xact_lock(BOOTSTRAP_ADMIN_LOCK_KEY)))
+        if user_count(db) != 0:
+            raise AppError(403, "forbidden", "Bootstrap is disabled once a user exists")
+        validate_password_strength(password)
+        payload = UserCreate(
+            email=email,
+            temporary_password=password,
+            is_system_admin=True,
+            mfa_required=True,
+        )
+        user = _create_user_record(
+            db,
+            payload,
+            actor=None,
+            onboarding_state=UserOnboardingState.pending_totp_enrollment,
+        )
+        user.must_change_password = False
         db.flush()
         ensure_user_dek(db, user=user)
         ensure_builtin_default_assets(db, user)
@@ -1768,14 +1789,14 @@ def create_bootstrap_admin(db: Session, *, email: str, password: str) -> User:
     return user
 
 
-def create_account_request(db: Session, payload: AccountRequestCreate) -> AccountRequest:
+def create_account_request(db: Session, payload: AccountRequestCreate) -> AccountRequest | None:
     normalized_email = normalize_email(payload.requested_email)
     team_name = payload.requested_team_name.strip()
     team_name_key = normalize_team_name_key(team_name)
 
     existing_user = db.scalar(select(User).where(User.email == normalized_email))
     if existing_user is not None:
-        raise AppError(409, "conflict", "User already exists", {"resource": "user", "field": "email"})
+        return None
 
     duplicate_pending = db.scalar(
         select(AccountRequest).where(
@@ -1785,7 +1806,7 @@ def create_account_request(db: Session, payload: AccountRequestCreate) -> Accoun
         )
     )
     if duplicate_pending is not None:
-        raise AppError(409, "conflict", "Account request already exists", {"resource": "account_request"})
+        return None
 
     request = AccountRequest(
         requested_name=payload.requested_name.strip(),
@@ -1795,7 +1816,14 @@ def create_account_request(db: Session, payload: AccountRequestCreate) -> Accoun
         request_details=payload.request_details.strip() if payload.request_details else None,
     )
     db.add(request)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        diagnostic = getattr(getattr(exc, "orig", None), "diag", None)
+        if getattr(diagnostic, "constraint_name", None) == "uq_account_requests_pending_email_team":
+            return None
+        raise
     db.refresh(request)
     record_security_event(
         db,

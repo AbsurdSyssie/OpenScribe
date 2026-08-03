@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 from uuid import UUID, uuid4
@@ -9,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
+from app.provider_url_security import require_safe_provider_url
 from app.models import (
     ClinicalEntityRun,
     DeidentificationAdapterKind,
@@ -39,9 +41,12 @@ from app.services.vault import (
 )
 from app.services.security_audit import record_security_event
 from app.services.provider_secret_cleanup import queue_orphan_provider_secret_after_rollback, queue_provider_secret_cleanup
+from app.services.provider_inspection import ProviderResponseTooLargeError, read_limited_httpx_response
 
 
 BUILTIN_DEIDENTIFICATION_PROVIDER_ID = UUID("00000000-0000-0000-0000-00000000d1d1")
+DEIDENTIFICATION_OPENAPI_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+DEIDENTIFICATION_PING_MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 def _record_deid_audit(db: Session, *, action: str, actor: User, provider_id: UUID | None = None, team_id: UUID | None = None, outcome: str = "success", **details: Any) -> None:
@@ -125,6 +130,7 @@ def _looks_like_openapi_path(path: str) -> bool:
 
 
 def _fetch_openapi_document(payload: DeidentificationProviderInspectRequest) -> tuple[dict[str, Any], str]:
+    require_safe_provider_url(payload.base_url)
     headers = {}
     if payload.bearer_token:
         headers["Authorization"] = f"Bearer {payload.bearer_token}"
@@ -132,16 +138,25 @@ def _fetch_openapi_document(payload: DeidentificationProviderInspectRequest) -> 
     for path in _candidate_openapi_paths(_openapi_lookup_path(payload)):
         url = f"{payload.base_url.rstrip('/')}{path}"
         try:
-            response = httpx.get(url, headers=headers, timeout=10.0)
+            with httpx.stream("GET", url, headers=headers, timeout=10.0) as response:
+                status_code = response.status_code
+                if status_code in {401, 403}:
+                    raise AppError(401, "unauthorized", "De-identification OpenAPI document rejected the provided credentials")
+                if status_code >= 400:
+                    last_status = status_code
+                    continue
+                document = json.loads(
+                    read_limited_httpx_response(response, max_bytes=DEIDENTIFICATION_OPENAPI_MAX_RESPONSE_BYTES)
+                )
         except httpx.HTTPError:
             continue
-        last_status = response.status_code
-        if response.status_code in {401, 403}:
-            raise AppError(401, "unauthorized", "De-identification OpenAPI document rejected the provided credentials")
-        if response.status_code >= 400:
-            continue
-        try:
-            document = response.json()
+        except ProviderResponseTooLargeError as exc:
+            raise AppError(
+                502,
+                "redaction_provider_invalid_response",
+                "De-identification OpenAPI document exceeded the permitted size",
+                {"provider_error_code": "response_too_large"},
+            ) from exc
         except ValueError:
             continue
         if isinstance(document, dict) and "paths" in document:
@@ -403,6 +418,7 @@ def _inspect_provider_ping(
 ) -> tuple[list[DeidentificationInspectEntity], str | None, Any | None, list[str]]:
     from app.services.redaction import _extract_path, _provider_spans_from_payload
 
+    require_safe_provider_url(provider.base_url)
     body: dict[str, Any] = dict(provider.extra_body_json or {})
     body[provider.request_text_field] = sample_text
     notes: list[str] = []
@@ -415,18 +431,32 @@ def _inspect_provider_ping(
     if provider.auth_mode is DeidentificationAuthMode.bearer:
         token = bearer_token or read_deidentification_provider_bearer_token(db, provider_id=provider.id)
         headers["Authorization"] = f"Bearer {token}"
-    def post_body(request_body: dict[str, Any]):
+    def post_body(request_body: dict[str, Any]) -> tuple[int, Any]:
         try:
-            return httpx.post(f"{provider.base_url.rstrip('/')}{provider.detect_path}", json=request_body, headers=headers, timeout=20.0)
+            with httpx.stream(
+                "POST",
+                f"{provider.base_url.rstrip('/')}{provider.detect_path}",
+                json=request_body,
+                headers=headers,
+                timeout=20.0,
+            ) as response:
+                return response.status_code, json.loads(
+                    read_limited_httpx_response(response, max_bytes=DEIDENTIFICATION_PING_MAX_RESPONSE_BYTES)
+                )
         except httpx.HTTPError as exc:
             raise AppError(502, "redaction_failed", "PHI redaction provider ping failed") from exc
+        except ProviderResponseTooLargeError as exc:
+            raise AppError(
+                502,
+                "redaction_provider_invalid_response",
+                "PHI redaction provider ping response exceeded the permitted size",
+                {"provider_error_code": "response_too_large"},
+            ) from exc
+        except ValueError as exc:
+            raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider ping did not return JSON") from exc
 
-    response = post_body(body)
-    try:
-        raw_response = response.json()
-    except ValueError as exc:
-        raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider ping did not return JSON") from exc
-    forbidden_fields = _extra_forbidden_body_fields(raw_response) if response.status_code == 422 else set()
+    response_status_code, raw_response = post_body(body)
+    forbidden_fields = _extra_forbidden_body_fields(raw_response) if response_status_code == 422 else set()
     retry_body = dict(body)
     pruned_fields = sorted(field for field in forbidden_fields if field in retry_body and field != provider.request_text_field)
     if pruned_fields:
@@ -436,13 +466,9 @@ def _inspect_provider_ping(
         if provider.request_language_field in pruned_fields:
             provider.request_language_field = None
         notes.append(f"Provider rejected extra body fields, so synthetic ping retried without: {', '.join(pruned_fields)}.")
-        response = post_body(retry_body)
-        try:
-            raw_response = response.json()
-        except ValueError as exc:
-            raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider ping did not return JSON") from exc
-    if response.status_code >= 400:
-        return [], None, raw_response, notes + [f"Provider ping returned HTTP {response.status_code}; inspect raw response to adjust request fields."]
+        response_status_code, raw_response = post_body(retry_body)
+    if response_status_code >= 400:
+        return [], None, raw_response, notes + [f"Provider ping returned HTTP {response_status_code}; inspect raw response to adjust request fields."]
     spans = []
     try:
         spans = _provider_spans_from_payload(sample_text, raw_response, provider=provider, score_threshold=0.0, entities=None)

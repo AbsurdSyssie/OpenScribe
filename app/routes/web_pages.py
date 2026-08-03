@@ -314,7 +314,14 @@ def activate_account_submit(request: Request, token: str = Form(...), new_passwo
 
 
 @app.post("/bootstrap/system-admin", response_class=HTMLResponse)
-def bootstrap_system_admin(request: Request, email: str = Form(...), password: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
+def bootstrap_system_admin(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    bootstrap_token: str = Form("", max_length=512),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
     if not _bootstrap_allowed(db):
         return render_auth_page(
             request,
@@ -325,7 +332,7 @@ def bootstrap_system_admin(request: Request, email: str = Form(...), password: s
         )
     try:
         validate_password_strength(password)
-        user = create_bootstrap_admin(db, email=email, password=password)
+        user = create_bootstrap_admin(db, email=email, password=password, bootstrap_token=bootstrap_token)
     except AppError as exc:
         return render_auth_page(request, db, message=exc.message, message_kind="error", status_code=exc.status_code)
     token = create_session(db, user)

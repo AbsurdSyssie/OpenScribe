@@ -7,8 +7,8 @@ alembic==1.14.0
 argon2-cffi==23.1.0
 cryptography==48.0.1
 email-validator==2.2.0
-python-multipart>=0.0.27
-idna>=3.15
+python-multipart==0.0.32
+idna==3.18
 httpx==0.28.1
 requests==2.33.0
 chardet==5.2.0
@@ -23,6 +23,7 @@ google-auth==2.55.2
 celery[redis]==5.4.0
 presidio-analyzer==2.2.360
 spacy==3.8.11
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 PyYAML==6.0.3
 openapi-spec-validator==0.7.2
 prance==23.6.21.0

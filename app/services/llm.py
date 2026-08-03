@@ -1,8 +1,8 @@
+import json
 import logging
 from uuid import UUID, uuid4
 
 import httpx
-from openai import APIStatusError, AuthenticationError, OpenAI, PermissionDeniedError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
@@ -33,9 +33,12 @@ from app.services.llm_adapters.gemini_enterprise import (
 )
 from app.services.llm_credentials import google_service_account_secret, resolve_llm_runtime_credential
 from app.services.provider_secret_cleanup import queue_orphan_provider_secret_after_rollback, queue_provider_secret_cleanup
+from app.services.provider_inspection import read_limited_httpx_response
+from app.provider_url_security import require_safe_provider_url
 
 
 logger = logging.getLogger("openscribe.llm")
+MODEL_DISCOVERY_MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 def _record_llm_audit(db: Session, *, action: str, actor: User, team_id: UUID, config_id: UUID | None = None, outcome: str = "success", **details) -> None:
@@ -78,36 +81,37 @@ def _gemini_auth_mode(payload) -> LlmAuthMode:
 
 
 def _list_openai_compatible_models(*, api_key: str, base_url: str) -> list[str]:
+    require_safe_provider_url(base_url)
     try:
-        client = OpenAI(api_key=api_key, base_url=base_url)
-        models_page = client.models.list()
-    except (AuthenticationError, PermissionDeniedError) as exc:  # pragma: no cover
-        raise AppError(
-            401,
-            "llm_invalid_credential",
-            "The API key was rejected by the provider.",
-            {"provider_status": getattr(exc, "status_code", None)},
-        ) from exc
-    except APIStatusError as exc:  # pragma: no cover
-        if exc.status_code in {401, 403}:
+        with httpx.stream(
+            "GET",
+            f"{base_url.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10.0,
+        ) as response:
+            response.raise_for_status()
+            payload = json.loads(read_limited_httpx_response(response, max_bytes=MODEL_DISCOVERY_MAX_RESPONSE_BYTES))
+    except httpx.HTTPStatusError as exc:  # pragma: no cover
+        if exc.response.status_code in {401, 403}:
             raise AppError(
                 401,
                 "llm_invalid_credential",
                 "The API key was rejected by the provider.",
-                {"provider_status": exc.status_code},
+                {"provider_status": exc.response.status_code},
             ) from exc
         raise AppError(
             502,
             "llm_inspection_failed",
             "Could not load available models from the provider.",
-            {"provider_status": exc.status_code},
+            {"provider_status": exc.response.status_code},
         ) from exc
-    except Exception as exc:  # pragma: no cover
+    except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover
         raise AppError(502, "llm_inspection_failed", "Could not load available models from the provider.") from exc
 
+    records = payload.get("data") if isinstance(payload, dict) else []
     models: set[str] = set()
-    for model in getattr(models_page, "data", []):
-        model_id = getattr(model, "id", None)
+    for model in records:
+        model_id = model.get("id") if isinstance(model, dict) else None
         if isinstance(model_id, str) and model_id.strip():
             models.add(model_id.strip())
     return sorted(models)
@@ -165,14 +169,16 @@ def _list_openai_chat_models(*, api_key: str, base_url: str) -> list[str]:
 
 
 def _list_mistral_chat_models(*, api_key: str, base_url: str) -> list[str]:
+    require_safe_provider_url(base_url)
     try:
-        response = httpx.get(
+        with httpx.stream(
+            "GET",
             f"{base_url.rstrip('/')}/models",
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=10.0,
-        )
-        response.raise_for_status()
-        payload = response.json()
+        ) as response:
+            response.raise_for_status()
+            payload = json.loads(read_limited_httpx_response(response, max_bytes=MODEL_DISCOVERY_MAX_RESPONSE_BYTES))
     except httpx.HTTPStatusError as exc:  # pragma: no cover
         if exc.response.status_code in {401, 403}:
             raise AppError(
@@ -204,14 +210,16 @@ def _list_mistral_chat_models(*, api_key: str, base_url: str) -> list[str]:
 
 
 def _list_together_chat_models(*, api_key: str, base_url: str) -> list[str]:
+    require_safe_provider_url(base_url)
     try:
-        response = httpx.get(
+        with httpx.stream(
+            "GET",
             f"{base_url.rstrip('/')}/models",
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=10.0,
-        )
-        response.raise_for_status()
-        payload = response.json()
+        ) as response:
+            response.raise_for_status()
+            payload = json.loads(read_limited_httpx_response(response, max_bytes=MODEL_DISCOVERY_MAX_RESPONSE_BYTES))
     except httpx.HTTPStatusError as exc:  # pragma: no cover
         if exc.response.status_code in {401, 403}:
             raise AppError(
@@ -388,14 +396,16 @@ def _successful_discovery_metadata(
 
 
 def _list_ollama_chat_models(*, base_url: str, bearer_token: str | None) -> list[str]:
+    require_safe_provider_url(base_url)
     try:
-        response = httpx.get(
+        with httpx.stream(
+            "GET",
             _ollama_api_url(base_url, "/api/tags"),
             headers=_ollama_headers(bearer_token=bearer_token),
             timeout=10.0,
-        )
-        response.raise_for_status()
-        payload = response.json()
+        ) as response:
+            response.raise_for_status()
+            payload = json.loads(read_limited_httpx_response(response, max_bytes=MODEL_DISCOVERY_MAX_RESPONSE_BYTES))
     except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover
         raise AppError(502, "llm_inspection_failed", "Could not load available Ollama chat models") from exc
 

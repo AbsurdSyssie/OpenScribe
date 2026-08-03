@@ -114,7 +114,7 @@ The earlier “planned account-administration clarification” is implemented an
 
 Current tables/services cover:
 
-- account requests;
+- account requests, including partial uniqueness for one pending normalized email/team-name pair;
 - opaque hashed sessions with auth level/lifecycle;
 - trusted devices;
 - encrypted TOTP methods;

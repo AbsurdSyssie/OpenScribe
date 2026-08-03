@@ -9,6 +9,7 @@ on:
       - docker-compose.adc.yml
       - docker/**
       - requirements.txt
+      - requirements-dev.txt
       - .env.example
       - start-dev.sh
       - README.md
@@ -31,6 +32,7 @@ on:
       - docker-compose.adc.yml
       - docker/**
       - requirements.txt
+      - requirements-dev.txt
       - .env.example
       - start-dev.sh
       - README.md
@@ -63,6 +65,11 @@ jobs:
           bash -n scripts/test_file_ingestion.sh
           bash -n .github/scripts/wait-for-openscribe-health.sh
           python -m py_compile scripts/security/xss_probe.py .github/scripts/check-operational-docs.py
+
+      - name: Audit Python runtime dependencies
+        run: |
+          python -m pip install pip-audit
+          python -m pip_audit -r requirements.txt
 
       - name: Create local environment
         run: cp .env.example .env

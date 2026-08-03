@@ -86,7 +86,7 @@ See [auth.md](auth.md) and [security.md](security.md).
 
 Password-reset request is generic for existing/missing users when mail is enabled. When mail is disabled it returns `503 mail_transport_disabled` so clients can direct the user to manager-assisted recovery.
 
-Public account requests are deduplicated by normalized email plus normalized requested-team name while pending. A request for an existing normalized user email is rejected.
+Public account requests are deduplicated by normalized email plus normalized requested-team name while pending, with a database partial unique index protecting concurrent submissions. A request for an existing normalized user email is not created. All three outcomes return `202 Accepted` with `{"message":"If the request is eligible, it has been submitted for review."}` so status and response content do not disclose account or request existence. This privacy change replaces the earlier `201 AccountRequestDetail` public response; clients must not depend on a public request ID or echo of submitted fields.
 
 ### Valid-session auth routes
 
@@ -384,6 +384,8 @@ Whole-file defaults:
 - daily: 100 uploads;
 - hourly aggregate: 200 MiB and four hours.
 
+Live-chunk uploads are limited to 24 MiB each. Whole-file, dictation, and live-chunk routes use bounded readers that reject the first byte over their applicable limit before queueing or transcription. These application limits do not stop a reverse proxy from accepting a large request body first; set matching request-body limits at the public proxy/CDN.
+
 Live defaults:
 
 - one chunk request per second;
@@ -436,6 +438,8 @@ Generated-document edits use optimistic concurrency (`expected_updated_at`). Del
 - `/api` responses are no-store/no-cache.
 - API cookies remain `HttpOnly`; browser JavaScript receives CSRF state only through server-rendered data.
 - Provider credentials and Vault references are never returned through normal config/content APIs.
+- Provider inspection and model discovery bound untrusted response bodies. OpenAPI inspection is limited to 2 MiB and model discovery to 1 MiB. Ollama generation streams are limited to 8 MiB and 10,000 fragments.
+- Provider base URLs reject known cloud metadata hostnames and addresses. `localhost` and private/loopback provider addresses remain supported for local providers; see [security.md](security.md).
 - Audit/usage/attempt/outbox rows contain metadata only.
 - Sensitive values must not be added to validation details or support diagnostics.
 - Browser invalid non-API routes redirect by current auth state; invalid `/api/*` routes remain JSON `404` and are never redirected to HTML.

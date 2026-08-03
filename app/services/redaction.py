@@ -25,6 +25,7 @@ from app.models import (
 )
 from app.services.content_crypto import decrypt_text_for_owner, encrypt_text_for_owner
 from app.services.deidentification import active_team_deidentification_provider, read_deidentification_provider_bearer_token
+from app.services.provider_inspection import ProviderResponseTooLargeError, read_limited_httpx_response
 
 from .redaction_policy import filter_analyzer_results, normalize_span_bounds
 
@@ -34,6 +35,7 @@ DEFAULT_CONFIG_PATH = BASE_DIR / "redaction" / "presidio_config.yaml"
 PHI_TOKEN_PATTERN = re.compile(r"\[PHI-(\d+)\]")
 POTENTIAL_PHI_TOKEN_PATTERN = re.compile(r"\[PHI-[^\]]*(?:\]|$)")
 CLINICAL_ENTITY_TYPES = {"DISEASE", "DIAGNOSIS", "CONDITION", "PROBLEM", "SYMPTOM", "SIGN"}
+REDACTION_PROVIDER_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
 
 
 @dataclass
@@ -299,6 +301,9 @@ def _detect_with_generic_rest(
     failure_code: str = "redaction_failed",
     failure_message: str = "PHI redaction failed",
 ) -> DeidentificationDetectionResult:
+    from app.provider_url_security import require_safe_provider_url
+
+    require_safe_provider_url(provider.base_url)
     body: dict[str, Any] = dict(provider.extra_body_json or {})
     if extra_body_overrides:
         for key, value in extra_body_overrides.items():
@@ -312,13 +317,24 @@ def _detect_with_generic_rest(
         headers["Authorization"] = f"Bearer {token}"
     url = f"{provider.base_url.rstrip('/')}{provider.detect_path}"
     try:
-        response = httpx.post(url, json=body, headers=headers, timeout=20.0)
+        with httpx.stream("POST", url, json=body, headers=headers, timeout=20.0) as response:
+            if response.status_code >= 400:
+                raise AppError(502, failure_code, failure_message)
+            response_body = read_limited_httpx_response(
+                response,
+                max_bytes=REDACTION_PROVIDER_RESPONSE_MAX_BYTES,
+            )
     except httpx.HTTPError as exc:  # pragma: no cover
         raise AppError(502, failure_code, failure_message) from exc
-    if response.status_code >= 400:
-        raise AppError(502, failure_code, failure_message)
+    except ProviderResponseTooLargeError as exc:
+        raise AppError(
+            502,
+            "redaction_provider_invalid_response",
+            "PHI redaction provider response exceeded the permitted size",
+            {"provider_error_code": "response_too_large"},
+        ) from exc
     try:
-        payload = response.json()
+        payload = json.loads(response_body)
     except ValueError as exc:
         raise AppError(502, "redaction_provider_invalid_response", "PHI redaction provider returned an invalid response") from exc
     spans = _provider_spans_from_payload(text, payload, provider=provider, score_threshold=score_threshold, entities=entities, excluded_entities=excluded_entities)

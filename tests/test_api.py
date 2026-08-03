@@ -20,6 +20,7 @@ from threading import Event, Lock
 import httpx
 import pytest
 import pyotp
+from fastapi import Request, UploadFile
 from fastapi.routing import APIRoute
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -39,9 +40,11 @@ from app.main import (
     MFA_RATE_LIMIT,
     WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT,
     WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT,
+    _allowed_hosts_for_environment,
     api,
     app as fastapi_app,
     get_db,
+    rate_limit_client_key,
     require_full_context,
 )
 from app.models import (
@@ -133,11 +136,13 @@ from app.schemas.templates import GenerateFollowupRequest, PromptTemplateUpsert,
 from app.schemas import LlmConfigDraftCreate, LlmConfigUpsert, LlmInspectRequest, SttConfigDraftCreate, SttConfigDraftReplaceCredential, SttConfigUpsert, SttInspectResult
 from app.services.audio import (
     AUDIO_FFMPEG_TIMEOUT_SECONDS,
+    LIVE_CHUNK_MAX_UPLOAD_BYTES,
     WHOLE_FILE_MAX_DURATION_SECONDS,
     WHOLE_FILE_MAX_UPLOAD_BYTES,
     NormalizedAudio,
     normalize_audio_to_wav_16k_mono,
     probe_audio_duration_seconds,
+    read_bounded_upload_file,
 )
 from app.services.content_crypto import (
     decrypt_json_for_owner,
@@ -580,6 +585,16 @@ class FakeHttpxResponse:
     def __init__(self, payload: dict, status_code: int = 200):
         self._payload = payload
         self.status_code = status_code
+        self.headers = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def iter_bytes(self):
+        return iter([json.dumps(self._payload).encode("utf-8")])
 
     def json(self):
         return self._payload
@@ -595,6 +610,7 @@ class FakeHttpxStreamResponse:
     def __init__(self, lines: list[str], status_code: int = 200):
         self._lines = lines
         self.status_code = status_code
+        self.headers = {}
 
     def __enter__(self):
         return self
@@ -604,6 +620,9 @@ class FakeHttpxStreamResponse:
 
     def iter_lines(self):
         return iter(self._lines)
+
+    def iter_raw(self, *, chunk_size=None):
+        return iter([("\n".join(self._lines) + "\n").encode("utf-8")])
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -691,6 +710,109 @@ def test_api_login_is_rate_limited_after_repeated_attempts(client, make_user, ca
     )
 
 
+def test_unknown_login_still_performs_password_verification(client, monkeypatch):
+    verified_hashes = []
+
+    def fake_verify_password(_password, password_hash):
+        verified_hashes.append(password_hash)
+        return False
+
+    monkeypatch.setattr("app.services.auth.verify_password", fake_verify_password)
+
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "unknown-login@example.com", "password": "wrong-password"},
+    )
+
+    assert_error(response, status_code=401, code="unauthorized", message="Invalid email or password")
+    assert len(verified_hashes) == 1
+    assert verified_hashes[0].startswith("$argon2id$")
+
+
+def _rate_limit_request(*, client_ip: str, host: str = "openscribe.co.uk", headers: list[tuple[bytes, bytes]] | None = None) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "https",
+            "path": "/api/v1/auth/login",
+            "raw_path": b"/api/v1/auth/login",
+            "query_string": b"",
+            "headers": [(b"host", host.encode()), *(headers or [])],
+            "client": (client_ip, 443),
+            "server": (host, 443),
+        }
+    )
+
+
+def test_rate_limit_client_key_ignores_untrusted_proxy_headers(monkeypatch):
+    monkeypatch.delenv("RATE_LIMIT_TRUST_CLOUDFLARE", raising=False)
+    monkeypatch.delenv("RATE_LIMIT_TRUST_X_FORWARDED_FOR", raising=False)
+    request = _rate_limit_request(
+        client_ip="198.51.100.10",
+        headers=[
+            (b"cf-connecting-ip", b"203.0.113.20"),
+            (b"x-forwarded-for", b"203.0.113.21"),
+        ],
+    )
+
+    assert rate_limit_client_key(request) == "ip:198.51.100.10"
+
+
+def test_rate_limit_client_key_uses_stable_cloudflare_identity_across_hosts_and_proxy_peers(monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_TRUST_CLOUDFLARE", "true")
+    monkeypatch.delenv("RATE_LIMIT_TRUST_X_FORWARDED_FOR", raising=False)
+    first = _rate_limit_request(
+        client_ip="172.68.1.10",
+        host="openscribe.co.uk",
+        headers=[(b"cf-connecting-ip", b"203.0.113.30")],
+    )
+    second = _rate_limit_request(
+        client_ip="172.69.2.20",
+        host="www.openscribe.co.uk",
+        headers=[(b"cf-connecting-ip", b"203.0.113.30")],
+    )
+
+    assert rate_limit_client_key(first) == "ip:203.0.113.30"
+    assert rate_limit_client_key(second) == "ip:203.0.113.30"
+
+
+def test_rate_limit_client_key_rejects_invalid_trusted_header_value(monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_TRUST_CLOUDFLARE", "true")
+    request = _rate_limit_request(
+        client_ip="198.51.100.40",
+        headers=[(b"cf-connecting-ip", b"not-an-ip")],
+    )
+
+    assert rate_limit_client_key(request) == "ip:198.51.100.40"
+
+
+def test_production_allowed_hosts_default_to_canonical_public_host(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("ALLOWED_HOSTS", raising=False)
+    monkeypatch.setenv("APP_PUBLIC_URL", "https://openscribe.co.uk")
+
+    assert _allowed_hosts_for_environment() == ["openscribe.co.uk"]
+
+
+def test_production_allowed_hosts_reject_wildcard_public_url(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("ALLOWED_HOSTS", raising=False)
+    monkeypatch.setenv("APP_PUBLIC_URL", "https://*.openscribe.co.uk")
+
+    with pytest.raises(RuntimeError, match="must not contain a wildcard"):
+        _allowed_hosts_for_environment()
+
+
+def test_production_allowed_hosts_reject_wildcards(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("ALLOWED_HOSTS", "openscribe.co.uk,*.openscribe.co.uk")
+
+    with pytest.raises(RuntimeError, match="must not contain wildcards"):
+        _allowed_hosts_for_environment()
+
+
 @pytest.mark.parametrize(("email", "is_system_admin"), [("dev.user@example.com", False), ("dev.admin@example.com", True)])
 def test_dev_seed_account_api_login_is_restricted_to_localhost(client, make_user, email, is_system_admin):
     make_user(email=email, password="password-1", is_system_admin=is_system_admin, mfa_required=False, mfa_enabled=False)
@@ -745,7 +867,7 @@ def test_public_account_request_submission_is_rate_limited(client):
             )
         )
 
-    assert [response.status_code for response in responses[:3]] == [201, 201, 201]
+    assert [response.status_code for response in responses[:3]] == [202, 202, 202]
     assert_error(responses[3], status_code=429, code="rate_limited", message="Too many requests")
 
 
@@ -795,7 +917,7 @@ def test_provider_action_rate_limits_accept_environment_overrides():
     assert json.loads(completed.stdout.strip()) == overrides
 
 
-def test_public_account_request_submission_and_duplicate_rules(client, make_user):
+def test_public_account_request_response_does_not_reveal_duplicate_or_existing_user(client, db_session, make_user):
     first = client.post(
         "/api/v1/account-requests",
         json={
@@ -815,9 +937,11 @@ def test_public_account_request_submission_and_duplicate_rules(client, make_user
         },
     )
 
-    assert first.status_code == 201
-    assert first.json()["requested_email"] == "alice@example.com"
-    assert_error(duplicate, status_code=409, code="conflict", message="Account request already exists")
+    expected_response = {"message": "If the request is eligible, it has been submitted for review."}
+    assert first.status_code == 202
+    assert duplicate.status_code == 202
+    assert first.json() == expected_response
+    assert duplicate.json() == expected_response
 
     make_user(email="alice@example.com", password="password-1", is_system_admin=True)
     existing_user = client.post(
@@ -828,7 +952,45 @@ def test_public_account_request_submission_and_duplicate_rules(client, make_user
             "requested_team_name": "Clinic North",
         },
     )
-    assert_error(existing_user, status_code=409, code="conflict", message="User already exists")
+    assert existing_user.status_code == 202
+    assert existing_user.json() == expected_response
+    requests = list(db_session.scalars(select(AccountRequest)))
+    assert len(requests) == 1
+    assert requests[0].requested_email == "alice@example.com"
+
+
+def test_account_request_unique_race_returns_generic_success(db_session, monkeypatch):
+    from app.schemas import AccountRequestCreate
+    from app.services.admin import create_account_request
+
+    original_rollback = db_session.rollback
+    rollback_calls = 0
+
+    class DuplicatePendingRequestError(Exception):
+        diag = SimpleNamespace(constraint_name="uq_account_requests_pending_email_team")
+
+    def raise_duplicate_pending_request():
+        raise IntegrityError("insert account request", {}, DuplicatePendingRequestError())
+
+    def track_rollback():
+        nonlocal rollback_calls
+        rollback_calls += 1
+        original_rollback()
+
+    monkeypatch.setattr(db_session, "commit", raise_duplicate_pending_request)
+    monkeypatch.setattr(db_session, "rollback", track_rollback)
+
+    result = create_account_request(
+        db_session,
+        AccountRequestCreate(
+            requested_name="Alice Example",
+            requested_email="alice@example.com",
+            requested_team_name="Clinic North",
+        ),
+    )
+
+    assert result is None
+    assert rollback_calls == 1
 
 
 def test_direct_managed_user_creation_sets_temp_password_onboarding_state(client, db_session, make_team, make_user):
@@ -900,7 +1062,7 @@ def test_leader_can_review_only_own_team_requests_and_approve_them(client, make_
 def test_system_admin_can_provision_and_read_team_stt_configs_without_secret_reveal(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
-    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"text": "sample transcript"}))
+    monkeypatch.setattr("app.services.stt.httpx.stream", lambda *args, **kwargs: FakeHttpxResponse({"text": "sample transcript"}))
 
     login(client, email="admin@example.com", password="password-1")
     created = client.post(
@@ -947,7 +1109,8 @@ def test_system_admin_can_create_and_finalize_stt_provider_draft(client, db_sess
     team = make_team(name="Clinic North")
     make_user(email="admin-stt-draft@example.com", password="password-1", is_system_admin=True)
 
-    def fake_get(url, *, headers=None, timeout=None):
+    def fake_stream(method, url, *, headers=None, timeout=None):
+        assert method == "GET"
         assert url == "https://api.eu.deepgram.com/v1/models"
         assert headers == {"Authorization": "Token dg-secret"}
         assert timeout == 10.0
@@ -961,7 +1124,7 @@ def test_system_admin_can_create_and_finalize_stt_provider_draft(client, db_sess
             }
         )
 
-    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_stream)
 
     logged_in = login(client, email="admin-stt-draft@example.com", password="password-1")
     assert logged_in.status_code == 200, logged_in.text
@@ -1012,12 +1175,13 @@ def test_system_admin_can_replace_stt_draft_credential_without_body_config_id(cl
     make_user(email="admin-stt-replace@example.com", password="password-1", is_system_admin=True)
     seen_tokens = []
 
-    def fake_get(url, *, headers=None, timeout=None):
+    def fake_stream(method, url, *, headers=None, timeout=None):
+        assert method == "GET"
         assert url == "https://api.eu.deepgram.com/v1/models"
         seen_tokens.append(headers["Authorization"])
         return FakeHttpxResponse({"stt": [{"name": "Nova 3", "canonical_name": "nova-3", "batch": True}]})
 
-    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_stream)
 
     logged_in = login(client, email="admin-stt-replace@example.com", password="password-1")
     assert logged_in.status_code == 200, logged_in.text
@@ -1049,13 +1213,14 @@ def test_pending_stt_provider_cannot_be_selected_directly(client, make_team, mak
     team = make_team(name="Clinic North")
     make_user(email="admin-stt-pending@example.com", password="password-1", is_system_admin=True)
 
-    def fake_get(url, *, headers=None, timeout=None):
+    def fake_stream(method, url, *, headers=None, timeout=None):
+        assert method == "GET"
         assert url == "https://api.elevenlabs.io/v1/models"
         assert headers == {"xi-api-key": "el-secret"}
         assert timeout == 10.0
         return FakeHttpxResponse({"models": [{"model_id": "scribe_v2", "name": "Scribe v2 speech-to-text"}]})
 
-    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_stream)
 
     login(client, email="admin-stt-pending@example.com", password="password-1")
     draft = client.post(
@@ -1077,7 +1242,8 @@ def test_system_admin_elevenlabs_draft_validates_credential(client, db_session, 
     team = make_team(name="Clinic ElevenLabs")
     make_user(email="admin-stt-el@example.com", password="password-1", is_system_admin=True)
 
-    def fake_get(url, *, headers=None, timeout=None):
+    def fake_stream(method, url, *, headers=None, timeout=None):
+        assert method == "GET"
         assert url == "https://api.elevenlabs.io/v1/models"
         assert headers == {"xi-api-key": "el-secret"}
         return FakeHttpxResponse(
@@ -1091,7 +1257,7 @@ def test_system_admin_elevenlabs_draft_validates_credential(client, db_session, 
             }
         )
 
-    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_stream)
 
     login(client, email="admin-stt-el@example.com", password="password-1")
     response = client.post(
@@ -1122,7 +1288,7 @@ def test_system_admin_elevenlabs_draft_validates_credential(client, db_session, 
 def test_system_admin_elevenlabs_draft_rejects_invalid_credential(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic Bad ElevenLabs")
     make_user(email="admin-stt-bad-el@example.com", password="password-1", is_system_admin=True)
-    monkeypatch.setattr("app.services.stt.httpx.get", lambda *args, **kwargs: FakeHttpxResponse({"detail": "invalid"}, status_code=401))
+    monkeypatch.setattr("app.services.stt.httpx.stream", lambda *args, **kwargs: FakeHttpxResponse({"detail": "invalid"}, status_code=401))
 
     login(client, email="admin-stt-bad-el@example.com", password="password-1")
     response = client.post(
@@ -1137,7 +1303,8 @@ def test_system_admin_elevenlabs_draft_rejects_invalid_credential(client, db_ses
 def test_elevenlabs_model_discovery_filters_sync_stt_models(monkeypatch):
     captured = {}
 
-    def fake_get(url, *, headers=None, timeout=None):
+    def fake_stream(method, url, *, headers=None, timeout=None):
+        assert method == "GET"
         captured.update({"url": url, "headers": headers, "timeout": timeout})
         return FakeHttpxResponse(
             [
@@ -1148,7 +1315,7 @@ def test_elevenlabs_model_discovery_filters_sync_stt_models(monkeypatch):
             ]
         )
 
-    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_stream)
 
     models = _list_elevenlabs_stt_models(api_key="el-secret", base_url="https://api.elevenlabs.io")
 
@@ -1160,7 +1327,7 @@ def test_elevenlabs_model_discovery_filters_sync_stt_models(monkeypatch):
 
 
 def test_elevenlabs_model_discovery_rejects_invalid_key(monkeypatch):
-    monkeypatch.setattr("app.services.stt.httpx.get", lambda *args, **kwargs: FakeHttpxResponse({"detail": "invalid"}, status_code=401))
+    monkeypatch.setattr("app.services.stt.httpx.stream", lambda *args, **kwargs: FakeHttpxResponse({"detail": "invalid"}, status_code=401))
 
     with pytest.raises(AppError) as exc_info:
         _list_elevenlabs_stt_models(api_key="bad-key", base_url="https://api.elevenlabs.io")
@@ -1173,7 +1340,7 @@ def test_elevenlabs_finalize_rejects_non_sync_model(client, make_team, make_user
     team = make_team(name="Clinic ElevenLabs Invalid Model")
     make_user(email="admin-stt-el-invalid-model@example.com", password="password-1", is_system_admin=True)
 
-    monkeypatch.setattr("app.services.stt.httpx.get", lambda *args, **kwargs: FakeHttpxResponse({"models": []}))
+    monkeypatch.setattr("app.services.stt.httpx.stream", lambda *args, **kwargs: FakeHttpxResponse({"models": []}))
 
     login(client, email="admin-stt-el-invalid-model@example.com", password="password-1")
     draft = client.post(
@@ -1199,11 +1366,11 @@ def test_elevenlabs_finalize_rejects_non_sync_model(client, make_team, make_user
 def test_elevenlabs_transcription_uses_xi_api_key_not_bearer(monkeypatch):
     captured = {}
 
-    def fake_post(url, *, headers=None, data=None, files=None, timeout=None):
-        captured.update({"url": url, "headers": headers, "data": data, "files": files, "timeout": timeout})
+    def fake_stream(method, url, *, headers=None, data=None, files=None, timeout=None):
+        captured.update({"method": method, "url": url, "headers": headers, "data": data, "files": files, "timeout": timeout})
         return FakeHttpxResponse({"text": "hello from elevenlabs"})
 
-    monkeypatch.setattr("app.services.stt.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_stream)
 
     result = _transcribe_via_elevenlabs(
         url="https://api.elevenlabs.io/v1/speech-to-text",
@@ -1217,6 +1384,7 @@ def test_elevenlabs_transcription_uses_xi_api_key_not_bearer(monkeypatch):
     )
 
     assert result == "hello from elevenlabs"
+    assert captured["method"] == "POST"
     assert captured["url"] == "https://api.elevenlabs.io/v1/speech-to-text"
     assert captured["headers"] == {"xi-api-key": "el-secret"}
     assert "Authorization" not in captured["headers"]
@@ -1229,11 +1397,11 @@ def test_elevenlabs_transcription_uses_xi_api_key_not_bearer(monkeypatch):
 def test_elevenlabs_transcription_does_not_send_default_language(monkeypatch, language):
     captured = {}
 
-    def fake_post(url, *, headers=None, data=None, files=None, timeout=None):
+    def fake_stream(method, url, *, headers=None, data=None, files=None, timeout=None):
         captured["data"] = data or {}
         return FakeHttpxResponse({"text": "ok"})
 
-    monkeypatch.setattr("app.services.stt.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_stream)
 
     _transcribe_via_elevenlabs(
         url="https://api.elevenlabs.io/v1/speech-to-text",
@@ -1253,11 +1421,11 @@ def test_elevenlabs_transcription_does_not_send_default_language(monkeypatch, la
 def test_generic_stt_transport_does_not_send_default_language(monkeypatch, language):
     captured = {}
 
-    def fake_post(url, *, headers=None, data=None, files=None, timeout=None):
+    def fake_stream(method, url, *, headers=None, data=None, files=None, timeout=None):
         captured["data"] = data or {}
         return FakeHttpxResponse({"text": "ok"})
 
-    monkeypatch.setattr("app.services.stt.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_stream)
 
     _transcribe_via_http(
         provider_preset=SttProviderPreset.custom_openai_compatible.value,
@@ -1282,7 +1450,7 @@ def test_generic_stt_transport_does_not_send_default_language(monkeypatch, langu
 def test_system_admin_deepgram_draft_rejects_invalid_credential(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     make_user(email="admin-stt-bad-dg@example.com", password="password-1", is_system_admin=True)
-    monkeypatch.setattr("app.services.stt.httpx.get", lambda *args, **kwargs: FakeHttpxResponse({"error": "unauthorized"}, status_code=401))
+    monkeypatch.setattr("app.services.stt.httpx.stream", lambda *args, **kwargs: FakeHttpxResponse({"error": "unauthorized"}, status_code=401))
 
     login(client, email="admin-stt-bad-dg@example.com", password="password-1")
     response = client.post(
@@ -1500,7 +1668,7 @@ def test_stt_draft_replace_commit_failure_preserves_old_secret_and_queues_new_or
 def test_stt_config_duplicate_warning_happens_before_vault_write_or_inspection(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin-duplicate-stt@example.com", password="password-1", is_system_admin=True)
-    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"text": "sample transcript"}))
+    monkeypatch.setattr("app.services.stt.httpx.stream", lambda *args, **kwargs: FakeHttpxResponse({"text": "sample transcript"}))
     login(client, email="admin-duplicate-stt@example.com", password="password-1")
     first = client.post(
         "/api/v1/stt-configs",
@@ -1532,7 +1700,7 @@ def test_stt_config_duplicate_warning_happens_before_vault_write_or_inspection(c
 def test_stt_config_confirmed_duplicate_can_proceed(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     make_user(email="admin-confirm-duplicate-stt@example.com", password="password-1", is_system_admin=True)
-    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"text": "sample transcript"}))
+    monkeypatch.setattr("app.services.stt.httpx.stream", lambda *args, **kwargs: FakeHttpxResponse({"text": "sample transcript"}))
     login(client, email="admin-confirm-duplicate-stt@example.com", password="password-1")
     payload = {"team_id": str(team.id), "adapter_kind": "openai_compatible_rest", "base_url": "http://127.0.0.1:7000", "bearer_token": "same-secret", "model_name": "whisper-1"}
     first = client.post("/api/v1/stt-configs", json={**payload, "label": "Clinic STT"})
@@ -1552,7 +1720,7 @@ def test_stt_config_invalid_first_add_removes_db_row_before_vault_cleanup(client
         assert db_session.get(TeamSttConfig, config_id) is None
         events.append("deleted")
 
-    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"error": "unauthorized"}, status_code=401))
+    monkeypatch.setattr("app.services.stt.httpx.stream", lambda *args, **kwargs: FakeHttpxResponse({"error": "unauthorized"}, status_code=401))
     monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", fake_delete)
 
     login(client, email="admin-invalid-stt@example.com", password="password-1")
@@ -1870,7 +2038,7 @@ def test_generic_stt_save_with_token_tests_saved_contract_not_openapi_discovery(
     def fail_if_called(*args, **kwargs):
         raise AssertionError("generic save must not inspect default OpenAPI")
 
-    def fake_post(url, *, headers, data, files, timeout):
+    def fake_post(method, url, *, headers, data, files, timeout):
         calls["url"] = url
         calls["headers"] = headers
         calls["data"] = data
@@ -1878,7 +2046,7 @@ def test_generic_stt_save_with_token_tests_saved_contract_not_openapi_discovery(
         return FakeHttpxResponse({"result": {"text": "sample transcript"}})
 
     monkeypatch.setattr("app.services.stt.inspect_stt_contract", fail_if_called)
-    monkeypatch.setattr("app.services.stt.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_post)
 
     login(client, email="admin-generic-stt-save@example.com", password="password-1")
     created = client.post(
@@ -1918,7 +2086,7 @@ def test_deepgram_direct_save_forces_mip_opt_out_and_known_runtime(client, db_se
     make_user(email="admin-deepgram-direct@example.com", password="password-1", is_system_admin=True)
     calls: dict[str, object] = {}
 
-    def fake_post(url, *, headers=None, params=None, content=None, data=None, files=None, timeout=None):
+    def fake_post(method, url, *, headers=None, params=None, content=None, data=None, files=None, timeout=None):
         calls["url"] = url
         calls["headers"] = headers
         calls["params"] = params
@@ -1927,7 +2095,7 @@ def test_deepgram_direct_save_forces_mip_opt_out_and_known_runtime(client, db_se
         calls["files"] = files
         return FakeHttpxResponse({"results": {"channels": [{"alternatives": [{"transcript": "sample transcript"}]}]}})
 
-    monkeypatch.setattr("app.services.stt.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_post)
 
     login(client, email="admin-deepgram-direct@example.com", password="password-1")
     created = client.post(
@@ -1973,7 +2141,7 @@ def test_deepgram_save_rejects_explicit_mip_opt_out_false(client, db_session, ma
     make_user(email="admin-deepgram-unsafe@example.com", password="password-1", is_system_admin=True)
     calls: list[str] = []
 
-    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: calls.append("called") or FakeHttpxResponse({"text": "unexpected"}))
+    monkeypatch.setattr("app.services.stt.httpx.stream", lambda *args, **kwargs: calls.append("called") or FakeHttpxResponse({"text": "unexpected"}))
 
     login(client, email="admin-deepgram-unsafe@example.com", password="password-1")
     rejected = client.post(
@@ -2059,7 +2227,7 @@ def test_generic_stt_bad_replacement_token_preserves_existing_config_and_selecti
         lambda *, team_id, config_id, bearer_token: written_tokens.append(bearer_token) or f"secret:openscribe/stt/team/{team_id}/config/{config_id}",
     )
     monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda *, team_id, config_id, secret_ref=None: deleted_config_ids.append(str(config_id)))
-    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"error": "unauthorized"}, status_code=401))
+    monkeypatch.setattr("app.services.stt.httpx.stream", lambda *args, **kwargs: FakeHttpxResponse({"error": "unauthorized"}, status_code=401))
 
     login(client, email="admin-generic-stt-replace@example.com", password="password-1")
     updated = client.post(
@@ -2124,7 +2292,7 @@ def test_openai_compatible_stt_bad_replacement_token_preserves_existing_config_a
         lambda *, team_id, config_id, bearer_token: written_tokens.append(bearer_token) or f"secret:openscribe/stt/team/{team_id}/config/{config_id}",
     )
     monkeypatch.setattr("app.services.stt.delete_team_stt_bearer_token", lambda *, team_id, config_id, secret_ref=None: deleted_config_ids.append(str(config_id)))
-    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"error": "unauthorized"}, status_code=401))
+    monkeypatch.setattr("app.services.stt.httpx.stream", lambda *args, **kwargs: FakeHttpxResponse({"error": "unauthorized"}, status_code=401))
 
     login(client, email="admin-openai-compatible-stt-replace@example.com", password="password-1")
     updated = client.post(
@@ -2190,7 +2358,7 @@ def test_system_admin_can_inspect_stt_openapi_and_get_prefilled_fields(client, m
     team = make_team(name="Clinic North")
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
 
-    monkeypatch.setattr("app.services.provider_inspection.httpx.get", lambda *args, **kwargs: FakeHttpxResponse(STT_OPENAPI_DOCUMENT))
+    monkeypatch.setattr("app.services.provider_inspection.httpx.stream", lambda *args, **kwargs: FakeHttpxResponse(STT_OPENAPI_DOCUMENT))
 
     login(client, email="admin@example.com", password="password-1")
     inspected = client.post(
@@ -2259,7 +2427,7 @@ def test_system_admin_can_inspect_generic_stt_dynamic_field_names(client, make_t
             }
         },
     }
-    monkeypatch.setattr("app.services.provider_inspection.httpx.get", lambda *args, **kwargs: FakeHttpxResponse(document))
+    monkeypatch.setattr("app.services.provider_inspection.httpx.stream", lambda *args, **kwargs: FakeHttpxResponse(document))
 
     login(client, email="admin@example.com", password="password-1")
     inspected = client.post(
@@ -2432,11 +2600,11 @@ def test_system_admin_saved_test_uses_elevenlabs_runtime_path(
 
     monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "el-secret")
 
-    def fake_post(url, *, headers=None, data=None, files=None, timeout=None):
+    def fake_post(method, url, *, headers=None, data=None, files=None, timeout=None):
         captured.update({"url": url, "headers": headers, "data": data, "files": files, "timeout": timeout})
         return FakeHttpxResponse({"text": "elevenlabs transcript"})
 
-    monkeypatch.setattr("app.services.stt.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_post)
 
     result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id)
 
@@ -2749,7 +2917,7 @@ def test_stt_config_validates_urls_and_enforces_admin_provisioning_plus_leader_t
     south = make_team(name="Clinic South")
     make_user(email="admin@example.com", password="password-2", is_system_admin=True)
     make_user(email="leader@example.com", password="password-1", team=north, team_role=TeamRole.leader)
-    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"text": "sample transcript"}))
+    monkeypatch.setattr("app.services.stt.httpx.stream", lambda *args, **kwargs: FakeHttpxResponse({"text": "sample transcript"}))
 
     login(client, email="admin@example.com", password="password-2")
 
@@ -4727,41 +4895,42 @@ def test_llm_schema_provider_defaults_use_shared_preset_catalog(monkeypatch):
 
 def test_mistral_model_discovery_uses_chat_capability_metadata(monkeypatch):
     class Response:
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
         def raise_for_status(self):
             return None
 
-        def json(self):
-            return {
-                "data": [
-                    {"id": "mistral-large-latest", "capabilities": {"completion_chat": True}},
-                    {"id": "mistral-embed", "capabilities": {"completion_chat": False}},
-                    {"id": "mistral-old", "archived": True, "capabilities": {"completion_chat": True}},
-                    {"id": "mistral-no-capability", "capabilities": {}},
-                ]
-            }
+        def iter_bytes(self):
+            return iter([b'{"data":[{"id":"mistral-large-latest","capabilities":{"completion_chat":true}},{"id":"mistral-embed","capabilities":{"completion_chat":false}},{"id":"mistral-old","archived":true,"capabilities":{"completion_chat":true}},{"id":"mistral-no-capability","capabilities":{}}]}'])
 
-    monkeypatch.setattr("app.services.llm.httpx.get", lambda *args, **kwargs: Response())
+    monkeypatch.setattr("app.services.llm.httpx.stream", lambda *args, **kwargs: Response())
 
     assert _list_mistral_chat_models(api_key="mistral-key", base_url="https://api.mistral.ai/v1") == ["mistral-large-latest"]
 
 
 def test_together_model_discovery_uses_type_metadata(monkeypatch):
     class Response:
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
         def raise_for_status(self):
             return None
 
-        def json(self):
-            return [
-                {"id": "meta-llama/Llama-3.3-70B-Instruct", "type": "chat"},
-                {"name": "Qwen/Qwen2.5-Coder", "type": "code"},
-                {"id": "mistralai/Mixtral", "type": "language"},
-                {"id": "black-forest-labs/FLUX.1", "type": "image"},
-                {"id": "BAAI/bge-base", "type": "embedding"},
-                {"id": "rerank-model", "type": "rerank"},
-                {"id": "moderation-model", "type": "moderation"},
-            ]
+        def iter_bytes(self):
+            return iter([b'[{"id":"meta-llama/Llama-3.3-70B-Instruct","type":"chat"},{"name":"Qwen/Qwen2.5-Coder","type":"code"},{"id":"mistralai/Mixtral","type":"language"},{"id":"black-forest-labs/FLUX.1","type":"image"},{"id":"BAAI/bge-base","type":"embedding"},{"id":"rerank-model","type":"rerank"},{"id":"moderation-model","type":"moderation"}]'])
 
-    monkeypatch.setattr("app.services.llm.httpx.get", lambda *args, **kwargs: Response())
+    monkeypatch.setattr("app.services.llm.httpx.stream", lambda *args, **kwargs: Response())
 
     assert _list_together_chat_models(api_key="together-key", base_url="https://api.together.xyz/v1") == [
         "Qwen/Qwen2.5-Coder",
@@ -5938,6 +6107,16 @@ def test_system_admin_can_inspect_deidentification_provider_without_persisting_s
 
     class FakeResponse:
         status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_bytes(self):
+            return iter([json.dumps(self.json()).encode("utf-8")])
 
         def json(self):
             return {
@@ -5948,14 +6127,15 @@ def test_system_admin_can_inspect_deidentification_provider_without_persisting_s
                 ],
             }
 
-    def fake_post(url, *, json, headers, timeout):
+    def fake_stream(method, url, *, json, headers, timeout):
+        assert method == "POST"
         captured["url"] = url
         captured["json"] = json
         captured["headers"] = headers
         captured["timeout"] = timeout
         return FakeResponse()
 
-    monkeypatch.setattr("app.services.redaction.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.deidentification.httpx.stream", fake_stream)
 
     login(client, email="deid-inspect-admin@example.com", password="password-1")
     inspected = client.post(
@@ -6004,6 +6184,16 @@ def test_system_admin_can_inspect_deidentification_openapi_docs(client, make_use
 
     class FakeResponse:
         status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_bytes(self):
+            return iter([json.dumps(self.json()).encode("utf-8")])
 
         def json(self):
             return {
@@ -6060,14 +6250,18 @@ def test_system_admin_can_inspect_deidentification_openapi_docs(client, make_use
                 },
             }
 
-    def fake_get(url, *, headers, timeout):
-        fetched_urls.append(url)
-        assert headers == {}
-        assert timeout == 10.0
-        return FakeResponse()
-
     class FakePostResponse:
         status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_bytes(self):
+            return iter([json.dumps(self.json()).encode("utf-8")])
 
         def json(self):
             return {
@@ -6077,15 +6271,20 @@ def test_system_admin_can_inspect_deidentification_openapi_docs(client, make_use
                 "model_version": "openapi-model",
             }
 
-    def fake_post(url, *, json, headers, timeout):
+    def fake_stream(method, url, *, headers, timeout, json=None):
+        if method == "GET":
+            fetched_urls.append(url)
+            assert headers == {}
+            assert timeout == 10.0
+            return FakeResponse()
+        assert method == "POST"
         posted["url"] = url
         posted["json"] = json
         posted["headers"] = headers
         posted["timeout"] = timeout
         return FakePostResponse()
 
-    monkeypatch.setattr("app.services.deidentification.httpx.get", fake_get)
-    monkeypatch.setattr("app.services.deidentification.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.deidentification.httpx.stream", fake_stream)
 
     login(client, email="deid-openapi-admin@example.com", password="password-1")
     inspected = client.post(
@@ -6154,6 +6353,16 @@ def test_deidentification_inspect_adjusts_entity_fields_from_ping_response(clien
 
     class FakeOpenAPIResponse:
         status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_bytes(self):
+            return iter([json.dumps(self.json()).encode("utf-8")])
 
         def json(self):
             return {
@@ -6210,6 +6419,16 @@ def test_deidentification_inspect_adjusts_entity_fields_from_ping_response(clien
 
     class FakePostResponse:
         status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_bytes(self):
+            return iter([json.dumps(self.json()).encode("utf-8")])
 
         def json(self):
             return {
@@ -6220,8 +6439,10 @@ def test_deidentification_inspect_adjusts_entity_fields_from_ping_response(clien
                 "model_name": "disease_detection_superclinical",
             }
 
-    monkeypatch.setattr("app.services.deidentification.httpx.get", lambda *args, **kwargs: FakeOpenAPIResponse())
-    monkeypatch.setattr("app.services.deidentification.httpx.post", lambda *args, **kwargs: FakePostResponse())
+    monkeypatch.setattr(
+        "app.services.deidentification.httpx.stream",
+        lambda method, *args, **kwargs: FakeOpenAPIResponse() if method == "GET" else FakePostResponse(),
+    )
 
     login(client, email="clinical-openapi-admin@example.com", password="password-1")
     inspected = client.post(
@@ -6255,6 +6476,16 @@ def test_deidentification_openapi_docs_preserve_top_level_array_response_path(cl
 
     class FakeOpenAPIResponse:
         status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_bytes(self):
+            return iter([json.dumps(self.json()).encode("utf-8")])
 
         def json(self):
             return {
@@ -6301,12 +6532,24 @@ def test_deidentification_openapi_docs_preserve_top_level_array_response_path(cl
 
     class FakePostResponse:
         status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_bytes(self):
+            return iter([json.dumps(self.json()).encode("utf-8")])
 
         def json(self):
             return [{"start": 0, "end": 10, "entity_type": "PERSON", "score": 0.98}]
 
-    monkeypatch.setattr("app.services.deidentification.httpx.get", lambda *args, **kwargs: FakeOpenAPIResponse())
-    monkeypatch.setattr("app.services.deidentification.httpx.post", lambda *args, **kwargs: FakePostResponse())
+    monkeypatch.setattr(
+        "app.services.deidentification.httpx.stream",
+        lambda method, *args, **kwargs: FakeOpenAPIResponse() if method == "GET" else FakePostResponse(),
+    )
 
     login(client, email="deid-openapi-array-admin@example.com", password="password-1")
     inspected = client.post(
@@ -6335,11 +6578,22 @@ def test_deidentification_inspect_prunes_forbidden_extra_fields_and_language_val
         def __init__(self, status_code, payload):
             self.status_code = status_code
             self.payload = payload
+            self.headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_bytes(self):
+            return iter([json.dumps(self.payload).encode("utf-8")])
 
         def json(self):
             return self.payload
 
-    def fake_post(url, *, json, headers, timeout):
+    def fake_stream(method, url, *, json, headers, timeout):
+        assert method == "POST"
         posted_bodies.append(dict(json))
         if len(posted_bodies) == 1:
             return FakeResponse(
@@ -6357,7 +6611,7 @@ def test_deidentification_inspect_prunes_forbidden_extra_fields_and_language_val
             )
         return FakeResponse(200, {"entities": [{"start": 0, "end": 14, "entity_type": "PERSON", "score": 0.99}]})
 
-    monkeypatch.setattr("app.services.deidentification.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.deidentification.httpx.stream", fake_stream)
 
     login(client, email="deid-prune-admin@example.com", password="password-1")
     inspected = client.post(
@@ -6925,9 +7179,16 @@ def test_generic_rest_deidentification_spans_are_normalized_and_filtered(
 
     class FakeResponse:
         status_code = 200
+        headers = {}
 
-        def json(self):
-            return {
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_bytes(self):
+            return iter([json.dumps({
                 "entities": [
                     {"start": name_start - 1, "end": name_start + len("John Smith"), "entity_type": "NAME", "score": 0.99},
                     {"start": asthma_start, "end": asthma_start + len("asthma"), "entity_type": "DISEASE", "score": 0.99},
@@ -6935,9 +7196,9 @@ def test_generic_rest_deidentification_spans_are_normalized_and_filtered(
                     {"start": today_start, "end": today_start + len("today"), "entity_type": "DATE_TIME", "score": 0.99},
                     {"start": 0, "end": len("Patient"), "entity_type": "PERSON", "score": 0.1},
                 ]
-            }
+            }).encode("utf-8")])
 
-    monkeypatch.setattr("app.services.redaction.httpx.post", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr("app.services.redaction.httpx.stream", lambda *args, **kwargs: FakeResponse())
 
     result = redact_text_with_mapping(
         db_session,
@@ -7006,18 +7267,25 @@ def test_clinical_detection_uses_redacted_text_for_remote_provider(
 
     class FakeClinicalResponse:
         status_code = 200
+        headers = {}
 
-        def json(self):
-            return {"entities": [{"start": 16, "end": 22, "entity_type": "DISEASE"}]}
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_bytes(self):
+            return iter([b'{"entities":[{"start":16,"end":22,"entity_type":"DISEASE"}]}'])
 
     captured_body = {}
 
-    def fake_post(url, json, headers, timeout):
+    def fake_post(method, url, *, json, headers, timeout):
         captured_body.update(json)
         return FakeClinicalResponse()
 
     monkeypatch.setattr("app.services.redaction._detect_phi", fake_detect_phi)
-    monkeypatch.setattr("app.services.redaction.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.redaction.httpx.stream", fake_post)
 
     ensure_redaction_run_for_transcript_version(db_session, transcript_version=version)
 
@@ -7084,15 +7352,22 @@ def test_clinical_detection_allows_unredacted_text_for_local_provider(
 
     class FakeClinicalResponse:
         status_code = 200
+        headers = {}
 
-        def json(self):
-            return {"entities": [{"start": 19, "end": 28, "entity_type": "SYMPTOM"}]}
+        def __enter__(self):
+            return self
 
-    def fake_post(url, json, headers, timeout):
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_bytes(self):
+            return iter([b'{"entities":[{"start":19,"end":28,"entity_type":"SYMPTOM"}]}'])
+
+    def fake_post(method, url, *, json, headers, timeout):
         captured_body.update(json)
         return FakeClinicalResponse()
 
-    monkeypatch.setattr("app.services.redaction.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.redaction.httpx.stream", fake_post)
 
     ensure_redaction_run_for_transcript_version(db_session, transcript_version=version)
 
@@ -7172,19 +7447,26 @@ def test_clinical_detection_chunks_long_local_analyze_requests(
 
     class FakeClinicalResponse:
         status_code = 200
+        headers = {}
 
         def __init__(self, body):
             self.body = body
 
-        def json(self):
-            start = self.body["text"].index("asthma")
-            return {"entities": [{"start": start, "end": start + len("asthma"), "label": "DISEASE", "confidence": 0.97}]}
+        def __enter__(self):
+            return self
 
-    def fake_post(url, json, headers, timeout):
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_bytes(self):
+            start = self.body["text"].index("asthma")
+            return iter([json.dumps({"entities": [{"start": start, "end": start + len("asthma"), "label": "DISEASE", "confidence": 0.97}]}).encode("utf-8")])
+
+    def fake_post(method, url, *, json, headers, timeout):
         captured_bodies.append(json)
         return FakeClinicalResponse(json)
 
-    monkeypatch.setattr("app.services.redaction.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.redaction.httpx.stream", fake_post)
 
     run = ensure_clinical_entity_run_for_transcript_version(db_session, transcript_version=version)
 
@@ -7279,16 +7561,23 @@ def test_clinical_detection_reruns_after_provider_config_update(
 
     class FakeClinicalResponse:
         status_code = 200
+        headers = {}
 
-        def json(self):
-            return {
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_bytes(self):
+            return iter([json.dumps({
                 "entities": [
                     {"start": 25, "end": 34, "entity_type": "DISEASE", "score": 0.95},
                     {"start": 39, "end": 49, "entity_type": "DISEASE", "score": 0.97},
                 ]
-            }
+            }).encode("utf-8")])
 
-    monkeypatch.setattr("app.services.redaction.httpx.post", lambda *args, **kwargs: FakeClinicalResponse())
+    monkeypatch.setattr("app.services.redaction.httpx.stream", lambda *args, **kwargs: FakeClinicalResponse())
 
     fresh_run = ensure_clinical_entity_run_for_transcript_version(db_session, transcript_version=version)
 
@@ -7324,16 +7613,23 @@ def test_generic_rest_deidentification_locates_value_only_entities(
 
     class FakeResponse:
         status_code = 200
+        headers = {}
 
-        def json(self):
-            return {
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_bytes(self):
+            return iter([json.dumps({
                 "entities": [
                     {"text": "Gemma Phillips", "label": "NAME", "confidence": 0.99},
                     {"text": "sixty-eight B Kenworthy Lane", "label": "ADDRESS", "confidence": 0.98},
                 ]
-            }
+            }).encode("utf-8")])
 
-    monkeypatch.setattr("app.services.redaction.httpx.post", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr("app.services.redaction.httpx.stream", lambda *args, **kwargs: FakeResponse())
 
     result = redact_text_with_mapping(
         db_session,
@@ -16969,10 +17265,10 @@ def test_stt_health_probe_uses_explicit_healthcheck_url_and_bearer_auth(monkeypa
         adapter_kind=SttAdapterKind.generic_rest,
         base_url="http://ignored.example",
         bearer_token="secret-token",
-        healthcheck_url="http://stt.example/internal/ready",
+        healthcheck_url="https://stt.example/internal/ready",
     )
 
-    assert calls == [("http://stt.example/internal/ready", {"Authorization": "Bearer secret-token"}, 5.0)]
+    assert calls == [("https://stt.example/internal/ready", {"Authorization": "Bearer secret-token"}, 5.0)]
 
 
 def test_stt_health_probe_skips_without_explicit_healthcheck_url(monkeypatch):
@@ -17576,12 +17872,42 @@ def test_audio_file_upload_is_rate_limited_per_authenticated_user(
 
 def test_audio_upload_default_caps_protect_users_without_configured_quotas():
     assert WHOLE_FILE_MAX_UPLOAD_BYTES == 200 * 1024 * 1024
+    assert LIVE_CHUNK_MAX_UPLOAD_BYTES == 24 * 1024 * 1024
     assert WHOLE_FILE_MAX_DURATION_SECONDS == 4 * 60 * 60
     assert LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS == 3600
     assert WHOLE_FILE_HOURLY_UPLOAD_BYTES == 200 * 1024 * 1024
     assert WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS == 4 * 60 * 60
     assert AUDIO_FFMPEG_TIMEOUT_SECONDS == 30 * 60
     assert STT_TRANSCRIPTION_TIMEOUT_SECONDS == 4 * 60 * 60
+
+
+def test_bounded_audio_upload_reader_rejects_before_building_an_oversized_bytes_object():
+    class SizedReadStream:
+        def __init__(self, data: bytes):
+            self._data = data
+            self._offset = 0
+            self.read_sizes: list[int] = []
+
+        def read(self, size: int = -1) -> bytes:
+            assert size >= 0
+            self.read_sizes.append(size)
+            chunk = self._data[self._offset : self._offset + size]
+            self._offset += len(chunk)
+            return chunk
+
+    boundary_stream = SizedReadStream(b"1234")
+    boundary_upload = UploadFile(file=boundary_stream, filename="audio.wav")
+    assert read_bounded_upload_file(upload=boundary_upload, max_bytes=4) == b"1234"
+    assert boundary_stream.read_sizes == [5, 1]
+
+    oversized_stream = SizedReadStream(b"12345")
+    oversized_upload = UploadFile(file=oversized_stream, filename="audio.wav")
+    with pytest.raises(AppError) as exc_info:
+        read_bounded_upload_file(upload=oversized_upload, max_bytes=4)
+
+    assert exc_info.value.status_code == 413
+    assert exc_info.value.code == "payload_too_large"
+    assert oversized_stream.read_sizes == [5]
 
 
 def test_audio_file_upload_rejects_oversized_payload(
@@ -17613,6 +17939,8 @@ def test_audio_file_upload_rejects_oversized_payload(
     db_session.commit()
 
     monkeypatch.setattr("app.services.audio.WHOLE_FILE_MAX_UPLOAD_BYTES", 4)
+    queue_calls = []
+    monkeypatch.setattr("app.routes.api_routes.queue_audio_file_ingestion", lambda **kwargs: queue_calls.append(kwargs))
 
     login(client, email="owner@example.com", password="password-3")
     oversized = client.post(
@@ -17626,6 +17954,96 @@ def test_audio_file_upload_rejects_oversized_payload(
         code="payload_too_large",
         message="Audio file exceeds the current maximum upload size",
     )
+    assert queue_calls == []
+
+
+def test_audio_file_upload_accepts_payload_at_configured_byte_limit(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+    monkeypatch,
+):
+    team = make_team(name="Boundary file upload")
+    admin = make_user(email="boundary-file-admin@example.com", password="password-1", is_system_admin=True)
+    leader = make_user(email="boundary-file-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=leader)
+    owner = make_user(email="boundary-file-owner@example.com", password="password-3", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Boundary upload",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    monkeypatch.setattr("app.services.audio.WHOLE_FILE_MAX_UPLOAD_BYTES", 4)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **kwargs: 1.0)
+
+    login(client, email=owner.email, password="password-3")
+    response = client.post(
+        f"/api/v1/transcripts/{transcript.id}/audio-file",
+        files={"audio": ("recording.mp3", b"1234", "audio/mpeg")},
+    )
+
+    assert response.status_code == 202
+
+
+def test_live_chunk_and_dictation_uploads_reject_oversized_payloads_before_services(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+):
+    team = make_team(name="Bounded live and dictation uploads")
+    owner = make_user(email="bounded-audio-owner@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    live_transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Live upload",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    dictation_transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Dictation upload",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add_all([live_transcript, dictation_transcript])
+    db_session.commit()
+    monkeypatch.setattr("app.services.audio.LIVE_CHUNK_MAX_UPLOAD_BYTES", 4)
+    monkeypatch.setattr("app.services.audio.WHOLE_FILE_MAX_UPLOAD_BYTES", 4)
+    service_calls = []
+    monkeypatch.setattr("app.routes.api_routes.queue_audio_chunk_ingestion", lambda **kwargs: service_calls.append("live"))
+    monkeypatch.setattr("app.routes.api_routes.append_post_consultation_dictation_audio", lambda **kwargs: service_calls.append("dictation"))
+
+    login(client, email=owner.email, password="password-1")
+    live_response = client.post(
+        f"/api/v1/transcripts/{live_transcript.id}/audio-chunks",
+        files={"audio": ("chunk.wav", b"12345", "audio/wav")},
+        data={"chunk_sequence_no": "1"},
+    )
+    dictation_response = client.post(
+        f"/api/v1/transcripts/{dictation_transcript.id}/post-consultation-dictation/audio-file",
+        files={"audio": ("dictation.wav", b"12345", "audio/wav")},
+    )
+
+    assert_error(live_response, status_code=413, code="payload_too_large", message="Audio file exceeds the current maximum upload size")
+    assert_error(dictation_response, status_code=413, code="payload_too_large", message="Audio file exceeds the current maximum upload size")
+    assert service_calls == []
 
 
 def test_audio_file_upload_rate_limit_is_isolated_per_authenticated_user(
@@ -18473,7 +18891,7 @@ def test_transcribe_with_team_stt_openai_compatible_rest_uses_vault_secret_and_r
         assert config_id == config.id
         return "secret-token"
 
-    def fake_httpx_post(url, *, headers, data, files, timeout):
+    def fake_httpx_post(method, url, *, headers, data, files, timeout):
         captured["url"] = url
         captured["headers"] = headers
         captured["data"] = data
@@ -18482,7 +18900,7 @@ def test_transcribe_with_team_stt_openai_compatible_rest_uses_vault_secret_and_r
         return FakeHttpxResponse({"result": {"text": "recognized text"}})
 
     monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", fake_read_team_stt_bearer_token)
-    monkeypatch.setattr("app.services.stt.httpx.post", fake_httpx_post)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_httpx_post)
 
     text = transcribe_with_team_stt(
         db_session,
@@ -18505,7 +18923,8 @@ def test_transcribe_with_team_stt_openai_compatible_rest_uses_vault_secret_and_r
 def test_deepgram_model_discovery_uses_models_endpoint(monkeypatch):
     captured = {}
 
-    def fake_get(url, *, headers=None, timeout=None):
+    def fake_stream(method, url, *, headers=None, timeout=None):
+        assert method == "GET"
         captured.update({"url": url, "headers": headers, "timeout": timeout})
         return FakeHttpxResponse(
             {
@@ -18517,7 +18936,7 @@ def test_deepgram_model_discovery_uses_models_endpoint(monkeypatch):
             }
         )
 
-    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_stream)
 
     models = _list_deepgram_stt_models(api_key="dg-secret", base_url="https://api.deepgram.com")
 
@@ -18528,10 +18947,10 @@ def test_deepgram_model_discovery_uses_models_endpoint(monkeypatch):
 
 
 def test_deepgram_model_discovery_rejects_invalid_key(monkeypatch):
-    def fake_get(*args, **kwargs):
+    def fake_stream(*args, **kwargs):
         return FakeHttpxResponse({"error": "unauthorized"}, status_code=401)
 
-    monkeypatch.setattr("app.services.stt.httpx.get", fake_get)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_stream)
 
     with pytest.raises(AppError) as exc_info:
         _list_deepgram_stt_models(api_key="bad-key", base_url="https://api.deepgram.com")
@@ -18543,9 +18962,10 @@ def test_deepgram_model_discovery_rejects_invalid_key(monkeypatch):
 def test_deepgram_transcription_uses_query_params_and_raw_audio(monkeypatch):
     captured = {}
 
-    def fake_post(url, *, headers=None, params=None, content=None, data=None, files=None, timeout=None):
+    def fake_stream(method, url, *, headers=None, params=None, content=None, data=None, files=None, timeout=None):
         captured.update(
             {
+                "method": method,
                 "url": url,
                 "headers": headers,
                 "params": params,
@@ -18557,7 +18977,7 @@ def test_deepgram_transcription_uses_query_params_and_raw_audio(monkeypatch):
         )
         return FakeHttpxResponse({"results": {"channels": [{"alternatives": [{"transcript": "hello from deepgram"}]}]}})
 
-    monkeypatch.setattr("app.services.stt.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_stream)
 
     result = _transcribe_via_http(
         base_url="https://api.deepgram.com",
@@ -18577,6 +18997,7 @@ def test_deepgram_transcription_uses_query_params_and_raw_audio(monkeypatch):
     )
 
     assert result == "hello from deepgram"
+    assert captured["method"] == "POST"
     assert captured["url"] == "https://api.deepgram.com/v1/listen"
     assert captured["headers"] == {"Authorization": "Token dg-secret", "Content-Type": "audio/wav"}
     assert captured["params"] == {"smart_format": "true", "mip_opt_out": "true", "model": "nova-3", "language": "en"}
@@ -18618,11 +19039,11 @@ def test_transcribe_with_team_stt_deepgram_uses_raw_audio_transport(
 
     monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "dg-secret")
 
-    def fake_post(url, *, headers=None, params=None, content=None, data=None, files=None, timeout=None):
+    def fake_stream(method, url, *, headers=None, params=None, content=None, data=None, files=None, timeout=None):
         captured.update({"headers": headers, "params": params, "content": content, "data": data, "files": files})
         return FakeHttpxResponse({"results": {"channels": [{"alternatives": [{"transcript": "recognized text"}]}]}})
 
-    monkeypatch.setattr("app.services.stt.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_stream)
 
     text = transcribe_with_team_stt(
         db_session,
@@ -18669,12 +19090,12 @@ def test_transcribe_with_team_stt_uses_saved_model_and_language_field_names(
     make_stt_selection(config=config, actor=owner)
     captured = {}
 
-    def fake_httpx_post(url, *, headers, data, files, timeout):
+    def fake_httpx_post(method, url, *, headers, data, files, timeout):
         captured["data"] = data
         captured["files"] = files
         return FakeHttpxResponse({"results": [{"alternatives": [{"transcript": "recognized text"}]}]})
 
-    monkeypatch.setattr("app.services.stt.httpx.post", fake_httpx_post)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_httpx_post)
 
     text = transcribe_with_team_stt(
         db_session,
@@ -18721,11 +19142,11 @@ def test_transcribe_with_team_stt_openai_compatible_rest_allows_no_auth_config(
 
     monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: pytest.fail("No-auth STT must not read stale Vault refs"))
 
-    def fake_httpx_post(url, *, headers, data, files, timeout):
+    def fake_httpx_post(method, url, *, headers, data, files, timeout):
         captured["headers"] = headers
         return FakeHttpxResponse({"text": "recognized text"})
 
-    monkeypatch.setattr("app.services.stt.httpx.post", fake_httpx_post)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_httpx_post)
 
     text = transcribe_with_team_stt(
         db_session,
@@ -18748,7 +19169,7 @@ def test_transcribe_with_team_stt_invalid_json_log_redacts_provider_url(
         team_id=team.id,
         label="Signed URL STT",
         adapter_kind=SttAdapterKind.generic_rest,
-        base_url="http://user:pass@stt.example:9000?token=secret",
+        base_url="http://127.0.0.1:9000?token=secret",
         transcribe_path="/v1/audio/transcriptions",
         auth_mode=SttAuthMode.bearer,
         model_name="whisper-1",
@@ -18768,15 +19189,22 @@ def test_transcribe_with_team_stt_invalid_json_log_redacts_provider_url(
 
     class InvalidJsonResponse:
         status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
 
         def raise_for_status(self):
             return None
 
-        def json(self):
-            raise ValueError("not json")
+        def iter_bytes(self):
+            return iter([b"not json"])
 
     monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
-    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: InvalidJsonResponse())
+    monkeypatch.setattr("app.services.stt.httpx.stream", lambda *args, **kwargs: InvalidJsonResponse())
 
     try:
         transcribe_with_team_stt(
@@ -18789,8 +19217,7 @@ def test_transcribe_with_team_stt_invalid_json_log_redacts_provider_url(
     except AppError as exc:
         assert exc.code == "stt_response_invalid"
         log_record = next(record for record in caplog.records if record.message == "stt_http_response_invalid_json")
-        assert log_record.stt_transport["url"] == "http://stt.example:9000"
-        assert "user:pass" not in log_record.stt_transport["url"]
+        assert log_record.stt_transport["url"] == "http://127.0.0.1:9000"
         assert "token=secret" not in log_record.stt_transport["url"]
     else:
         raise AssertionError("Expected invalid JSON STT response to raise an AppError")
@@ -18824,7 +19251,7 @@ def test_transcribe_with_team_stt_paragraphizes_timestamped_segments_when_presen
 
     monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
     monkeypatch.setattr(
-        "app.services.stt.httpx.post",
+        "app.services.stt.httpx.stream",
         lambda *args, **kwargs: FakeHttpxResponse(
             {
                 "text": "flat transcript that should not win",
@@ -18883,7 +19310,7 @@ def test_transcribe_with_team_stt_uses_configured_segment_fields(
 
     monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
     monkeypatch.setattr(
-        "app.services.stt.httpx.post",
+        "app.services.stt.httpx.stream",
         lambda *args, **kwargs: FakeHttpxResponse(
             {
                 "transcript": "flat transcript that should not win",
@@ -19099,7 +19526,7 @@ def test_transcribe_with_team_stt_generic_rest_surfaces_connect_errors_cleanly(
     def fake_httpx_post(*args, **kwargs):
         raise httpx.ConnectError("boom", request=httpx.Request("POST", "http://127.0.0.1:9000/v1/audio/transcriptions"))
 
-    monkeypatch.setattr("app.services.stt.httpx.post", fake_httpx_post)
+    monkeypatch.setattr("app.services.stt.httpx.stream", fake_httpx_post)
 
     try:
         transcribe_with_team_stt(
@@ -19152,7 +19579,7 @@ def test_transcribe_with_team_stt_generic_rest_surfaces_http_status_failures_cle
     caplog.set_level("WARNING", logger="openscribe.stt")
 
     monkeypatch.setattr("app.services.stt.read_team_stt_bearer_token", lambda **kwargs: "secret-token")
-    monkeypatch.setattr("app.services.stt.httpx.post", lambda *args, **kwargs: FakeHttpxResponse({"error": "bad request"}, status_code=503))
+    monkeypatch.setattr("app.services.stt.httpx.stream", lambda *args, **kwargs: FakeHttpxResponse({"error": "bad request"}, status_code=503))
 
     try:
         transcribe_with_team_stt(

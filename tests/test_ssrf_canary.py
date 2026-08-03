@@ -8,6 +8,8 @@ Tests that provider inspection endpoints:
 """
 
 import pytest
+from app.errors import AppError
+from app.provider_url_security import require_safe_provider_url
 from app.schemas.stt import SttInspectRequest, SttConfigDraftCreate
 from app.schemas.llm import LlmInspectRequest, LlmConfigDraftCreate
 from app.schemas.deidentification import (
@@ -40,14 +42,18 @@ class TestSttUrlValidation:
         with pytest.raises(ValueError, match="https"):
             SttInspectRequest(base_url="http://api.example.com/v1", label="test")
 
-    def test_metadata_service_ip_passes_validation(self):
-        """AWS metadata IP passes http-to-private-IP validation by design."""
-        req = SttInspectRequest(
-            base_url="http://169.254.169.254/latest/meta-data/", label="test"
-        )
-        assert "169.254.169.254" in req.base_url
-        # trailing slash stripped by validator
-        assert req.base_url.endswith("meta-data")
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://169.254.169.254/latest/meta-data/",
+            "https://100.100.100.200/latest/meta-data/",
+            "http://[fd00:ec2::254]/latest/meta-data/",
+            "https://metadata.google.internal/computeMetadata/v1/",
+        ],
+    )
+    def test_rejects_cloud_metadata_targets(self, url):
+        with pytest.raises(ValueError, match="metadata|link-local"):
+            SttInspectRequest(base_url=url, label="test")
 
     def test_strips_trailing_slash(self):
         req = SttInspectRequest(base_url="https://api.example.com/v1/", label="test")
@@ -140,20 +146,27 @@ class TestInspectEndpointsRequireAuth:
 
 
 class TestSsrFCanaryDesign:
-    """Document SSRF design constraints and accepted risks."""
+    """Document SSRF design constraints and enforced boundaries."""
 
-    def test_metadata_service_passes_validation(self):
-        """AWS metadata service IP is private → passes validation by design.
-        This is accepted because:
-        - Only system admins can configure providers
-        - Ollama/Presidio need local HTTP access
-        - Infrastructure-level egress controls should restrict metadata access
-        Recommended: add metadata IP blocklist (169.254.169.254, 100.64.0.0/10, etc.)
-        """
-        req = SttInspectRequest(
-            base_url="http://169.254.169.254/latest/meta-data/", label="test"
-        )
-        assert "169.254.169.254" in req.base_url
+    @pytest.mark.parametrize(
+        "factory,kwargs",
+        [
+            (SttInspectRequest, {"base_url": "http://169.254.169.254/latest/meta-data/", "label": "test"}),
+            (LlmInspectRequest, {"base_url": "https://metadata.google.internal/", "label": "test"}),
+            (
+                DeidentificationProviderInspectRequest,
+                {
+                    "base_url": "https://100.100.100.200/latest/meta-data/",
+                    "label": "test",
+                    "detect_path": "/detect",
+                    "adapter_kind": "generic_rest",
+                },
+            ),
+        ],
+    )
+    def test_all_provider_schemas_reject_metadata_services(self, factory, kwargs):
+        with pytest.raises(ValueError, match="metadata|link-local"):
+            factory(**kwargs)
 
     def test_httpx_does_not_follow_redirects_by_default(self):
         """httpx clients default to follow_redirects=False.
@@ -176,11 +189,44 @@ class TestSsrFCanaryDesign:
         assert response.status_code == 302
         assert requested_paths == ["/redirect/1"]
 
-    def test_no_host_allowlist_exists(self):
-        """URL validation allows any host — no allowlist/blocklist.
-        Accepted because:
-        - System admins are trusted to configure valid external providers
-        - Local HTTP must work for Ollama/Presidio
-        - Cloud environments should use network-level egress controls
-        """
-        pass  # Documented finding, no code assertion needed
+    def test_local_private_provider_support_remains_available(self):
+        req = SttInspectRequest(base_url="http://10.0.0.20:8080/v1", label="test")
+        assert req.base_url == "http://10.0.0.20:8080/v1"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://[::ffff:169.254.169.254]/latest/meta-data/",
+            "https://metadata.google.internal/computeMetadata/v1/",
+        ],
+    )
+    def test_runtime_recheck_blocks_persisted_metadata_urls(self, url):
+        with pytest.raises(AppError) as exc_info:
+            require_safe_provider_url(url)
+
+        assert exc_info.value.code == "provider_endpoint_blocked"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://provider.example/v1",
+            "ftp://localhost/provider",
+            "https://user:password@provider.example/v1",
+        ],
+    )
+    def test_runtime_recheck_blocks_unsafe_persisted_provider_urls(self, url):
+        with pytest.raises(AppError) as exc_info:
+            require_safe_provider_url(url)
+
+        assert exc_info.value.code == "provider_endpoint_blocked"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://provider.example/v1",
+            "http://localhost:11434/v1",
+            "http://10.0.0.20:8080/v1",
+        ],
+    )
+    def test_runtime_recheck_preserves_supported_provider_urls(self, url):
+        require_safe_provider_url(url)

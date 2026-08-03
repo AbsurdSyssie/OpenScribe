@@ -40,6 +40,7 @@ TOTP_SECRET_MAX_LENGTH = 128
 TOTP_SECRET_PATTERN = re.compile(r"^[A-Za-z2-7]+={0,6}$")
 TOTP_SECRET_TABLE = "user_mfa_methods"
 TOTP_SECRET_FIELD = "secret"
+DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
 
 
 def opaque_token_hash(token: str) -> str:
@@ -88,7 +89,9 @@ def authenticate_user(db: Session, email: str, password: str) -> User:
         .where(User.email == normalized_email)
     )
     user = db.scalar(stmt)
-    if user is None or not verify_password(password, user.password_hash):
+    password_hash = user.password_hash if user is not None else DUMMY_PASSWORD_HASH
+    password_valid = verify_password(password, password_hash)
+    if user is None or not password_valid:
         raise AppError(401, "unauthorized", "Invalid email or password")
     if user.status is not UserStatus.active:
         raise AppError(403, "forbidden", "User account is not active", {"status": user.status.value})

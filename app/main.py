@@ -11,9 +11,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -263,6 +263,7 @@ from .services.dictations import (
 from .services.admin import (
     admin_usage_overview as admin_usage_overview_service,
     approve_account_request as approve_account_request_service,
+    bootstrap_admin_is_configured,
     create_account_request as create_account_request_service,
     create_bootstrap_admin,
     create_team as create_team_service,
@@ -357,7 +358,7 @@ from .services.transcripts import (
     update_transcript_title as update_transcript_title_service,
 )
 from .tasks import enqueue_generated_document_job, enqueue_transcript_ingestion_job
-from .services.audio import enforce_whole_file_upload_size
+from .services.audio import enforce_whole_file_upload_size, read_live_chunk_upload, read_whole_file_upload
 from .services.redaction import redaction_run_text as redaction_run_text_service
 from .web.presentation import (
     admin_page_route_from_return_view,
@@ -431,10 +432,28 @@ class AuthenticatedContext:
     token: str
 
 
+def _allowed_hosts_for_environment() -> list[str]:
+    configured = [host.strip().lower() for host in os.getenv("ALLOWED_HOSTS", "").split(",") if host.strip()]
+    environment = app_environment()
+    if configured:
+        if environment in {"production", "prod"} and any("*" in host for host in configured):
+            raise RuntimeError("ALLOWED_HOSTS must not contain wildcards in production")
+        return configured
+    if environment not in {"production", "prod"}:
+        return ["*"]
+    public_host = urlsplit(os.getenv("APP_PUBLIC_URL", "")).hostname
+    if not public_host:
+        raise RuntimeError("ALLOWED_HOSTS or a valid APP_PUBLIC_URL is required in production")
+    if "*" in public_host:
+        raise RuntimeError("APP_PUBLIC_URL must not contain a wildcard host in production")
+    return [public_host.lower()]
+
+
 enforce_production_cookie_security()
 csrf_secret_configured_for_environment()
 audit_subject_hash_secret_configured_for_environment()
 app = FastAPI(title="OpenScribe MVP", docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts_for_environment())
 LOCALHOST_NAMES = {"localhost", "127.0.0.1", "::1", "testserver", "testclient"}
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 def _local_only_dev_emails() -> set[str]:
@@ -485,6 +504,40 @@ def _enforce_localhost_only_dev_account(request: Request, user: User) -> None:
     raise AppError(403, "forbidden", "Dev test accounts are available only from localhost")
 
 
+def _enabled_environment_flag(name: str) -> bool:
+    return os.getenv(name, "false").strip().lower() in {"1", "true", "yes"}
+
+
+def _validated_client_ip(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return str(ip_address(value.strip()))
+    except ValueError:
+        return None
+
+
+def rate_limit_client_key(request: Request) -> str:
+    """Return a stable abuse-control key from an explicitly trusted source.
+
+    Proxy headers remain disabled by default. Deployments may trust one only
+    when the named proxy is the sole route to the origin and overwrites that
+    header. Invalid trusted-header values fail closed to the socket peer.
+    """
+
+    client_ip = None
+    if _enabled_environment_flag("RATE_LIMIT_TRUST_CLOUDFLARE"):
+        client_ip = _validated_client_ip(request.headers.get("cf-connecting-ip"))
+    elif _enabled_environment_flag("RATE_LIMIT_TRUST_X_FORWARDED_FOR"):
+        forwarded_for = request.headers.get("x-forwarded-for", "")
+        client_ip = _validated_client_ip(forwarded_for.split(",", 1)[0])
+    if client_ip is None:
+        client_ip = _validated_client_ip(request.client.host if request.client else None) or "unknown"
+    subject = f"ip:{client_ip}"
+    request.state.rate_limit_subject = subject
+    return subject
+
+
 def whole_file_upload_rate_limit_key(request: Request) -> str:
     raw_token = request.cookies.get(SESSION_COOKIE_NAME)
     if raw_token:
@@ -509,7 +562,7 @@ def whole_file_upload_rate_limit_key(request: Request) -> str:
         else:
             subject = f"session:{hashed_token[:16]}"
     else:
-        subject = f"ip:{get_remote_address(request)}"
+        subject = rate_limit_client_key(request)
     request.state.rate_limit_subject = subject
     return subject
 
@@ -676,7 +729,7 @@ api = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_csrf)])
 
 
 limiter = Limiter(
-    key_func=get_remote_address,
+    key_func=rate_limit_client_key,
     storage_uri=os.getenv("RATE_LIMIT_STORAGE_URL", "redis://localhost:6379/0"),
     key_prefix=os.getenv("RATE_LIMIT_KEY_PREFIX", ""),
     headers_enabled=False,
@@ -973,7 +1026,7 @@ def _user_count(db: Session) -> int:
 
 
 def _bootstrap_allowed(db: Session) -> bool:
-    return _user_count(db) == 0
+    return bootstrap_admin_is_configured() and _user_count(db) == 0
 
 
 def _current_context_optional(request: Request, db: Session) -> AuthenticatedContext | None:

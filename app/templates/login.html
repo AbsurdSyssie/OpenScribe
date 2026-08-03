@@ -47,7 +47,7 @@
       <div class="card-top">
         <div class="section-label">System setup</div>
         <h2>Create the first system admin</h2>
-        <p class="muted">This option only appears before anyone has used the system.</p>
+        <p class="muted">This option only appears before anyone has used the system and requires the deployment bootstrap credential.</p>
       </div>
       <form method="post" action="/bootstrap/system-admin">
         <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
@@ -58,6 +58,10 @@
         <label>
           Password
           <input type="password" name="password" required minlength="12" autocomplete="new-password">
+        </label>
+        <label>
+          Bootstrap credential
+          <input type="password" name="bootstrap_token" required autocomplete="off">
         </label>
         <div class="submit-row">
           <button type="submit">Create system admin</button>

@@ -8,10 +8,9 @@ This document covers test execution, non-database test boundaries, and focused v
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
-python -m spacy download en_core_web_sm
 ```
 
-`requirements-dev.txt` includes the runtime dependencies plus pytest and pytest-xdist. The persistent Docker runtime image installs runtime requirements only and is not intended to run the complete test suite.
+`requirements-dev.txt` includes the runtime dependencies plus pytest and pytest-xdist. The requirements install the pinned `en_core_web_sm` model wheel; do not run a separate `spacy download` command. The persistent Docker runtime image installs runtime requirements only and is not intended to run the complete test suite.
 
 ## Run the suite
 
@@ -91,6 +90,16 @@ Provider configuration:
 ```bash
 pytest -q tests/test_stt_config.py tests/test_llm_config.py tests/test_deidentification.py
 ```
+
+Security-remediation focus:
+
+```bash
+pytest -q tests/test_api.py tests/test_admin_ui.py tests/test_docker_runtime.py tests/test_security_audit.py tests/test_ssrf_canary.py tests/test_provider_response_bounds.py
+python -m pip install pip-audit
+python -m pip_audit -r requirements.txt
+```
+
+The Docker smoke workflow runs the runtime dependency audit. It does not prove that deployed image references are digest-locked or that all dependency artifacts use full hashes.
 
 Use the actual file names present on the branch when a focused area has been split or renamed; `pytest --collect-only -q` is the authoritative collection view.
 

@@ -1,3 +1,5 @@
+import logging
+
 from sqlalchemy import select
 
 from app.models import SecurityAuditEvent, Team, TeamRole, TeamStatus
@@ -356,7 +358,7 @@ def test_team_delete_blocker_is_audited(db_session, make_user, make_team):
     assert event.details_json["blocked_user_id"] == str(linked_admin.id)
 
 
-def test_account_lifecycle_events_are_persisted(db_session, make_user, make_team):
+def test_account_lifecycle_events_are_persisted_without_raw_email_in_log_records(db_session, make_user, make_team, caplog):
     team = make_team(name="Audit Team")
     admin = make_user(email="audit-admin@example.com", is_system_admin=True)
     user = create_user(
@@ -372,8 +374,9 @@ def test_account_lifecycle_events_are_persisted(db_session, make_user, make_team
         actor=admin,
     )
 
-    suspend_user(db_session, admin, user.id)
-    reactivate_user(db_session, admin, user.id)
+    with caplog.at_level(logging.INFO, logger="openscribe.audit"):
+        suspend_user(db_session, admin, user.id)
+        reactivate_user(db_session, admin, user.id)
 
     created = _audit_events(db_session, "user_created")[0]
     suspended = _audit_events(db_session, "account_suspended")[0]
@@ -384,6 +387,17 @@ def test_account_lifecycle_events_are_persisted(db_session, make_user, make_team
     assert "temporary-password-1" not in str(created.details_json)
     assert suspended.details_json["target_status"] == UserStatus.suspended.value
     assert reactivated.details_json["target_status"] == UserStatus.active.value
+
+    lifecycle_records = [
+        record
+        for record in caplog.records
+        if record.name == "openscribe.audit" and record.getMessage() == "account_lifecycle"
+    ]
+    assert [record.event for record in lifecycle_records] == ["account_suspended", "account_reactivated"]
+    for record in lifecycle_records:
+        assert record.target_user_id == str(user.id)
+        assert not hasattr(record, "target_email")
+        assert user.email not in str(record.__dict__)
 
 
 def test_template_audit_excludes_prompt_text(db_session, make_user):

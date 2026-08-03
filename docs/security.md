@@ -23,9 +23,12 @@ OpenScribe uses opaque browser tokens with server-side state:
 - Session levels explicitly distinguish onboarding, pending MFA, and full access.
 - Suspension, disable/lock handling, password/account recovery, and sensitive account changes revoke the applicable sessions and trusted-device records.
 - Password hashes use Argon2id.
+- Unknown-user login attempts still run Argon2id password verification against a dummy hash before returning the same invalid-credential response.
 - New TOTP seeds are encrypted under the owning user's DEK; recovery codes and auth email tokens are hash-only.
 
 Cookies are `HttpOnly`, `SameSite=Lax`, and use `Secure` according to `COOKIE_SECURE_MODE`. Production startup fails unless `COOKIE_SECURE_MODE=always`.
+
+The first system administrator is a one-time bootstrap path. In production it is unavailable unless `BOOTSTRAP_ADMIN_TOKEN` is configured, and the submitted value must match. Creation obtains a transaction advisory lock and rechecks that no user exists, preventing concurrent requests from creating more than one first administrator.
 
 ## CSRF and origin validation
 
@@ -125,7 +128,8 @@ Provider metadata lives in PostgreSQL. Raw credentials live in Vault or the depl
 - Rollback compensation queues orphan cleanup when a Vault write succeeded but the database transaction failed.
 - Provider error persistence/logging uses bounded safe codes rather than raw response bodies.
 - Remote provider endpoints require HTTPS; HTTP is limited to localhost/private development targets under explicit adapter rules.
-- SSRF-sensitive inspection follows validated schemes/hosts, redirect rules, response size/content constraints, and provider-specific contracts.
+- SSRF-sensitive inspection follows validated schemes/hosts, redirect rules, response size/content constraints, and provider-specific contracts. Provider base URLs reject known cloud metadata names and addresses, including AWS, Alibaba, AWS IPv6, and Google metadata targets. This denylist does not remove support for `localhost`, loopback, or private-address local providers such as Ollama and Presidio.
+- Provider OpenAPI inspection reads at most 2 MiB. Model discovery reads at most 1 MiB. Ollama generation streams accept at most 8 MiB and 10,000 fragments. A declared or streamed excess fails as a bounded provider error rather than being retained in memory.
 
 `PROVIDER_CREDENTIAL_FINGERPRINT_SECRET` is used for non-reversible STT duplicate-credential fingerprints. Set a stable dedicated production value.
 
@@ -144,7 +148,7 @@ Generation and ingestion creation use a durable metadata-only task-dispatch outb
 
 `security_audit_events` stores bounded metadata such as action, actor/target/team IDs, outcome, reason codes, route, method, sanitized IP, and user agent.
 
-The sanitizer removes nested keys containing sensitive terms, escapes CR/LF, bounds strings, lists, maps, and serialized detail size, and never intentionally records request bodies. Login/reset subjects are stored as HMAC-SHA256 digests, not raw email addresses.
+The sanitizer removes nested keys containing sensitive terms, escapes CR/LF, bounds strings, lists, maps, and serialized detail size, and never intentionally records request bodies. Login/reset subjects are stored as HMAC-SHA256 digests, not raw email addresses. Account lifecycle log records use the target user ID and do not include the raw target email.
 
 Configure a dedicated `AUDIT_SUBJECT_HASH_SECRET` in production where practical. The fallback chain uses `SECRET_KEY`, `CSRF_SECRET`, or the stable Vault-backed CSRF key. Audit client-IP trust is disabled by default:
 
@@ -158,6 +162,10 @@ Authentication and account-security endpoints use fixed SlowAPI limits. Upload a
 
 System-admin quotas and provider attempts are abuse/usage controls, not authorization grants. Quota rows contain accounting metadata and must not contain prompt or transcript text.
 
+IP-keyed rate limits use the socket peer by default. `RATE_LIMIT_TRUST_CLOUDFLARE=true` uses a valid `CF-Connecting-IP`; if it is not enabled, `RATE_LIMIT_TRUST_X_FORWARDED_FOR=true` uses the first valid `X-Forwarded-For` address. Invalid trusted-header values fall back to the socket peer. Enable either setting only after the proxy/CDN is the sole origin path and overwrites that header. Header trust without those two conditions lets direct callers select another client's rate-limit key.
+
+`ALLOWED_HOSTS` uses Trusted Host middleware. Production accepts only explicit hostnames and rejects wildcard entries, including a wildcard derived from `APP_PUBLIC_URL`. Set `APP_HEALTHCHECK_HOST` to one allowed canonical host so internal health probes do not require a localhost exception.
+
 See [environment.md](environment.md) for exact variables/defaults and [auth.md](auth.md) for route limits.
 
 ## Local and Docker exposure
@@ -168,9 +176,14 @@ Checked-in defaults bind FastAPI, PostgreSQL, Redis, and Vault to localhost. Per
 - Exposing Redis also exposes Celery broker/result data and limiter state.
 - Do not use `FORWARDED_ALLOW_IPS=*` unless the application origin is unreachable except through the trusted proxy.
 - Enabling forwarded-origin or audit-header trust does not secure direct origin access.
+- Enabling Cloudflare or forwarded-header rate-limit trust also does not secure direct origin access; it requires origin restriction and header overwrite.
 - `start-dev.sh` remote bind/service exposure requires explicit development opt-ins.
 
 The persistent Docker profile is a single-host runtime baseline, not a complete production security architecture. Production requires external TLS/proxy controls, managed secrets, backups, monitoring, least-privilege service identities, and deliberate database/Redis/Vault hardening. See [docker.md](docker.md).
+
+## Deployment work not completed by the application
+
+Operators still need to restrict the origin before enabling Cloudflare rate-limit trust, add Cloudflare WAF rate rules, configure proxy request-body caps, and redirect `www` or remove unneeded wildcard DNS. Image digest locking and full dependency-hash locking remain open. Password-reset email timing is not yet backed by durable asynchronous delivery; adopt that design if stronger uniformity is required.
 
 ## Library import/export boundary
 

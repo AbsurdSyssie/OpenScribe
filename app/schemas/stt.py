@@ -1,5 +1,4 @@
 from datetime import datetime
-import ipaddress
 from typing import Literal
 from uuid import UUID
 from urllib.parse import urlparse
@@ -7,6 +6,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models import ProviderCredentialStatus, SttAdapterKind, SttAuthMode, SttConfigSetupStatus, SttProviderPreset, SttSelectionPurpose
+from app.provider_url_security import provider_host_is_local
 from app.stt_normalization import normalize_stt_language
 
 
@@ -21,14 +21,7 @@ def _validate_stt_base_url(value: str) -> str:
     if parsed.query or parsed.fragment or parsed.params:
         raise ValueError("STT base URL must not include query parameters or fragments")
     host = (parsed.hostname or "").lower()
-    is_localish = host == "localhost"
-    if not is_localish:
-        try:
-            ip = ipaddress.ip_address(host)
-        except ValueError:
-            ip = None
-        if ip is not None:
-            is_localish = ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
+    is_localish = provider_host_is_local(host)
     if parsed.scheme != "https" and not is_localish:
         raise ValueError("Remote STT endpoints must use https")
     return value.rstrip("/")

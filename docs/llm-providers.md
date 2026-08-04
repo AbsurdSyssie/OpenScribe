@@ -73,6 +73,8 @@ Saved credentials may be kept only while the target authentication type matches 
 
 Required-token presets must have an existing or replacement Vault-backed token. Ollama can be saved without a token for local deployments.
 
+When OpenScribe runs in Docker, an Ollama Base URL on `localhost` points to the OpenScribe container, not the Docker host. Use a host address that the container can reach, such as the host machine's LAN IP. Bare-metal OpenScribe installs can continue to use `http://localhost:11434`.
+
 Blank revision credentials are inherited only by required-token presets. The draft reads the target token for inspection, then immediately writes it to a unique versioned Vault path owned by the draft config; it never persists the target reference. This lets root credential replacement and retired-reference cleanup proceed without breaking a pending revision. Revising a credentialed provider to Ollama with no submitted token creates a no-auth draft and retires the old Vault reference only after promotion commits. Supplying an optional Ollama token keeps bearer authentication. Runtime and saved inspection read a Vault reference only when the config's `auth_mode` is `bearer`.
 
 When a ready provider's model catalog changes, OpenScribe reconciles dependent selections in the same database transaction. Existing leader-approved models are retained only when still advertised; a disjoint catalog narrows access to the new provider default. Removed team-default models move to that default, and a removed hallucination-check override clears so the checker uses the same provider config's default rather than another provider.

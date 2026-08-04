@@ -4462,6 +4462,11 @@
                 <div class="field full" id="llm-base-url-field" hidden>
                   <label>Base URL</label
                   ><input id="llm-base-url" name="base_url" type="url" />
+                  <p class="field-help" id="llm-ollama-docker-help" hidden>
+                    If OpenScribe runs in Docker, localhost points to the
+                    OpenScribe container. Use an address the container can
+                    reach, such as this machine's LAN IP.
+                  </p>
                 </div>
                 <div class="field full" id="llm-region-field" hidden>
                   <label>Region</label
@@ -5141,6 +5146,7 @@
         document.getElementById("llm-base-url-field").hidden = !(
           custom || ollama
         );
+        document.getElementById("llm-ollama-docker-help").hidden = !ollama;
         document.getElementById("llm-region-field").hidden = !bedrock;
         document.getElementById("llm-api-key-field").hidden = ollama || gemini;
         ["project", "location", "auth", "capacity"].forEach((name) => {

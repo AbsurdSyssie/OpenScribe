@@ -8680,6 +8680,9 @@ def test_admin_page_renders_branded_llm_provider_defaults(client, make_team, mak
     assert page.status_code == 200
     assert 'action="/admin/llm-configs/drafts"' in page.text
     assert 'id="llm-provider-preset"' in page.text
+    assert "If OpenScribe runs in Docker, localhost points to the" in page.text
+    assert "Use an address the container can" in page.text
+    assert 'document.getElementById("llm-ollama-docker-help").hidden = !ollama;' in page.text
 
 
 def test_admin_provider_save_errors_keep_matching_provider_tab(client, make_team, make_user):

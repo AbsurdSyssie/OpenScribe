@@ -32,7 +32,7 @@ def _disable_mail(monkeypatch):
     monkeypatch.delenv("MAIL_TRANSPORT", raising=False)
     monkeypatch.delenv("APP_PUBLIC_URL", raising=False)
     monkeypatch.delenv("MAIL_FROM_ADDRESS", raising=False)
-    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.delenv("ENVIRONMENT", raising=False)
     monkeypatch.delenv("ENV", raising=False)
 

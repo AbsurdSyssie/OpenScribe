@@ -32,6 +32,9 @@ celery_app.conf.update(
         "openscribe.process_quota_lifecycle": {"queue": "control"},
         "openscribe.delete_expired_transcripts": {"queue": "control"},
         "openscribe.process_transcript_audio_cleanup_jobs": {"queue": "control"},
+        "openscribe.expire_ingestion_source_audio": {"queue": "control"},
+        "openscribe.expire_security_audit_events": {"queue": "control"},
+        "openscribe.expire_legal_document_versions": {"queue": "control"},
         "openscribe.process_provider_secret_cleanup_jobs": {"queue": "control"},
         "openscribe.process_generated_document": {"queue": "generation"},
         "openscribe.process_transcript_ingestion_job": {"queue": "ingestion"},
@@ -44,6 +47,21 @@ celery_app.conf.update(
         },
         "retry-transcript-audio-cleanup-every-10-seconds": {
             "task": "openscribe.process_transcript_audio_cleanup_jobs",
+            "schedule": 10.0,
+            "options": {"expires": 10.0},
+        },
+        "expire-ingestion-source-audio-every-10-seconds": {
+            "task": "openscribe.expire_ingestion_source_audio",
+            "schedule": 10.0,
+            "options": {"expires": 10.0},
+        },
+        "expire-security-audit-events-every-10-seconds": {
+            "task": "openscribe.expire_security_audit_events",
+            "schedule": 10.0,
+            "options": {"expires": 10.0},
+        },
+        "expire-legal-document-versions-every-10-seconds": {
+            "task": "openscribe.expire_legal_document_versions",
             "schedule": 10.0,
             "options": {"expires": 10.0},
         },

@@ -1,9 +1,9 @@
 import enum
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import BigInteger, JSON, CheckConstraint, DateTime, Enum, Float, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint, text
+from sqlalchemy import BigInteger, Boolean, Date, JSON, CheckConstraint, DateTime, Enum, Float, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -82,6 +82,26 @@ class SessionStatus(str, enum.Enum):
     active = "active"
     revoked = "revoked"
     expired = "expired"
+
+
+class LegalDocumentKind(str, enum.Enum):
+    privacy = "privacy"
+    cookie_storage = "cookie_storage"
+    terms = "terms"
+
+
+class LegalDocumentVersionState(str, enum.Enum):
+    draft = "draft"
+    published = "published"
+    superseded = "superseded"
+
+
+class SecurityAuditHoldReason(str, enum.Enum):
+    incident = "incident"
+    contractual_investigation = "contractual_investigation"
+    legal_hold = "legal_hold"
+    legal_duty = "legal_duty"
+    dispute = "dispute"
 
 
 class MfaMethodType(str, enum.Enum):
@@ -498,6 +518,162 @@ class SecurityAuditEvent(Base):
     actor: Mapped["User | None"] = relationship(foreign_keys=[actor_user_id])
     target: Mapped["User | None"] = relationship(foreign_keys=[target_user_id])
     team: Mapped["Team | None"] = relationship()
+    holds: Mapped[list["SecurityAuditEventHold"]] = relationship(back_populates="event", cascade="all, delete-orphan")
+
+
+class SecurityAuditEventHold(Base):
+    __tablename__ = "security_audit_event_holds"
+    __table_args__ = (
+        CheckConstraint("approved_at >= created_at", name="ck_security_audit_event_holds_approval_order"),
+        CheckConstraint("review_at > approved_at", name="ck_security_audit_event_holds_review_order"),
+        CheckConstraint("expires_at > approved_at", name="ck_security_audit_event_holds_expiry_order"),
+        CheckConstraint("expires_at <= approved_at + INTERVAL '90 days'", name="ck_security_audit_event_holds_max_duration"),
+        CheckConstraint("review_at <= expires_at", name="ck_security_audit_event_holds_review_before_expiry"),
+        CheckConstraint("renewal_count >= 0", name="ck_security_audit_event_holds_renewal_nonnegative"),
+        CheckConstraint("released_at IS NULL OR released_at >= created_at", name="ck_security_audit_event_holds_release_order"),
+        CheckConstraint(
+            "released_at IS NOT NULL OR owner_user_id IS NOT NULL",
+            name="ck_security_audit_event_holds_active_owner",
+        ),
+        Index(
+            "uq_security_audit_event_holds_unreleased",
+            "security_audit_event_id",
+            unique=True,
+            postgresql_where=text("released_at IS NULL"),
+        ),
+        Index("ix_security_audit_event_holds_expiry", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    security_audit_event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("security_audit_events.id", ondelete="CASCADE"), nullable=False)
+    reason: Mapped[SecurityAuditHoldReason] = mapped_column(Enum(SecurityAuditHoldReason), nullable=False)
+    reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    review_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    renewal_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    released_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    event: Mapped[SecurityAuditEvent] = relationship(back_populates="holds")
+    owner: Mapped["User | None"] = relationship(foreign_keys=[owner_user_id])
+    released_by: Mapped["User | None"] = relationship(foreign_keys=[released_by_user_id])
+
+
+class OperatorLegalProfile(Base):
+    __tablename__ = "operator_legal_profiles"
+    __table_args__ = (
+        CheckConstraint("singleton_key IS TRUE", name="ck_operator_legal_profiles_singleton"),
+        CheckConstraint("revision > 0", name="ck_operator_legal_profiles_revision_positive"),
+    )
+
+    singleton_key: Mapped[bool] = mapped_column(Boolean, primary_key=True, default=True)
+    legal_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    company_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    public_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    privacy_email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    complaints_email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    security_contact: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    postal_address: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    cookie_banner_summary: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class LegalDocumentRoot(Base):
+    __tablename__ = "legal_document_roots"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    kind: Mapped[LegalDocumentKind] = mapped_column(Enum(LegalDocumentKind), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    versions: Mapped[list["LegalDocumentVersion"]] = relationship(back_populates="root")
+
+
+class LegalDocumentVersion(Base):
+    __tablename__ = "legal_document_versions"
+    __table_args__ = (
+        UniqueConstraint("document_root_id", "version_no", name="uq_legal_document_versions_root_version"),
+        CheckConstraint("version_no > 0", name="ck_legal_document_versions_version_positive"),
+        CheckConstraint("revision > 0", name="ck_legal_document_versions_revision_positive"),
+        CheckConstraint(
+            "(state = 'draft' AND published_at IS NULL AND superseded_at IS NULL) OR "
+            "(state = 'published' AND published_at IS NOT NULL AND superseded_at IS NULL) OR "
+            "(state = 'superseded' AND published_at IS NOT NULL AND superseded_at IS NOT NULL)",
+            name="ck_legal_document_versions_state_timestamps",
+        ),
+        Index(
+            "uq_legal_document_versions_one_published",
+            "document_root_id",
+            unique=True,
+            postgresql_where=text("state = 'published'"),
+        ),
+        Index(
+            "ix_legal_document_versions_superseded_retention",
+            "superseded_at",
+            postgresql_where=text("state = 'superseded'"),
+        ),
+        Index(
+            "ix_legal_document_versions_draft_retention",
+            "updated_at",
+            postgresql_where=text("state = 'draft'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_root_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("legal_document_roots.id", ondelete="RESTRICT"), nullable=False)
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[LegalDocumentVersionState] = mapped_column(Enum(LegalDocumentVersionState), nullable=False)
+    effective_on: Mapped[date] = mapped_column(Date, nullable=False)
+    blocks_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    author_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    published_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    superseded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    root: Mapped[LegalDocumentRoot] = relationship(back_populates="versions")
+    author: Mapped["User | None"] = relationship(foreign_keys=[author_user_id])
+    published_by: Mapped["User | None"] = relationship(foreign_keys=[published_by_user_id])
+    superseded_by: Mapped["User | None"] = relationship(foreign_keys=[superseded_by_user_id])
+    holds: Mapped[list["LegalDocumentVersionHold"]] = relationship(
+        back_populates="version",
+        passive_deletes=True,
+    )
+
+
+class LegalDocumentVersionHold(Base):
+    __tablename__ = "legal_document_version_holds"
+    __table_args__ = (
+        CheckConstraint("char_length(btrim(reason)) BETWEEN 1 AND 500", name="ck_legal_document_version_holds_reason_length"),
+        CheckConstraint("released_at IS NULL OR released_at >= created_at", name="ck_legal_document_version_holds_release_order"),
+        Index(
+            "uq_legal_document_version_holds_active",
+            "legal_document_version_id",
+            unique=True,
+            postgresql_where=text("released_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    legal_document_version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("legal_document_versions.id", ondelete="CASCADE"), nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    released_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    version: Mapped[LegalDocumentVersion] = relationship(back_populates="holds")
+    created_by: Mapped["User | None"] = relationship(foreign_keys=[created_by_user_id])
+    released_by: Mapped["User | None"] = relationship(foreign_keys=[released_by_user_id])
 
 
 class SmartPhrase(Base):
@@ -1373,6 +1549,19 @@ class TranscriptIngestionJob(Base):
     __tablename__ = "transcript_ingestion_jobs"
     __table_args__ = (
         UniqueConstraint("transcript_id", "chunk_sequence_no", name="uq_transcript_ingestion_job_chunk_sequence"),
+        CheckConstraint(
+            "(source_audio_blob IS NULL AND source_audio_vault_ref IS NULL) OR source_audio_expires_at IS NOT NULL",
+            name="ck_transcript_ingestion_jobs_source_expiry",
+        ),
+        CheckConstraint(
+            "source_audio_expired_at IS NULL OR source_audio_expires_at IS NOT NULL",
+            name="ck_transcript_ingestion_jobs_expired_has_deadline",
+        ),
+        Index(
+            "ix_transcript_ingestion_jobs_source_audio_expiry",
+            "source_audio_expires_at",
+            postgresql_where=text("source_audio_vault_ref IS NOT NULL OR source_audio_blob IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -1409,6 +1598,8 @@ class TranscriptIngestionJob(Base):
     source_audio_vault_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
     source_audio_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_audio_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_audio_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_audio_expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     declared_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     result_text_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(255), nullable=True)

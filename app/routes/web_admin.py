@@ -1,8 +1,11 @@
 """Admin browser routes extracted from app.main."""
 
-from datetime import UTC, datetime
+import json
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
+
+from pydantic import ValidationError
 
 from .. import main as main_module
 from ..main import *  # noqa: F401,F403
@@ -13,7 +16,7 @@ from ..main import (
     _page_context_or_redirect,
 )
 from ..stt_normalization import normalize_stt_language
-from ..models import LlmConfigSetupStatus, SttConfigSetupStatus, Team, TeamLlmConfig, TeamSttConfig
+from ..models import LegalDocumentKind, LlmConfigSetupStatus, SecurityAuditHoldReason, SttConfigSetupStatus, Team, TeamLlmConfig, TeamSttConfig
 from ..services.admin import update_team_default_retention as update_team_default_retention_service
 from ..schemas import HallucinationCheckSelectionUpsert
 from ..services.llm import (
@@ -29,6 +32,38 @@ from ..services.admin_quotas import (
     reset_user_quota_batch,
     revoke_user_quota_grant,
     update_user_base_quotas_batch,
+)
+from ..schemas.legal_content import (
+    LegalDocumentContent,
+    LegalDocumentDraftCreate,
+    LegalDocumentDraftUpdate,
+    OperatorLegalProfileUpdate,
+)
+from ..services.legal_content import (
+    create_legal_document_draft,
+    create_legal_document_rollback_draft,
+    get_operator_legal_profile,
+    list_legal_document_versions,
+    operator_legal_setup_warnings,
+    publish_legal_document_draft,
+    update_legal_document_draft,
+    update_operator_legal_profile,
+)
+from ..services.legal_content_markdown import (
+    LegalMarkdownError,
+    LegalMarkdownParseResult,
+    legal_content_to_markdown,
+    parse_legal_markdown_result,
+)
+from ..services.legal_content_retention import (
+    active_legal_document_holds,
+    place_legal_document_hold,
+    release_legal_document_hold,
+)
+from ..services.audit_retention import (
+    place_security_audit_hold,
+    release_security_audit_hold,
+    renew_security_audit_hold,
 )
 
 
@@ -97,6 +132,10 @@ def admin_page(
     range: str | None = None,
     audit_since: str | None = None,
     audit_action: str | None = None,
+    audit_notice: str | None = None,
+    kind: str = LegalDocumentKind.privacy.value,
+    version_id: UUID | None = None,
+    notice: str | None = None,
     db: Session = Depends(get_db),
 ):
     context, response = _page_context_or_redirect(request, db, require_full=True)
@@ -117,7 +156,7 @@ def admin_page(
     elif team_id and tab == "providers":
         resolved_team_tab = "provider-policy"
     else:
-        resolved_team_tab = "overview" if team_id and tab not in {"directory", "requests", "system-admins", "global-defaults", "deid-providers", "usage", "audit"} else None
+        resolved_team_tab = "overview" if team_id and tab not in {"directory", "requests", "system-admins", "global-defaults", "deid-providers", "usage", "audit", "legal"} else None
     # Member URL state is only meaningful in an explicit selected Members scope.
     # render_admin repeats membership eligibility before it reads quota data.
     if not (team_id and resolved_team_tab == "members" and member_id):
@@ -133,8 +172,19 @@ def admin_page(
         "usage",
         "defaults",
         "audit",
+        "legal",
     }
     resolved_global_tab = tab if tab in functional_tabs else "providers"
+    if resolved_global_tab == "legal":
+        return _legal_admin_page(
+            request,
+            db,
+            actor=context.user,
+            selected_kind=_legal_kind(kind),
+            selected_version_id=version_id,
+            message=_LEGAL_ADMIN_MESSAGES.get(notice),
+            message_kind=_legal_notice_kind(notice),
+        )
     return render_admin(
         request,
         db,
@@ -154,8 +204,543 @@ def admin_page(
         message={
             "limits_updated": "Quota limits updated.", "grant_created": "Quota allowance added.",
             "usage_reset": "Quota usage reset.", "grant_revoked": "Quota allowance revoked.",
-        }.get(safe_notice),
+        }.get(safe_notice) or {
+            "hold_placed": "Audit hold placed.",
+            "hold_renewed": "Audit hold renewed.",
+            "hold_released": "Audit hold released.",
+        }.get(audit_notice),
     )
+
+
+def _legal_admin_page(
+    request: Request,
+    db: Session,
+    *,
+    actor: User,
+    selected_kind: LegalDocumentKind,
+    selected_version_id: UUID | None = None,
+    message: str | None = None,
+    message_kind: str = "success",
+    status_code: int = 200,
+    profile_form: dict[str, str] | None = None,
+    markdown_source: str | None = None,
+    effective_on: str | None = None,
+):
+    versions = list_legal_document_versions(db, kind=selected_kind)
+    active_holds = active_legal_document_holds(db, version_ids=[version.id for version in versions])
+    selected_version = next(
+        (version for version in versions if version.id == selected_version_id),
+        versions[0] if versions else None,
+    )
+    selected_content = None
+    if selected_version is not None:
+        selected_content = LegalDocumentContent.model_validate({"blocks": selected_version.blocks_json})
+    selected_markdown = (
+        markdown_source
+        if markdown_source is not None
+        else legal_content_to_markdown(selected_content)
+        if selected_content is not None
+        else "## Section heading\n\nApproved plain text."
+    )
+    preview_content = selected_content if markdown_source is None else None
+    return render_admin(
+        request,
+        db,
+        current_user=actor,
+        active_admin_tab="legal",
+        admin_page_route="/admin",
+        admin_return_view="workspace",
+        template_name="admin_mockup.html",
+        message=message,
+        message_kind=message_kind,
+        status_code=status_code,
+        legal_context={
+            "profile": profile_form if profile_form is not None else get_operator_legal_profile(db),
+            "setup_warnings": operator_legal_setup_warnings(db),
+            "document_kinds": list(LegalDocumentKind),
+            "selected_kind": selected_kind,
+            "versions": versions,
+            "active_holds": active_holds,
+            "selected_version": selected_version,
+            "selected_content": selected_content,
+            "legal_preview_content": preview_content,
+            "legal_markdown_source": selected_markdown,
+            "legal_effective_on": effective_on
+            or (selected_version.effective_on.isoformat() if selected_version is not None else date.today().isoformat()),
+            "today": date.today().isoformat(),
+        },
+    )
+
+
+_LEGAL_ADMIN_MESSAGES = {
+    "profile_saved": "Operator profile saved.",
+    "draft_created": "Draft created.",
+    "draft_saved": "Draft saved.",
+    "draft_created_scrubbed": "Draft created. Some unsupported formatting was removed. Check the preview before publishing.",
+    "draft_saved_scrubbed": "Draft saved. Some unsupported formatting was removed. Check the preview before publishing.",
+    "published": "Draft published.",
+    "rollback_created": "Rollback draft created.",
+    "hold_placed": "Legal hold placed.",
+    "hold_released": "Legal hold released.",
+}
+
+
+def _legal_notice_kind(notice: str | None) -> str:
+    return "warning" if notice in {"draft_created_scrubbed", "draft_saved_scrubbed"} else "success"
+
+
+def _legal_admin_url(
+    *,
+    kind: LegalDocumentKind = LegalDocumentKind.privacy,
+    version_id: UUID | None = None,
+    notice: str | None = None,
+) -> str:
+    params: dict[str, str] = {"tab": "legal", "kind": kind.value}
+    if version_id is not None:
+        params["version_id"] = str(version_id)
+    if notice is not None:
+        params["notice"] = notice
+    return f"/admin?{urlencode(params)}"
+
+
+_OPERATOR_PROFILE_FIELD_LABELS = {
+    "expected_revision": "Profile revision",
+    "legal_name": "Legal name",
+    "display_name": "Display name",
+    "company_number": "Company number",
+    "public_url": "Public HTTPS URL",
+    "privacy_email": "Privacy email",
+    "complaints_email": "Complaints email",
+    "security_contact": "Security email",
+    "postal_address": "Postal address",
+    "cookie_banner_summary": "Cookie-banner summary",
+}
+
+
+def _operator_profile_validation_message(exc: ValidationError) -> str:
+    first_error = exc.errors(include_input=False)[0]
+    location = first_error.get("loc") or ()
+    field_name = str(location[0]) if location else ""
+    label = _OPERATOR_PROFILE_FIELD_LABELS.get(field_name, "Operator profile")
+    detail = str(first_error.get("msg") or "is invalid").removeprefix("Value error, ")
+    if field_name == "public_url" and detail.startswith("Link URL "):
+        detail = detail.removeprefix("Link URL ")
+    elif detail.lower().startswith(label.lower()):
+        return detail
+    return f"{label} {detail}"
+
+
+def _legal_admin_context(request: Request, db: Session):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return None, response
+    if not context.user.is_system_admin:
+        return None, HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    return context, None
+
+
+def _legal_kind(value: str) -> LegalDocumentKind:
+    try:
+        return LegalDocumentKind(value)
+    except ValueError as exc:
+        raise AppError(422, "validation_error", "Legal document kind is invalid") from exc
+
+
+def _legal_content_payload(markdown_source: str) -> LegalMarkdownParseResult:
+    try:
+        return parse_legal_markdown_result(markdown_source)
+    except LegalMarkdownError as exc:
+        raise AppError(422, "validation_error", str(exc)) from exc
+
+
+@app.get("/admin/legal-content", response_class=HTMLResponse, include_in_schema=False)
+def admin_legal_content_page(
+    request: Request,
+    kind: str = LegalDocumentKind.privacy.value,
+    version_id: UUID | None = None,
+    notice: str | None = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _legal_admin_context(request, db)
+    if response is not None:
+        return response
+    selected_kind = _legal_kind(kind)
+    safe_notice = notice if notice in _LEGAL_ADMIN_MESSAGES else None
+    return RedirectResponse(
+        _legal_admin_url(kind=selected_kind, version_id=version_id, notice=safe_notice),
+        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    )
+
+
+@app.post("/admin/legal-content/profile", response_class=HTMLResponse, include_in_schema=False)
+def admin_update_legal_profile(
+    request: Request,
+    kind: str = Form(LegalDocumentKind.privacy.value),
+    expected_revision: str = Form(""),
+    legal_name: str = Form(""),
+    display_name: str = Form(""),
+    company_number: str = Form(""),
+    public_url: str = Form(""),
+    privacy_email: str = Form(""),
+    complaints_email: str = Form(""),
+    security_contact: str = Form(""),
+    postal_address: str = Form(""),
+    cookie_banner_summary: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _legal_admin_context(request, db)
+    if response is not None:
+        return response
+    selected_kind = _legal_kind(kind)
+    profile_form = {
+        "revision": expected_revision,
+        "legal_name": legal_name,
+        "display_name": display_name,
+        "company_number": company_number,
+        "public_url": public_url,
+        "privacy_email": privacy_email,
+        "complaints_email": complaints_email,
+        "security_contact": security_contact,
+        "postal_address": postal_address,
+        "cookie_banner_summary": cookie_banner_summary,
+    }
+    error: AppError | None = None
+    try:
+        payload = OperatorLegalProfileUpdate(
+            expected_revision=int(expected_revision) if expected_revision else None,
+            legal_name=legal_name,
+            display_name=display_name,
+            company_number=company_number,
+            public_url=public_url,
+            privacy_email=privacy_email,
+            complaints_email=complaints_email,
+            security_contact=security_contact,
+            postal_address=postal_address,
+            cookie_banner_summary=cookie_banner_summary,
+        )
+        update_operator_legal_profile(db, actor=context.user, payload=payload)
+    except AppError as exc:
+        error = exc
+    except ValidationError as exc:
+        error = AppError(422, "validation_error", _operator_profile_validation_message(exc))
+    except ValueError:
+        error = AppError(422, "validation_error", "Profile revision is invalid; reload the page and try again")
+    if error is not None:
+        return _legal_admin_page(
+            request, db, actor=context.user, selected_kind=selected_kind,
+            message=error.message, message_kind="error", status_code=error.status_code,
+            profile_form=profile_form,
+        )
+    return RedirectResponse(
+        _legal_admin_url(kind=selected_kind, notice="profile_saved"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/legal-content/drafts", response_class=HTMLResponse, include_in_schema=False)
+def admin_create_legal_draft(
+    request: Request,
+    kind: str = Form(...),
+    effective_on: str = Form(...),
+    markdown_source: str = Form(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _legal_admin_context(request, db)
+    if response is not None:
+        return response
+    selected_kind = LegalDocumentKind.privacy
+    try:
+        selected_kind = _legal_kind(kind)
+        parse_result = _legal_content_payload(markdown_source)
+        version = create_legal_document_draft(
+            db,
+            actor=context.user,
+            payload=LegalDocumentDraftCreate(
+                kind=selected_kind,
+                effective_on=date.fromisoformat(effective_on),
+                content=parse_result.content,
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        error = exc if isinstance(exc, AppError) else AppError(422, "validation_error", "Legal draft is invalid")
+        return _legal_admin_page(
+            request, db, actor=context.user, selected_kind=selected_kind,
+            message=error.message, message_kind="error", status_code=error.status_code,
+            markdown_source=markdown_source, effective_on=effective_on,
+        )
+    return RedirectResponse(
+        _legal_admin_url(
+            kind=selected_kind,
+            version_id=version.id,
+            notice="draft_created_scrubbed" if parse_result.scrubbed_formatting else "draft_created",
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/legal-content/drafts/{version_id}", response_class=HTMLResponse, include_in_schema=False)
+def admin_update_legal_draft(
+    request: Request,
+    version_id: UUID,
+    kind: str = Form(...),
+    expected_revision: int = Form(...),
+    effective_on: str = Form(...),
+    markdown_source: str = Form(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _legal_admin_context(request, db)
+    if response is not None:
+        return response
+    selected_kind = _legal_kind(kind)
+    try:
+        parse_result = _legal_content_payload(markdown_source)
+        version = update_legal_document_draft(
+            db,
+            actor=context.user,
+            version_id=version_id,
+            payload=LegalDocumentDraftUpdate(
+                expected_revision=expected_revision,
+                effective_on=date.fromisoformat(effective_on),
+                content=parse_result.content,
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        error = exc if isinstance(exc, AppError) else AppError(422, "validation_error", "Legal draft is invalid")
+        return _legal_admin_page(
+            request, db, actor=context.user, selected_kind=selected_kind, selected_version_id=version_id,
+            message=error.message, message_kind="error", status_code=error.status_code,
+            markdown_source=markdown_source, effective_on=effective_on,
+        )
+    return RedirectResponse(
+        _legal_admin_url(
+            kind=selected_kind,
+            version_id=version.id,
+            notice="draft_saved_scrubbed" if parse_result.scrubbed_formatting else "draft_saved",
+        ),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/legal-content/preview", response_class=HTMLResponse, include_in_schema=False)
+def admin_preview_legal_markdown(
+    request: Request,
+    markdown_source: str = Form(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _legal_admin_context(request, db)
+    if response is not None:
+        return response
+    try:
+        parse_result = _legal_content_payload(markdown_source)
+    except AppError as exc:
+        return HTMLResponse(exc.message, status_code=exc.status_code)
+    preview_response = templates.TemplateResponse(
+        request,
+        "_legal_content_blocks.html",
+        {"request": request, "blocks": parse_result.content.blocks},
+    )
+    if parse_result.scrubbed_formatting:
+        preview_response.headers["X-OpenScribe-Legal-Formatting"] = "scrubbed"
+    return preview_response
+
+
+@app.post("/admin/legal-content/drafts/{version_id}/publish", response_class=HTMLResponse, include_in_schema=False)
+def admin_publish_legal_draft(
+    request: Request,
+    version_id: UUID,
+    kind: str = Form(...),
+    expected_revision: int = Form(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _legal_admin_context(request, db)
+    if response is not None:
+        return response
+    selected_kind = _legal_kind(kind)
+    try:
+        version = publish_legal_document_draft(
+            db, actor=context.user, version_id=version_id, expected_revision=expected_revision
+        )
+    except AppError as exc:
+        return _legal_admin_page(
+            request, db, actor=context.user, selected_kind=selected_kind, selected_version_id=version_id,
+            message=exc.message, message_kind="error", status_code=exc.status_code,
+        )
+    return RedirectResponse(
+        _legal_admin_url(kind=selected_kind, version_id=version.id, notice="published"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/legal-content/versions/{version_id}/rollback", response_class=HTMLResponse, include_in_schema=False)
+def admin_create_legal_rollback(
+    request: Request,
+    version_id: UUID,
+    kind: str = Form(...),
+    effective_on: str = Form(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _legal_admin_context(request, db)
+    if response is not None:
+        return response
+    selected_kind = _legal_kind(kind)
+    try:
+        version = create_legal_document_rollback_draft(
+            db, actor=context.user, source_version_id=version_id, effective_on=date.fromisoformat(effective_on)
+        )
+    except (ValueError, AppError) as exc:
+        error = exc if isinstance(exc, AppError) else AppError(422, "validation_error", "Rollback date is invalid")
+        return _legal_admin_page(
+            request, db, actor=context.user, selected_kind=selected_kind, selected_version_id=version_id,
+            message=error.message, message_kind="error", status_code=error.status_code,
+        )
+    return RedirectResponse(
+        _legal_admin_url(kind=selected_kind, version_id=version.id, notice="rollback_created"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/legal-content/versions/{version_id}/holds", response_class=HTMLResponse, include_in_schema=False)
+def admin_place_legal_document_hold(
+    request: Request,
+    version_id: UUID,
+    kind: str = Form(...),
+    reason: str = Form(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _legal_admin_context(request, db)
+    if response is not None:
+        return response
+    selected_kind = _legal_kind(kind)
+    try:
+        place_legal_document_hold(db, actor=context.user, version_id=version_id, reason=reason)
+    except AppError as exc:
+        return _legal_admin_page(
+            request, db, actor=context.user, selected_kind=selected_kind, selected_version_id=version_id,
+            message=exc.message, message_kind="error", status_code=exc.status_code,
+        )
+    return RedirectResponse(
+        _legal_admin_url(kind=selected_kind, version_id=version_id, notice="hold_placed"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/legal-content/holds/{hold_id}/release", response_class=HTMLResponse, include_in_schema=False)
+def admin_release_legal_document_hold(
+    request: Request,
+    hold_id: UUID,
+    version_id: UUID = Form(...),
+    kind: str = Form(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _legal_admin_context(request, db)
+    if response is not None:
+        return response
+    selected_kind = _legal_kind(kind)
+    try:
+        release_legal_document_hold(db, actor=context.user, hold_id=hold_id)
+    except AppError as exc:
+        return _legal_admin_page(
+            request, db, actor=context.user, selected_kind=selected_kind, selected_version_id=version_id,
+            message=exc.message, message_kind="error", status_code=exc.status_code,
+        )
+    return RedirectResponse(
+        _legal_admin_url(kind=selected_kind, version_id=version_id, notice="hold_released"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def _audit_hold_datetime(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise AppError(422, "validation_error", "Hold dates must be valid UTC date-times") from exc
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+@app.post("/admin/audit/events/{event_id}/holds", response_class=HTMLResponse, include_in_schema=False)
+def admin_place_security_audit_hold(
+    request: Request,
+    event_id: UUID,
+    reason: str = Form(...),
+    reference: str = Form(""),
+    review_at: str = Form(...),
+    expires_at: str = Form(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _legal_admin_context(request, db)
+    if response is not None:
+        return response
+    try:
+        place_security_audit_hold(
+            db, actor=context.user, event_id=event_id, reason=SecurityAuditHoldReason(reason),
+            reference=reference, review_at=_audit_hold_datetime(review_at),
+            expires_at=_audit_hold_datetime(expires_at),
+        )
+    except (ValueError, AppError) as exc:
+        error = exc if isinstance(exc, AppError) else AppError(422, "validation_error", "Audit hold is invalid")
+        return render_admin(
+            request, db, current_user=context.user, active_admin_tab="audit", admin_page_route="/admin",
+            admin_return_view="workspace", message=error.message, message_kind="error", status_code=error.status_code,
+        )
+    return RedirectResponse("/admin?tab=audit&audit_notice=hold_placed", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/audit/holds/{hold_id}/renew", response_class=HTMLResponse, include_in_schema=False)
+def admin_renew_security_audit_hold(
+    request: Request,
+    hold_id: UUID,
+    reason: str = Form(...),
+    reference: str = Form(""),
+    review_at: str = Form(...),
+    expires_at: str = Form(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _legal_admin_context(request, db)
+    if response is not None:
+        return response
+    try:
+        renew_security_audit_hold(
+            db, actor=context.user, hold_id=hold_id, reason=SecurityAuditHoldReason(reason),
+            reference=reference, review_at=_audit_hold_datetime(review_at),
+            expires_at=_audit_hold_datetime(expires_at),
+        )
+    except (ValueError, AppError) as exc:
+        error = exc if isinstance(exc, AppError) else AppError(422, "validation_error", "Audit hold renewal is invalid")
+        return render_admin(
+            request, db, current_user=context.user, active_admin_tab="audit", admin_page_route="/admin",
+            admin_return_view="workspace", message=error.message, message_kind="error", status_code=error.status_code,
+        )
+    return RedirectResponse("/admin?tab=audit&audit_notice=hold_renewed", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/audit/holds/{hold_id}/release", response_class=HTMLResponse, include_in_schema=False)
+def admin_release_security_audit_hold(
+    request: Request,
+    hold_id: UUID,
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _legal_admin_context(request, db)
+    if response is not None:
+        return response
+    try:
+        release_security_audit_hold(db, actor=context.user, hold_id=hold_id)
+    except AppError as exc:
+        return render_admin(
+            request, db, current_user=context.user, active_admin_tab="audit", admin_page_route="/admin",
+            admin_return_view="workspace", message=exc.message, message_kind="error", status_code=exc.status_code,
+        )
+    return RedirectResponse("/admin?tab=audit&audit_notice=hold_released", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/admin/users/{user_id}/quotas/limits", response_class=HTMLResponse)

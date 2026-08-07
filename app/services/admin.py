@@ -29,6 +29,7 @@ from app.models import (
     ProviderUsageEventType,
     QuickAction,
     QuickActionVersion,
+    SecurityAuditEventHold,
     Team,
     TeamClinicalNlpSelection,
     TeamDeidentificationProviderAssignment,
@@ -1445,6 +1446,19 @@ def reactivate_user(db: Session, actor: User, user_id) -> User:
 
 
 def _delete_user_rows(db: Session, actor: User, *, user: User) -> list[UUID]:
+    owns_active_audit_hold = db.scalar(
+        select(SecurityAuditEventHold.id).where(
+            SecurityAuditEventHold.owner_user_id == user.id,
+            SecurityAuditEventHold.released_at.is_(None),
+        ).limit(1)
+    )
+    if owns_active_audit_hold is not None:
+        raise AppError(
+            409,
+            "conflict",
+            "Release or transfer this system administrator's active audit holds before deleting the account",
+        )
+
     linked_requests = db.scalars(select(AccountRequest).where(AccountRequest.linked_user_id == user.id))
     for request in linked_requests:
         request.linked_user_id = None

@@ -235,10 +235,11 @@ def test_public_metadata_routes_are_explicit_and_cookie_free(raw_client):
     assert "set-cookie" not in robots.headers
     assert robots.headers["Cache-Control"] == "public, max-age=3600"
 
-    assert security_txt.status_code == 200
+    assert security_txt.status_code == 404
     assert security_txt.headers["content-type"].startswith("text/plain")
-    assert "Contact: mailto:oscar@meddleapp.com" in security_txt.text
-    assert "Canonical: https://openscribe.co.uk/.well-known/security.txt" in security_txt.text
+    assert security_txt.text == "Security contact not configured.\n"
+    assert "meddleapp.com" not in security_txt.text
+    assert "openscribe.co.uk" not in security_txt.text
     assert "set-cookie" not in security_txt.headers
     assert security_txt.headers["Cache-Control"] == "public, max-age=3600"
 

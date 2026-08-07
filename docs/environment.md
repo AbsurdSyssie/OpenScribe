@@ -56,7 +56,7 @@ The persistent Compose runtime replaces only addresses that must use Docker serv
 | `CELERY_TASK_ALWAYS_EAGER` | `false` | Test-only synchronous execution switch. Compose forces `false`. |
 | `TASK_OUTBOX_MAX_ATTEMPTS` | `10` | Maximum broker-publication attempts before a durable task-dispatch row becomes failed. Retry delay starts at 10 seconds and is capped at one hour. |
 
-Celery Beat publishes pending task-dispatch outbox rows every second. Retention cleanup, transcript-audio cleanup, provider-secret cleanup, and quota lifecycle processing run every 10 seconds. These schedules are code constants, not environment settings.
+Celery Beat publishes pending task-dispatch outbox rows every second. Transcript-root retention, 24-hour failed-ingestion source expiry, transcript-audio cleanup, six-month security-audit expiry, legal-document retention, provider-secret cleanup, and quota lifecycle processing run every 10 seconds. These schedules are code constants, not environment settings.
 
 Redis append-only persistence protects queued work, result data, and rate-limit state across normal restarts. PostgreSQL remains authoritative and Redis is not a substitute for database backups.
 

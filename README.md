@@ -80,6 +80,8 @@ Primary references:
 - Libraries: `http://127.0.0.1:8080/workspace/library/templates`
 - Leader AI services: `http://127.0.0.1:8080/workspace/team/ai-services`
 - Admin UI: `http://127.0.0.1:8080/admin`
+- Operator legal-content admin: `http://127.0.0.1:8080/admin?tab=legal`
+- Published operator privacy/cookie/terms routes: `/privacy`, `/cookies`, `/terms`
 
 Successful normal-user and team-leader login lands directly on `/workspace`. Legacy `GET /home`, `/transcribe`, and `/settings` links redirect into canonical `/workspace` routes; `/home` is no longer a separately rendered landing page. The former `/transcribe-claude`, `/transcribe-glm-2`, and `/transcriber_col_changes` prototype routes have been removed. `/workspace` is the only Scribe product surface.
 
@@ -117,7 +119,7 @@ docker compose logs -f openscribe
 curl --fail http://127.0.0.1:8080/health
 ```
 
-The persistent profile stores PostgreSQL, Redis, Vault, and Vault bootstrap state in named volumes. It initializes/unseals Vault, applies migrations, and supervises the web server, one Celery worker, and Celery Beat whenever the application container starts. Beat publishes pending task-dispatch rows every second and runs retention, transcript-audio cleanup, provider-secret cleanup, and quota lifecycle processing every 10 seconds. Read [docs/docker.md](docs/docker.md) before migrating an existing `start-dev.sh` instance or exposing the service beyond localhost.
+The persistent profile stores PostgreSQL, Redis, Vault, and Vault bootstrap state in named volumes. It initializes/unseals Vault, applies migrations, and supervises the web server, one Celery worker, and Celery Beat whenever the application container starts. Beat publishes pending task-dispatch rows every second and runs transcript, temporary-audio, audit, legal-content, provider-secret, and quota lifecycle work every 10 seconds. Read [docs/docker.md](docs/docker.md) before migrating an existing `start-dev.sh` instance or exposing the service beyond localhost.
 
 Local `.env` should include `APP_ENV=local` and `COOKIE_SECURE_MODE=auto`. The application defaults to production behavior when no environment selector is set. Production must use `APP_ENV=production`, `COOKIE_SECURE_MODE=always`, an exact `ALLOWED_HOSTS` list (no wildcards), `BOOTSTRAP_ADMIN_TOKEN` before creating the first admin, an explicit or Vault-backed stable CSRF secret, intentional proxy trust, and exactly one HSTS owner through `HSTS_SOURCE`. See [docs/environment.md](docs/environment.md) and [docs/docker.md](docs/docker.md).
 

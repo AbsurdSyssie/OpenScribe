@@ -103,7 +103,8 @@ def test_failed_dispatch_cancels_reserved_source_attempt_and_published_is_unchan
     transcript = _transcript(db_session, owner)
     job = TranscriptIngestionJob(transcript_id=transcript.id, owner_user_id=owner.id, team_id=owner.team_id,
                                  job_kind=TranscriptIngestionJobKind.audio_file, source_filename="retry.wav",
-                                 source_audio_vault_ref="vault:retry-audio")
+                                 source_audio_vault_ref="vault:retry-audio",
+                                 source_audio_expires_at=NOW + timedelta(hours=24))
     db_session.add(job); db_session.flush()
     attempt = _attempt(db_session, owner, job=job, audio=True, expired=False)
     version = TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="x")

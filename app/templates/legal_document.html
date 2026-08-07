@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>
+      {{ page_title }}{% if operator_profile and operator_profile.display_name
+      %} — {{ operator_profile.display_name }}{% endif %}
+    </title>
+    <link
+      rel="stylesheet"
+      href="/static/css/tokens.css?v=20260701-token-harmonise"
+    />
+    <link
+      rel="stylesheet"
+      href="/static/css/components.css?v=20260701-home-components"
+    />
+    <link
+      rel="stylesheet"
+      href="/static/css/legal-content.css?v=20260806-multiline"
+    />
+  </head>
+  <body class="legal-page">
+    <header class="legal-page__header">
+      <a href="/">OpenScribe</a>
+      {% if operator_profile and (operator_profile.display_name or
+      operator_profile.legal_name) %}
+      <span
+        >{{ operator_profile.display_name or operator_profile.legal_name
+        }}</span
+      >
+      {% endif %}
+    </header>
+    <main class="legal-document">
+      <h1>{{ page_title }}</h1>
+      <p class="legal-document__meta">
+        Version {{ version.version_no }} · Effective {{
+        version.effective_on.isoformat() }}
+      </p>
+      {% include "_legal_content_blocks.html" %}
+    </main>
+    {% include "_legal_footer_banner.html" %}
+  </body>
+</html>

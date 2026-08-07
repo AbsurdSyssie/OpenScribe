@@ -116,14 +116,15 @@ data-recording-mode-select
 <option value="whole_file" {% if (active_transcript and active_transcript.ingestion_mode.value == 'whole_file') or (not active_transcript and preferred_recording_mode != 'live_chunked') %}selected{% endif %}>Recorded upload</option>
 <option value="live_chunked" {% if (active_transcript and active_transcript.ingestion_mode.value == 'live_chunked') or (not active_transcript and preferred_recording_mode == 'live_chunked') %}selected{% endif %}>Live capture</option>
 </select>
-<form method="post" action="/transcribe/retry-file-ingestion" data-retry-ingestion-form{% if not active_transcript or active_transcript.status.value != 'failed' or active_transcript.ingestion_mode.value != 'whole_file' or not active_transcript_latest_job or (not active_transcript_latest_job.source_audio_blob and not active_transcript_latest_job.source_audio_vault_ref) or not active_transcript_latest_job.source_audio_size_bytes or not stt_selection or not stt_available %} hidden{% endif %}>
+<p class="text-sm text-slate" data-retry-ingestion-expired{% if not active_transcript_retry_expired %} hidden{% endif %}>The failed upload has expired. Upload the audio file again.</p>
+<form method="post" action="/transcribe/retry-file-ingestion" data-retry-ingestion-form{% if active_transcript_retry_expired or not active_transcript or active_transcript.status.value != 'failed' or active_transcript.ingestion_mode.value != 'whole_file' or not active_transcript_latest_job or (not active_transcript_latest_job.source_audio_blob and not active_transcript_latest_job.source_audio_vault_ref) or not active_transcript_latest_job.source_audio_size_bytes or not stt_selection or not stt_available %} hidden{% endif %}>
 <input type="hidden" name="transcript_id" value="{% if active_transcript %}{{ active_transcript.id }}{% endif %}" data-retry-transcript-id>
 <button
 type="submit"
 class="px-4 py-2 bg-white border border-stone rounded-lg text-sm font-medium text-ink hover:border-teal-muted hover:bg-teal-pale/30 transition disabled:opacity-50"
 data-retry-ingestion-trigger
 data-local-busy-protected
-{% if not active_transcript or active_transcript.status.value != 'failed' or active_transcript.ingestion_mode.value != 'whole_file' or not active_transcript_latest_job or not active_transcript_latest_job.source_audio_size_bytes or not stt_selection or not stt_available %}hidden disabled{% endif %}>
+{% if active_transcript_retry_expired or not active_transcript or active_transcript.status.value != 'failed' or active_transcript.ingestion_mode.value != 'whole_file' or not active_transcript_latest_job or not active_transcript_latest_job.source_audio_size_bytes or not stt_selection or not stt_available %}hidden disabled{% endif %}>
 Try transcription again
 </button>
 </form>

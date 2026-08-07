@@ -1,0 +1,35 @@
+{% macro render_legal_inline(value) -%}
+  {%- if value is string -%}
+    {{ value }}
+  {%- else -%}
+    {%- for run in value -%}
+      {%- if run.type == 'italic' -%}<em>{{ run.text }}</em>
+      {%- elif run.type == 'bold' -%}<strong>{{ run.text }}</strong>
+      {%- elif run.type == 'bold_italic' -%}<strong><em>{{ run.text }}</em></strong>
+      {%- elif run.type == 'link' -%}<a href="{{ run.url }}">{{ run.text }}</a>
+      {%- else -%}{{ run.text }}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+{%- endmacro %}
+
+{% for block in blocks %}
+  {% if block.type == 'heading' %}
+  <h2>{{ render_legal_inline(block.text) }}</h2>
+  {% elif block.type == 'paragraph' %}
+  <p class="legal-document__paragraph">{{ render_legal_inline(block.text) }}</p>
+  {% elif block.type == 'bullet_list' %}
+  <ul>
+    {% for item in block.items %}<li>{{ render_legal_inline(item) }}</li>{% endfor %}
+  </ul>
+  {% elif block.type == 'table' %}
+  <div class="legal-document__table-scroll" tabindex="0" role="region" aria-label="Scrollable legal-content table">
+    <table class="legal-document__table">
+      <thead><tr>{% for header in block.headers %}<th scope="col">{{ render_legal_inline(header) }}</th>{% endfor %}</tr></thead>
+      <tbody>{% for row in block.rows %}<tr>{% for cell in row %}<td>{{ render_legal_inline(cell) }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+    </table>
+  </div>
+  {% elif block.type == 'labelled_https_link' %}
+  <p><a href="{{ block.url }}">{{ block.label }}</a></p>
+  {% endif %}
+{% endfor %}

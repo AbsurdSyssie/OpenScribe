@@ -42,7 +42,7 @@ The user selects an audio file. The backend:
 7. enforces normalized duration limits;
 8. resolves the snapshotted team STT configuration and credential;
 9. calls the provider and appends encrypted result text to the transcript draft;
-10. clears or durably queues cleanup for temporary source audio after terminal lifecycle handling.
+10. clears or durably queues cleanup for temporary source audio after successful terminal handling; a failed source remains retryable only until its fixed 24-hour deadline.
 
 ### Microphone batch
 
@@ -86,7 +86,10 @@ Transcript state is reconciled from durable ingestion work rather than trusted b
 - `recording` represents an active capture session.
 - `transcribing` represents pending or processing ingestion after capture/upload.
 - `ready` represents a transcript with no active ingestion work after reconciliation.
-- terminal/failed job metadata remains distinct from transcript text and can be retried only when a bounded source-audio reference still exists.
+- terminal/failed job metadata remains distinct from transcript text and can be retried only while its bounded source-audio reference exists and the original 24-hour deadline has not passed;
+- retry transfers the original source reference and deadline; it cannot extend the source-audio lifetime;
+- queued, processing or failed work that reaches the deadline is terminalised safely, its dispatch/attempt state is reconciled, and Vault cleanup is durable and repeatable;
+- the API and workspace report expiry in safe terms and require a fresh upload.
 
 A processing live chunk older than `LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS` can be reconciled as stale. Provider-attempt and quota lifecycle deadlines are separate from Celery task delivery and are documented in [environment.md](environment.md).
 
@@ -180,7 +183,7 @@ Owners can add/delete manual PII values. Values are encrypted and duplicate dete
 - The transcript root owns versions, jobs, generated documents, redaction/PII data, working notes, dictation, and related content.
 - Content services reject expired roots before the 10-second retention worker physically deletes them.
 - Transcript deletion is immediate from the user's perspective and uses relational cascades/service cleanup.
-- Temporary source audio and provider secrets use durable cleanup queues with retries and live-reference guards.
+- Temporary source audio and provider secrets use durable cleanup queues with retries and live-reference guards. Failed whole-file retry audio has an absolute maximum lifetime of 24 hours from its original Vault write.
 - Queue/outbox rows are terminalized or removed consistently with their source objects.
 
 ## Remaining roadmap

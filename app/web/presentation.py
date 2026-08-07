@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
@@ -20,6 +20,7 @@ from ..models import (
     PromptTemplate,
     QuickAction,
     SmartPhrase,
+    SecurityAuditHoldReason,
     SttAdapterKind,
     SttConfigSetupStatus,
     SttProviderPreset,
@@ -123,6 +124,8 @@ from ..services.default_assets import (
     list_default_templates as list_default_templates_service,
 )
 from ..services.admin_quotas import get_admin_user_quota_detail
+from ..services.legal_content import operator_legal_setup_warnings
+from ..services.audit_retention import active_security_audit_holds
 from .templates import templates
 
 
@@ -880,6 +883,7 @@ def render_admin(
     default_template_return_tab: str = "global-defaults",
     selected_quota_member_id: str | None = None,
     quota_form_values: dict[str, object] | None = None,
+    legal_context: dict[str, object] | None = None,
 ):
     workspace_team_tabs = {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"}
     if admin_return_view == "workspace" and workspace_team_tab is None and active_admin_tab in workspace_team_tabs:
@@ -938,6 +942,7 @@ def render_admin(
         "usage",
         "defaults",
         "audit",
+        "legal",
     }
     if extra_admin_tabs:
         available_admin_tabs = available_admin_tabs | extra_admin_tabs
@@ -985,6 +990,10 @@ def render_admin(
         "audit_actor_user_id_filter": request.query_params.get("audit_actor_user_id", ""),
         "audit_report": {"event_count": 0, "action_counts": {}, "category_counts": {}, "outcome_counts": {}, "signals": []},
         "audit_events": [],
+        "audit_active_holds": {},
+        "audit_hold_reasons": list(SecurityAuditHoldReason),
+        "audit_hold_default_review_at": "",
+        "audit_hold_default_expires_at": "",
         "audit_filter_options": {"actions": [], "categories": [], "outcomes": [], "request_ips": []},
     }
     if resolved_admin_tab == "audit":
@@ -1018,20 +1027,32 @@ def render_admin(
                 for signal in audit_report["signals"]
             ],
         }
+        audit_events = list_security_audit_events_service(
+            db,
+            since=audit_since,
+            limit=audit_limit,
+            action=request.query_params.get("audit_action") or None,
+            category=request.query_params.get("audit_category") or None,
+            outcome=request.query_params.get("audit_outcome") or None,
+            request_ip=request.query_params.get("audit_request_ip") or None,
+            team_id=query_uuid("audit_team_id"),
+            actor_user_id=query_uuid("audit_actor_user_id"),
+        )
+        hold_now = datetime.now(UTC)
         audit_context.update(
             {
                 "audit_report": audit_report,
-                "audit_events": list_security_audit_events_service(
-                    db,
-                    since=audit_since,
-                    limit=audit_limit,
-                    action=request.query_params.get("audit_action") or None,
-                    category=request.query_params.get("audit_category") or None,
-                    outcome=request.query_params.get("audit_outcome") or None,
-                    request_ip=request.query_params.get("audit_request_ip") or None,
-                    team_id=query_uuid("audit_team_id"),
-                    actor_user_id=query_uuid("audit_actor_user_id"),
-                ),
+                "audit_events": audit_events,
+                "audit_active_holds": {
+                    str(event_id): hold
+                    for event_id, hold in active_security_audit_holds(
+                        db,
+                        event_ids=[UUID(event["id"]) for event in audit_events],
+                        now=hold_now,
+                    ).items()
+                },
+                "audit_hold_default_review_at": (hold_now + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M"),
+                "audit_hold_default_expires_at": (hold_now + timedelta(days=90)).strftime("%Y-%m-%dT%H:%M"),
                 "audit_filter_options": audit_filter_options_service(
                     db,
                     since=audit_since,
@@ -1141,6 +1162,8 @@ def render_admin(
         "recovery_temporary_password": recovery_temporary_password,
         "email_recovery_enabled": email_recovery_enabled,
         "break_glass_recovery_enabled": break_glass_recovery_enabled(),
+        "operator_legal_setup_warnings": operator_legal_setup_warnings(db),
+        **(legal_context or {}),
         **usage_context,
         **audit_context,
     }

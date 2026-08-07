@@ -67,6 +67,7 @@ Choose exactly one HSTS owner. Set `HSTS_SOURCE=proxy` when the reverse proxy em
 No-store responses include:
 
 - `/`, login, account request, reset, activation, onboarding, MFA, settings/workspace and admin surfaces;
+- public legal routes `/privacy`, `/cookies`, and `/terms` when a matching notice is published;
 - `/api` and `/api/*`;
 - transcript, generated-document, dictation, and preview content routes.
 
@@ -141,12 +142,14 @@ Generation and ingestion creation use a durable metadata-only task-dispatch outb
 - Provider credentials are resolved before a provider attempt is marked submitted.
 - Definite pre-dispatch credential failure cancels quota reservation without consuming provider quota.
 - Duplicate delivery is handled through database claim/idempotency controls.
-- Uploaded source audio needed for asynchronous processing/retry is stored under a bounded Vault reference and removed through durable cleanup after terminal lifecycle transitions.
-- Retention cleanup, transcript-audio cleanup, provider-secret cleanup, and quota lifecycle processing run every 10 seconds.
+- Uploaded source audio needed for asynchronous processing or retry is stored under a bounded Vault reference. Its deadline is fixed at the original Vault write and does not reset on retry. Successful processing and transcript deletion clear it sooner; the periodic worker expires every remaining source at 24 hours and uses the durable cleanup queue when Vault deletion fails.
+- Retention cleanup, failed-ingestion source expiry, transcript-audio cleanup, provider-secret cleanup, audit expiry, legal-document expiry, and quota lifecycle processing run every 10 seconds.
 
 ## Security audit
 
 `security_audit_events` stores bounded metadata such as action, actor/target/team IDs, outcome, reason codes, route, method, sanitized IP, and user agent.
+
+Ordinary identifiable rows expire after six calendar months. The control-queue worker deletes due rows in locked batches and is safe to repeat. A fully authenticated system administrator can place a documented hold for an incident, contractual investigation, legal duty or dispute. Each approval records an owner, reason, review date and expiry, lasts no more than 90 days, and must be renewed explicitly. An account that owns an active hold cannot be deleted until the hold is released or transferred. Release or expiry restores the ordinary deletion rule.
 
 The sanitizer removes nested keys containing sensitive terms, escapes CR/LF, bounds strings, lists, maps, and serialized detail size, and never intentionally records request bodies. Login/reset subjects are stored as HMAC-SHA256 digests, not raw email addresses. Account lifecycle log records use the target user ID and do not include the raw target email.
 
@@ -155,6 +158,14 @@ Configure a dedicated `AUDIT_SUBJECT_HASH_SECRET` in production where practical.
 - `AUDIT_TRUST_X_FORWARDED_FOR=true` trusts the first forwarded address;
 - `AUDIT_TRUST_CLOUDFLARE=true` trusts Cloudflare's client address;
 - enable either only behind the expected sanitizing proxy with blocked direct origin access.
+
+## Operator legal content
+
+Each deployment has one optional global operator profile and fixed privacy, cookie/browser-storage and terms document roots. System administrators write a restricted Markdown subset in the Legal content admin tab. The server parses headings, paragraphs, flat bullet lists, bold and italic text, bounded tables, inline or standalone HTTPS links, and inline email links into validated structured blocks before saving. Email links accept one plain address and do not accept query parameters. It removes harmless unsupported presentation marks, keeps their wording and warns the administrator. It rejects HTML, unsafe link schemes and structures that could change meaning, such as numbered or nested lists, block quotes and code blocks. Preview and publication render only validated blocks; they never render parser-produced HTML. Publishing atomically supersedes the previous version; rollback creates a new draft. Each legal change and its sanitized audit row commit in the same transaction. Public routes return 404 until the matching kind is published, and footer links appear only for published kinds.
+
+The profile and documents must not contain patient, transcript, provider-secret or customer-specific content. Missing identity, contact or required notices creates a persistent system-administrator warning but does not block startup, readiness, sign-in or use. `/.well-known/security.txt` uses only the configured security contact and returns 404 when it is absent; it never falls back to a project or Memre identity.
+
+Abandoned drafts expire after 12 calendar months. Superseded published versions remain for six years after replacement. An active system-administrator legal hold blocks scheduled deletion until release. Current published versions are never retention candidates.
 
 ## Rate limiting and quotas
 

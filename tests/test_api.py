@@ -13051,6 +13051,7 @@ def test_leader_can_delete_own_team_user_and_owned_transcripts(client, db_sessio
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
         source_audio_vault_ref="secret:openscribe/transcript-ingestion/user-delete/source-audio",
+        source_audio_expires_at=utcnow() + timedelta(hours=24),
         source_audio_size_bytes=len(b"raw-file-audio"),
         status=TranscriptIngestionJobStatus.failed,
         error_code="stt_request_failed",
@@ -13216,6 +13217,7 @@ def test_leader_can_delete_user_even_when_retry_audio_vault_cleanup_fails(client
             job_kind=TranscriptIngestionJobKind.audio_file,
             source_filename="recording.mp3",
             source_audio_vault_ref="secret:openscribe/transcript-ingestion/user-best-effort/source-audio",
+            source_audio_expires_at=utcnow() + timedelta(hours=24),
             source_audio_size_bytes=len(b"raw-file-audio"),
             status=TranscriptIngestionJobStatus.failed,
             error_code="stt_request_failed",
@@ -14457,6 +14459,7 @@ def test_transcript_detail_includes_latest_ingestion_failure(client, db_session,
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
         source_audio_vault_ref="secret:openscribe/transcript-ingestion/detail/source-audio",
+        source_audio_expires_at=utcnow() + timedelta(hours=24),
         source_audio_size_bytes=len(b"raw-file-audio"),
         status=TranscriptIngestionJobStatus.failed,
         error_code="stt_config_secret_missing",
@@ -15838,6 +15841,7 @@ def test_transcript_delete_still_succeeds_when_retry_audio_vault_cleanup_fails(c
             job_kind=TranscriptIngestionJobKind.audio_file,
             source_filename="recording.mp3",
             source_audio_vault_ref="secret:openscribe/transcript-ingestion/delete-best-effort/source-audio",
+            source_audio_expires_at=utcnow() + timedelta(hours=24),
             source_audio_size_bytes=len(b"raw-file-audio"),
             status=TranscriptIngestionJobStatus.failed,
             error_code="stt_request_failed",
@@ -17025,6 +17029,7 @@ def test_processing_transcript_ingestion_job_does_not_revive_midflight_failed_jo
     monkeypatch.setattr("app.services.transcripts.read_transcript_ingestion_source_audio", lambda **kwargs: b"raw-audio")
     monkeypatch.setattr("app.services.transcripts.resolve_stt_snapshot_bearer_token", lambda *args, **kwargs: None)
     job.source_audio_vault_ref = "secret:openscribe/transcript-ingestion/midflight/source-audio"
+    job.source_audio_expires_at = utcnow() + timedelta(hours=24)
     db_session.add(job)
     db_session.commit()
     reserve_audio_attempt_for_job(db_session, job)
@@ -17078,6 +17083,7 @@ def test_processing_transcript_ingestion_job_deletes_root_that_expires_midflight
         chunk_sequence_no=1,
         source_filename="chunk-1.webm",
         source_audio_vault_ref="secret:openscribe/transcript-ingestion/midflight-expiry/source-audio",
+        source_audio_expires_at=utcnow() + timedelta(hours=24),
         status=TranscriptIngestionJobStatus.queued,
     )
     db_session.add(job)
@@ -17378,6 +17384,7 @@ def test_retry_audio_file_route_requeues_failed_blob_for_owner(
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
         source_audio_vault_ref="secret:openscribe/transcript-ingestion/retry/source-audio",
+        source_audio_expires_at=utcnow() + timedelta(hours=24),
         source_audio_size_bytes=len(b"raw-file-audio"),
         source_audio_duration_seconds=15.25,
         stt_config_id=config.id,
@@ -17453,6 +17460,7 @@ def test_retry_audio_file_route_excludes_failed_job_from_hourly_budget(
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
         source_audio_blob=b"raw-file-audio",
+        source_audio_expires_at=utcnow() + timedelta(hours=24),
         source_audio_size_bytes=len(b"raw-file-audio"),
         source_audio_duration_seconds=15.25,
         stt_config_id=config.id,
@@ -17549,6 +17557,7 @@ def test_retry_audio_file_route_rejects_when_vault_retry_audio_is_missing(
             job_kind=TranscriptIngestionJobKind.audio_file,
             source_filename="recording.mp3",
             source_audio_vault_ref="secret:openscribe/transcript-ingestion/missing/source-audio",
+            source_audio_expires_at=utcnow() + timedelta(hours=24),
             source_audio_size_bytes=len(b"raw-file-audio"),
             status=TranscriptIngestionJobStatus.failed,
             error_code="stt_request_failed",
@@ -17636,6 +17645,7 @@ def test_retry_audio_file_uses_outbox_without_direct_broker_publish(
         source_filename="recording.mp3",
         source_audio_blob=None,
         source_audio_vault_ref="secret:openscribe/transcript-ingestion/legacy/source-audio",
+        source_audio_expires_at=utcnow() + timedelta(hours=24),
         source_audio_size_bytes=len(b"raw-file-audio"),
         source_audio_duration_seconds=15.25,
         stt_config_id=config.id,
@@ -18825,6 +18835,7 @@ def test_retry_audio_file_route_enforces_owner_scope(client, db_session, make_te
             job_kind=TranscriptIngestionJobKind.audio_file,
             source_filename="recording.mp3",
             source_audio_blob=b"raw-file-audio",
+            source_audio_expires_at=utcnow() + timedelta(hours=24),
             source_audio_size_bytes=len(b"raw-file-audio"),
             status=TranscriptIngestionJobStatus.failed,
         )

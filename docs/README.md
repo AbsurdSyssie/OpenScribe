@@ -28,6 +28,7 @@ These documents are maintained as descriptions of implemented behavior or an exp
 | Authentication and access control | [auth.md](auth.md) |
 | Account recovery | [account_recovery_brief.md](account_recovery_brief.md) |
 | Security model | [security.md](security.md) |
+| Operator legal content and retention | [security.md#operator-legal-content](security.md#operator-legal-content) |
 | XSS probe and focused checks | [security-xss.md](security-xss.md) |
 | MFA secret encryption and compatibility | [mfa-secret-encryption.md](mfa-secret-encryption.md) |
 | JSON API behavior | [api.md](api.md) |

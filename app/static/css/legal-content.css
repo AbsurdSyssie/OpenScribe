@@ -1,0 +1,115 @@
+.legal-page {
+  margin: 0;
+  background: var(--color-bg, #f5f7f5);
+  color: var(--color-text, #17211b);
+  font-family: var(--font-sans, system-ui, sans-serif);
+}
+
+.legal-page__header,
+.legal-document,
+.operator-legal-footer {
+  width: min(52rem, calc(100% - 2rem));
+  margin-inline: auto;
+}
+
+.legal-page__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-block: 1.25rem;
+}
+
+.legal-document {
+  box-sizing: border-box;
+  margin-block: 1rem 3rem;
+  padding: clamp(1.25rem, 4vw, 3rem);
+  border: 1px solid #d8e0da;
+  border-radius: 1rem;
+  background: #fff;
+  line-height: 1.65;
+}
+
+.legal-document__meta {
+  color: #536158;
+}
+
+.legal-document__paragraph,
+.legal-content-paragraph {
+  white-space: pre-wrap;
+}
+
+.legal-document__table-scroll {
+  margin-block: 1rem;
+  overflow-x: auto;
+}
+
+.legal-document__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.legal-document__table th,
+.legal-document__table td {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #d8e0da;
+  text-align: left;
+  vertical-align: top;
+}
+
+.legal-document__table th {
+  background: #f3f6f4;
+}
+
+.operator-legal-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding-block: 1rem 2rem;
+}
+
+.browser-storage-notice {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  left: 1rem;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  max-width: 60rem;
+  margin-inline: auto;
+  padding: 1rem;
+  border: 1px solid #8fa098;
+  border-radius: 0.75rem;
+  background: #fff;
+  box-shadow: 0 0.5rem 2rem rgb(0 0 0 / 18%);
+}
+
+.browser-storage-notice[hidden] {
+  display: none;
+}
+
+.browser-storage-notice h2,
+.browser-storage-notice p {
+  margin: 0;
+}
+
+.browser-storage-notice h2 {
+  font-size: 1rem;
+}
+
+.browser-storage-notice button:focus-visible,
+.operator-legal-footer a:focus-visible,
+.legal-document a:focus-visible,
+.legal-document__table-scroll:focus-visible {
+  outline: 3px solid #145c3f;
+  outline-offset: 3px;
+}
+
+@media (max-width: 40rem) {
+  .browser-storage-notice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

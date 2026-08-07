@@ -54,8 +54,17 @@ Do not add tests that call public provider endpoints or the public internet duri
 Authentication, cookies, CSRF, and headers:
 
 ```bash
-pytest -q tests/test_auth.py tests/test_auth_email.py tests/test_cookie_csrf_security.py
+pytest -q tests/test_auth_service.py tests/test_auth_email.py tests/test_cookie_csrf_security.py
 ```
+
+DSPT legal-content and lifecycle controls:
+
+```bash
+.venv/bin/pytest -q tests/test_legal_content.py tests/test_dspt_retention.py
+.venv/bin/pytest -q tests/test_migrations.py -k "operator_legal_content or dspt_retention or alembic_upgrade_head_creates_expected_schema"
+```
+
+These checks cover restricted Markdown parsing into safe legal blocks, including bold, italics and bounded tables. They also cover harmless formatting removal and warnings, preview and rendering, full-session system-administrator writes, publication and versioning, legal retention and holds, the 24-hour failed-source deadline and durable Vault cleanup, six-calendar-month audit expiry, bounded audit holds, browser state, schedules and additive migrations. They use synthetic content only.
 
 API authorization manifest:
 

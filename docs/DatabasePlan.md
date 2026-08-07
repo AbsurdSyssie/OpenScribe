@@ -145,7 +145,7 @@ Persisted ingestion modes:
 - `whole_file`;
 - `live_chunked`.
 
-Ingestion jobs store metadata such as kind/status/sequence/config snapshot/source byte-duration/safe error/time fields and encrypted result text. Whole-file retry source audio is referenced through bounded Vault storage rather than a PostgreSQL audio blob.
+Ingestion jobs store metadata such as kind/status/sequence/config snapshot/source byte-duration/safe error/time fields and encrypted result text. Whole-file retry source audio is referenced through bounded Vault storage rather than a PostgreSQL audio blob. `source_audio_expires_at` records the fixed deadline set at the original write; `source_audio_expired_at` records enforcement. A database check requires every live source reference/blob to have a deadline.
 
 Creation/retry uses transactional durable task-dispatch metadata. Provider-attempt/quota reservation, source-audio cleanup, job claim/idempotency, and transcript reconciliation are service-layer workflows backed by explicit rows/constraints.
 
@@ -218,6 +218,14 @@ Usage events/jobs/generated-document metadata provide aggregate reporting withou
 ### Security audit
 
 `security_audit_events` stores bounded sanitized metadata. It excludes request bodies, credentials/tokens, transcript/prompt/note/dictation/PII/provider-response content. Login/reset subjects are HMAC digests where recorded.
+
+Ordinary rows expire after six calendar months. `security_audit_event_holds` records a bounded system-administrator approval with owner, reason, review, expiry, renewal count and release metadata. One unreleased hold can exist per event; each approval is limited to 90 days. Active holds must retain an owner, and account deletion is blocked until an owned hold is released or transferred. Event deletion cascades its hold history.
+
+### Operator legal content
+
+`operator_legal_profiles` is a singleton, deployment-global and optional. Fixed-kind legal roots own draft, published and superseded versions containing validated structured JSON blocks. Constraints enforce positive revisions/version numbers, valid state timestamps and one current published version per root. Administrator references use `ON DELETE SET NULL`; legal history does not depend on an administrator account.
+
+Published versions are immutable. Abandoned drafts become deletion candidates after 12 calendar months, superseded versions after six years, and active `legal_document_version_holds` exclude a version from deletion. Deleting an eligible version cascades its released hold history. Current published versions are not deletion candidates.
 
 ## External cleanup
 

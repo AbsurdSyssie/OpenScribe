@@ -73,6 +73,7 @@ INGESTION_PROVIDER_DEADLINE_SECONDS = max(
     int(os.getenv("INGESTION_PROVIDER_DEADLINE_SECONDS", str(int(STT_TRANSCRIPTION_TIMEOUT_SECONDS) + 300))),
     int(STT_TRANSCRIPTION_TIMEOUT_SECONDS) + 300,
 )
+INGESTION_SOURCE_AUDIO_MAX_AGE = timedelta(hours=24)
 retry_audio_logger = logging.getLogger("openscribe.retry_audio")
 transcript_redaction_logger = logging.getLogger("openscribe.transcript_redaction")
 transcript_retention_logger = logging.getLogger("openscribe.transcript_retention")
@@ -90,11 +91,33 @@ def transcript_is_expired(transcript: Transcript, *, now: datetime | None = None
     return expires_at <= comparison_now
 
 
-def _retry_source_available(job: TranscriptIngestionJob) -> bool:
-    return bool(job.source_audio_blob or job.source_audio_vault_ref)
+def ingestion_retry_source_expired(
+    job: TranscriptIngestionJob,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if job.source_audio_expired_at is not None:
+        return True
+    if job.source_audio_expires_at is None:
+        return False
+    comparison_now = now or utcnow()
+    expires_at = job.source_audio_expires_at
+    if expires_at.tzinfo is None and comparison_now.tzinfo is not None:
+        comparison_now = comparison_now.replace(tzinfo=None)
+    return expires_at <= comparison_now
+
+
+def _retry_source_available(job: TranscriptIngestionJob, *, now: datetime | None = None) -> bool:
+    return bool(job.source_audio_blob or job.source_audio_vault_ref) and not ingestion_retry_source_expired(job, now=now)
 
 
 def _read_retry_source_audio(job: TranscriptIngestionJob) -> bytes:
+    if ingestion_retry_source_expired(job):
+        raise AppError(
+            409,
+            "ingestion_retry_expired",
+            "The failed upload has expired. Upload the audio file again.",
+        )
     if job.source_audio_blob:
         return job.source_audio_blob
     if job.source_audio_vault_ref:
@@ -330,6 +353,106 @@ def process_transcript_audio_cleanup_jobs(
             deleted_count += 1
     db.commit()
     return deleted_count
+
+
+def expire_ingestion_source_audio(
+    db: Session,
+    *,
+    batch_size: int = 100,
+    now: datetime | None = None,
+) -> int:
+    """Make source audio unavailable at its original deadline and queue Vault deletion."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
+    comparison_now = now or utcnow()
+    candidate_ids = list(
+        db.scalars(
+            select(TranscriptIngestionJob.id)
+            .where(
+                TranscriptIngestionJob.source_audio_expires_at.is_not(None),
+                TranscriptIngestionJob.source_audio_expires_at <= comparison_now,
+                (
+                    TranscriptIngestionJob.source_audio_vault_ref.is_not(None)
+                    | TranscriptIngestionJob.source_audio_blob.is_not(None)
+                ),
+            )
+            .order_by(TranscriptIngestionJob.source_audio_expires_at.asc(), TranscriptIngestionJob.id.asc())
+            .limit(batch_size)
+        )
+    )
+    expired_count = 0
+    for job_id in candidate_ids:
+        identity = db.get(TranscriptIngestionJob, job_id)
+        if identity is None:
+            db.rollback()
+            continue
+        owner = db.scalar(select(User).where(User.id == identity.owner_user_id).with_for_update())
+        if owner is None:
+            db.rollback()
+            continue
+        locked = _lock_ingestion_job_and_transcript(db, job_id=job_id)
+        if locked is None:
+            continue
+        job, transcript = locked
+        if not ingestion_retry_source_expired(job, now=comparison_now):
+            db.rollback()
+            continue
+        if not job.source_audio_vault_ref and not job.source_audio_blob:
+            db.rollback()
+            continue
+        _expire_locked_ingestion_source(
+            db,
+            job=job,
+            transcript=transcript,
+            comparison_now=comparison_now,
+        )
+        expired_count += 1
+    return expired_count
+
+
+def _expire_locked_ingestion_source(
+    db: Session,
+    *,
+    job: TranscriptIngestionJob,
+    transcript: Transcript,
+    comparison_now: datetime,
+) -> TranscriptIngestionJob:
+    """Expire one already owner/root/job-locked source and finish cleanup durably."""
+    secret_ref = job.source_audio_vault_ref
+    cleanup_job_ids: list[UUID] = []
+    if job.status in {TranscriptIngestionJobStatus.queued, TranscriptIngestionJobStatus.processing}:
+        attempt = _ingestion_attempt(db, job_id=job.id, lock=True)
+        if attempt is not None:
+            if attempt.status is AttemptStatus.reserved:
+                cancel_provider_attempt(db, attempt_id=attempt.id, now=comparison_now)
+            elif attempt.status is AttemptStatus.submitted:
+                settle_provider_attempt_audio(
+                    db,
+                    attempt_id=attempt.id,
+                    measured_audio_seconds=attempt.measured_audio_seconds,
+                    outcome=AttemptOutcome.unknown,
+                    now=comparison_now,
+                )
+        delete_dispatches_for_sources(db, ingestion_job_ids=[job.id])
+        job.status = TranscriptIngestionJobStatus.failed
+        job.error_code = "ingestion_source_expired"
+        job.error_message = "Uploaded audio expired before transcription completed"
+        job.completed_at = comparison_now
+
+    job.source_audio_blob = None
+    job.source_audio_vault_ref = None
+    job.source_audio_expired_at = comparison_now
+    db.add(job)
+    if secret_ref:
+        cleanup_job_ids = queue_transcript_audio_cleanup(db, secret_refs=[secret_ref])
+    db.flush()
+    transcript.status = _resolved_transcript_status(db, transcript=transcript)
+    db.add(transcript)
+    db.commit()
+    if cleanup_job_ids:
+        process_transcript_audio_cleanup_jobs(db, job_ids=cleanup_job_ids)
+    db.refresh(job)
+    return job
 
 
 def _create_transcript_row(
@@ -1412,6 +1535,7 @@ def queue_audio_chunk_ingestion(
     except Exception:
         raise
 
+    source_audio_stored_at = utcnow()
     job = TranscriptIngestionJob(
         id=job_id,
         transcript_id=transcript.id,
@@ -1423,6 +1547,7 @@ def queue_audio_chunk_ingestion(
         source_audio_blob=None,
         source_audio_vault_ref=source_audio_vault_ref,
         source_audio_size_bytes=len(source_audio_bytes),
+        source_audio_expires_at=source_audio_stored_at + INGESTION_SOURCE_AUDIO_MAX_AGE,
         declared_duration_seconds=measured_duration_seconds,
         stt_config_id=config.id,
         stt_provider_preset=config.provider_preset,
@@ -1491,6 +1616,7 @@ def queue_audio_file_ingestion(
     source_audio_blob: bytes,
     source_audio_duration_seconds: float | None = None,
     source_audio_vault_ref: str | None = None,
+    source_audio_expires_at: datetime | None = None,
     exclude_job_ids: tuple[UUID, ...] = (),
 ) -> tuple[Transcript, TranscriptIngestionJob]:
     transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
@@ -1545,6 +1671,9 @@ def queue_audio_file_ingestion(
     persisted_source_audio_vault_ref = source_audio_vault_ref
     if persisted_source_audio_vault_ref is None:
         persisted_source_audio_vault_ref = write_transcript_ingestion_source_audio(job_id=job_id, audio_bytes=source_audio_blob)
+        source_audio_expires_at = utcnow() + INGESTION_SOURCE_AUDIO_MAX_AGE
+    elif source_audio_expires_at is None:
+        raise AppError(409, "ingestion_retry_unavailable", "The failed upload is no longer available to retry. Upload the audio file again.")
 
     job = TranscriptIngestionJob(
         id=job_id,
@@ -1558,6 +1687,7 @@ def queue_audio_file_ingestion(
         source_audio_vault_ref=persisted_source_audio_vault_ref,
         source_audio_size_bytes=len(source_audio_blob),
         source_audio_duration_seconds=resolved_source_audio_duration_seconds,
+        source_audio_expires_at=source_audio_expires_at,
         stt_config_id=config.id,
         stt_provider_preset=config.provider_preset,
         stt_adapter_kind=config.adapter_kind.value,
@@ -1630,6 +1760,8 @@ def retry_audio_file_ingestion(
     if latest_job.status is not TranscriptIngestionJobStatus.failed:
         raise AppError(409, "ingestion_retry_unavailable", "The latest uploaded audio is not in a retryable failed state")
     if not _retry_source_available(latest_job):
+        if ingestion_retry_source_expired(latest_job):
+            raise AppError(409, "ingestion_retry_expired", "The failed upload has expired. Upload the audio file again.")
         raise AppError(409, "ingestion_retry_unavailable", "The failed upload is no longer available to retry. Upload the audio file again.")
 
     source_audio_blob = _read_retry_source_audio(latest_job)
@@ -1644,6 +1776,7 @@ def retry_audio_file_ingestion(
         # Transfer the durable retry object instead of creating a second Vault
         # copy.  The old row is cleared in the same transaction below.
         source_audio_vault_ref=latest_job.source_audio_vault_ref,
+        source_audio_expires_at=latest_job.source_audio_expires_at,
         exclude_job_ids=(latest_job.id,),
     )
     latest_job.source_audio_blob = None
@@ -1771,6 +1904,19 @@ def _claim_queued_ingestion_job(
     if transcript_is_expired(transcript):
         _delete_expired_ingestion_transcript(db, transcript=transcript)
         return None
+    claim_now = utcnow()
+    if (
+        job.status is TranscriptIngestionJobStatus.queued
+        and ingestion_retry_source_expired(job, now=claim_now)
+        and (job.source_audio_vault_ref is not None or job.source_audio_blob is not None)
+    ):
+        expired_job = _expire_locked_ingestion_source(
+            db,
+            job=job,
+            transcript=transcript,
+            comparison_now=claim_now,
+        )
+        return _return_released_ingestion_job(db, expired_job)
     if job.status in _TERMINAL_INGESTION_JOB_STATUSES or job.status is TranscriptIngestionJobStatus.processing:
         return _return_released_ingestion_job(db, job)
     attempt = _ingestion_attempt(db, job_id=job.id, lock=True)
@@ -1854,6 +2000,38 @@ def _delete_if_ingestion_root_expired_before_preparation(db: Session, *, job_id:
         _release_ingestion_transaction(db)
         return False
     _delete_expired_ingestion_transcript(db, transcript=transcript)
+    return True
+
+
+def _expire_ingestion_source_before_preparation(db: Session, *, job_id: UUID) -> bool:
+    """Enforce the source deadline before any Vault read or audio processing."""
+    identity = db.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.id == job_id))
+    if identity is None:
+        _release_ingestion_transaction(db)
+        return True
+    owner = db.scalar(select(User).where(User.id == identity.owner_user_id).with_for_update())
+    if owner is None:
+        _release_ingestion_transaction(db)
+        return True
+    locked = _lock_ingestion_job_and_transcript(db, job_id=job_id)
+    if locked is None:
+        return True
+    job, transcript = locked
+    comparison_now = utcnow()
+    if (
+        job.status is not TranscriptIngestionJobStatus.queued
+        or not ingestion_retry_source_expired(job, now=comparison_now)
+        or (job.source_audio_vault_ref is None and job.source_audio_blob is None)
+    ):
+        _release_ingestion_transaction(db)
+        return False
+    _expire_locked_ingestion_source(
+        db,
+        job=job,
+        transcript=transcript,
+        comparison_now=comparison_now,
+    )
+    _release_ingestion_transaction(db)
     return True
 
 
@@ -2130,6 +2308,8 @@ def process_transcript_ingestion_job(
 
     if _delete_if_ingestion_root_expired_before_preparation(db, job_id=job_id):
         return None
+    if _expire_ingestion_source_before_preparation(db, job_id=job_id):
+        return db.get(TranscriptIngestionJob, job_id)
 
     try:
         audio_bytes = _read_queued_source_audio(db, preparation_job, legacy_audio_bytes=legacy_audio_bytes)

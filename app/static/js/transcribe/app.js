@@ -191,6 +191,7 @@ import {
       const retryIngestionForm = document.querySelector('[data-retry-ingestion-form]');
       const retryIngestionTrigger = document.querySelector('[data-retry-ingestion-trigger]');
       const retryTranscriptIdInput = document.querySelector('[data-retry-transcript-id]');
+      const retryIngestionExpired = document.querySelector('[data-retry-ingestion-expired]');
       const newSessionForm = document.querySelector('#new-session-form');
       const bulkDeleteForm = document.querySelector('#bulk-delete-sessions');
       const titleForm = document.querySelector('[data-transcript-title-form]');
@@ -2171,7 +2172,7 @@ let statusDetailsHideTimer = null;
         return true;
       };
 
-      const setRetryAvailability = (canRetry) => {
+      const setRetryAvailability = (canRetry, retryExpired = false) => {
         if (retryIngestionForm) {
           retryIngestionForm.hidden = !canRetry;
         }
@@ -2182,6 +2183,9 @@ let statusDetailsHideTimer = null;
         }
         if (retryTranscriptIdInput) {
           retryTranscriptIdInput.value = transcriptId || '';
+        }
+        if (retryIngestionExpired) {
+          retryIngestionExpired.hidden = !retryExpired;
         }
       };
 
@@ -3523,7 +3527,7 @@ let statusDetailsHideTimer = null;
           && transcript.status === 'failed'
         );
         setNewSessionAvailability(Boolean(workspace.can_create_new_session), workspace.new_session_block_message || '');
-        setRetryAvailability(retryAvailable);
+        setRetryAvailability(retryAvailable, Boolean(transcript?.latest_ingestion_retry_expired));
         const recentTranscriptsTopHasMore = Boolean(
           workspace.recent_transcripts_has_more && workspace.recent_transcripts_next_cursor
         );

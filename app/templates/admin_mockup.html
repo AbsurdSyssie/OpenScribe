@@ -1405,6 +1405,11 @@
         background: #fff5f5;
         color: var(--error);
       }
+      .toast.warning {
+        border-color: rgba(183, 121, 31, 0.25);
+        background: #fffaf0;
+        color: #8a5a13;
+      }
       .operation-result p {
         margin: 6px 0 0;
       }
@@ -1583,6 +1588,237 @@
         }
       }
 
+      .legal-heading-row {
+        display: flex;
+        align-items: start;
+        justify-content: space-between;
+        gap: 18px;
+      }
+      .legal-notice {
+        margin-bottom: 18px;
+        padding: 16px;
+        border: 1px solid var(--warning);
+        background: #fff9ec;
+      }
+      .legal-notice h2 {
+        font-size: 1.2rem;
+      }
+      .legal-notice ul {
+        margin: 10px 0;
+      }
+      .legal-kind-tabs,
+      .legal-secondary-controls,
+      .legal-editor-actions,
+      .legal-publish-form {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .legal-kind-tabs {
+        margin-bottom: 18px;
+      }
+      .legal-secondary-controls {
+        margin-bottom: 18px;
+      }
+      .legal-settings-panel {
+        flex: 1 1 280px;
+      }
+      .legal-settings-panel > summary {
+        padding: 14px 16px;
+        color: var(--accent);
+        cursor: pointer;
+        font-weight: 700;
+      }
+      .legal-settings-panel[open] > summary {
+        border-bottom: 1px solid var(--border);
+      }
+      .legal-settings-panel > :not(summary) {
+        margin: 14px 16px;
+      }
+      .legal-profile-form {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .legal-profile-form label,
+      .legal-editor-meta label,
+      .legal-retention-panel label {
+        display: grid;
+        gap: 5px;
+        color: var(--slate);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .legal-profile-form input,
+      .legal-profile-form textarea,
+      .legal-editor-meta input,
+      .legal-retention-panel input {
+        width: 100%;
+        min-height: 38px;
+        padding: 8px 10px;
+        border: 1px solid var(--border-strong);
+        border-radius: 5px;
+        background: var(--card);
+        color: var(--ink);
+        font: inherit;
+      }
+      .legal-profile-form textarea {
+        resize: vertical;
+      }
+      .legal-form-wide {
+        grid-column: 1 / -1;
+      }
+      .legal-version-list {
+        padding-left: 22px;
+      }
+      .legal-version-list li {
+        margin: 8px 0;
+      }
+      .legal-version-list a {
+        color: var(--accent);
+      }
+      .legal-version-list [aria-current="true"] a {
+        font-weight: 800;
+      }
+      .legal-editor-panel {
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.86);
+      }
+      .legal-editor-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 16px 18px;
+        border-bottom: 1px solid var(--border);
+      }
+      .legal-editor-header p,
+      .legal-editor-meta span {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .legal-editor-panel > form[data-legal-markdown-form] {
+        padding: 18px;
+      }
+      .legal-editor-meta {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 14px;
+      }
+      .legal-editor-tabs {
+        display: flex;
+        border-bottom: 1px solid var(--border);
+      }
+      .legal-editor-tabs .tab {
+        position: relative;
+      }
+      .legal-markdown-label {
+        display: block;
+        margin: 14px 0 7px;
+        color: var(--slate);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .legal-markdown-editor {
+        display: block;
+        width: 100%;
+        min-height: clamp(32rem, 62vh, 58rem);
+        padding: 20px;
+        resize: vertical;
+        border: 1px solid var(--border-strong);
+        border-radius: 5px;
+        outline: none;
+        background: var(--card);
+        color: var(--ink);
+        font: 16px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace;
+        tab-size: 2;
+      }
+      .legal-markdown-editor:focus {
+        border-color: var(--accent-soft);
+        box-shadow: var(--shadow-focus);
+      }
+      .legal-markdown-help {
+        margin: 10px 0 16px;
+        color: var(--muted);
+      }
+      .legal-markdown-help summary {
+        color: var(--accent);
+        cursor: pointer;
+        font-weight: 700;
+      }
+      .legal-markdown-help p {
+        margin-top: 8px;
+      }
+      .legal-preview-panel {
+        min-height: clamp(32rem, 62vh, 58rem);
+        padding: 20px;
+        background: var(--card);
+      }
+      .legal-preview-message {
+        margin-bottom: 12px;
+        color: var(--muted);
+      }
+      .legal-preview-message.error {
+        color: var(--error);
+        font-weight: 700;
+      }
+      .legal-preview-message.warning {
+        color: #8a5a13;
+        font-weight: 700;
+      }
+      .legal-preview-body {
+        max-width: 76ch;
+        line-height: 1.7;
+      }
+      .legal-preview-body h2 {
+        margin: 24px 0 8px;
+      }
+      .legal-preview-body h2:first-child {
+        margin-top: 0;
+      }
+      .legal-preview-body p,
+      .legal-preview-body ul {
+        margin: 0 0 14px;
+      }
+      .legal-document__paragraph {
+        white-space: pre-wrap;
+      }
+      .legal-document__table-scroll {
+        margin-block: 16px;
+        overflow-x: auto;
+      }
+      .legal-document__table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      .legal-document__table th,
+      .legal-document__table td {
+        padding: 9px 11px;
+        border: 1px solid var(--border);
+        text-align: left;
+        vertical-align: top;
+      }
+      .legal-document__table th {
+        background: var(--parchment);
+      }
+      .legal-editor-actions {
+        position: sticky;
+        bottom: 10px;
+        margin-top: 14px;
+        padding: 10px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.96);
+      }
+      .legal-publish-form {
+        padding: 0 18px 18px;
+      }
+      .legal-retention-panel {
+        margin-top: 18px;
+      }
+
       .danger-action {
         color: var(--error);
         border-color: rgba(197, 48, 48, 0.35);
@@ -1641,6 +1877,12 @@
           overflow-x: auto;
         }
         .policy-row { min-width: 1060px; }
+        .legal-profile-form {
+          grid-template-columns: 1fr;
+        }
+        .legal-form-wide {
+          grid-column: auto;
+        }
       }
     </style>
   </head>
@@ -1725,6 +1967,9 @@
           <a class="nav-link" href="/admin?tab=audit"
             ><span class="nav-icon">◎</span>Audit</a
           >
+          <a class="nav-link{% if active_admin_tab == 'legal' %} active{% endif %}" href="/admin?tab=legal"
+            ><span class="nav-icon">§</span>Legal content</a
+          >
         </nav>
 
         <div class="sidebar-spacer"></div>
@@ -1740,9 +1985,16 @@
       </aside>
 
       <main class="workspace">
+        {% if operator_legal_setup_warnings %}
+        <aside class="flash warning" role="status" aria-label="Operator legal setup warnings">
+          <strong>Operator legal setup is incomplete.</strong>
+          <ul>{% for warning in operator_legal_setup_warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+          <a href="/admin?tab=legal">Review legal content</a>
+        </aside>
+        {% endif %}
         {% if message %}
         <div class="flash {{ message_kind }}" role="status">{{ message }}</div>
-        {% endif %} {% if not selected_team or active_admin_tab in ['directory','requests','system-admins','global-defaults','deid-providers','usage','audit'] %}
+        {% endif %} {% if not selected_team or active_admin_tab in ['directory','requests','system-admins','global-defaults','deid-providers','usage','audit','legal'] %}
         <section class="detail-pane" aria-labelledby="admin-home-title">
           <div class="detail-content">
             {% if active_admin_tab == 'home' %}
@@ -2234,6 +2486,8 @@
                 </div>
               </section>
             </div>
+            {% elif active_admin_tab == 'legal' %}
+            {% include "_admin_legal_content_panel.html" %}
             {% elif active_admin_tab == 'audit' %}
             <div class="section-intro">
               <h1>Security audit</h1>
@@ -2262,6 +2516,34 @@
                 {{ event.created_at }} · {{ event.actor_email or
                 event.actor_user_id or 'system' }} · {{ event.team_name or '' }}
               </p>
+              {% set audit_hold = audit_active_holds.get(event.id) %}
+              {% if audit_hold %}
+              <p><strong>Retention hold:</strong> {{ audit_hold.reason.value|replace('_', ' ')|title }}{% if audit_hold.reference %} · {{ audit_hold.reference }}{% endif %}<br>Review {{ audit_hold.review_at }} · expires {{ audit_hold.expires_at }} · renewals {{ audit_hold.renewal_count }}</p>
+              <form method="post" action="/admin/audit/holds/{{ audit_hold.id }}/renew">
+                <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+                <label>Reason<select name="reason">{% for reason in audit_hold_reasons %}<option value="{{ reason.value }}"{% if reason == audit_hold.reason %} selected{% endif %}>{{ reason.value|replace('_', ' ')|title }}</option>{% endfor %}</select></label>
+                <label>Reference<input name="reference" maxlength="255" value="{{ audit_hold.reference or '' }}"></label>
+                <label>Review (UTC)<input type="datetime-local" name="review_at" value="{{ audit_hold_default_review_at }}" required></label>
+                <label>Expiry (UTC, at most 90 days)<input type="datetime-local" name="expires_at" value="{{ audit_hold_default_expires_at }}" required></label>
+                <button class="btn" type="submit">Renew hold</button>
+              </form>
+              <form method="post" action="/admin/audit/holds/{{ audit_hold.id }}/release" data-confirm-submit="Release this audit hold? The event may then be deleted when its six-month retention period ends.">
+                <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+                <button class="btn" type="submit">Release hold</button>
+              </form>
+              {% else %}
+              <details>
+                <summary>Place retention hold</summary>
+                <form method="post" action="/admin/audit/events/{{ event.id }}/holds">
+                  <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+                  <label>Reason<select name="reason">{% for reason in audit_hold_reasons %}<option value="{{ reason.value }}">{{ reason.value|replace('_', ' ')|title }}</option>{% endfor %}</select></label>
+                  <label>Reference<input name="reference" maxlength="255"></label>
+                  <label>Review (UTC)<input type="datetime-local" name="review_at" value="{{ audit_hold_default_review_at }}" required></label>
+                  <label>Expiry (UTC, at most 90 days)<input type="datetime-local" name="expires_at" value="{{ audit_hold_default_expires_at }}" required></label>
+                  <button class="btn" type="submit">Place hold</button>
+                </form>
+              </details>
+              {% endif %}
             </article>
             {% else %}
             <p>No audit events in this window.</p>
@@ -5436,6 +5718,9 @@
     </script>
     {% endif %}
     {% include "_csrf_script.html" %}
+    {% if active_admin_tab == 'legal' %}
+    <script src="/static/js/legal-content-editor.js?v=20260806-markdown" defer></script>
+    {% endif %}
     <div class="toast-container" data-toast-container></div>
     {% if active_admin_tab == 'usage' or workspace_team_tab == 'usage' %}
     <script id="usage-chart-data" type="application/json" data-range-label="{{ usage_range_label }}" data-has-comparison="{{ 'true' if usage_has_comparison else 'false' }}">{{ usage_comparison_trend_points|tojson }}</script>
@@ -5456,7 +5741,11 @@
         window.showToast = showToast;
         document.querySelectorAll(".flash").forEach((flash) => {
           const message = flash.textContent.trim();
-          const kind = flash.classList.contains("error") ? "error" : "success";
+          const kind = flash.classList.contains("error")
+            ? "error"
+            : flash.classList.contains("warning")
+              ? "warning"
+              : "success";
           showToast(message, kind);
           flash.hidden = true;
         });
@@ -5482,5 +5771,6 @@
       })();
     </script>
     <script src="/static/js/generated-password.js?v=20260712-infield-controls"></script>
+    {% include "_legal_footer_banner.html" %}
   </body>
 </html>

@@ -180,6 +180,34 @@ def record_security_event(
     request: Request | None = None,
     details: dict[str, Any] | None = None,
 ) -> None:
+    AuditSession = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False, future=True)
+    try:
+        with AuditSession() as audit_db:
+            add_security_event(
+                audit_db,
+                action=action,
+                actor=actor,
+                target=target,
+                team_id=team_id,
+                request=request,
+                details=details,
+            )
+            audit_db.commit()
+    except Exception:
+        logger.exception("security_audit_write_failed", extra={"action": action})
+
+
+def add_security_event(
+    db: Session,
+    *,
+    action: str,
+    actor: User | None = None,
+    target: User | None = None,
+    team_id: UUID | None = None,
+    request: Request | None = None,
+    details: dict[str, Any] | None = None,
+) -> SecurityAuditEvent:
+    """Add a sanitized audit row to the caller's transaction without committing it."""
     safe_details = _safe_details(details)
     if request is not None:
         safe_details.setdefault("method", request.method)
@@ -193,10 +221,6 @@ def record_security_event(
         "user_agent": _safe_string(request.headers.get("user-agent", "")) if request else None,
         "details_json": safe_details,
     }
-    AuditSession = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False, future=True)
-    try:
-        with AuditSession() as audit_db:
-            audit_db.add(SecurityAuditEvent(**event_payload))
-            audit_db.commit()
-    except Exception:
-        logger.exception("security_audit_write_failed", extra={"action": action})
+    event = SecurityAuditEvent(**event_payload)
+    db.add(event)
+    return event

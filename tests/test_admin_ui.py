@@ -5263,6 +5263,7 @@ def test_user_transcribe_page_shows_specific_ingestion_failure_message(client, d
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
         source_audio_vault_ref="secret:openscribe/transcript-ingestion/admin-detail/source-audio",
+        source_audio_expires_at=utcnow() + timedelta(hours=24),
         source_audio_size_bytes=len(b"raw-file-audio"),
         status=TranscriptIngestionJobStatus.failed,
         error_code="stt_config_secret_missing",
@@ -5338,6 +5339,7 @@ def test_user_can_retry_failed_file_transcription_from_browser(client, db_sessio
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.mp3",
         source_audio_vault_ref="secret:openscribe/transcript-ingestion/admin-retry/source-audio",
+        source_audio_expires_at=utcnow() + timedelta(hours=24),
         source_audio_size_bytes=len(b"raw-file-audio"),
         status=TranscriptIngestionJobStatus.failed,
         error_code="stt_request_failed",
@@ -8210,6 +8212,7 @@ def test_admin_page_can_delete_team_and_owned_records(
             source_filename="team-delete.wav",
             status=TranscriptIngestionJobStatus.failed,
             source_audio_vault_ref=retry_audio_ref,
+            source_audio_expires_at=utcnow() + timedelta(hours=24),
         )
     )
     db_session.add(

@@ -394,7 +394,7 @@ Live defaults:
 
 The server measures/probes audio rather than trusting declared duration for enforcement/accounting. Accepted jobs snapshot STT execution metadata and create task-dispatch/quota metadata transactionally.
 
-Whole-file source audio required for asynchronous processing/retry is stored under a bounded Vault reference, not a new PostgreSQL audio blob. Successful/terminal/deletion paths clear or durably queue cleanup with live-reference guards. Retry transfers an existing source reference transactionally rather than duplicating it.
+Whole-file source audio required for asynchronous processing/retry is stored under a bounded Vault reference, not a new PostgreSQL audio blob. Its 24-hour expiry starts at the original Vault write and is preserved across retries. Successful processing and transcript deletion clear or durably queue cleanup sooner. At or after the deadline, transcript detail returns `latest_ingestion_retry_expired=true`, `latest_ingestion_retry_available=false`, and retry requires a fresh upload without exposing storage details.
 
 Workers normalize to 16 kHz mono PCM WAV, resolve the snapshotted credential, mark the provider attempt submitted only at dispatch, call the adapter under configured timeouts, encrypt result text, settle usage, and reconcile transcript/job state.
 

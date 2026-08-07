@@ -808,11 +808,17 @@ PUBLIC_NO_STORE_PATHS = {
     "/docs",
     "/redoc",
     "/openapi.json",
+    "/privacy",
+    "/cookies",
+    "/terms",
 }
 CSRF_COOKIE_SKIP_PATHS = {
     "/robots.txt",
     "/sitemap.xml",
     "/.well-known/security.txt",
+    "/privacy",
+    "/cookies",
+    "/terms",
 }
 CSRF_COOKIE_SKIP_PREFIXES = ("/static/",)
 PUBLIC_CACHE_PATHS = {
@@ -872,6 +878,21 @@ def _set_cache_headers(request: Request, response: Response) -> None:
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     request.state.csp_nonce = new_csp_nonce()
+    request.state.legal_footer_links = ()
+    request.state.operator_legal_profile = None
+    path = request.url.path
+    if (
+        request.method == "GET"
+        and not path.startswith("/api/")
+        and not path.startswith("/static/")
+        and path not in {"/health", "/robots.txt", "/sitemap.xml", "/.well-known/security.txt"}
+    ):
+        from app.services.legal_content import get_operator_legal_profile, published_legal_links
+
+        session_factory = getattr(request.app.state, "db_session_factory", SessionLocal)
+        with session_factory() as legal_db:
+            request.state.legal_footer_links = published_legal_links(legal_db)
+            request.state.operator_legal_profile = get_operator_legal_profile(legal_db)
     response = await call_next(request)
     is_https = _request_is_https(request)
 
@@ -905,6 +926,8 @@ async def ensure_csrf_cookie(request: Request, call_next):
     )
 
     response = await call_next(request)
+    if getattr(request.state, "session_cookie_issued", False):
+        return response
     if request.method not in {"GET", "HEAD"} or not _should_issue_csrf_cookie(request):
         return response
 
@@ -944,6 +967,7 @@ async def ensure_csrf_cookie(request: Request, call_next):
 
 
 def _set_session_cookie(request: Request, response: Response, token: str) -> None:
+    request.state.session_cookie_issued = True
     secure_cookie = should_set_secure_cookie(
         request_url=str(request.url),
         forwarded_proto=request.headers.get("x-forwarded-proto"),

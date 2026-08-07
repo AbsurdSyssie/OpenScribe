@@ -182,6 +182,7 @@ def test_retention_cleanup_preserves_failed_vault_deletion_for_retry(db_session,
             job_kind=TranscriptIngestionJobKind.audio_file,
             source_filename="recording.wav",
             source_audio_vault_ref=secret_ref,
+            source_audio_expires_at=now + timedelta(hours=24),
             status=TranscriptIngestionJobStatus.failed,
         )
     )
@@ -218,6 +219,7 @@ def test_ingestion_worker_deletes_already_expired_root_and_queues_retry_audio_cl
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.wav",
         source_audio_vault_ref=secret_ref,
+        source_audio_expires_at=utcnow() + timedelta(hours=24),
         status=TranscriptIngestionJobStatus.queued,
     )
     db_session.add(job)
@@ -265,6 +267,7 @@ def test_ingestion_failure_deletes_root_expired_during_failure_path(
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.wav",
         source_audio_vault_ref=secret_ref,
+        source_audio_expires_at=utcnow() + timedelta(hours=24),
         status=TranscriptIngestionJobStatus.queued,
     )
     db_session.add(job)
@@ -324,6 +327,7 @@ def test_audio_cleanup_worker_never_deletes_live_ingestion_retry_source(db_sessi
         job_kind=TranscriptIngestionJobKind.audio_file,
         source_filename="recording.wav",
         source_audio_vault_ref=secret_ref,
+        source_audio_expires_at=utcnow() + timedelta(hours=24),
         status=TranscriptIngestionJobStatus.failed,
     )
     db_session.add(ingestion_job)

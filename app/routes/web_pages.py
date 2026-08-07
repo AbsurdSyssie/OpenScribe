@@ -1,5 +1,7 @@
 """Browser page and form routes extracted from app.main."""
 
+from datetime import timedelta
+
 from ..main import *  # noqa: F401,F403
 from ..main import (
     _bootstrap_allowed,
@@ -14,7 +16,9 @@ from ..main import (
     _set_trusted_device_cookie,
 )
 from ..models import UserOnboardingState
+from ..models import LegalDocumentKind, utcnow
 from ..services.auth import totp_secret_for_method
+from ..services.legal_content import current_published_legal_document, get_operator_legal_profile
 from ..services.passwords import validate_password_strength
 
 
@@ -33,18 +37,71 @@ def robots_txt():
 
 
 @app.get("/.well-known/security.txt", include_in_schema=False)
-def security_txt():
+def security_txt(db: Session = Depends(get_db)):
+    profile = get_operator_legal_profile(db)
+    if profile is None or not profile.security_contact:
+        return Response(
+            "Security contact not configured.\n",
+            status_code=status.HTTP_404_NOT_FOUND,
+            media_type="text/plain; charset=utf-8",
+        )
+    lines = [
+        f"Contact: mailto:{profile.security_contact}",
+        f"Expires: {(utcnow() + timedelta(days=365)).strftime('%Y-%m-%dT%H:%M:%SZ')}",
+        "Preferred-Languages: en",
+    ]
+    if profile.public_url:
+        lines.append(f"Canonical: {profile.public_url.rstrip('/')}/.well-known/security.txt")
+    lines.append("")
     return Response(
-        "\n".join(
-            [
-                "Contact: mailto:oscar@meddleapp.com",
-                "Expires: 2027-06-01T00:00:00Z",
-                "Preferred-Languages: en",
-                "Canonical: https://openscribe.co.uk/.well-known/security.txt",
-                "",
-            ]
-        ),
+        "\n".join(lines),
         media_type="text/plain; charset=utf-8",
+    )
+
+
+def _render_public_legal_document(
+    request: Request,
+    db: Session,
+    *,
+    kind: LegalDocumentKind,
+    title: str,
+):
+    resolved = current_published_legal_document(db, kind=kind)
+    if resolved is None:
+        return HTMLResponse("Not found", status_code=status.HTTP_404_NOT_FOUND)
+    version, content = resolved
+    return templates.TemplateResponse(
+        request,
+        "legal_document.html",
+        {
+            "request": request,
+            "page_title": title,
+            "document_kind": kind.value,
+            "version": version,
+            "blocks": content.blocks,
+            "operator_profile": get_operator_legal_profile(db),
+        },
+    )
+
+
+@app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
+def privacy_page(request: Request, db: Session = Depends(get_db)):
+    return _render_public_legal_document(
+        request, db, kind=LegalDocumentKind.privacy, title="Privacy notice"
+    )
+
+
+@app.get("/cookies", response_class=HTMLResponse, include_in_schema=False)
+def cookies_page(request: Request, db: Session = Depends(get_db)):
+    return _render_public_legal_document(
+        request, db, kind=LegalDocumentKind.cookie_storage, title="Cookies and browser storage"
+    )
+
+
+@app.get("/terms", response_class=HTMLResponse, include_in_schema=False)
+def terms_page(request: Request, db: Session = Depends(get_db)):
+    return _render_public_legal_document(
+        request, db, kind=LegalDocumentKind.terms, title="Terms"
     )
 
 

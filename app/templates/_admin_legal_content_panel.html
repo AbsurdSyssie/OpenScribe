@@ -1,0 +1,319 @@
+<div class="section-intro legal-heading-row">
+  <div>
+    <h1 id="admin-home-title">Legal content</h1>
+    <p>
+      Write and publish deployment-wide legal information. Do not enter patient
+      data, credentials, or provider secrets.
+    </p>
+  </div>
+</div>
+
+{% if setup_warnings %}
+<aside class="legal-notice warning" aria-labelledby="legal-warning-title">
+  <h2 id="legal-warning-title">Setup warnings</h2>
+  <ul>
+    {% for warning in setup_warnings %}
+    <li>{{ warning }}</li>
+    {% endfor %}
+  </ul>
+  <p>These warnings do not block startup, readiness, sign-in, or use.</p>
+</aside>
+{% endif %}
+
+<nav class="legal-kind-tabs" aria-label="Legal document kinds">
+  {% for legal_kind in document_kinds %}
+  <a
+    class="btn{% if legal_kind == selected_kind %} primary{% endif %}"
+    href="/admin?tab=legal&amp;kind={{ legal_kind.value }}"
+    aria-current="{{ 'page' if legal_kind == selected_kind else 'false' }}"
+  >
+    {{ legal_kind.value.replace('_', ' ')|title }}
+  </a>
+  {% endfor %}
+</nav>
+
+<div class="legal-secondary-controls">
+  <details class="summary-panel legal-settings-panel">
+    <summary>Operator profile</summary>
+    <form
+      method="post"
+      action="/admin/legal-content/profile"
+      class="legal-profile-form"
+    >
+      <input type="hidden" name="kind" value="{{ selected_kind.value }}" />
+      <input
+        type="hidden"
+        name="expected_revision"
+        value="{{ profile.revision if profile else '' }}"
+      />
+      <label
+        >Legal name<input
+          name="legal_name"
+          maxlength="255"
+          value="{{ profile.legal_name or '' if profile else '' }}"
+      /></label>
+      <label
+        >Display name<input
+          name="display_name"
+          maxlength="255"
+          value="{{ profile.display_name or '' if profile else '' }}"
+      /></label>
+      <label
+        >Company number<input
+          name="company_number"
+          maxlength="64"
+          value="{{ profile.company_number or '' if profile else '' }}"
+      /></label>
+      <label
+        >Public HTTPS URL<input
+          type="url"
+          name="public_url"
+          maxlength="2048"
+          pattern="https://.*"
+          title="Enter an absolute HTTPS URL beginning with https://"
+          value="{{ profile.public_url or '' if profile else '' }}"
+      /></label>
+      <label
+        >Privacy email<input
+          type="email"
+          name="privacy_email"
+          maxlength="254"
+          value="{{ profile.privacy_email or '' if profile else '' }}"
+      /></label>
+      <label
+        >Complaints email<input
+          type="email"
+          name="complaints_email"
+          maxlength="254"
+          value="{{ profile.complaints_email or '' if profile else '' }}"
+      /></label>
+      <label
+        >Security email for security.txt<input
+          type="email"
+          name="security_contact"
+          maxlength="254"
+          value="{{ profile.security_contact or '' if profile else '' }}"
+      /></label>
+      <label class="legal-form-wide"
+        >Postal address<textarea
+          name="postal_address"
+          maxlength="1000"
+          rows="4"
+        >
+{{ profile.postal_address or '' if profile else '' }}</textarea>
+      </label>
+      <label class="legal-form-wide"
+        >Cookie-banner summary<textarea
+          name="cookie_banner_summary"
+          maxlength="1000"
+          rows="4"
+        >
+{{ profile.cookie_banner_summary or '' if profile else '' }}</textarea>
+      </label>
+      <p class="legal-form-wide field-help">
+        Use plain text without HTML or Markdown. The public URL must begin with
+        https://.
+      </p>
+      <div class="legal-form-wide">
+        <button class="btn primary" type="submit">Save operator profile</button>
+      </div>
+    </form>
+  </details>
+
+  <details class="summary-panel legal-settings-panel">
+    <summary>
+      {{ selected_kind.value.replace('_', ' ')|title }} version history
+    </summary>
+    {% if versions %}
+    <ol class="legal-version-list">
+      {% for version in versions %}
+      <li
+        aria-current="{{ 'true' if selected_version and selected_version.id == version.id else 'false' }}"
+      >
+        <a
+          href="/admin?tab=legal&amp;kind={{ selected_kind.value }}&amp;version_id={{ version.id }}"
+        >
+          Version {{ version.version_no }} · {{ version.state.value|title }} ·
+          {{ version.effective_on.isoformat() }}
+        </a>
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p>No versions exist.</p>
+    {% endif %}
+  </details>
+</div>
+
+<section class="legal-editor-panel" aria-labelledby="legal-editor-title">
+  <header class="legal-editor-header">
+    <div>
+      <h2 id="legal-editor-title">
+        {% if selected_version %}Version {{ selected_version.version_no }} · {{
+        selected_version.state.value|title }}{% else %}New {{
+        selected_kind.value.replace('_', ' ') }} draft{% endif %}
+      </h2>
+      {% if selected_version %}
+      <p>Revision {{ selected_version.revision }}</p>
+      {% endif %}
+    </div>
+  </header>
+
+  {% if not selected_version or selected_version.state.value == 'draft' %} {%
+  set editor_action = '/admin/legal-content/drafts/' ~ selected_version.id if
+  selected_version else '/admin/legal-content/drafts' %} {% set editor_label =
+  'Save draft' if selected_version else 'Create draft' %} {% else %} {% set
+  editor_action = '/admin/legal-content/drafts' %} {% set editor_label = 'Create
+  editable draft from this version' %} {% endif %}
+
+  <form method="post" action="{{ editor_action }}" data-legal-markdown-form>
+    <input type="hidden" name="kind" value="{{ selected_kind.value }}" />
+    {% if selected_version and selected_version.state.value == 'draft' %}<input
+      type="hidden"
+      name="expected_revision"
+      value="{{ selected_version.revision }}"
+    />{% endif %}
+    <div class="legal-editor-meta">
+      <label
+        >Effective date<input
+          type="date"
+          name="effective_on"
+          value="{{ legal_effective_on }}"
+          required
+      /></label>
+      <span data-legal-editor-status role="status"
+        >Changes are saved only when you submit this form.</span
+      >
+    </div>
+
+    <div
+      class="legal-editor-tabs"
+      role="tablist"
+      aria-label="Legal document editor view"
+    >
+      <button
+        class="tab active"
+        type="button"
+        role="tab"
+        aria-selected="true"
+        data-legal-write-tab
+      >
+        Write
+      </button>
+      <button
+        class="tab"
+        type="button"
+        role="tab"
+        aria-selected="false"
+        data-legal-preview-tab
+      >
+        Preview
+      </button>
+    </div>
+
+    <div data-legal-write-panel role="tabpanel">
+      <label class="legal-markdown-label" for="legal-markdown-source"
+        >Markdown</label
+      >
+      <textarea
+        id="legal-markdown-source"
+        class="legal-markdown-editor"
+        name="markdown_source"
+        maxlength="65536"
+        spellcheck="true"
+        required
+        data-legal-markdown-source
+      >
+{{ legal_markdown_source }}</textarea>
+      <details class="legal-markdown-help">
+        <summary>Supported Markdown</summary>
+        <p>
+          Use <code>##</code> for headings, blank lines between paragraphs,
+          <code>-</code> for bullet items, <code>*italics*</code>,
+          <code>**bold**</code>, tables, and standalone
+          or inline <code>[labels](https://example.org)</code> links. Plain
+          <code>mailto:</code> email links also work. The editor removes
+          harmless unsupported formatting and warns you. It rejects HTML and
+          structures that could change the document's meaning.
+        </p>
+      </details>
+    </div>
+
+    <div
+      class="legal-preview-panel"
+      data-legal-preview-panel
+      role="tabpanel"
+      hidden
+    >
+      <p
+        class="legal-preview-message"
+        data-legal-preview-message
+        role="status"
+      ></p>
+      <article class="legal-preview-body" data-legal-preview-body>
+        {% if legal_preview_content %}{% with
+        blocks=legal_preview_content.blocks %}{% include
+        "_legal_content_blocks.html" %}{% endwith %}{% endif %}
+      </article>
+    </div>
+
+    <div class="legal-editor-actions">
+      <button class="btn primary" type="submit">{{ editor_label }}</button>
+    </div>
+  </form>
+
+  {% if selected_version and selected_version.state.value == 'draft' %}
+  <form
+    method="post"
+    action="/admin/legal-content/drafts/{{ selected_version.id }}/publish"
+    class="legal-publish-form"
+    data-confirm-submit="Publish the saved draft and supersede the current published version? Unsaved editor changes will not be published."
+  >
+    <input type="hidden" name="kind" value="{{ selected_kind.value }}" />
+    <input
+      type="hidden"
+      name="expected_revision"
+      value="{{ selected_version.revision }}"
+    />
+    <button class="btn" type="submit">Publish saved draft</button>
+  </form>
+  {% elif selected_version %}
+  <form
+    method="post"
+    action="/admin/legal-content/versions/{{ selected_version.id }}/rollback"
+    class="legal-publish-form"
+  >
+    <input type="hidden" name="kind" value="{{ selected_kind.value }}" />
+    <input type="hidden" name="effective_on" value="{{ today }}" />
+    <button class="btn" type="submit">Create rollback draft</button>
+  </form>
+  {% endif %}
+</section>
+
+{% if selected_version %} {% set active_hold =
+active_holds.get(selected_version.id) %}
+<details class="summary-panel legal-settings-panel legal-retention-panel">
+  <summary>Retention hold</summary>
+  {% if active_hold %}
+  <p><strong>Active hold:</strong> {{ active_hold.reason }}</p>
+  <form
+    method="post"
+    action="/admin/legal-content/holds/{{ active_hold.id }}/release"
+    data-confirm-submit="Release this legal hold? The version may then be deleted when its retention period ends."
+  >
+    <input type="hidden" name="kind" value="{{ selected_kind.value }}" />
+    <input type="hidden" name="version_id" value="{{ selected_version.id }}" />
+    <button class="btn" type="submit">Release hold</button>
+  </form>
+  {% else %}
+  <form
+    method="post"
+    action="/admin/legal-content/versions/{{ selected_version.id }}/holds"
+  >
+    <input type="hidden" name="kind" value="{{ selected_kind.value }}" />
+    <label>Reason<input name="reason" maxlength="500" required /></label>
+    <button class="btn" type="submit">Place legal hold</button>
+  </form>
+  {% endif %}
+</details>
+{% endif %}

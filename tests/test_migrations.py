@@ -58,6 +58,10 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "alembic_version",
         "auth_email_tokens",
         "account_requests",
+        "operator_legal_profiles",
+        "legal_document_roots",
+        "legal_document_versions",
+        "legal_document_version_holds",
         "clinical_entities",
         "clinical_entity_runs",
         "default_quick_actions",
@@ -77,6 +81,7 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "redaction_entities",
         "redaction_runs",
         "security_audit_events",
+        "security_audit_event_holds",
         "smart_phrases",
         "transcript_manual_pii_entities",
         "teams",
@@ -176,6 +181,355 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
     assert stt_auth_modes == ["bearer", "none"]
     assert llm_auth_modes == ["bearer", "none", "google_adc", "google_service_account"]
     assert llm_adapter_kinds == ["openai_chat", "ollama_chat", "bedrock_chat", "gemini_enterprise"]
+
+
+@pytest.mark.migration
+def test_operator_legal_content_migration_creates_retained_legal_schema():
+    reset_public_schema()
+
+    command.upgrade(alembic_config(), "a8b9c0d1e2f3")
+
+    inspector = inspect(engine)
+    assert {
+        "operator_legal_profiles",
+        "legal_document_roots",
+        "legal_document_versions",
+        "legal_document_version_holds",
+    } <= set(inspector.get_table_names())
+
+    profile_columns = {column["name"]: column for column in inspector.get_columns("operator_legal_profiles")}
+    root_columns = {column["name"] for column in inspector.get_columns("legal_document_roots")}
+    version_columns = {column["name"] for column in inspector.get_columns("legal_document_versions")}
+    hold_columns = {column["name"] for column in inspector.get_columns("legal_document_version_holds")}
+    assert {
+        "singleton_key",
+        "legal_name",
+        "display_name",
+        "company_number",
+        "public_url",
+        "privacy_email",
+        "complaints_email",
+        "security_contact",
+        "postal_address",
+        "cookie_banner_summary",
+        "revision",
+        "created_at",
+        "updated_at",
+    } == set(profile_columns)
+    assert profile_columns["singleton_key"]["nullable"] is False
+    assert profile_columns["revision"]["nullable"] is False
+    assert {"id", "kind", "created_at", "updated_at"} == root_columns
+    assert {
+        "id",
+        "document_root_id",
+        "version_no",
+        "state",
+        "effective_on",
+        "blocks_json",
+        "revision",
+        "author_user_id",
+        "published_by_user_id",
+        "superseded_by_user_id",
+        "created_at",
+        "updated_at",
+        "published_at",
+        "superseded_at",
+    } == version_columns
+    assert {
+        "id",
+        "legal_document_version_id",
+        "reason",
+        "created_by_user_id",
+        "created_at",
+        "released_by_user_id",
+        "released_at",
+    } == hold_columns
+
+    root_constraints = {item["name"] for item in inspector.get_unique_constraints("legal_document_roots")}
+    version_constraints = {item["name"] for item in inspector.get_unique_constraints("legal_document_versions")}
+    assert "uq_legal_document_roots_kind" in root_constraints
+    assert "uq_legal_document_versions_root_version" in version_constraints
+
+    version_indexes = {item["name"]: item for item in inspector.get_indexes("legal_document_versions")}
+    hold_indexes = {item["name"]: item for item in inspector.get_indexes("legal_document_version_holds")}
+    assert version_indexes["uq_legal_document_versions_one_published"]["unique"] is True
+    assert "state = 'published'" in version_indexes["uq_legal_document_versions_one_published"]["dialect_options"]["postgresql_where"]
+    assert "state = 'superseded'" in version_indexes["ix_legal_document_versions_superseded_retention"]["dialect_options"]["postgresql_where"]
+    assert "state = 'draft'" in version_indexes["ix_legal_document_versions_draft_retention"]["dialect_options"]["postgresql_where"]
+    assert hold_indexes["uq_legal_document_version_holds_active"]["unique"] is True
+    assert "released_at IS NULL" in hold_indexes["uq_legal_document_version_holds_active"]["dialect_options"]["postgresql_where"]
+
+    version_checks = {item["name"]: item["sqltext"] for item in inspector.get_check_constraints("legal_document_versions")}
+    hold_checks = {item["name"]: item["sqltext"] for item in inspector.get_check_constraints("legal_document_version_holds")}
+    profile_checks = {item["name"]: item["sqltext"] for item in inspector.get_check_constraints("operator_legal_profiles")}
+    assert "singleton_key IS TRUE" in profile_checks["ck_operator_legal_profiles_singleton"]
+    assert "revision > 0" in profile_checks["ck_operator_legal_profiles_revision_positive"]
+    assert "version_no > 0" in version_checks["ck_legal_document_versions_version_positive"]
+    assert "revision > 0" in version_checks["ck_legal_document_versions_revision_positive"]
+    assert "state = 'published'" in version_checks["ck_legal_document_versions_state_timestamps"]
+    reason_length_check = hold_checks["ck_legal_document_version_holds_reason_length"]
+    assert "char_length(btrim(reason" in reason_length_check
+    assert ">= 1" in reason_length_check
+    assert "<= 500" in reason_length_check
+    assert "released_at IS NULL OR released_at >= created_at" in hold_checks["ck_legal_document_version_holds_release_order"]
+
+    version_fks = inspector.get_foreign_keys("legal_document_versions")
+    hold_fks = inspector.get_foreign_keys("legal_document_version_holds")
+    assert any(
+        fk["referred_table"] == "legal_document_roots"
+        and fk["constrained_columns"] == ["document_root_id"]
+        and fk.get("options", {}).get("ondelete") == "RESTRICT"
+        for fk in version_fks
+    )
+    for column in ("author_user_id", "published_by_user_id", "superseded_by_user_id"):
+        assert any(
+            fk["referred_table"] == "users"
+            and fk["constrained_columns"] == [column]
+            and fk.get("options", {}).get("ondelete") == "SET NULL"
+            for fk in version_fks
+        )
+    assert any(
+        fk["referred_table"] == "legal_document_versions"
+        and fk["constrained_columns"] == ["legal_document_version_id"]
+        and fk.get("options", {}).get("ondelete") == "CASCADE"
+        for fk in hold_fks
+    )
+    for column in ("created_by_user_id", "released_by_user_id"):
+        assert any(
+            fk["referred_table"] == "users"
+            and fk["constrained_columns"] == [column]
+            and fk.get("options", {}).get("ondelete") == "SET NULL"
+            for fk in hold_fks
+        )
+
+    with engine.connect() as connection:
+        enum_values = {
+            enum_name: connection.execute(
+                text(
+                    """
+                    SELECT enumlabel
+                    FROM pg_enum
+                    JOIN pg_type ON pg_type.oid = pg_enum.enumtypid
+                    WHERE pg_type.typname = :enum_name
+                    ORDER BY enumsortorder
+                    """
+                ),
+                {"enum_name": enum_name},
+            ).scalars().all()
+            for enum_name in ("legaldocumentkind", "legaldocumentversionstate")
+        }
+    assert enum_values["legaldocumentkind"] == ["privacy", "cookie_storage", "terms"]
+    assert enum_values["legaldocumentversionstate"] == ["draft", "published", "superseded"]
+
+
+@pytest.mark.migration
+def test_operator_legal_content_downgrade_refuses_retained_legal_rows():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "a8b9c0d1e2f3")
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO operator_legal_profiles (singleton_key, revision, created_at, updated_at)
+                VALUES (TRUE, 1, NOW(), NOW())
+                """
+            )
+        )
+
+    with pytest.raises(RuntimeError, match="retained legal records exist"):
+        command.downgrade(alembic_config(), "f7a8b9c0d1e3")
+
+    with engine.connect() as connection:
+        assert inspect(connection).has_table("operator_legal_profiles")
+
+
+@pytest.mark.migration
+def test_dspt_retention_controls_migration_backfills_and_enforces_schema():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "a8b9c0d1e2f3")
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+                VALUES ('00000000-0000-0000-0000-000000000801', 'Retention migration', 'retention migration', 'active', 30, NOW(), NOW())
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000802', 'Retention owner', 'retention-owner@example.com', 'hash',
+                    '00000000-0000-0000-0000-000000000801', 'user', false, 'active', false, 'complete', true, false,
+                    NOW(), NOW(), NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO transcripts (
+                    id, owner_user_id, team_id, ingestion_mode, status, next_live_chunk_sequence_no_applied,
+                    retention_days_applied, retention_expires_at, created_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000803',
+                    '00000000-0000-0000-0000-000000000802',
+                    '00000000-0000-0000-0000-000000000801',
+                    'whole_file', 'recording', 1, 30, NOW() + INTERVAL '30 days', NOW() - INTERVAL '2 hours'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO transcript_ingestion_jobs (
+                    id, transcript_id, owner_user_id, team_id, job_kind, source_filename, status,
+                    source_audio_vault_ref, created_at, updated_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000804',
+                    '00000000-0000-0000-0000-000000000803',
+                    '00000000-0000-0000-0000-000000000802',
+                    '00000000-0000-0000-0000-000000000801',
+                    'audio_file', 'source.wav', 'queued', 'secret:openscribe/test/audio',
+                    NOW() - INTERVAL '2 hours', NOW()
+                )
+                """
+            )
+        )
+
+    command.upgrade(alembic_config(), "b9c0d1e2f3a4")
+
+    inspector = inspect(engine)
+    job_columns = {column["name"] for column in inspector.get_columns("transcript_ingestion_jobs")}
+    hold_columns = {column["name"] for column in inspector.get_columns("security_audit_event_holds")}
+    assert {"source_audio_expires_at", "source_audio_expired_at"} <= job_columns
+    assert {
+        "id",
+        "security_audit_event_id",
+        "reason",
+        "reference",
+        "owner_user_id",
+        "created_at",
+        "approved_at",
+        "review_at",
+        "expires_at",
+        "renewal_count",
+        "released_by_user_id",
+        "released_at",
+    } == hold_columns
+
+    job_checks = {item["name"]: item["sqltext"] for item in inspector.get_check_constraints("transcript_ingestion_jobs")}
+    hold_checks = {item["name"]: item["sqltext"] for item in inspector.get_check_constraints("security_audit_event_holds")}
+    assert "source_audio_expires_at IS NOT NULL" in job_checks["ck_transcript_ingestion_jobs_source_expiry"]
+    assert "source_audio_expired_at IS NULL OR source_audio_expires_at IS NOT NULL" in job_checks["ck_transcript_ingestion_jobs_expired_has_deadline"]
+    assert {
+        "ck_security_audit_event_holds_approval_order",
+        "ck_security_audit_event_holds_review_order",
+        "ck_security_audit_event_holds_expiry_order",
+        "ck_security_audit_event_holds_max_duration",
+        "ck_security_audit_event_holds_review_before_expiry",
+        "ck_security_audit_event_holds_renewal_nonnegative",
+        "ck_security_audit_event_holds_release_order",
+        "ck_security_audit_event_holds_active_owner",
+    } == set(hold_checks)
+    assert "90 days" in hold_checks["ck_security_audit_event_holds_max_duration"]
+
+    job_indexes = {item["name"]: item for item in inspector.get_indexes("transcript_ingestion_jobs")}
+    hold_indexes = {item["name"]: item for item in inspector.get_indexes("security_audit_event_holds")}
+    source_expiry_predicate = job_indexes["ix_transcript_ingestion_jobs_source_audio_expiry"]["dialect_options"]["postgresql_where"]
+    assert "source_audio_vault_ref IS NOT NULL" in source_expiry_predicate
+    assert "source_audio_blob IS NOT NULL" in source_expiry_predicate
+    assert hold_indexes["uq_security_audit_event_holds_unreleased"]["unique"] is True
+    assert "released_at IS NULL" in hold_indexes["uq_security_audit_event_holds_unreleased"]["dialect_options"]["postgresql_where"]
+    assert hold_indexes["ix_security_audit_event_holds_expiry"]["column_names"] == ["expires_at"]
+
+    hold_fks = inspector.get_foreign_keys("security_audit_event_holds")
+    assert any(
+        fk["referred_table"] == "security_audit_events"
+        and fk["constrained_columns"] == ["security_audit_event_id"]
+        and fk.get("options", {}).get("ondelete") == "CASCADE"
+        for fk in hold_fks
+    )
+    for column in ("owner_user_id", "released_by_user_id"):
+        assert any(
+            fk["referred_table"] == "users"
+            and fk["constrained_columns"] == [column]
+            and fk.get("options", {}).get("ondelete") == "SET NULL"
+            for fk in hold_fks
+        )
+
+    with engine.connect() as connection:
+        expiry = connection.execute(
+            text(
+                """
+                SELECT source_audio_expires_at - created_at
+                FROM transcript_ingestion_jobs
+                WHERE id = '00000000-0000-0000-0000-000000000804'
+                """
+            )
+        ).scalar_one()
+        hold_reasons = connection.execute(
+            text(
+                """
+                SELECT enumlabel
+                FROM pg_enum
+                JOIN pg_type ON pg_type.oid = pg_enum.enumtypid
+                WHERE pg_type.typname = 'securityauditholdreason'
+                ORDER BY enumsortorder
+                """
+            )
+        ).scalars().all()
+    assert expiry.total_seconds() == 24 * 60 * 60
+    assert hold_reasons == ["incident", "contractual_investigation", "legal_hold", "legal_duty", "dispute"]
+
+
+@pytest.mark.migration
+def test_dspt_retention_controls_downgrade_refuses_security_audit_holds():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "b9c0d1e2f3a4")
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO security_audit_events (id, action, details_json, created_at)
+                VALUES ('00000000-0000-0000-0000-000000000805', 'migration_test', '{}'::json, NOW())
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO security_audit_event_holds (
+                    id, security_audit_event_id, reason, created_at, approved_at, review_at, expires_at,
+                    released_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000806',
+                    '00000000-0000-0000-0000-000000000805',
+                    'legal_hold', NOW(), NOW(), NOW() + INTERVAL '1 day', NOW() + INTERVAL '2 days',
+                    NOW()
+                )
+                """
+            )
+        )
+
+    with pytest.raises(RuntimeError, match="security-audit holds exist"):
+        command.downgrade(alembic_config(), "a8b9c0d1e2f3")
+
+    with engine.connect() as connection:
+        assert inspect(connection).has_table("security_audit_event_holds")
 
 
 @pytest.mark.migration

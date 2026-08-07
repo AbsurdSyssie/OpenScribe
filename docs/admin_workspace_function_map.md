@@ -22,6 +22,7 @@ Global navigation areas:
 - De-identification providers;
 - Usage;
 - Audit;
+- Legal content;
 - Log out.
 
 Selected-team tabs:
@@ -178,9 +179,15 @@ Reusable configuration must not contain patient content.
 
 Usage provides global or validated selected-team aggregate operational telemetry. Per-user aggregates appear only under selected-team scope. See [usage_tab.md](usage_tab.md).
 
-Audit supports validated filters for safe dimensions such as time range, team, actor ID, action, category, outcome, and sanitized request IP.
+Audit supports validated filters for safe dimensions such as time range, team, actor ID, action, category, outcome, and sanitized request IP. A fully authenticated system administrator can place, renew or release a retention hold on a visible event. Each approval has a controlled reason, bounded reference, owner, review date and expiry; one approval cannot exceed 90 days.
 
 Neither surface may include request bodies, transcript-derived content, secrets, raw provider responses, tokens, or plaintext email subjects where hashing/minimization is required.
+
+## Operator legal content
+
+`/admin?tab=legal` manages the deployment-global operator profile and fixed privacy, cookie/browser-storage and terms documents inside the normal admin side-rail workspace. The former `/admin/legal-content` address redirects to this tab. Access is system-admin-only, requires a full session and CSRF, and must never contain patient, transcript, credential or team-specific content.
+
+The full-width editor accepts a restricted Markdown subset: headings, paragraphs, flat bullet lists, bold and italic text, bounded tables, inline or standalone HTTPS links, and plain email links. The server parses Markdown into validated blocks. Each document remains bounded to 64 KiB and 1,000 blocks. Email links accept one address without query parameters. The parser removes harmless unsupported presentation marks, keeps their wording and warns the administrator. It rejects HTML, unsafe link schemes and structures that could change meaning. Administrators can open a server-generated preview, edit drafts with optimistic concurrency, publish one immutable current version, create a rollback draft from history, and place or release a retention hold. Legal changes and their metadata-only audit events commit together. Missing required profile, contact or notices create warnings; they do not block service use.
 
 ## Security tab
 
@@ -219,7 +226,7 @@ Navigation, dialogs, forms, menus, validation summaries, charts, and destructive
 Relevant checks include:
 
 ```bash
-pytest -q tests/test_admin_ui.py tests/test_admin_workspace.py tests/test_auth.py
+pytest -q tests/test_admin_ui.py tests/test_auth_service.py tests/test_cookie_csrf_security.py
 ./.venv/bin/python scripts/audit_api_auth.py
 ```
 

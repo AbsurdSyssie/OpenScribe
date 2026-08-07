@@ -77,6 +77,7 @@ class TranscriptDetail(TranscriptListItem):
     latest_ingestion_error_code: str | None = None
     latest_ingestion_error_message: str | None = None
     latest_ingestion_retry_available: bool = False
+    latest_ingestion_retry_expired: bool = False
 
 
 class StructuredWorkingNotePayload(BaseModel):

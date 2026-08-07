@@ -5,7 +5,9 @@ from app.celery_app import celery_app
 from app.db import SessionLocal
 from app.models import GeneratedDocument, TranscriptIngestionJob, utcnow
 from app.services.templates import GeneratedDocumentWaitingForTranscript, process_generated_document
-from app.services.transcripts import delete_expired_transcripts, process_transcript_audio_cleanup_jobs, process_transcript_ingestion_job
+from app.services.transcripts import delete_expired_transcripts, expire_ingestion_source_audio, process_transcript_audio_cleanup_jobs, process_transcript_ingestion_job
+from app.services.audit_retention import expire_security_audit_events
+from app.services.legal_content_retention import expire_legal_document_versions
 from app.services.provider_secret_cleanup import process_provider_secret_cleanup_jobs
 from app.services.task_outbox import publish_pending_task_dispatches
 from app.services.quota_lifecycle import process_quota_lifecycle
@@ -68,6 +70,24 @@ def delete_expired_transcripts_task(*, batch_size: int = 100) -> int:
 def process_transcript_audio_cleanup_jobs_task(*, batch_size: int = 100) -> int:
     with SessionLocal() as db:
         return process_transcript_audio_cleanup_jobs(db, batch_size=batch_size)
+
+
+@celery_app.task(name="openscribe.expire_ingestion_source_audio")
+def expire_ingestion_source_audio_task(*, batch_size: int = 100) -> int:
+    with SessionLocal() as db:
+        return expire_ingestion_source_audio(db, batch_size=batch_size)
+
+
+@celery_app.task(name="openscribe.expire_security_audit_events")
+def expire_security_audit_events_task(*, batch_size: int = 100) -> int:
+    with SessionLocal() as db:
+        return expire_security_audit_events(db, batch_size=batch_size)
+
+
+@celery_app.task(name="openscribe.expire_legal_document_versions")
+def expire_legal_document_versions_task(*, batch_size: int = 100) -> int:
+    with SessionLocal() as db:
+        return expire_legal_document_versions(db, batch_size=batch_size)
 
 
 @celery_app.task(name="openscribe.process_provider_secret_cleanup_jobs")

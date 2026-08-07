@@ -1,0 +1,37 @@
+<link
+  rel="stylesheet"
+  href="/static/css/legal-content.css?v=20260805-legal-content"
+/>
+{% set legal_links = request.state.legal_footer_links if
+request.state.legal_footer_links is defined else () %} {% set legal_profile =
+request.state.operator_legal_profile if request.state.operator_legal_profile is
+defined else none %} {% if legal_links %}
+<footer class="operator-legal-footer" aria-label="Operator legal information">
+  {% for link in legal_links %}<a href="{{ link.href }}">{{ link.label }}</a>{%
+  endfor %}
+</footer>
+{% endif %}
+<section
+  class="browser-storage-notice"
+  data-browser-storage-notice
+  hidden
+  aria-labelledby="browser-storage-notice-title"
+>
+  <div>
+    <h2 id="browser-storage-notice-title">Cookies and browser storage</h2>
+    <p>
+      {% if legal_profile and legal_profile.cookie_banner_summary %} {{
+      legal_profile.cookie_banner_summary }} {% else %} This software uses
+      cookies and browser storage for security, sign-in and preferences. {%
+      endif %} {% for link in legal_links %}{% if link.href == '/cookies' %}<a
+        href="{{ link.href }}"
+        >Read the operator's notice.</a
+      >{% endif %}{% endfor %}
+    </p>
+  </div>
+  <button type="button" data-browser-storage-dismiss>Dismiss</button>
+</section>
+<script
+  nonce="{{ request.state.csp_nonce }}"
+  src="/static/js/legal-content-banner.js?v=20260805-legal-content"
+></script>

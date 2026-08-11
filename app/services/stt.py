@@ -83,7 +83,7 @@ DEEPGRAM_FALSE_VALUES = {"false", "0", "no", "off"}
 
 logger = logging.getLogger("openscribe.stt")
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_STT_SAMPLE_PATH = REPO_ROOT / "tests" / "MoreOrLess.wav"
+DEFAULT_STT_SAMPLE_PATH = REPO_ROOT / "tests" / "example_audio.wav"
 STT_TRANSCRIPTION_TIMEOUT_SECONDS = float(os.getenv("STT_TRANSCRIPTION_TIMEOUT_SECONDS", str(4 * 60 * 60)))
 STT_MODEL_DISCOVERY_MAX_RESPONSE_BYTES = 1024 * 1024
 STT_PROVIDER_ERROR_RESPONSE_MAX_BYTES = 64 * 1024
@@ -1944,19 +1944,28 @@ def transcribe_with_stt_snapshot(
     )
 
 
+def _read_stt_test_sample(sample_path: Path) -> bytes:
+    try:
+        return sample_path.read_bytes()
+    except OSError as exc:
+        raise AppError(
+            503,
+            "stt_test_sample_unavailable",
+            "STT test audio is unavailable. Add a synthetic WAV file at tests/example_audio.wav before running the diagnostic.",
+        ) from exc
+
+
 def run_saved_stt_config_test(
     db: Session,
     actor: User,
     *,
     config_id: UUID,
     team_id: UUID | None = None,
-    sample_path: Path = DEFAULT_STT_SAMPLE_PATH,
+    sample_path: Path | None = None,
 ) -> dict[str, Any]:
+    sample_path = sample_path or DEFAULT_STT_SAMPLE_PATH
     config = get_stt_config(db, actor, config_id=config_id, team_id=team_id)
-    try:
-        audio_bytes = sample_path.read_bytes()
-    except OSError as exc:  # pragma: no cover
-        raise AppError(500, "stt_test_sample_unavailable", "Bundled STT test audio is unavailable") from exc
+    audio_bytes = _read_stt_test_sample(sample_path)
 
     measured_duration_seconds = normalized_wav_duration_seconds(audio_bytes=audio_bytes)
     started_at = monotonic()
@@ -2079,12 +2088,10 @@ def _verify_generic_stt_config_with_sample(
     config: TeamSttConfig,
     *,
     bearer_token: str | None,
-    sample_path: Path = DEFAULT_STT_SAMPLE_PATH,
+    sample_path: Path | None = None,
 ) -> None:
-    try:
-        audio_bytes = sample_path.read_bytes()
-    except OSError as exc:  # pragma: no cover
-        raise AppError(500, "stt_test_sample_unavailable", "Bundled STT test audio is unavailable") from exc
+    sample_path = sample_path or DEFAULT_STT_SAMPLE_PATH
+    audio_bytes = _read_stt_test_sample(sample_path)
 
     measured_duration_seconds = normalized_wav_duration_seconds(audio_bytes=audio_bytes)
     _transcribe_metered_audio(

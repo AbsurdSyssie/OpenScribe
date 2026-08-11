@@ -186,6 +186,8 @@ DEV_FORWARDED_ALLOW_IPS=<reverse-proxy-ip>
 
 PostgreSQL, Redis, and Vault remain loopback-bound unless Compose is deliberately changed and `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true` is set. Do not use wildcard forwarded-header trust while the origin is directly reachable.
 
+`DEV_FORWARDED_ALLOW_IPS` defaults to `127.0.0.1`. Set it to the exact reverse-proxy address only when the proxy is the sole path to the development server.
+
 For persistent Docker reverse-proxy configuration, use [docker.md](docker.md), not the host-development switches.
 
 ## Database reset

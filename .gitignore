@@ -32,11 +32,8 @@ opencode.jsonc
 celerybeat-schedule*
 encrypt_mfa.md
 
-AGENTS.md
-brief.md
-CONTEXT.md
-
-.codex/
+tests/example_audio.wav
+.codex
 .agents/
 .claude/
 .codebuddy/

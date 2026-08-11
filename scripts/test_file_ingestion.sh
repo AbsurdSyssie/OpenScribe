@@ -5,18 +5,19 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE_URL="${BASE_URL:-http://127.0.0.1:8080}"
 ORIGIN="${BASE_URL%/}"
 COOKIE_JAR="${COOKIE_JAR:-/tmp/openscribe_file_ingestion.cookies}"
-AUDIO_PATH="${1:-$ROOT_DIR/tests/MoreOrLess.wav}"
+AUDIO_PATH="${1:-$ROOT_DIR/tests/example_audio.wav}"
 EMAIL="${OPENSCRIBE_EMAIL:-}"
 PASSWORD="${OPENSCRIBE_PASSWORD:-}"
 TITLE="${OPENSCRIBE_TITLE:-Manual file ingestion test}"
 
-if [[ -z "$EMAIL" || -z "$PASSWORD" ]]; then
-  echo "Set OPENSCRIBE_EMAIL and OPENSCRIBE_PASSWORD before running this script." >&2
+if [[ ! -f "$AUDIO_PATH" ]]; then
+  echo "STT smoke-test audio is not available: $AUDIO_PATH" >&2
+  echo "Add a synthetic, non-patient WAV file at tests/example_audio.wav or pass its path as the first argument." >&2
   exit 1
 fi
 
-if [[ ! -f "$AUDIO_PATH" ]]; then
-  echo "Audio file not found: $AUDIO_PATH" >&2
+if [[ -z "$EMAIL" || -z "$PASSWORD" ]]; then
+  echo "Set OPENSCRIBE_EMAIL and OPENSCRIBE_PASSWORD before running this script." >&2
   exit 1
 fi
 

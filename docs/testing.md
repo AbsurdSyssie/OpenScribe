@@ -137,10 +137,10 @@ With a local app, worker, Beat, STT configuration, and test user available:
 ```bash
 OPENSCRIBE_EMAIL='user@example.com' \
 OPENSCRIBE_PASSWORD='password-1' \
-./scripts/test_file_ingestion.sh tests/MoreOrLess.wav
+./scripts/test_file_ingestion.sh tests/example_audio.wav
 ```
 
-The script uses the real auth flow, prompts for TOTP only when required, starts a whole-file transcript, uploads the sample through the JSON API, and prints bounded response metadata. Do not use a real patient recording as a smoke-test fixture.
+Before running it, add a synthetic, non-patient WAV file at `tests/example_audio.wav`; that local file is ignored by Git. The script stops before login or upload when the file is missing. It uses the real auth flow, prompts for TOTP only when required, starts a whole-file transcript, uploads the sample through the JSON API, and prints bounded response metadata. Do not use a real patient recording as a smoke-test fixture.
 
 ## Persistent Docker smoke workflow
 

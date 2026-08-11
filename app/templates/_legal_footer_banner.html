@@ -11,6 +11,13 @@ request.state.legal_cookie_notice_version is defined else 'unpublished' %} {% if
 <footer class="operator-legal-footer" aria-label="Operator legal information">
   {% for link in legal_links %}<a href="{{ link.href }}">{{ link.label }}</a>{%
   endfor %}
+  <a href="{{ source_code_url() }}">Source code</a>
+  <span class="operator-legal-footer__release">Release {{ app_release() }}</span>
+</footer>
+{% else %}
+<footer class="operator-legal-footer" aria-label="OpenScribe legal information">
+  <a href="{{ source_code_url() }}">Source code</a>
+  <span class="operator-legal-footer__release">Release {{ app_release() }}</span>
 </footer>
 {% endif %}
 <section

@@ -1060,7 +1060,7 @@ def test_leader_can_review_only_own_team_requests_and_approve_them(client, make_
     assert approved.json()["team_id"] == str(team.id)
 
 
-def test_system_admin_can_provision_and_read_team_stt_configs_without_secret_reveal(client, db_session, make_team, make_user, monkeypatch):
+def test_system_admin_can_provision_and_read_team_stt_configs_without_secret_reveal(client, db_session, make_team, make_user, monkeypatch, stt_test_sample):
     team = make_team(name="Clinic North")
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
     monkeypatch.setattr("app.services.stt.httpx.stream", lambda *args, **kwargs: FakeHttpxResponse({"text": "sample transcript"}))
@@ -1712,7 +1712,7 @@ def test_stt_config_confirmed_duplicate_can_proceed(client, db_session, make_tea
     assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.label == "Duplicate STT")) is not None
 
 
-def test_stt_config_invalid_first_add_removes_db_row_before_vault_cleanup(client, db_session, make_team, make_user, monkeypatch):
+def test_stt_config_invalid_first_add_removes_db_row_before_vault_cleanup(client, db_session, make_team, make_user, monkeypatch, stt_test_sample):
     team = make_team(name="Clinic North")
     make_user(email="admin-invalid-stt@example.com", password="password-1", is_system_admin=True)
     events: list[str] = []
@@ -2031,7 +2031,7 @@ def test_system_admin_can_explicitly_remove_saved_stt_secret(client, db_session,
     assert_provider_cleanup_job(db_session, secret_ref=old_secret_ref, kind=ProviderSecretCleanupKind.stt)
 
 
-def test_generic_stt_save_with_token_tests_saved_contract_not_openapi_discovery(client, db_session, make_team, make_user, monkeypatch):
+def test_generic_stt_save_with_token_tests_saved_contract_not_openapi_discovery(client, db_session, make_team, make_user, monkeypatch, stt_test_sample):
     team = make_team(name="Clinic North")
     make_user(email="admin-generic-stt-save@example.com", password="password-1", is_system_admin=True)
     calls: dict[str, object] = {}
@@ -2082,7 +2082,7 @@ def test_generic_stt_save_with_token_tests_saved_contract_not_openapi_discovery(
     assert persisted.inspection_metadata_json["sample_test"] == "passed"
 
 
-def test_deepgram_direct_save_forces_mip_opt_out_and_known_runtime(client, db_session, make_team, make_user, monkeypatch):
+def test_deepgram_direct_save_forces_mip_opt_out_and_known_runtime(client, db_session, make_team, make_user, monkeypatch, stt_test_sample):
     team = make_team(name="Clinic Deepgram Direct")
     make_user(email="admin-deepgram-direct@example.com", password="password-1", is_system_admin=True)
     calls: dict[str, object] = {}
@@ -2203,6 +2203,7 @@ def test_generic_stt_bad_replacement_token_preserves_existing_config_and_selecti
     make_stt_config,
     make_stt_selection,
     monkeypatch,
+    stt_test_sample,
 ):
     team = make_team(name="Clinic Generic Replacement")
     admin = make_user(email="admin-generic-stt-replace@example.com", password="password-1", is_system_admin=True)
@@ -2269,6 +2270,7 @@ def test_openai_compatible_stt_bad_replacement_token_preserves_existing_config_a
     make_stt_config,
     make_stt_selection,
     monkeypatch,
+    stt_test_sample,
 ):
     team = make_team(name="Clinic OpenAI Compatible Replacement")
     admin = make_user(email="admin-openai-compatible-stt-replace@example.com", password="password-1", is_system_admin=True)
@@ -2447,12 +2449,25 @@ def test_system_admin_can_inspect_generic_stt_dynamic_field_names(client, make_t
     assert body["response_text_path"] == "transcript"
 
 
-def test_system_admin_can_test_saved_stt_config_with_bundled_sample(
+@pytest.fixture
+def stt_test_sample(tmp_path, monkeypatch):
+    sample_path = tmp_path / "example_audio.wav"
+    with wave.open(str(sample_path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16_000)
+        wav_file.writeframes(b"\x00\x00" * 160)
+    monkeypatch.setattr("app.services.stt.DEFAULT_STT_SAMPLE_PATH", sample_path)
+    return sample_path
+
+
+def test_system_admin_can_test_saved_stt_config_with_local_sample(
     db_session,
     make_team,
     make_user,
     make_stt_config,
     monkeypatch,
+    stt_test_sample,
 ):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
@@ -2473,11 +2488,11 @@ def test_system_admin_can_test_saved_stt_config_with_bundled_sample(
         lambda **kwargs: "more or less, I suppose",
     )
 
-    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id)
+    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id, sample_path=stt_test_sample)
 
     assert result["success"] is True
     assert result["health_status"] == "skipped"
-    assert result["sample_filename"] == "MoreOrLess.wav"
+    assert result["sample_filename"] == "example_audio.wav"
     assert result["transcribe_url"] == "http://127.0.0.1:7000/v1/audio/transcriptions"
     assert result["model_name"] == "whisper-1"
     assert result["language"] == "en"
@@ -2491,12 +2506,39 @@ def test_system_admin_can_test_saved_stt_config_with_bundled_sample(
     assert attempt.outcome is AttemptOutcome.succeeded
 
 
+def test_saved_stt_test_requires_local_sample_before_credentials_or_provider_dispatch(
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    monkeypatch,
+):
+    team = make_team(name="Missing sample clinic")
+    admin = make_user(email="missing-sample-admin@example.com", password="password-1", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin, base_url="http://127.0.0.1:7000")
+    credential_reads: list[bool] = []
+    provider_calls: list[bool] = []
+    monkeypatch.setattr("app.services.stt._read_saved_stt_bearer_token", lambda **kwargs: credential_reads.append(True))
+    monkeypatch.setattr("app.services.stt._transcribe_via_http", lambda **kwargs: provider_calls.append(True))
+
+    with pytest.raises(AppError) as raised:
+        run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id)
+
+    assert raised.value.status_code == 503
+    assert raised.value.code == "stt_test_sample_unavailable"
+    assert "tests/example_audio.wav" in raised.value.message
+    assert credential_reads == []
+    assert provider_calls == []
+    assert db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.team_id == team.id)) is None
+
+
 def test_system_admin_can_test_saved_openai_stt_config_without_generic_fields(
     db_session,
     make_team,
     make_user,
     make_stt_config,
     monkeypatch,
+    stt_test_sample,
 ):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin-openai-stt-test@example.com", password="password-1", is_system_admin=True)
@@ -2521,7 +2563,7 @@ def test_system_admin_can_test_saved_openai_stt_config_without_generic_fields(
 
     monkeypatch.setattr("app.services.stt._transcribe_via_openai_cloud", fake_openai_transcribe)
 
-    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id)
+    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id, sample_path=stt_test_sample)
 
     assert result["success"] is True
     assert result["transcript_text"] == "openai transcript"
@@ -2536,6 +2578,7 @@ def test_system_admin_can_test_saved_generic_stt_config_with_dynamic_fields(
     make_user,
     make_stt_config,
     monkeypatch,
+    stt_test_sample,
 ):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin-generic-stt-test@example.com", password="password-1", is_system_admin=True)
@@ -2564,7 +2607,7 @@ def test_system_admin_can_test_saved_generic_stt_config_with_dynamic_fields(
 
     monkeypatch.setattr("app.services.stt._transcribe_via_http", fake_http_transcribe)
 
-    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id)
+    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id, sample_path=stt_test_sample)
 
     assert result["success"] is True
     assert result["transcript_text"] == "generic transcript"
@@ -2579,6 +2622,7 @@ def test_system_admin_saved_test_uses_elevenlabs_runtime_path(
     make_user,
     make_stt_config,
     monkeypatch,
+    stt_test_sample,
 ):
     team = make_team(name="Clinic ElevenLabs Test")
     admin = make_user(email="admin-elevenlabs-stt-test@example.com", password="password-1", is_system_admin=True)
@@ -2607,7 +2651,7 @@ def test_system_admin_saved_test_uses_elevenlabs_runtime_path(
 
     monkeypatch.setattr("app.services.stt.httpx.stream", fake_post)
 
-    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id)
+    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id, sample_path=stt_test_sample)
 
     assert result["success"] is True
     assert result["transcript_text"] == "elevenlabs transcript"
@@ -2615,12 +2659,12 @@ def test_system_admin_saved_test_uses_elevenlabs_runtime_path(
     assert captured["headers"] == {"xi-api-key": "el-secret"}
     assert "Authorization" not in captured["headers"]
     assert captured["data"] == {"model_id": "scribe_v2"}
-    assert captured["files"]["file"][0] == "MoreOrLess.wav"
+    assert captured["files"]["file"][0] == "example_audio.wav"
 
     config.language = "en"
     db_session.add(config)
     db_session.commit()
-    run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id)
+    run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id, sample_path=stt_test_sample)
     assert captured["data"] == {"model_id": "scribe_v2", "language_code": "en"}
 
 
@@ -2630,6 +2674,7 @@ def test_system_admin_stt_test_result_surfaces_provider_failure_without_secret_r
     make_user,
     make_stt_config,
     monkeypatch,
+    stt_test_sample,
 ):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
@@ -2646,7 +2691,7 @@ def test_system_admin_stt_test_result_surfaces_provider_failure_without_secret_r
 
     monkeypatch.setattr("app.services.stt._transcribe_via_http", raise_failure)
 
-    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id)
+    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id, sample_path=stt_test_sample)
 
     assert result["success"] is False
     assert result["health_status"] == "skipped"
@@ -20558,7 +20603,7 @@ def test_stt_schema_rejects_credential_and_request_target_components(base_url):
     ).base_url == "http://127.0.0.1:9000"
 
 
-def test_saved_stt_test_sanitizes_legacy_url_before_returning_it(db_session, make_team, make_user, make_stt_config, monkeypatch):
+def test_saved_stt_test_sanitizes_legacy_url_before_returning_it(db_session, make_team, make_user, make_stt_config, monkeypatch, stt_test_sample):
     team = make_team(name="Legacy STT URL")
     admin = make_user(email="legacy-url-admin@example.com", is_system_admin=True)
     config = make_stt_config(team=team, actor=admin, base_url="http://127.0.0.1:7000", transcribe_path="/transcribe")
@@ -20568,7 +20613,7 @@ def test_saved_stt_test_sanitizes_legacy_url_before_returning_it(db_session, mak
     db_session.commit()
     monkeypatch.setattr("app.services.stt._transcribe_via_http", lambda **kwargs: "ok")
 
-    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id)
+    result = run_saved_stt_config_test(db_session, admin, config_id=config.id, team_id=team.id, sample_path=stt_test_sample)
 
     assert result["success"] is True
     assert result["transcribe_url"] == "http://127.0.0.1:7000/transcribe"

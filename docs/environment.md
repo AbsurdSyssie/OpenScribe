@@ -23,6 +23,8 @@ The persistent Compose runtime replaces only addresses that must use Docker serv
 | `APP_HOST` | `127.0.0.1` in host tooling | Host bind used by `start-dev.sh`. Compose binds the container internally to `0.0.0.0`. |
 | `APP_PORT` | `8080` | Host development port and Docker-published port. The application container listens on internal port `8080`. |
 | `APP_PUBLIC_URL` | `http://127.0.0.1:8080` in local configuration | Canonical browser URL used in generated links and transactional email. |
+| `APP_SOURCE_CODE_URL` | `https://github.com/AbsurdSyssie/OpenScribe` | Source-code link shown in every application footer. Set it to complete corresponding source for the exact deployed release, including deployment modifications. Only absolute `http` or `https` URLs are used; an invalid value falls back to the default. |
+| `APP_RELEASE` | Git commit when available; otherwise `unversioned build` | Text shown beside the source-code link. Set this to the immutable release identifier deployed by your build process. |
 | `ALLOWED_HOSTS` | unset | Comma-separated hostnames accepted by Trusted Host middleware. In production, use exact public hosts only; wildcards are rejected. If unset, production uses the hostname from `APP_PUBLIC_URL`; startup fails if it cannot derive one. Non-production allows all hosts for local tooling. |
 | `APP_HEALTHCHECK_HOST` | `127.0.0.1` locally | Host header sent by the Compose health check. In production it must equal one exact `ALLOWED_HOSTS` entry, normally the canonical public hostname. It does not create an additional allowed host. |
 | `BOOTSTRAP_ADMIN_TOKEN` | unset | Deployment credential required to create the first system administrator in production. Keep it in deployment secret storage, not source control. Production hides/disables bootstrap when it is unset. |
@@ -171,7 +173,7 @@ These variables are consumed by `start-dev.sh` and are not application runtime p
 - `DEV_START_CELERY`
 - `DEV_START_BRAVE`
 - `DEV_ALLOW_REMOTE_BIND`
-- `DEV_FORWARDED_ALLOW_IPS`
+- `DEV_FORWARDED_ALLOW_IPS` (defaults to `127.0.0.1`; set an exact proxy address only when the proxy is the sole path to the host server)
 - `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE`
 - `DEV_RESTART_EXISTING_PROCESSES`
 - `DEV_PURGE_CELERY_QUEUE`

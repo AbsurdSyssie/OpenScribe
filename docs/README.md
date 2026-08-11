@@ -14,12 +14,13 @@ These documents are maintained as descriptions of implemented behavior or an exp
 | Local evaluator demo | [local-demo.md](local-demo.md) |
 | Persistent single-host Docker runtime | [docker.md](docker.md) |
 | Environment variables | [environment.md](environment.md) |
+| Licence, source offer, and browser asset notices | [`LICENSE`](../LICENSE) and [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) |
 | Test strategy | [testing.md](testing.md) |
 | Database test behavior | [dbtesting.md](dbtesting.md) |
 | Persistence architecture | [DatabasePlan.md](DatabasePlan.md) |
 | Frontend styling architecture | [styling_condensation_plan.md](styling_condensation_plan.md) |
 | Current focused backlog | [feature_todo.md](feature_todo.md) |
-| Contributor rules | [`AGENTS.md`](../AGENTS.md) and [`brief.md`](../brief.md) |
+| Contributor rules | [`AGENTS.md`](../AGENTS.md); [`brief.md`](../brief.md) is a contributor brief, not an operational source of truth. |
 
 ### Security, identity, and API
 
@@ -28,6 +29,7 @@ These documents are maintained as descriptions of implemented behavior or an exp
 | Authentication and access control | [auth.md](auth.md) |
 | Account recovery | [account_recovery_brief.md](account_recovery_brief.md) |
 | Security model | [security.md](security.md) |
+| Clinical safety | [SAFETY.md](../SAFETY.md) |
 | Cookies and browser-storage inventory | [cookies-browser-storage.md](cookies-browser-storage.md) |
 | Operator legal content and retention | [security.md#operator-legal-content](security.md#operator-legal-content) |
 | XSS probe and focused checks | [security-xss.md](security-xss.md) |

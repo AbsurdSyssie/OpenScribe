@@ -47,6 +47,14 @@ Transcripts, dictation, notes, and other designated clinical content are
 encrypted with per-user keys. Provider credentials are held separately in
 Vault.
 
+### Clinical safety
+
+OpenScribe creates clinician-reviewed drafts from supplied information. It does
+not diagnose, triage, recommend treatment, make clinical decisions, or act
+autonomously. A clinician must review and approve every draft before it is
+committed to the clinical record. Read [SAFETY.md](SAFETY.md) for the intended
+purpose, safety status, main hazards, and deployment responsibilities.
+
 ## Documentation
 
 Start with the [documentation index](docs/README.md), which separates maintained current references from implemented design history, future roadmaps, and dated compliance evidence.
@@ -59,6 +67,7 @@ Primary references:
 - environment variables: [docs/environment.md](docs/environment.md)
 - authentication and account recovery: [docs/auth.md](docs/auth.md), [docs/account_recovery_brief.md](docs/account_recovery_brief.md)
 - security and encryption: [docs/security.md](docs/security.md), [docs/dek-kek-production-plan.md](docs/dek-kek-production-plan.md)
+- clinical safety: [SAFETY.md](SAFETY.md)
 - API and persistence contracts: [docs/api.md](docs/api.md), [docs/DatabasePlan.md](docs/DatabasePlan.md)
 - permanent user workspace and Scribe: [docs/workspace.md](docs/workspace.md), [docs/transcript-capture.md](docs/transcript-capture.md)
 - STT/LLM provider configuration: [docs/stt-config.md](docs/stt-config.md), [docs/llm-providers.md](docs/llm-providers.md)
@@ -66,6 +75,14 @@ Primary references:
 - testing and database-test safety: [docs/testing.md](docs/testing.md), [docs/dbtesting.md](docs/dbtesting.md)
 - role-based product tutorials: [docs/tutorials/README.md](docs/tutorials/README.md)
 - current focused backlog: [docs/feature_todo.md](docs/feature_todo.md)
+
+## Licence and source code
+
+Copyright © 2026 MemRe Ltd.
+
+OpenScribe is licensed under the GNU Affero General Public License, version 3 only (`AGPL-3.0-only`). Read the full licence in [LICENSE](LICENSE). The running application always links to its configured source offer and release identifier in its footer. Operators must set `APP_SOURCE_CODE_URL` to complete corresponding source for the deployed release, including their changes, and set `APP_RELEASE` to that release's immutable identifier. See [docs/environment.md](docs/environment.md).
+
+Third-party browser asset provenance, checksums, and licence locations are recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Primary local URLs
 

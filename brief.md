@@ -1,5 +1,7 @@
 # OpenScribe Contributor Brief
 
+> Status: contributor guidance, not an operational source of truth. Use `AGENTS.md`, implementation, focused tests, runtime configuration, and the maintained documents listed in `docs/README.md` for current behavior.
+
 ## Source of truth
 
 Use [`AGENTS.md`](AGENTS.md) as the repository-wide contributor rule set and [`docs/README.md`](docs/README.md) as the documentation index.

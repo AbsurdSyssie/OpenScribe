@@ -188,12 +188,12 @@ System administrators can run a saved-config diagnostic from the admin workspace
 
 - reads saved metadata and the Vault-backed credential;
 - performs an adapter-appropriate health check when applicable;
-- submits the bundled `tests/MoreOrLess.wav` sample;
+- submits the local `tests/example_audio.wav` sample;
 - reports bounded status, endpoint/model metadata, duration/size, and either sample transcript text or a sanitized provider error;
 - does not create a user transcript or ingestion job;
 - does not reveal the credential.
 
-Returned sample transcript text is test-fixture output, not user content, but it should still be handled as diagnostic data and not copied into public logs/issues unnecessarily.
+Before running the diagnostic, add a synthetic, non-patient WAV file at `tests/example_audio.wav`; Git ignores this local file. If it is missing, the diagnostic fails before it reads credentials or calls the provider. Returned sample transcript text is test-fixture output, not user content, but it should still be handled as diagnostic data and not copied into public logs/issues unnecessarily.
 
 ## API boundary
 

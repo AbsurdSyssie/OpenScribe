@@ -62,9 +62,15 @@
 
 .operator-legal-footer {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 1rem;
   padding-block: 1rem 2rem;
+}
+
+.operator-legal-footer__release {
+  color: #536158;
+  font-size: 0.875rem;
 }
 
 .browser-storage-notice {

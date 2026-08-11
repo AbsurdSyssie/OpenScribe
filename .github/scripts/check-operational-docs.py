@@ -12,6 +12,7 @@ MAINTAINED_DOCS: tuple[Path, ...] = tuple(
     ROOT / path
     for path in (
         "README.md",
+        "SAFETY.md",
         "AGENTS.md",
         "brief.md",
         "CONTEXT.md",

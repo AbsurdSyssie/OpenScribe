@@ -1,4 +1,4 @@
-import { generationLoadingHtml } from './documents.js?v=20260718-note-pill-datetime';
+import { generationLoadingHtml } from './documents.js?v=20260810-followups-accessibility';
 
 export function createStructuredEditor({
   dom,
@@ -35,7 +35,7 @@ export function createStructuredEditor({
   let copyReviewViewportCheckScheduled = false;
   let copyReviewRefreshScheduled = false;
 
-  const noteCopyStatusDefault = 'Select the note lines you want to copy.';
+  const noteCopyStatusDefault = '';
 
   const autosizeStatementEditor = (textarea) => {
     if (!textarea) return;

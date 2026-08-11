@@ -16,7 +16,7 @@ from app.models import (
     User,
     utcnow,
 )
-from app.services.security_audit import record_security_event
+from app.services.security_audit import add_security_event
 
 
 SECURITY_AUDIT_RETENTION_MONTHS = 6
@@ -111,24 +111,27 @@ def place_security_audit_hold(
     )
     db.add(hold)
     try:
+        add_security_event(
+            db,
+            action="security_audit_hold_placed",
+            actor=actor,
+            details={
+                "category": "audit_retention",
+                "outcome": "success",
+                "object_type": "security_audit_event",
+                "object_id": str(event.id),
+                "hold_reason": reason.value,
+                "hold_expires_at": expires_at.isoformat(),
+            },
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise AppError(409, "conflict", "This security-audit event already has an active hold") from exc
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(hold)
-    record_security_event(
-        db,
-        action="security_audit_hold_placed",
-        actor=actor,
-        details={
-            "category": "audit_retention",
-            "outcome": "success",
-            "object_type": "security_audit_event",
-            "object_id": str(event.id),
-            "hold_reason": reason.value,
-            "hold_expires_at": expires_at.isoformat(),
-        },
-    )
     return hold
 
 
@@ -161,22 +164,26 @@ def renew_security_audit_hold(
     hold.expires_at = expires_at
     hold.renewal_count += 1
     db.add(hold)
-    db.commit()
+    try:
+        add_security_event(
+            db,
+            action="security_audit_hold_renewed",
+            actor=actor,
+            details={
+                "category": "audit_retention",
+                "outcome": "success",
+                "object_type": "security_audit_event",
+                "object_id": str(hold.security_audit_event_id),
+                "hold_reason": reason.value,
+                "hold_expires_at": expires_at.isoformat(),
+                "renewal_count": hold.renewal_count,
+            },
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(hold)
-    record_security_event(
-        db,
-        action="security_audit_hold_renewed",
-        actor=actor,
-        details={
-            "category": "audit_retention",
-            "outcome": "success",
-            "object_type": "security_audit_event",
-            "object_id": str(hold.security_audit_event_id),
-            "hold_reason": reason.value,
-            "hold_expires_at": expires_at.isoformat(),
-            "renewal_count": hold.renewal_count,
-        },
-    )
     return hold
 
 
@@ -199,19 +206,23 @@ def release_security_audit_hold(
     hold.released_at = released_at
     hold.released_by_user_id = actor.id
     db.add(hold)
-    db.commit()
+    try:
+        add_security_event(
+            db,
+            action="security_audit_hold_released",
+            actor=actor,
+            details={
+                "category": "audit_retention",
+                "outcome": "success",
+                "object_type": "security_audit_event",
+                "object_id": str(hold.security_audit_event_id),
+            },
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(hold)
-    record_security_event(
-        db,
-        action="security_audit_hold_released",
-        actor=actor,
-        details={
-            "category": "audit_retention",
-            "outcome": "success",
-            "object_type": "security_audit_event",
-            "object_id": str(hold.security_audit_event_id),
-        },
-    )
     return hold
 
 
@@ -265,19 +276,23 @@ def expire_security_audit_events(
     )
     for event in events:
         db.delete(event)
-    db.commit()
-    if events or expired_holds:
-        record_security_event(
-            db,
-            action="security_audit_retention_processed",
-            details={
-                "category": "audit_retention",
-                "outcome": "success",
-                "deleted_count": len(events),
-                "expired_hold_count": len(expired_holds),
-                "retention_months": SECURITY_AUDIT_RETENTION_MONTHS,
-            },
-        )
+    try:
+        if events or expired_holds:
+            add_security_event(
+                db,
+                action="security_audit_retention_processed",
+                details={
+                    "category": "audit_retention",
+                    "outcome": "success",
+                    "deleted_count": len(events),
+                    "expired_hold_count": len(expired_holds),
+                    "retention_months": SECURITY_AUDIT_RETENTION_MONTHS,
+                },
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return len(events)
 
 

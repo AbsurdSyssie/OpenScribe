@@ -97,6 +97,7 @@ Open `http://127.0.0.1:8080`. Read [docs/local-demo.md](docs/local-demo.md) for 
 
 The demo and fresh full installs share the built-in Template and Quick Action
 catalogue. `Daily Driver` is the starting Template until a user chooses another.
+In Scribe, the Follow Ups composer accepts an optional Quick Action plus task-specific context and keeps each consultation's drafts in a searchable, collapsible history rail.
 
 For host-based development with live reload:
 

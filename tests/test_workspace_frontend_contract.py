@@ -89,13 +89,13 @@ def test_workspace_library_partials_use_canonical_urls_and_return_view():
 
 def test_scribe_template_navigation_does_not_reintroduce_home_landing():
     workspace = read("app/templates/transcribe/_workspace.html")
+    sidebar = read("app/templates/workspace/_sidebar.html")
     layout = read("app/static/js/transcribe/layout.js")
-    assert 'href="/workspace/library/templates"' in workspace
+    assert 'href="/workspace/library/templates"' in sidebar
+    assert "data-workspace-settings-link" not in workspace
     assert 'data-settings-url="/workspace/library/templates?scope=' in workspace
     assert "/home?tab=templates" not in layout
     assert "/settings?tab=quick-actions" not in layout
-    assert "/workspace/library/templates" in layout
-    assert "/workspace/library/quick-actions" in layout
 
 
 def test_settings_partial_post_return_metadata_is_canonical():

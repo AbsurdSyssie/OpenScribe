@@ -1675,6 +1675,8 @@ class GeneratedDocument(Base):
     structured_context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     generation_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     working_note_mode_snapshot: Mapped[TranscriptWorkingNoteMode | None] = mapped_column(Enum(TranscriptWorkingNoteMode), nullable=True)
+    dictation_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    generation_steering_text_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     freeform_working_note_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     structured_working_note_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     structured_section_definitions_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)

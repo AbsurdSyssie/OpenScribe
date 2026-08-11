@@ -81,6 +81,7 @@ from .schemas import (
     GenerateFollowupRequest,
     GenerateQuickActionRequest,
     GenerateTemplateOutputRequest,
+    RegenerateGeneratedDocumentRequest,
     GenericMessageResponse,
     LlmConfigDraftCreate,
     LlmConfigDraftCreateResult,
@@ -175,6 +176,7 @@ from .services.templates import (
     generated_document_section_text as generated_document_section_text_service,
     generated_document_text as generated_document_text_service,
     queue_quick_action_generation as queue_quick_action_generation_service,
+    queue_generated_document_regeneration as queue_generated_document_regeneration_service,
     queue_document_generation_from_template as queue_document_generation_from_template_service,
     queue_followup_generation as queue_followup_generation_service,
     upsert_personal_quick_action as upsert_personal_quick_action_service,
@@ -879,6 +881,7 @@ def _set_cache_headers(request: Request, response: Response) -> None:
 async def add_security_headers(request: Request, call_next):
     request.state.csp_nonce = new_csp_nonce()
     request.state.legal_footer_links = ()
+    request.state.legal_cookie_notice_version = "unpublished"
     request.state.operator_legal_profile = None
     path = request.url.path
     if (
@@ -887,12 +890,22 @@ async def add_security_headers(request: Request, call_next):
         and not path.startswith("/static/")
         and path not in {"/health", "/robots.txt", "/sitemap.xml", "/.well-known/security.txt"}
     ):
-        from app.services.legal_content import get_operator_legal_profile, published_legal_links
+        from app.services.legal_content import (
+            get_operator_legal_profile,
+            published_legal_footer_state,
+        )
 
         session_factory = getattr(request.app.state, "db_session_factory", SessionLocal)
         with session_factory() as legal_db:
-            request.state.legal_footer_links = published_legal_links(legal_db)
+            request.state.legal_footer_links, cookie_notice_version = published_legal_footer_state(legal_db)
             request.state.operator_legal_profile = get_operator_legal_profile(legal_db)
+            cookie_token = str(cookie_notice_version) if cookie_notice_version is not None else "unpublished"
+            profile_token = (
+                str(request.state.operator_legal_profile.revision)
+                if request.state.operator_legal_profile is not None
+                else "unpublished"
+            )
+            request.state.legal_cookie_notice_version = f"{cookie_token}:{profile_token}"
     response = await call_next(request)
     is_https = _request_is_https(request)
 

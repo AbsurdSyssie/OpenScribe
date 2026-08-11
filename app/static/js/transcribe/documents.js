@@ -10,10 +10,24 @@ export const generationLoadingHtml = ({
       <div class="note-generation-loading__dot-wrap"><div class="note-generation-loading__dot"></div></div>
       <div class="note-generation-loading__star">&#10022;</div>
     </div>
-    <h2>Generating your ${label}</h2>
+    <h2>${label === 'follow-up' ? 'Creating' : 'Generating'} your ${label}</h2>
     <p>${message}</p>
   </div>
 `;
+
+export const formatWorkspaceCreatedAt = (value) => {
+  if (!value) return '';
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  return new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit',
+    month: '2-digit',
+    year: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(new Date(timestamp));
+};
 
 const structuredDefinitionsSnapshot = (definitions = []) => {
   const sections = (Array.isArray(definitions) ? definitions : [])
@@ -89,7 +103,6 @@ export function createDocumentNavigator({
     outputRedactionSlot,
     followupRedactionSlot,
     outputLlmRequestSlot,
-    followupLlmRequestSlot,
   } = dom;
   const {
     escapeHtml,
@@ -110,23 +123,19 @@ export function createDocumentNavigator({
 
   const noteDocumentLabel = (document) => document?.title || document?.source_template_name || "Untitled note";
 
-  const followupDocumentLabel = (document) => (
-    document?.title || document?.source_quick_action_name || document?.follow_up_prompt_text || (
-      document?.generator_type === "quick_action" ? "Quick action" : "Follow-up"
-    )
-  );
-
-  const formatNoteCreatedAt = (value) => {
-    if (!value) return '';
-    const timestamp = Date.parse(value);
-    if (!Number.isFinite(timestamp)) return value;
-    const date = new Date(timestamp);
-    const pad = (part) => String(part).padStart(2, '0');
-    return `${String(date.getFullYear()).slice(-2)}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const followupDocumentLabel = (document) => {
+    const title = String(document?.title || '');
+    if (document?.generator_type === 'followup' && title.startsWith('Follow-up:')) {
+      return 'Custom follow-up';
+    }
+    if (document?.generator_type === 'quick_action' && title.startsWith('Quick action:') && document?.source_quick_action_name) {
+      return document.source_quick_action_name;
+    }
+    return title || document?.source_quick_action_name || 'Custom follow-up';
   };
 
   noteSelector?.querySelectorAll?.('[data-note-created-at]').forEach((node) => {
-    node.textContent = formatNoteCreatedAt(node.dataset.noteCreatedAt);
+    node.textContent = formatWorkspaceCreatedAt(node.dataset.noteCreatedAt);
   });
 
   const truncateSwitcherLabel = (value, maxWords = 4) => {
@@ -187,7 +196,7 @@ export function createDocumentNavigator({
       button.dataset.documentKind = kind;
       const label = item.kind === "working_note" ? "Working note" : (kind === "note" ? noteDocumentLabel(item) : followupDocumentLabel(item));
       button.title = label;
-      const meta = item.kind === "working_note" ? "Your own notes used as context" : `${escapeHtml(item.status || "")} · ${escapeHtml(formatNoteCreatedAt(item.created_at))}`;
+      const meta = item.kind === "working_note" ? "Your own notes used as context" : `${escapeHtml(item.status || "")} · ${escapeHtml(formatWorkspaceCreatedAt(item.created_at))}`;
       button.innerHTML = `
         <span class="document-switcher-label">${escapeHtml(truncateSwitcherLabel(label))}</span>
         <span class="document-switcher-meta">${meta}</span>
@@ -264,7 +273,7 @@ export function createDocumentNavigator({
             <div class="text-sm font-medium text-ink">${escapeHtml(noteDocumentLabel(item))}</div>
             <div class="text-xs text-slate mt-1">${escapeHtml(item.source_template_name || "Note layout output")} · ${escapeHtml(item.model_used || "model not shown")}</div>
           </div>
-          <div class="text-xs text-slate text-right">${escapeHtml(item.status || "")}<br>${escapeHtml(formatNoteCreatedAt(item.created_at))}</div>
+          <div class="text-xs text-slate text-right">${escapeHtml(item.status || "")}<br>${escapeHtml(formatWorkspaceCreatedAt(item.created_at))}</div>
         </div>
       `;
       noteHistory.appendChild(card);
@@ -275,25 +284,35 @@ export function createDocumentNavigator({
     if (!followupHistory) return;
     followupHistory.innerHTML = "";
     if (!documents.length) {
-      followupHistory.innerHTML = '<div class="followup-empty-v2">No follow-ups for this transcript yet.</div>';
+      followupHistory.innerHTML = '<div class="followup-empty-v2">No follow-ups yet.</div><div class="followup-empty-v2" data-followup-history-no-results hidden>No follow-ups match your search.</div>';
       refreshIcons?.(followupHistory);
+      window.document.dispatchEvent(new window.CustomEvent('transcribe:followup-history-rendered'));
       return;
     }
     documents.forEach((item) => {
-      const card = window.document.createElement("button");
-      card.type = "button";
-      card.className = `followup-recent-item-v2${item.id === selectedId ? " is-selected" : ""}`;
+      const card = window.document.createElement("div");
+      card.className = `followup-history-item-v3${item.id === selectedId ? " is-selected" : ""}`;
       card.dataset.documentId = item.id;
       card.dataset.documentKind = "followup";
       const title = followupDocumentLabel(item);
-      const detail = item.follow_up_prompt_text || item.source_quick_action_name || "";
+      card.dataset.followupSearchText = `${title} ${item.source_quick_action_name || ''}`;
       card.innerHTML = `
-        <span>${escapeHtml(title)}${detail && detail !== title ? `<small>${escapeHtml(detail)}</small>` : ""}</span>
-        <span>${escapeHtml(item.created_at || "")} <i data-lucide="chevron-right"></i></span>
+        <button type="button" class="followup-history-item-v3__select" data-followup-history-select ${item.id === selectedId ? 'aria-current="true"' : ''} aria-label="Open ${escapeHtml(title)}, created ${escapeHtml(formatWorkspaceCreatedAt(item.created_at))}">
+          <span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(formatWorkspaceCreatedAt(item.created_at))}</small></span>
+        </button>
+        <details class="followup-history-menu-v3" data-followup-history-menu>
+          <summary aria-label="More actions for ${escapeHtml(title)}" aria-haspopup="menu" aria-expanded="false" title="More actions"><i data-lucide="ellipsis-vertical" aria-hidden="true"></i></summary>
+          <div role="menu">
+            <button type="button" role="menuitem" data-followup-copy>Copy</button>
+            <button type="button" role="menuitem" class="followup-history-menu-v3__delete" data-followup-delete data-generated-document-id="${escapeHtml(item.id || '')}">Delete</button>
+          </div>
+        </details>
       `;
       followupHistory.appendChild(card);
     });
+    followupHistory.insertAdjacentHTML('beforeend', '<div class="followup-empty-v2" data-followup-history-no-results hidden>No follow-ups match your search.</div>');
     refreshIcons?.(followupHistory);
+    window.document.dispatchEvent(new window.CustomEvent('transcribe:followup-history-rendered'));
   };
 
   const renderSelectedNote = ({ forcePreserveEditor = false } = {}) => {
@@ -320,7 +339,7 @@ export function createDocumentNavigator({
       noteMeta.textContent = selectedNote?.kind === "working_note"
         ? "Working note · Your own notes used as context for generation."
         : (selectedNote
-          ? `${noteDocumentLabel(selectedNote)} · ${selectedNote.model_used || "model not shown"} · ${selectedNote.status} · ${selectedNote.hallucination_check_bucket || "not_applicable"} · ${formatNoteCreatedAt(selectedNote.created_at)}`
+          ? `${noteDocumentLabel(selectedNote)} · ${selectedNote.model_used || "model not shown"} · ${selectedNote.status} · ${selectedNote.hallucination_check_bucket || "not_applicable"} · ${formatWorkspaceCreatedAt(selectedNote.created_at)}`
           : "No note yet.");
     }
     renderDocumentSelector({
@@ -352,7 +371,7 @@ export function createDocumentNavigator({
       }
     }
     if (followupOutputTitle && !preserveEditor) {
-      const title = selectedFollowup ? followupDocumentLabel(selectedFollowup) : "Generated follow-up";
+      const title = selectedFollowup ? followupDocumentLabel(selectedFollowup) : "Custom follow-up";
       if (followupOutputTitle instanceof window.HTMLInputElement || followupOutputTitle instanceof window.HTMLTextAreaElement) {
         followupOutputTitle.value = title;
         followupOutputTitle.disabled = selectedFollowup?.status !== "ready";
@@ -361,14 +380,13 @@ export function createDocumentNavigator({
       }
     }
     if (followupOutputSubtitle) {
-      const kind = selectedFollowup?.generator_type === "quick_action" ? "Quick action" : "Follow-up";
       followupOutputSubtitle.textContent = selectedFollowup
-        ? [kind, selectedFollowup.created_at || ""].filter(Boolean).join(", ")
-        : "Select or generate a follow-up";
+        ? (selectedFollowup.created_at ? `Created ${formatWorkspaceCreatedAt(selectedFollowup.created_at)}` : "Created")
+        : "No follow-up selected";
     }
     if (followupMeta) {
       followupMeta.textContent = selectedFollowup
-        ? `${selectedFollowup.model_used || "model not shown"} · ${selectedFollowup.status} · ${selectedFollowup.created_at}`
+        ? `${followupDocumentLabel(selectedFollowup)} · ${selectedFollowup.status} · ${formatWorkspaceCreatedAt(selectedFollowup.created_at)}`
         : "No follow-ups yet";
     }
     renderDocumentSelector({
@@ -380,7 +398,6 @@ export function createDocumentNavigator({
       kind: "followup",
     });
     renderFollowupHistory(state.workspaceFollowupDocuments, selectedFollowup?.id || null);
-    renderLlmRequestPanel(followupLlmRequestSlot, selectedFollowup);
     renderRedactionDebugPanel(followupRedactionSlot, selectedFollowup);
     dispatchLegacyWorkspaceSelection('followup', selectedFollowup);
   };
@@ -406,18 +423,19 @@ export function createDocumentNavigator({
     }
     const state = getState();
     if (state.selectedFollowupDocumentId === documentId) {
-      return;
+      return true;
     }
     if (hasPendingGeneratedFollowupEdits?.()) {
       const savedDocument = await persistFollowupEditsSilently?.();
       if (!savedDocument) {
-        return;
+        return false;
       }
     }
     clearFollowupEditorDirty?.();
     setState({ selectedFollowupDocumentId: documentId });
     renderSelectedFollowup();
     setTab("followups");
+    return true;
   };
 
   return {

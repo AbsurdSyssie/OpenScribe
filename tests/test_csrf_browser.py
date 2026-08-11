@@ -1,16 +1,29 @@
 import socket
 import threading
+from datetime import timedelta
 
 import pytest
 from sqlalchemy.orm import sessionmaker
 
 playwright_sync = pytest.importorskip("playwright.sync_api")
+expect = playwright_sync.expect
 
 pytestmark = pytest.mark.real_db_connections
 
 from app.db import get_db
 from app.main import app
-from app.models import TeamRole
+from app.models import (
+    GeneratedDocument,
+    GeneratedDocumentGeneratorType,
+    GeneratedDocumentStatus,
+    TeamRole,
+    TemplateMode,
+    Transcript,
+    TranscriptIngestionMode,
+    TranscriptStatus,
+    TranscriptVersion,
+    utcnow,
+)
 
 
 @pytest.fixture
@@ -104,6 +117,211 @@ def test_browser_transcribe_start_sends_csrf_header(live_server, make_team, make
         )
         if csrf_cookie_after != csrf_cookie_before:
             pytest.fail("Authenticated navigation rotated the per-session CSRF token")
+    finally:
+        browser.close()
+        playwright.stop()
+
+
+def test_followup_context_accepts_typed_input_when_generation_is_available(
+    client,
+    live_server,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+):
+    """The steering field must remain a usable text control, not just look enabled."""
+    team = make_team(name="Browser Follow-up Context Clinic")
+    admin = make_user(
+        email="browser-followup-context-admin@example.com",
+        password="password-1",
+        is_system_admin=True,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+    leader = make_user(
+        email="browser-followup-context-leader@example.com",
+        password="password-2",
+        team=team,
+        team_role=TeamRole.leader,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+    member = make_user(
+        email="browser-followup-context-member@example.com",
+        password="password-3",
+        team=team,
+        team_role=TeamRole.user,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Browser Follow-up LLM",
+        model_name="gpt-4o-mini",
+        available_models_json=["gpt-4o-mini"],
+    )
+    make_llm_selection(config=config, actor=leader, model_name_override="gpt-4o-mini")
+
+    client.post(
+        "/login",
+        data={"email": member.email, "password": "password-3"},
+        follow_redirects=False,
+    )
+    transcript_response = client.post(
+        "/api/v1/transcripts/start",
+        json={
+            "title": "Browser follow-up context",
+            "ingestion_mode": "whole_file",
+            "current_draft_text_encrypted": "",
+        },
+    )
+    assert transcript_response.status_code == 201
+    transcript_id = transcript_response.json()["id"]
+    working_note_response = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"mode": "freeform", "freeform_text": "Synthetic working note."},
+    )
+    assert working_note_response.status_code == 200
+
+    try:
+        playwright = playwright_sync.sync_playwright().start()
+        browser = playwright.chromium.launch()
+    except Exception as exc:
+        pytest.skip(f"Playwright browser unavailable: {exc}")
+
+    try:
+        context = browser.new_context(base_url=live_server)
+        page = context.new_page()
+        page.goto("/login")
+        page.locator('form[action="/login"] input[name="email"]').fill(member.email)
+        page.locator('form[action="/login"] input[name="password"]').fill("password-3")
+        page.get_by_role("button", name="Sign in").click()
+        page.wait_for_url("**/workspace")
+
+        page.goto(f"/transcribe?transcript_id={transcript_id}")
+        page.get_by_role("tab", name="Follow Ups").click()
+        steering = page.locator("[data-quick-action-context-input]")
+
+        assert steering.is_enabled()
+        steering.click()
+        assert steering.evaluate("element => document.activeElement === element")
+        page.keyboard.type("Use a concise tone.")
+        assert steering.input_value() == "Use a concise tone."
+    finally:
+        browser.close()
+        playwright.stop()
+
+
+def test_followup_history_menu_paints_above_the_workspace(
+    live_server,
+    db_session,
+    make_team,
+    make_user,
+):
+    """The active Follow Ups menu must not be hidden behind the output pane."""
+    team = make_team(name="Browser Follow-up History Menu Clinic")
+    member = make_user(
+        email="browser-followup-history-menu@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.user,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+    transcript = Transcript(
+        owner_user_id=member.id,
+        team_id=team.id,
+        title="Browser follow-up history menu",
+        current_draft_text_encrypted="Synthetic transcript.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted=transcript.current_draft_text_encrypted,
+    )
+    db_session.add(transcript_version)
+    db_session.flush()
+    db_session.add(
+        GeneratedDocument(
+            owner_user_id=member.id,
+            team_id=team.id,
+            transcript_id=transcript.id,
+            transcript_version_id=transcript_version.id,
+            generator_type=GeneratedDocumentGeneratorType.followup,
+            source_template_name="Follow-up",
+            status=GeneratedDocumentStatus.ready,
+            title="Custom follow-up",
+            document_mode=TemplateMode.freeform,
+            original_output_text_encrypted="Synthetic follow-up.",
+            edited_output_text_encrypted="Synthetic follow-up.",
+            retention_expires_at=transcript.retention_expires_at,
+        )
+    )
+    db_session.commit()
+
+    try:
+        playwright = playwright_sync.sync_playwright().start()
+        browser = playwright.chromium.launch()
+    except Exception as exc:
+        pytest.skip(f"Playwright browser unavailable: {exc}")
+
+    try:
+        context = browser.new_context(base_url=live_server, viewport={"width": 1440, "height": 900})
+        page = context.new_page()
+        page.goto("/login")
+        page.locator('form[action="/login"] input[name="email"]').fill(member.email)
+        page.locator('form[action="/login"] input[name="password"]').fill("password-1")
+        page.get_by_role("button", name="Sign in").click()
+        page.wait_for_url("**/workspace")
+
+        page.goto(f"/transcribe?transcript_id={transcript.id}&tab=followups")
+        page.get_by_role("tab", name="Follow Ups").click()
+
+        menu_trigger = page.locator("[data-followup-history-menu] > summary")
+        menu_trigger.click()
+        menu = page.locator('[data-followup-history-menu][open] > [role="menu"]')
+        expect(menu).to_be_visible()
+
+        # Checking the viewport alone misses stacking-context bugs: a hidden menu
+        # can retain a valid layout box. Hit testing its centre proves it paints
+        # above the output pane and receives pointer interaction.
+        menu_box = menu.bounding_box()
+        assert menu_box is not None
+        assert menu_box["width"] > 0
+        assert menu_box["height"] > 0
+        assert menu_box["x"] >= 0
+        assert menu_box["y"] >= 0
+        assert menu_box["x"] + menu_box["width"] <= page.viewport_size["width"]
+        assert menu_box["y"] + menu_box["height"] <= page.viewport_size["height"]
+        assert menu.evaluate(
+            """
+            (element) => {
+              const rect = element.getBoundingClientRect();
+              const topmost = document.elementFromPoint(
+                rect.left + (rect.width / 2),
+                rect.top + (rect.height / 2),
+              );
+              return topmost === element || element.contains(topmost);
+            }
+            """
+        )
+
+        # Retain the menu's keyboard and screen-reader semantics as part of the
+        # same regression contract.
+        expect(menu).to_have_attribute("role", "menu")
+        expect(menu.locator('[data-followup-copy]')).to_have_attribute("role", "menuitem")
+        expect(menu.locator('[data-followup-delete]')).to_have_attribute("role", "menuitem")
+        page.keyboard.press("Escape")
+        expect(menu_trigger).to_be_focused()
+        expect(menu).to_be_hidden()
     finally:
         browser.close()
         playwright.stop()

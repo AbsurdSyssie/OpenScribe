@@ -163,6 +163,7 @@ from app.services.stt import transcribe_metered_team_stt, transcribe_with_team_s
 from app.services.dictations import update_post_consultation_dictation
 from app.services.templates import (
     DICTATION_SOURCE_SPLIT_MARKER,
+    QUICK_ACTION_CONTEXT_MARKER,
     GeneratedDocumentWaitingForTranscript,
     _apply_hallucination_check_request_overrides,
     _generate_freeform_output_openai,
@@ -9061,13 +9062,126 @@ def test_followup_generation_uses_saved_dictation_when_transcript_empty(
 
     document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
     assert document is not None
+    assert is_encrypted_envelope(document.dictation_snapshot_encrypted)
+    assert decrypt_generated_document_field(
+        db_session,
+        document,
+        "dictation_snapshot_encrypted",
+    ) == "Book repeat U&E blood test next week."
+    update_post_consultation_dictation(
+        db_session,
+        owner,
+        transcript_id=transcript.id,
+        combined_text="This later dictation must not retarget queued work.",
+    )
     processed = process_generated_document(db_session, document_id=document.id)
     assert processed.status is GeneratedDocumentStatus.ready
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "Generated dictation follow-up"
     user_message = captured_provider_request["messages"][1]["content"]
     assert "Consultation transcript:\n" in user_message
     assert "Post-consultation dictation:\nBook repeat U&E blood test next week." in user_message
+    assert "This later dictation must not retarget queued work." not in user_message
     assert "Follow-up request:\nCreate patient SMS." in user_message
+
+
+def test_generated_document_dictation_snapshot_distinguishes_empty_from_legacy_null(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+):
+    team = make_team(name="Dictation Snapshot Compatibility")
+    admin = make_user(
+        email="dictation-snapshot-admin@example.com",
+        password="password-1",
+        is_system_admin=True,
+    )
+    owner = make_user(
+        email="dictation-snapshot-owner@example.com",
+        password="password-2",
+        team=team,
+        team_role=TeamRole.user,
+    )
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        model_name="gpt-4o-mini",
+        available_models_json=["gpt-4o-mini"],
+    )
+    make_llm_selection(
+        config=config,
+        actor=admin,
+        model_name_override="gpt-4o-mini",
+    )
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Dictation compatibility",
+        current_draft_text_encrypted="Stable transcript source.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    provider_requests: list[dict[str, object]] = []
+
+    def fake_generate(**kwargs):
+        provider_requests.append(kwargs["request_body"])
+        return "Generated follow-up", {
+            "input_tokens": 5,
+            "output_tokens": 3,
+            "total_tokens": 8,
+            "duration_ms": 2,
+        }
+
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        fake_generate,
+    )
+
+    empty_snapshot_document = queue_followup_generation(
+        db_session,
+        owner,
+        transcript_id=transcript.id,
+        prompt_text="Write a follow-up.",
+    )
+    assert is_encrypted_envelope(
+        empty_snapshot_document.dictation_snapshot_encrypted
+    )
+    assert decrypt_generated_document_field(
+        db_session,
+        empty_snapshot_document,
+        "dictation_snapshot_encrypted",
+    ) == ""
+    update_post_consultation_dictation(
+        db_session,
+        owner,
+        transcript_id=transcript.id,
+        combined_text="Live dictation added after queue.",
+    )
+    process_generated_document(
+        db_session,
+        document_id=empty_snapshot_document.id,
+    )
+    assert "Live dictation added after queue." not in json.dumps(
+        provider_requests[-1]
+    )
+
+    legacy_document = queue_followup_generation(
+        db_session,
+        owner,
+        transcript_id=transcript.id,
+        prompt_text="Write another follow-up.",
+    )
+    legacy_document.dictation_snapshot_encrypted = None
+    db_session.add(legacy_document)
+    db_session.commit()
+    process_generated_document(db_session, document_id=legacy_document.id)
+    assert "Live dictation added after queue." in json.dumps(provider_requests[-1])
 
 
 def test_quick_action_generation_uses_saved_working_note_when_transcript_empty(
@@ -10439,11 +10553,13 @@ def test_followup_generation_queues_and_processes_with_owner_scope(
     assert queued.status_code == 202
     assert queued.json()["generator_type"] == "followup"
     assert queued.json()["status"] == "queued"
+    assert queued.json()["title"] == "Custom follow-up"
     assert queued.json()["follow_up_prompt_text"] == "Arrange repeat bloods for John Smith and advise review if the cough persists."
 
     persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
     assert persisted_document is not None
     assert persisted_document.generator_type is GeneratedDocumentGeneratorType.followup
+    assert persisted_document.title == "Custom follow-up"
     assert UUID(persisted_document.celery_task_id)
     assert is_encrypted_envelope(persisted_document.follow_up_prompt_text)
     assert decrypt_generated_document_field(db_session, persisted_document, "follow_up_prompt_text") == "Arrange repeat bloods for John Smith and advise review if the cough persists."
@@ -10473,6 +10589,463 @@ def test_followup_generation_queues_and_processes_with_owner_scope(
         json={"prompt_text": "Do something else"},
     )
     assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
+
+
+def test_followup_regeneration_uses_fresh_sources_new_steering_and_current_provider(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+):
+    team = make_team(name="Clinic Followup Regeneration")
+    admin = make_user(
+        email="admin-followup-regeneration@example.com",
+        password="password-1",
+        is_system_admin=True,
+    )
+    owner = make_user(
+        email="owner-followup-regeneration@example.com",
+        password="password-2",
+        team=team,
+        team_role=TeamRole.user,
+    )
+    original_config = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Original LLM",
+        model_name="original-model",
+        available_models_json=["original-model"],
+    )
+    selection = make_llm_selection(
+        config=original_config,
+        actor=admin,
+        model_name_override="original-model",
+    )
+    current_config = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Current LLM",
+        model_name="current-model",
+        available_models_json=["current-model"],
+    )
+    provider_requests: list[dict[str, object]] = []
+
+    def fake_generate_followup(**kwargs):
+        provider_requests.append(kwargs["request_body"])
+        return f"Generated follow-up {len(provider_requests)}", {
+            "input_tokens": 8,
+            "output_tokens": 5,
+            "total_tokens": 13,
+            "duration_ms": 4,
+        }
+
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        fake_generate_followup,
+    )
+    monkeypatch.setattr(
+        "app.services.templates.redact_transient_text",
+        lambda db, text, *, team_id, start_index: {
+            "redacted_text": text,
+            "phi_mapping": {},
+            "phi_index": [],
+            "phi_count": 0,
+            "api_provider": "native_presidio",
+            "api_model_or_version": "test",
+        },
+    )
+
+    login(client, email=owner.email, password="password-2")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={
+            "title": "Regeneration visit",
+            "ingestion_mode": "whole_file",
+            "current_draft_text_encrypted": "Old transcript source.",
+        },
+    )
+    assert started.status_code == 201
+    transcript_id = started.json()["id"]
+    initial_working_note = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={"mode": "freeform", "freeform_text": "Old working note source."},
+    )
+    assert initial_working_note.status_code == 200
+    assert client.patch(
+        f"/api/v1/transcripts/{transcript_id}/post-consultation-dictation",
+        json={"combined_text": "Old dictation source."},
+    ).status_code == 200
+
+    queued_source = client.post(
+        f"/api/v1/transcripts/{transcript_id}/generate-followup",
+        json={"prompt_text": "Write a patient follow-up message."},
+    )
+    assert queued_source.status_code == 202
+    source_document = process_generated_document(
+        db_session,
+        document_id=UUID(queued_source.json()["id"]),
+    )
+    assert source_document.status is GeneratedDocumentStatus.ready
+    source_transcript_version_id = source_document.transcript_version_id
+    edited = client.patch(
+        f"/api/v1/generated-documents/{source_document.id}",
+        json={
+            "expected_updated_at": source_document.updated_at.isoformat(),
+            "title": "Edited old title",
+            "edited_output_text": "DO NOT REUSE THIS EDITED OUTPUT",
+            "sections": [],
+        },
+    )
+    assert edited.status_code == 200
+
+    assert client.post(
+        f"/api/v1/transcripts/{transcript_id}/commit",
+        json={"text_encrypted": "Fresh transcript source."},
+    ).status_code == 200
+    assert client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json={
+            "mode": "freeform",
+            "expected_updated_at": initial_working_note.json()["updated_at"],
+            "freeform_text": "Fresh working note source.",
+        },
+    ).status_code == 200
+    assert client.patch(
+        f"/api/v1/transcripts/{transcript_id}/post-consultation-dictation",
+        json={"combined_text": "Fresh dictation source."},
+    ).status_code == 200
+    selection.llm_config_id = current_config.id
+    selection.allowed_models_json = ["current-model"]
+    selection.model_name_override = "current-model"
+    db_session.add(selection)
+    db_session.commit()
+
+    regenerated = client.post(
+        f"/api/v1/generated-documents/{source_document.id}/regenerate",
+        json={"steering_text": "Use plain language."},
+    )
+    assert regenerated.status_code == 202
+    regenerated_document = db_session.get(
+        GeneratedDocument,
+        UUID(regenerated.json()["id"]),
+    )
+    assert regenerated_document is not None
+    assert regenerated_document.id != source_document.id
+    assert regenerated_document.transcript_version_id != source_transcript_version_id
+    assert regenerated_document.model_used == "current-model"
+    assert regenerated_document.llm_config_id == current_config.id
+    assert is_encrypted_envelope(regenerated_document.dictation_snapshot_encrypted)
+    assert is_encrypted_envelope(
+        regenerated_document.generation_steering_text_encrypted
+    )
+    assert decrypt_generated_document_field(
+        db_session,
+        regenerated_document,
+        "dictation_snapshot_encrypted",
+    ) == "Fresh dictation source."
+    assert decrypt_generated_document_field(
+        db_session,
+        regenerated_document,
+        "generation_steering_text_encrypted",
+    ) == "Use plain language."
+    assert decrypt_generated_document_field(
+        db_session,
+        regenerated_document,
+        "freeform_working_note_snapshot_encrypted",
+    ) == "Fresh working note source."
+    assert decrypt_generated_document_field(
+        db_session,
+        regenerated_document,
+        "follow_up_prompt_text",
+    ) == "Write a patient follow-up message."
+
+    processed = process_generated_document(
+        db_session,
+        document_id=regenerated_document.id,
+    )
+    assert processed.status is GeneratedDocumentStatus.ready
+    regenerated_request = json.dumps(provider_requests[-1])
+    assert "Fresh transcript source." in regenerated_request
+    assert "Fresh working note source." in regenerated_request
+    assert "Fresh dictation source." in regenerated_request
+    assert "Write a patient follow-up message." in regenerated_request
+    assert "Use plain language." in regenerated_request
+    assert "Old transcript source." not in regenerated_request
+    assert "Old working note source." not in regenerated_request
+    assert "Old dictation source." not in regenerated_request
+    assert "DO NOT REUSE THIS EDITED OUTPUT" not in regenerated_request
+    assert len(
+        db_session.scalars(
+            select(ProviderAttempt).where(
+                ProviderAttempt.generated_document_id.in_(
+                    [source_document.id, regenerated_document.id]
+                )
+            )
+        ).all()
+    ) == 2
+    assert len(
+        db_session.scalars(
+            select(TaskDispatchOutbox).where(
+                TaskDispatchOutbox.source_id.in_(
+                    [source_document.id, regenerated_document.id]
+                )
+            )
+        ).all()
+    ) == 2
+    db_session.refresh(source_document)
+    assert decrypt_generated_document_field(
+        db_session,
+        source_document,
+        "edited_output_text_encrypted",
+    ) == "DO NOT REUSE THIS EDITED OUTPUT"
+
+
+def test_quick_action_regeneration_discards_legacy_steering_and_enforces_owner_and_terminal_state(
+    client,
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_quick_action,
+):
+    team = make_team(name="Clinic Quick Action Regeneration")
+    admin = make_user(
+        email="admin-quick-regeneration@example.com",
+        password="password-1",
+        is_system_admin=True,
+    )
+    owner = make_user(
+        email="owner-quick-regeneration@example.com",
+        password="password-2",
+        team=team,
+        team_role=TeamRole.user,
+    )
+    other = make_user(
+        email="other-quick-regeneration@example.com",
+        password="password-3",
+        team=team,
+        team_role=TeamRole.user,
+    )
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        model_name="gpt-4o-mini",
+        available_models_json=["gpt-4o-mini"],
+    )
+    make_llm_selection(
+        config=config,
+        actor=admin,
+        model_name_override="gpt-4o-mini",
+    )
+    quick_action = make_quick_action(
+        scope=TemplateScope.user,
+        owner=owner,
+        actor=owner,
+        name="Patient update",
+        prompt_text="Write a short patient update.",
+    )
+    provider_requests: list[dict[str, object]] = []
+
+    def fake_generate(**kwargs):
+        provider_requests.append(kwargs["request_body"])
+        return "Generated patient update", {
+            "input_tokens": 8,
+            "output_tokens": 4,
+            "total_tokens": 12,
+            "duration_ms": 3,
+        }
+
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        fake_generate,
+    )
+    monkeypatch.setattr(
+        "app.services.templates.redact_transient_text",
+        lambda db, text, *, team_id, start_index: {
+            "redacted_text": text,
+            "phi_mapping": {},
+            "phi_index": [],
+            "phi_count": 0,
+            "api_provider": "native_presidio",
+            "api_model_or_version": "test",
+        },
+    )
+
+    login(client, email=owner.email, password="password-2")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={
+            "title": "Quick Action regeneration",
+            "ingestion_mode": "whole_file",
+            "current_draft_text_encrypted": "Current consultation source.",
+        },
+    )
+    transcript_id = started.json()["id"]
+    queued = client.post(
+        f"/api/v1/transcripts/{transcript_id}/run-quick-action",
+        json={
+            "quick_action_id": str(quick_action.id),
+            "context_text": "New-format steering.",
+        },
+    )
+    assert queued.status_code == 202
+    source_document = db_session.get(GeneratedDocument, UUID(queued.json()["id"]))
+    assert source_document is not None
+    still_running = client.post(
+        f"/api/v1/generated-documents/{source_document.id}/regenerate",
+        json={},
+    )
+    assert_error(
+        still_running,
+        status_code=409,
+        code="conflict",
+        message="This follow-up is still being generated",
+    )
+    process_generated_document(db_session, document_id=source_document.id)
+
+    edited_asset = client.post(
+        "/api/v1/quick-actions/personal",
+        json={
+            "scope": "user",
+            "quick_action_id": str(quick_action.id),
+            "name": "Patient update",
+            "description": "Changed after the original run",
+            "prompt_text": "EDITED ASSET INSTRUCTION MUST NOT BE REUSED",
+            "is_active": True,
+        },
+    )
+    assert edited_asset.status_code == 200
+    deleted_asset = client.delete(
+        f"/api/v1/quick-actions/personal/{quick_action.id}"
+    )
+    assert deleted_asset.status_code == 204
+    db_session.refresh(source_document)
+    assert source_document.quick_action_version_id is None
+
+    source_document.prompt_snapshot_text = (
+        f"Write a short patient update.{QUICK_ACTION_CONTEXT_MARKER}"
+        "LEGACY STEERING MUST NOT BE REUSED"
+    )
+    source_document.generation_steering_text_encrypted = None
+    db_session.add(source_document)
+    db_session.commit()
+    regenerated = client.post(
+        f"/api/v1/generated-documents/{source_document.id}/regenerate"
+    )
+    assert regenerated.status_code == 202
+    regenerated_document = db_session.get(
+        GeneratedDocument,
+        UUID(regenerated.json()["id"]),
+    )
+    assert regenerated_document is not None
+    assert regenerated_document.prompt_snapshot_text == "Write a short patient update."
+    assert is_encrypted_envelope(
+        regenerated_document.generation_steering_text_encrypted
+    )
+    assert decrypt_generated_document_field(
+        db_session,
+        regenerated_document,
+        "generation_steering_text_encrypted",
+    ) == ""
+    process_generated_document(db_session, document_id=regenerated_document.id)
+    regenerated_request = json.dumps(provider_requests[-1])
+    assert "Write a short patient update." in regenerated_request
+    assert "LEGACY STEERING MUST NOT BE REUSED" not in regenerated_request
+    assert "New-format steering." not in regenerated_request
+    assert "EDITED ASSET INSTRUCTION MUST NOT BE REUSED" not in regenerated_request
+
+    client.post("/api/v1/auth/logout")
+    login(client, email=other.email, password="password-3")
+    forbidden = client.post(
+        f"/api/v1/generated-documents/{source_document.id}/regenerate",
+        json={},
+    )
+    assert_error(
+        forbidden,
+        status_code=403,
+        code="forbidden",
+        message="Generated document access is restricted to the owning user",
+    )
+
+
+def test_regeneration_rejects_template_documents_and_expired_transcripts(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_generated_document,
+):
+    team = make_team(name="Regeneration boundaries")
+    owner = make_user(
+        email="owner-regeneration-boundaries@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.user,
+    )
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Regeneration boundary visit",
+        current_draft_text_encrypted="Synthetic transcript.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript_version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="Synthetic transcript.",
+    )
+    db_session.add(transcript_version)
+    db_session.commit()
+    document = make_generated_document(
+        owner=owner,
+        transcript=transcript,
+        transcript_version=transcript_version,
+    )
+
+    login(client, email=owner.email, password="password-1")
+    unsupported = client.post(
+        f"/api/v1/generated-documents/{document.id}/regenerate",
+        json={},
+    )
+    assert_error(
+        unsupported,
+        status_code=422,
+        code="business_rule_violation",
+        message="Only follow-ups can be regenerated",
+    )
+
+    document.generator_type = GeneratedDocumentGeneratorType.followup
+    document.follow_up_prompt_text = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="generated_documents",
+        field="follow_up_prompt_text",
+        record_id=document.id,
+        plaintext="Write a follow-up.",
+    )
+    transcript.retention_expires_at = utcnow() - timedelta(seconds=1)
+    db_session.add_all([document, transcript])
+    db_session.commit()
+    expired = client.post(
+        f"/api/v1/generated-documents/{document.id}/regenerate",
+        json={},
+    )
+    assert_error(
+        expired,
+        status_code=404,
+        code="not_found",
+        message="Transcript not found",
+    )
 
 
 def test_process_generated_document_redacts_transcript_and_reidentifies_output(
@@ -12064,11 +12637,13 @@ def test_team_and_personal_quick_action_routes_enforce_scope_and_allow_generatio
     body = generated.json()
     assert body["generator_type"] == "quick_action"
     assert body["source_quick_action_name"] == "Arrange repeat bloods"
+    assert body["title"] == "Arrange repeat bloods"
     assert body["status"] == "queued"
 
     persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
     assert persisted_document is not None
     assert persisted_document.generator_type is GeneratedDocumentGeneratorType.quick_action
+    assert persisted_document.title == "Arrange repeat bloods"
     assert persisted_document.quick_action_version_id is not None
     assert UUID(persisted_document.celery_task_id)
 
@@ -12434,7 +13009,7 @@ def test_upsert_personal_quick_action_translates_raced_integrity_error_to_confli
     assert exc_info.value.message == "Quick action changed during save. Retry."
 
 
-def test_generated_document_keeps_prompt_snapshot_with_quick_action_context(
+def test_generated_document_encrypts_quick_action_steering_separately_from_prompt_snapshot(
     db_session,
     monkeypatch,
     make_team,
@@ -12470,7 +13045,13 @@ def test_generated_document_keeps_prompt_snapshot_with_quick_action_context(
         quick_action_id=quick_action.id,
         context_text="Mention John Smith's agreed follow-up call.",
     )
-    assert document.prompt_snapshot_text == "Write a short SMS update.\n\nAdditional context:\nMention John Smith's agreed follow-up call."
+    assert document.prompt_snapshot_text == "Write a short SMS update."
+    assert is_encrypted_envelope(document.generation_steering_text_encrypted)
+    assert decrypt_generated_document_field(
+        db_session,
+        document,
+        "generation_steering_text_encrypted",
+    ) == "Mention John Smith's agreed follow-up call."
     monkeypatch.setattr(
         "app.services.templates.redact_transient_text",
         lambda db, text, *, team_id, start_index: {

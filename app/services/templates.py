@@ -124,6 +124,7 @@ TEMPLATE_BUNDLE_MAX_ENTRIES = 100
 QUICK_ACTION_NAME_CONSTRAINTS = {"uq_quick_actions_team_name_lower", "uq_quick_actions_owner_name_lower"}
 DICTATION_SOURCE_SPLIT_MARKER = "\n\n<<<POST_CONSULTATION_DICTATION_SPLIT>>>\n\n"
 QUICK_ACTION_CONTEXT_MARKER = "\n\nAdditional context:\n"
+GENERATION_STEERING_MARKER = "\n\nSteering for this run:\n"
 NOTE_GENERATION_OPTIONS_SNAPSHOT_KEY = "_openscribe_note_generation_options"
 GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY = "_openscribe_wait_for_transcript"
 DEFAULT_NOTE_GENERATION_LENGTH = "normal"
@@ -1733,7 +1734,11 @@ def _document_has_empty_allowed_source(db: Session, *, document: GeneratedDocume
     if (
         document.generator_type in {GeneratedDocumentGeneratorType.template, GeneratedDocumentGeneratorType.followup, GeneratedDocumentGeneratorType.quick_action}
         and transcript is not None
-        and _effective_dictation_text(db, transcript=transcript).strip()
+        and _dictation_text_for_generated_document(
+            db,
+            document=document,
+            transcript=transcript,
+        ).strip()
     ):
         return True
     return False
@@ -3462,6 +3467,32 @@ def _effective_dictation_text(db: Session, *, transcript: Transcript) -> str:
     return dictation_effective_text(db, dictation=dictation).strip()
 
 
+def _dictation_text_for_generated_document(
+    db: Session,
+    *,
+    document: GeneratedDocument,
+    transcript: Transcript,
+) -> str:
+    """Read the queued snapshot, with live fallback for pre-migration jobs."""
+    if document.dictation_snapshot_encrypted is None:
+        return _effective_dictation_text(db, transcript=transcript)
+    return generated_document_text(
+        db,
+        document=document,
+        field="dictation_snapshot_encrypted",
+    ).strip()
+
+
+def _generation_steering_text(db: Session, *, document: GeneratedDocument) -> str:
+    if document.generation_steering_text_encrypted is None:
+        return ""
+    return generated_document_text(
+        db,
+        document=document,
+        field="generation_steering_text_encrypted",
+    ).strip()
+
+
 def _redact_dynamic_prompt_text(
     db: Session,
     text: str | None,
@@ -3517,6 +3548,40 @@ def _redact_dynamic_prompt_value(
             next_index += len(item_phi_index)
         return redacted_dict, phi_index
     return value, []
+
+
+def _redacted_generation_steering(
+    db: Session,
+    *,
+    document: GeneratedDocument,
+    redaction_run: RedactionRun,
+    extra_phi_index: list[dict[str, object]],
+    legacy_text: str = "",
+) -> str:
+    steering_text = (
+        legacy_text.strip()
+        if document.generation_steering_text_encrypted is None
+        else _generation_steering_text(db, document=document)
+    )
+    if not steering_text:
+        return ""
+    redacted_text, steering_phi_index = _redact_dynamic_prompt_text(
+        db,
+        steering_text,
+        team_id=document.team_id,
+        start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+    )
+    extra_phi_index.extend(steering_phi_index)
+    redacted_text, _, manual_steering_phi_index = _apply_manual_pii_redaction(
+        db,
+        transcript_id=document.transcript_id,
+        owner_user_id=document.owner_user_id,
+        transcript_text=redacted_text or "",
+        dictation_text="",
+        start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+    )
+    extra_phi_index.extend(manual_steering_phi_index)
+    return (redacted_text or "").strip()
 
 
 def _redacted_generation_source_texts(
@@ -3677,7 +3742,14 @@ def _initial_generation_reservation_strings(
     structured_context = generated_document_structured_context(db, document=document)
     if structured_context:
         strings.append(json.dumps(structured_context, ensure_ascii=True, sort_keys=True))
-    strings.append(_effective_dictation_text(db, transcript=transcript))
+    strings.append(
+        _dictation_text_for_generated_document(
+            db,
+            document=document,
+            transcript=transcript,
+        )
+    )
+    strings.append(_generation_steering_text(db, document=document))
     return strings
 
 
@@ -3763,6 +3835,7 @@ def queue_document_generation_from_template(
     latest_version = _latest_template_version(db, template_id=template.id)
     template_config = _template_version_config(latest_version)
     working_note_mode, freeform_working_note_snapshot, structured_working_note_snapshot = _working_note_snapshot_for_transcript(db, transcript=transcript)
+    dictation_snapshot = _effective_dictation_text(db, transcript=transcript)
     transcript_version = _snapshot_transcript_version(
         db,
         transcript=transcript,
@@ -3770,7 +3843,7 @@ def queue_document_generation_from_template(
             waiting_for_transcript
             or bool(freeform_working_note_snapshot.strip())
             or bool(structured_working_note_snapshot)
-            or bool(_effective_dictation_text(db, transcript=transcript))
+            or bool(dictation_snapshot)
         ),
         mark_transcript_ready=not waiting_for_transcript,
     )
@@ -3823,6 +3896,18 @@ def queue_document_generation_from_template(
         document=generated_document,
         plaintext=structured_working_note_snapshot if working_note_mode is TranscriptWorkingNoteMode.structured else None,
     )
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="dictation_snapshot_encrypted",
+        plaintext=dictation_snapshot,
+    )
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="generation_steering_text_encrypted",
+        plaintext="",
+    )
     set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
     set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
     generated_document = _queue_generated_document_with_quota(
@@ -3871,6 +3956,7 @@ def queue_followup_generation(
         raise AppError(422, "business_rule_violation", "Follow-up text is required", {"field": "prompt_text"})
 
     working_note_mode, freeform_working_note_snapshot, structured_working_note_snapshot = _working_note_snapshot_for_transcript(db, transcript=transcript)
+    dictation_snapshot = _effective_dictation_text(db, transcript=transcript)
     transcript_version = _snapshot_transcript_version(
         db,
         transcript=transcript,
@@ -3878,7 +3964,7 @@ def queue_followup_generation(
             waiting_for_transcript
             or bool(freeform_working_note_snapshot.strip())
             or bool(structured_working_note_snapshot)
-            or bool(_effective_dictation_text(db, transcript=transcript))
+            or bool(dictation_snapshot)
         ),
         mark_transcript_ready=not waiting_for_transcript,
     )
@@ -3886,7 +3972,6 @@ def queue_followup_generation(
     if not resolved_model_name:
         raise AppError(422, "business_rule_violation", "No active LLM model is configured for this user", {"field": "preferred_model_name"})
 
-    truncated_title = clean_prompt_text[:72]
     generated_document = GeneratedDocument(
         id=uuid4(),
         owner_user_id=actor.id,
@@ -3904,7 +3989,7 @@ def queue_followup_generation(
         freeform_working_note_snapshot_encrypted=None,
         structured_working_note_snapshot_json=None,
         status=GeneratedDocumentStatus.queued,
-        title=f"Follow-up: {truncated_title}",
+        title="Custom follow-up",
         document_mode=TemplateMode.freeform,
         original_output_text_encrypted="",
         edited_output_text_encrypted="",
@@ -3926,6 +4011,18 @@ def queue_followup_generation(
         db,
         document=generated_document,
         plaintext=structured_working_note_snapshot if working_note_mode is TranscriptWorkingNoteMode.structured else None,
+    )
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="dictation_snapshot_encrypted",
+        plaintext=dictation_snapshot,
+    )
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="generation_steering_text_encrypted",
+        plaintext="",
     )
     set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
     set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
@@ -3973,6 +4070,7 @@ def queue_quick_action_generation(
     quick_action = _resolve_available_quick_action_for_user(db, actor, quick_action_id=quick_action_id)
     latest_version = _latest_quick_action_version(db, quick_action_id=quick_action.id)
     working_note_mode, freeform_working_note_snapshot, structured_working_note_snapshot = _working_note_snapshot_for_transcript(db, transcript=transcript)
+    dictation_snapshot = _effective_dictation_text(db, transcript=transcript)
     transcript_version = _snapshot_transcript_version(
         db,
         transcript=transcript,
@@ -3980,7 +4078,7 @@ def queue_quick_action_generation(
             waiting_for_transcript
             or bool(freeform_working_note_snapshot.strip())
             or bool(structured_working_note_snapshot)
-            or bool(_effective_dictation_text(db, transcript=transcript))
+            or bool(dictation_snapshot)
         ),
         mark_transcript_ready=not waiting_for_transcript,
     )
@@ -3989,8 +4087,6 @@ def queue_quick_action_generation(
         raise AppError(422, "business_rule_violation", "No active LLM model is configured for this user", {"field": "preferred_model_name"})
     clean_context_text = (context_text or "").strip()
     prompt_snapshot_text = latest_version.prompt_text.strip()
-    if clean_context_text:
-        prompt_snapshot_text = f"{prompt_snapshot_text}{QUICK_ACTION_CONTEXT_MARKER}{clean_context_text}"
 
     generated_document = GeneratedDocument(
         id=uuid4(),
@@ -4011,7 +4107,7 @@ def queue_quick_action_generation(
         freeform_working_note_snapshot_encrypted=None,
         structured_working_note_snapshot_json=None,
         status=GeneratedDocumentStatus.queued,
-        title=f"Quick action: {quick_action.name}",
+        title=quick_action.name,
         document_mode=TemplateMode.freeform,
         original_output_text_encrypted="",
         edited_output_text_encrypted="",
@@ -4032,6 +4128,18 @@ def queue_quick_action_generation(
         db,
         document=generated_document,
         plaintext=structured_working_note_snapshot if working_note_mode is TranscriptWorkingNoteMode.structured else None,
+    )
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="dictation_snapshot_encrypted",
+        plaintext=dictation_snapshot,
+    )
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="generation_steering_text_encrypted",
+        plaintext=clean_context_text,
     )
     set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
     set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
@@ -4060,6 +4168,254 @@ def queue_quick_action_generation(
             "llm_config_id": str(config.id),
             "context_supplied": bool(clean_context_text),
             "waiting_for_transcript": bool(waiting_for_transcript),
+        },
+    )
+    return generated_document
+
+
+def queue_generated_document_regeneration(
+    db: Session,
+    actor: User,
+    *,
+    generated_document_id: UUID,
+    steering_text: str | None = None,
+    request: Request | None = None,
+) -> GeneratedDocument:
+    """Queue a fresh-source run using a saved follow-up or Quick Action task."""
+    _require_team_member(actor)
+    source_document = db.get(GeneratedDocument, generated_document_id)
+    if source_document is None:
+        raise AppError(
+            404,
+            "not_found",
+            "Generated document not found",
+            {
+                "resource": "generated_document",
+                "generated_document_id": str(generated_document_id),
+            },
+        )
+    if source_document.owner_user_id != actor.id:
+        raise AppError(
+            403,
+            "forbidden",
+            "Generated document access is restricted to the owning user",
+        )
+    if source_document.generator_type not in {
+        GeneratedDocumentGeneratorType.followup,
+        GeneratedDocumentGeneratorType.quick_action,
+    }:
+        raise AppError(
+            422,
+            "business_rule_violation",
+            "Only follow-ups can be regenerated",
+        )
+    if source_document.status not in {
+        GeneratedDocumentStatus.ready,
+        GeneratedDocumentStatus.failed,
+    }:
+        raise AppError(
+            409,
+            "conflict",
+            "This follow-up is still being generated",
+        )
+
+    transcript = get_active_owner_transcript(
+        db,
+        actor,
+        transcript_id=source_document.transcript_id,
+    )
+    transcript, waiting_for_transcript = _ensure_generation_can_be_queued(
+        db,
+        transcript=transcript,
+    )
+    if waiting_for_transcript:
+        raise AppError(
+            409,
+            "conflict",
+            "Wait for transcription to finish before regenerating this follow-up",
+        )
+
+    clean_steering_text = (steering_text or "").strip()
+    if len(clean_steering_text) > 4000:
+        raise AppError(
+            422,
+            "validation_error",
+            "Steering must be 4000 characters or fewer",
+            {"field": "steering_text"},
+        )
+
+    if source_document.generator_type is GeneratedDocumentGeneratorType.followup:
+        base_prompt_text = generated_document_text(
+            db,
+            document=source_document,
+            field="follow_up_prompt_text",
+        ).strip()
+        source_quick_action_name = None
+        quick_action_version_id = None
+        source_template_name = "Follow-up"
+        title = "Custom follow-up"
+    else:
+        base_prompt_text = _prompt_snapshot_text_for_document(
+            db,
+            document=source_document,
+        ).strip()
+        if QUICK_ACTION_CONTEXT_MARKER in base_prompt_text:
+            base_prompt_text = base_prompt_text.split(
+                QUICK_ACTION_CONTEXT_MARKER,
+                1,
+            )[0].strip()
+        source_quick_action_name = (
+            source_document.source_quick_action_name or "Quick action"
+        )
+        quick_action_version_id = source_document.quick_action_version_id
+        source_template_name = "Quick action"
+        title = source_quick_action_name
+    if not base_prompt_text:
+        raise AppError(
+            422,
+            "business_rule_violation",
+            "The saved follow-up task is unavailable",
+        )
+
+    working_note_mode, freeform_working_note_snapshot, structured_working_note_snapshot = (
+        _working_note_snapshot_for_transcript(db, transcript=transcript)
+    )
+    dictation_snapshot = _effective_dictation_text(db, transcript=transcript)
+    transcript_version = _snapshot_transcript_version(
+        db,
+        transcript=transcript,
+        allow_empty=(
+            bool(freeform_working_note_snapshot.strip())
+            or bool(structured_working_note_snapshot)
+            or bool(dictation_snapshot)
+        ),
+    )
+    _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
+    if not resolved_model_name:
+        raise AppError(
+            422,
+            "business_rule_violation",
+            "No active LLM model is configured for this user",
+            {"field": "preferred_model_name"},
+        )
+
+    generated_document = GeneratedDocument(
+        id=uuid4(),
+        owner_user_id=actor.id,
+        team_id=transcript.team_id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        redaction_run_id=None,
+        generator_type=source_document.generator_type,
+        template_version_id=None,
+        quick_action_version_id=quick_action_version_id,
+        llm_config_id=config.id,
+        source_template_name=source_template_name,
+        source_quick_action_name=source_quick_action_name,
+        follow_up_prompt_text=None,
+        prompt_snapshot_text=(
+            base_prompt_text
+            if source_document.generator_type
+            is GeneratedDocumentGeneratorType.quick_action
+            else None
+        ),
+        generation_snapshot_json={
+            GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY: False,
+        },
+        working_note_mode_snapshot=working_note_mode,
+        freeform_working_note_snapshot_encrypted=None,
+        structured_working_note_snapshot_json=None,
+        status=GeneratedDocumentStatus.queued,
+        title=title,
+        document_mode=TemplateMode.freeform,
+        original_output_text_encrypted="",
+        edited_output_text_encrypted="",
+        is_edited=False,
+        retention_expires_at=transcript.retention_expires_at,
+        model_used=resolved_model_name,
+        llm_adapter_kind=config.adapter_kind.value,
+        llm_base_url=config.base_url,
+        llm_provider_config_json=dict(config.provider_config_json or {}),
+    )
+    if source_document.generator_type is GeneratedDocumentGeneratorType.followup:
+        set_generated_document_text(
+            db,
+            document=generated_document,
+            field="follow_up_prompt_text",
+            plaintext=base_prompt_text,
+        )
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="freeform_working_note_snapshot_encrypted",
+        plaintext=(
+            freeform_working_note_snapshot
+            if working_note_mode is TranscriptWorkingNoteMode.freeform
+            else None
+        ),
+    )
+    set_generated_document_structured_working_note_snapshot(
+        db,
+        document=generated_document,
+        plaintext=(
+            structured_working_note_snapshot
+            if working_note_mode is TranscriptWorkingNoteMode.structured
+            else None
+        ),
+    )
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="dictation_snapshot_encrypted",
+        plaintext=dictation_snapshot,
+    )
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="generation_steering_text_encrypted",
+        plaintext=clean_steering_text,
+    )
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="original_output_text_encrypted",
+        plaintext="",
+    )
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="edited_output_text_encrypted",
+        plaintext="",
+    )
+    generated_document = _queue_generated_document_with_quota(
+        db,
+        document=generated_document,
+        transcript=transcript,
+        config=config,
+    )
+    _record_generation_usage_event(
+        db,
+        event="llm_generation_queued",
+        document=generated_document,
+        config=config,
+    )
+    record_security_event(
+        db,
+        action="generation_regenerated",
+        actor=actor,
+        target=actor,
+        team_id=transcript.team_id,
+        request=request,
+        details={
+            "category": "generated_document",
+            "outcome": "success",
+            "object_type": "generated_document",
+            "object_id": str(generated_document.id),
+            "source_generated_document_id": str(source_document.id),
+            "generator_type": source_document.generator_type.value,
+            "transcript_id": str(transcript.id),
+            "llm_config_id": str(config.id),
+            "steering_supplied": bool(clean_steering_text),
         },
     )
     return generated_document
@@ -4423,7 +4779,11 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
         raise AppError(422, "business_rule_violation", "No resolved LLM model is stored for this generated document")
     redaction_run = ensure_redaction_run_for_transcript_version(db, transcript_version=transcript_version)
     document.redaction_run_id = redaction_run.id
-    dictation_text = _effective_dictation_text(db, transcript=live_transcript)
+    dictation_text = _dictation_text_for_generated_document(
+        db,
+        document=document,
+        transcript=live_transcript,
+    )
     transcript_text, dictation_text, extra_phi_index = _redacted_generation_source_texts(
         db,
         transcript_version=transcript_version,
@@ -4549,6 +4909,17 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
             start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
         )
         extra_phi_index.extend(manual_prompt_phi_index)
+        steering_text_redacted = _redacted_generation_steering(
+            db,
+            document=document,
+            redaction_run=redaction_run,
+            extra_phi_index=extra_phi_index,
+        )
+        if steering_text_redacted:
+            prompt_text_redacted = (
+                f"{prompt_text_redacted}{GENERATION_STEERING_MARKER}"
+                f"{steering_text_redacted}"
+            )
         system_message, user_message = _build_followup_generation_messages(
             transcript_text=transcript_text,
             follow_up_prompt_text=prompt_text_redacted,
@@ -4570,24 +4941,18 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
         if QUICK_ACTION_CONTEXT_MARKER in prompt_text:
             quick_action_prompt_text, quick_action_context_text = prompt_text.split(QUICK_ACTION_CONTEXT_MARKER, 1)
         prompt_text_redacted = quick_action_prompt_text
-        if quick_action_context_text.strip():
-            redacted_context_text, context_phi_index = _redact_dynamic_prompt_text(
-                db,
-                quick_action_context_text,
-                team_id=document.team_id,
-                start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
+        steering_text_redacted = _redacted_generation_steering(
+            db,
+            document=document,
+            redaction_run=redaction_run,
+            extra_phi_index=extra_phi_index,
+            legacy_text=quick_action_context_text,
+        )
+        if steering_text_redacted:
+            prompt_text_redacted = (
+                f"{prompt_text_redacted}{GENERATION_STEERING_MARKER}"
+                f"{steering_text_redacted}"
             )
-            extra_phi_index.extend(context_phi_index)
-            redacted_context_text, _, manual_context_phi_index = _apply_manual_pii_redaction(
-                db,
-                transcript_id=document.transcript_id,
-                owner_user_id=document.owner_user_id,
-                transcript_text=redacted_context_text or "",
-                dictation_text="",
-                start_index=next_placeholder_index(redaction_run) + len(extra_phi_index),
-            )
-            extra_phi_index.extend(manual_context_phi_index)
-            prompt_text_redacted = f"{prompt_text_redacted}{QUICK_ACTION_CONTEXT_MARKER}{redacted_context_text}"
         system_message, user_message = _build_quick_action_generation_messages(
             transcript_text=transcript_text,
             quick_action_text=prompt_text_redacted,

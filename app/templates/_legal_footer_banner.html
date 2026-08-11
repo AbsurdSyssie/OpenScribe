@@ -5,7 +5,9 @@
 {% set legal_links = request.state.legal_footer_links if
 request.state.legal_footer_links is defined else () %} {% set legal_profile =
 request.state.operator_legal_profile if request.state.operator_legal_profile is
-defined else none %} {% if legal_links %}
+defined else none %} {% set cookie_notice_version =
+request.state.legal_cookie_notice_version if
+request.state.legal_cookie_notice_version is defined else 'unpublished' %} {% if legal_links %}
 <footer class="operator-legal-footer" aria-label="Operator legal information">
   {% for link in legal_links %}<a href="{{ link.href }}">{{ link.label }}</a>{%
   endfor %}
@@ -14,7 +16,7 @@ defined else none %} {% if legal_links %}
 <section
   class="browser-storage-notice"
   data-browser-storage-notice
-  hidden
+  data-browser-storage-notice-version="{{ cookie_notice_version }}"
   aria-labelledby="browser-storage-notice-title"
 >
   <div>
@@ -33,5 +35,5 @@ defined else none %} {% if legal_links %}
 </section>
 <script
   nonce="{{ request.state.csp_nonce }}"
-  src="/static/js/legal-content-banner.js?v=20260805-legal-content"
+  src="/static/js/legal-content-banner.js?v=20260811-versioned-dismissal"
 ></script>

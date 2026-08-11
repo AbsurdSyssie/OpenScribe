@@ -13,7 +13,7 @@
 {% macro generation_loading(label, message, detail=none) -%}
 <div class="note-generation-loading" role="status" aria-live="polite">
 {{ loading_orbit() }}
-<h2>Generating your {{ label }}</h2>
+<h2>{% if label == 'follow-up' %}Creating{% else %}Generating{% endif %} your {{ label }}</h2>
 <p>{{ message }}{% if detail %}<br>{{ detail }}{% endif %}</p>
 </div>
 {%- endmacro %}
@@ -65,9 +65,6 @@ data-transcript-title-input>
 <span class="w-2 h-2 bg-slate rounded-full"></span>
 <span class="text-sm font-medium text-slate" data-active-status>{{ active_status_display }}</span>
 </div>
-{% endif %}
-{% if stt_selection %}
-<span class="text-sm text-slate" data-stt-provider-label>Speech service: {{ stt_selection.config.label }}</span>
 {% endif %}
 <button
 type="button"
@@ -237,26 +234,18 @@ Ready to upload a recording or capture one from your microphone.
 </div>
 
 <div class="flex-1 flex flex-col min-h-0 overflow-hidden" data-split-workspace>
-<div class="flex items-center justify-between border-b border-stone bg-white px-4 gap-3">
-<div class="flex gap-1 min-w-0">
-<button type="button" class="main-tab active" data-tab-trigger="output" data-tour-target="note-tab">Clinical Note</button>
-<button type="button" class="main-tab" data-tab-trigger="followups" data-tour-target="messages-tab">Follow Ups</button>
-<button type="button" class="main-tab" data-tab-trigger="history">Transcript</button>
+<div class="flex items-center border-b border-stone bg-white px-4 gap-3">
+<div class="flex gap-1 min-w-0" role="tablist" aria-label="Consultation workspace">
+<button type="button" id="workspace-tab-output" class="main-tab active" role="tab" aria-selected="true" aria-controls="workspace-panel-output" data-tab-trigger="output" data-tour-target="note-tab">Clinical Note</button>
+<button type="button" id="workspace-tab-followups" class="main-tab" role="tab" aria-selected="false" aria-controls="workspace-panel-followups" tabindex="-1" data-tab-trigger="followups" data-tour-target="messages-tab">Follow Ups</button>
+<button type="button" id="workspace-tab-history" class="main-tab" role="tab" aria-selected="false" aria-controls="workspace-panel-history" tabindex="-1" data-tab-trigger="history">Transcript</button>
 </div>
-<a
-href="/workspace/library/templates"
-class="inline-flex items-center justify-center flex-shrink-0 w-10 h-10 rounded-lg border border-stone bg-white text-slate hover:text-ink hover:border-teal-muted transition"
-data-workspace-settings-link
-aria-label="Open related settings"
-title="Open related settings">
-<i class="w-4 h-4" data-lucide="settings" aria-hidden="true"></i>
-</a>
 </div>
 
 <div class="transcribe-lower-row">
 {% include "transcribe/_session_panel.html" %}
 <div class="transcribe-tab-workspace flex-1 min-w-0 min-h-0 bg-parchment">
-<div class="main-panel h-full" data-tab-panel="output">
+<div id="workspace-panel-output" class="main-panel h-full" role="tabpanel" aria-labelledby="workspace-tab-output" data-tab-panel="output">
 <div class="structured-workspace">
 <div class="structured-workspace__header workspace-context-header" data-workspace-context-header>
 {% set latest_template = preferred_template if preferred_template is defined and preferred_template else (available_templates[0] if available_templates else none) %}
@@ -274,22 +263,6 @@ aria-expanded="false">
 <span class="template-picker-button__text" data-template-picker-label>{% if latest_template %}{{ latest_template.name }}{% else %}Choose template{% endif %}</span>
 <span class="template-picker-button__mode" data-template-picker-mode>{% if latest_template_version %}{{ 'Sectioned' if latest_template_version.mode.value == 'structured' else 'Free text' }}{% endif %}</span>
 </button>
-{% if not latest_generated_document or latest_generated_document.status.value != "ready" %}
-{% endif %}
-</div>
-<div class="note-header-right">
-<div
-class="note-editor-toolbar note-editor-toolbar--header"
-data-note-editor-toolbar
-data-note-editor-header-toolbar
-{% if not (latest_generated_document and latest_generated_document.status.value == "ready" and (latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections or latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text)) %}hidden{% endif %}>
-<span class="note-editor-toolbar__status text-sm text-slate" data-structured-copy-status data-copy-review-status aria-live="polite">Select the note lines you want to copy.</span>
-<div class="note-editor-toolbar__actions flex items-center gap-2">
-<button type="button" class="btn-ghost-sm" data-clear-structured-selection>Clear</button>
-<button type="button" class="btn-ghost-sm" data-select-structured-selection>Select all</button>
-<button type="button" class="btn-primary-sm" data-copy-structured-lines>Copy selected</button>
-</div>
-</div>
 <form method="post" action="/transcribe/generate-output" data-generate-output-form class="inline-form">
 {% if active_transcript %}
 <input type="hidden" name="transcript_id" value="{{ active_transcript.id }}">
@@ -302,66 +275,20 @@ class="btn-primary btn-primary--compact"
 Create
 </button>
 </form>
-<details class="relative" data-note-options-menu>
-<summary class="btn-secondary btn-primary--compact cursor-pointer list-none" data-note-options-summary>
-<i class="w-4 h-4" data-lucide="sliders-horizontal"></i>
-Note options
-</summary>
-<div class="absolute right-0 z-40 mt-2 w-[19rem] max-w-[calc(100vw-2rem)] rounded-lg border border-stone bg-white p-3 shadow-lg space-y-3" data-note-options-panel>
-<div>
-<label class="text-xs font-medium uppercase tracking-[0.12em] text-slate" for="note-options-model">Model</label>
-{% if llm_selection %}
-{% set allowed_llm_models = llm_selection.allowed_models_json or llm_selection.config.available_models_json or [] %}
-{% if allowed_llm_models|length > 1 %}
-<select id="note-options-model" class="mt-1 w-full rounded-lg border border-stone bg-white px-3 py-2 text-sm" data-note-options-model-select>
-<option value="">Team default</option>
-{% set team_default_llm_model = llm_selection.model_name_override or llm_selection.config.model_name %}
-{% for model in allowed_llm_models %}
-{% if model != team_default_llm_model %}
-<option value="{{ model }}" {% if user_llm_preference and user_llm_preference.preferred_model_name == model %}selected{% endif %}>{{ model }}</option>
-{% endif %}
-{% endfor %}
-</select>
-{% else %}
-<select id="note-options-model" class="mt-1 w-full rounded-lg border border-stone bg-white px-3 py-2 text-sm" disabled data-note-options-model-select>
-<option>{{ allowed_llm_models[0] if allowed_llm_models else (llm_selection.model_name_override or llm_selection.config.model_name or "No model configured") }}</option>
-</select>
-{% endif %}
-{% else %}
-<div class="mt-1 rounded-lg border border-stone bg-parchment px-3 py-2 text-sm text-slate">No LLM provider configured</div>
-{% endif %}
 </div>
-<div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-<label class="text-xs font-medium uppercase tracking-[0.12em] text-slate" for="note-options-length">
-Length
-<select id="note-options-length" class="mt-1 w-full rounded-lg border border-stone bg-white px-3 py-2 text-sm normal-case tracking-normal text-ink" data-note-options-length-select>
-{% set note_generation_length = user_app_preferences_json.get('note_generation_length', 'normal') %}
-<option value="short" {% if note_generation_length == 'short' %}selected{% endif %}>Short (up to ~1 page)</option>
-<option value="normal" {% if note_generation_length == 'normal' %}selected{% endif %}>Normal (up to ~2 pages)</option>
-<option value="long" {% if note_generation_length == 'long' %}selected{% endif %}>Long (up to ~4 pages)</option>
-</select>
-</label>
-<label class="text-xs font-medium uppercase tracking-[0.12em] text-slate" for="note-options-detail">
-Detail
-<select id="note-options-detail" class="mt-1 w-full rounded-lg border border-stone bg-white px-3 py-2 text-sm normal-case tracking-normal text-ink" data-note-options-detail-select>
-{% set llm_detail_level = user_app_preferences_json.get('llm_detail_level', 'balanced') %}
-<option value="concise" {% if llm_detail_level == 'concise' %}selected{% endif %}>Concise</option>
-<option value="balanced" {% if llm_detail_level == 'balanced' %}selected{% endif %}>Balanced</option>
-<option value="detailed" {% if llm_detail_level == 'detailed' %}selected{% endif %}>Detailed</option>
-</select>
-</label>
+<div class="note-header-right">
+<div
+class="note-editor-toolbar note-editor-toolbar--header"
+data-note-editor-toolbar
+data-note-editor-header-toolbar
+{% if not (latest_generated_document and latest_generated_document.status.value == "ready" and (latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections or latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text)) %}hidden{% endif %}>
+<span class="note-editor-toolbar__status text-sm text-slate" data-structured-copy-status data-copy-review-status aria-live="polite"></span>
+<div class="note-editor-toolbar__actions flex items-center gap-2">
+<button type="button" class="btn-ghost-sm" data-clear-structured-selection>Clear</button>
+<button type="button" class="btn-ghost-sm" data-select-structured-selection>Select all</button>
+<button type="button" class="btn-primary-sm" data-copy-structured-lines>Copy selected</button>
 </div>
-<div class="text-xs text-coral" data-note-options-warning hidden></div>
 </div>
-</details>
-<a
-href="/workspace/library/templates"
-class="btn-icon"
-data-workspace-settings-link
-aria-label="Open templates"
-title="Manage templates">
-<i class="w-4 h-4" data-lucide="plus" aria-hidden="true"></i>
-</a>
 </div>
 <select
 name="template_id"
@@ -553,25 +480,146 @@ data-generated-freeform-panel
 </div>
 </div>
 
-<div class="main-panel h-full followup-tab-panel" data-tab-panel="followups" hidden>
-{% set initial_followup_title = latest_followup_document.title or latest_followup_document.source_quick_action_name or 'Generated follow-up' if latest_followup_document else 'Generated follow-up' %}
-<div class="followup-output-header-v2 workspace-context-header" data-workspace-context-header>
+<div id="workspace-panel-followups" class="main-panel h-full followup-tab-panel" role="tabpanel" aria-labelledby="workspace-tab-followups" data-tab-panel="followups" hidden>
+{% if latest_followup_document and latest_followup_document.generator_type.value == 'followup' and latest_followup_document.title[:10] == 'Follow-up:' %}
+{% set initial_followup_title = 'Custom follow-up' %}
+{% elif latest_followup_document and latest_followup_document.generator_type.value == 'quick_action' and latest_followup_document.title[:13] == 'Quick action:' and latest_followup_document.source_quick_action_name %}
+{% set initial_followup_title = latest_followup_document.source_quick_action_name %}
+{% else %}
+{% set initial_followup_title = latest_followup_document.title or latest_followup_document.source_quick_action_name or 'Custom follow-up' if latest_followup_document else 'Custom follow-up' %}
+{% endif %}
+{% set followup_is_terminal = latest_followup_document and latest_followup_document.status.value in ["ready", "failed"] %}
+<section class="followup-composer-v3 workspace-context-header" data-workspace-context-header data-tour-target="followups-panel">
+<div class="followup-composer-field-v3 followup-composer-field-v3--action">
+<label id="quick-action-combobox-label">Quick action <span>(optional)</span></label>
+<small class="followup-composer-field-v3__helper-spacer" aria-hidden="true">&nbsp;</small>
+<div class="followup-combobox-v3" data-quick-action-combobox>
+<div class="followup-combobox-v3__control">
+<button
+type="button"
+class="followup-combobox-v3__toggle"
+aria-labelledby="quick-action-combobox-label"
+aria-haspopup="listbox"
+aria-expanded="false"
+aria-controls="quick-action-listbox"
+data-quick-action-combobox-toggle
+{% if not active_transcript or not available_quick_actions or not llm_selection or not active_quick_action_input_available %}disabled{% endif %}>
+<i data-lucide="zap" aria-hidden="true"></i>
+<span data-quick-action-combobox-label>Choose a quick action</span>
+<i data-lucide="chevron-down" aria-hidden="true"></i>
+</button>
+<button type="button" class="followup-combobox-v3__clear" data-clear-quick-action aria-label="Remove quick action" title="Remove quick action" hidden>
+<i data-lucide="x" aria-hidden="true"></i>
+</button>
+</div>
+<div class="followup-combobox-v3__panel" data-quick-action-combobox-panel hidden>
+<div class="followup-combobox-v3__search">
+<i data-lucide="search" aria-hidden="true"></i>
+<input type="search" placeholder="Search quick actions…" aria-label="Search quick actions" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="quick-action-listbox" data-quick-action-search autocomplete="off">
+</div>
+<div id="quick-action-listbox" class="followup-combobox-v3__list" role="listbox" data-quick-action-listbox>
+{% if available_quick_actions %}
+{% for quick_action in available_quick_actions %}
+<button
+type="button"
+id="quick-action-option-{{ quick_action.id }}"
+class="followup-combobox-v3__option"
+role="option"
+aria-selected="false"
+data-quick-action-option
+data-quick-action-id="{{ quick_action.id }}"
+data-quick-action-name="{{ quick_action.name }}"
+data-quick-action-description="{{ quick_action.description or '' }}">
+<i data-lucide="zap" aria-hidden="true"></i>
+<span><strong>{{ quick_action.name }}</strong>{% if quick_action.description %}<small>{{ quick_action.description }}</small>{% endif %}</span>
+<i data-lucide="check" aria-hidden="true"></i>
+</button>
+{% endfor %}
+{% else %}
+<div class="followup-empty-v2">No quick actions available. Add context to continue.</div>
+{% endif %}
+<div class="followup-empty-v2" data-quick-action-no-results hidden>No quick actions match your search.</div>
+</div>
+</div>
+</div>
+<select
+name="quick_action_id"
+data-quick-action-select
+class="sr-only"
+{% if not active_transcript or not available_quick_actions or not llm_selection or not active_quick_action_input_available %}disabled{% endif %}>
+<option value="">No quick action</option>
+{% for quick_action in available_quick_actions %}
+<option
+value="{{ quick_action.id }}"
+data-quick-action-name="{{ quick_action.name }}"
+data-quick-action-description="{{ quick_action.description or '' }}"
+data-settings-url="/workspace/library/quick-actions?scope={% if quick_action.scope.value == 'team' %}team{% else %}personal{% endif %}&quick_action_id={{ quick_action.id }}">
+{{ quick_action.name }}
+</option>
+{% endfor %}
+</select>
+</div>
+<div class="followup-composer-field-v3 followup-composer-field-v3--steering">
+<label for="followup-steering-input">Context and instructions</label>
+<small id="followup-steering-help">Add facts or say how you want this follow-up written.</small>
+<div class="followup-steering-v3">
+<textarea
+id="followup-steering-input"
+name="prompt_text"
+rows="1"
+maxlength="4000"
+placeholder="Add details or instructions…"
+aria-describedby="followup-steering-help followup-steering-count followup-steering-status"
+{% if not active_transcript or not llm_selection or not (active_note_input_available or active_quick_action_input_available) %}disabled{% endif %}
+data-quick-action-context-input
+data-followup-prompt-input></textarea>
+<button
+type="button"
+class="followup-steering-v3__record"
+data-quick-action-context-record
+data-voice-unavailable="{% if not dictation_stt_selected or not dictation_stt_available %}true{% else %}false{% endif %}"
+aria-label="Record context"
+title="{% if not dictation_stt_selected or not dictation_stt_available %}Voice input unavailable.{% else %}Record context{% endif %}"
+{% if not active_transcript or not dictation_stt_selected or not dictation_stt_available %}disabled{% endif %}>
+<i data-lucide="mic" aria-hidden="true"></i>
+<span class="sr-only" data-quick-action-context-record-label>Record context</span>
+</button>
+</div>
+<span class="followup-steering-v3__meta"><span id="followup-steering-count" data-context-char-count>0 / 4000</span><span id="followup-steering-status" role="status" aria-live="polite" data-quick-action-context-status></span></span>
+</div>
+<button
+type="button"
+class="followup-action-button-v2 followup-action-button-v2--primary followup-composer-v3__generate"
+data-run-quick-action-trigger
+disabled>
+<i data-lucide="sparkles" aria-hidden="true"></i>
+<span data-followup-generate-label>Generate</span>
+</button>
+<button type="button" hidden data-generate-followup-trigger disabled></button>
+</section>
+
+<div class="followup-workspace-v3" data-followup-workspace data-history-collapsed="false">
+<section class="followup-output-v3">
+<div class="followup-output-header-v2">
 <div class="followup-output-title-wrap-v2">
-<span class="followup-output-icon-v2"><i data-lucide="message-square-text"></i></span>
+<span class="followup-output-icon-v2"><i data-lucide="message-square-text" aria-hidden="true"></i></span>
 <div>
 <input type="text" class="followup-output-title-v2 followup-output-title-input-v2" value="{{ initial_followup_title }}" maxlength="255" aria-label="Follow-up title" data-followup-output-title data-followup-title-input {% if not (latest_followup_document and latest_followup_document.status.value == "ready") %}disabled{% endif %}>
-<div class="followup-output-subtitle-v2" data-followup-output-subtitle>{% if latest_followup_document %}{{ latest_followup_document.generator_type.value|replace('_', ' ') if latest_followup_document.generator_type else 'Follow-up' }}{% if latest_followup_document.created_at %}, {{ latest_followup_document.created_at }}{% endif %}{% else %}Select or generate a follow-up{% endif %}</div>
+<div class="followup-output-subtitle-v2" data-followup-output-subtitle>{% if latest_followup_document and latest_followup_document.created_at %}Created {{ latest_followup_document.created_at.strftime("%d/%m/%y, %H:%M") }}{% else %}No follow-up selected{% endif %}</div>
 </div>
 </div>
 <div class="followup-output-actions-v2">
-<button type="button" class="btn-ghost-sm" data-copy-latest-followup>Copy</button>
-<button type="button" class="btn-ghost-sm" data-followup-delete-latest>Delete</button>
+<button type="button" class="btn-ghost-sm" data-followup-regenerate-latest {% if not followup_is_terminal %}disabled{% endif %}><i data-lucide="rotate-ccw" aria-hidden="true"></i> <span data-followup-regenerate-label>Regenerate</span></button>
+<button type="button" class="btn-ghost-sm" data-copy-latest-followup {% if not (latest_followup_document and latest_followup_document.status.value == "ready") %}disabled{% endif %}><i data-lucide="copy" aria-hidden="true"></i> Copy</button>
+<button type="button" class="btn-ghost-sm followup-delete-action-v3" data-followup-delete-latest {% if not followup_is_terminal %}disabled{% endif %}><i data-lucide="trash-2" aria-hidden="true"></i> Delete</button>
+<button type="button" class="btn-ghost-sm followup-history-open-v3" data-followup-history-open aria-label="Open Follow Ups history" aria-controls="followup-history-rail" aria-expanded="false" title="Open history" hidden><i data-lucide="panel-right-open" aria-hidden="true"></i><span class="sr-only">Open Follow Ups history</span></button>
 </div>
 </div>
-<div class="followup-workspace-v2" data-tour-target="followups-panel">
-<section class="followup-panel-v2 followup-output-v2">
 <div
 class="followup-output-card-v2"
+role="region"
+aria-label="Generated follow-up"
+aria-busy="{% if latest_followup_document and latest_followup_document.status.value in ['queued', 'processing'] %}true{% else %}false{% endif %}"
 data-latest-followup-output
 data-latest-followup-status="{{ latest_followup_document.status.value if latest_followup_document else '' }}"
 data-latest-followup-id="{{ latest_followup_document.id if latest_followup_document else '' }}"
@@ -579,42 +627,12 @@ data-latest-followup-updated-at="{{ latest_followup_document.updated_at if lates
 {% if latest_followup_document and latest_followup_document.status.value == "ready" %}
 <textarea class="followup-output-card-v2__content followup-output-body-input-v2" aria-label="Follow-up text" data-followup-copy-body data-followup-body-input>{{ latest_followup_document.edited_output_text }}</textarea>
 {% elif latest_followup_document and latest_followup_document.status.value in ["queued", "processing"] %}
-{% set followup_generation_loading_detail = none %}
-{% if active_transcript and active_transcript.status.value in ["queued", "transcribing", "processing"] %}
-{% if latest_followup_document.generator_type and latest_followup_document.generator_type.value == "quick_action" %}
-{% set followup_generation_loading_message = 'Waiting for transcription to finish before running this quick action.' %}
-{% else %}
-{% set followup_generation_loading_message = 'Waiting for transcription to finish before writing your follow-up.' %}
-{% endif %}
-{% else %}
-{% set followup_generation_loading_message = 'This usually takes a few seconds.' %}
-{% set followup_generation_loading_detail = "We're preparing your follow-up..." %}
-{% endif %}
-{{ generation_loading('follow-up', followup_generation_loading_message, followup_generation_loading_detail) }}
+{{ generation_loading('follow-up', 'This may take a few seconds.') }}
 {% elif latest_followup_document and latest_followup_document.status.value == "failed" %}
-<span class="text-slate">The latest follow-up could not be created{% if latest_followup_document.error_message %}: {{ latest_followup_document.error_message }}{% endif %}.</span>
+<span class="text-slate">We couldn’t create this follow-up. Select Regenerate to try again.</span>
 {% else %}
-<div class="empty-state"><div class="empty-state__text">No follow-ups yet. Pick a quick action or write a custom request to create one from the current consultation.</div></div>
+<div class="empty-state"><div class="empty-state__text">Choose a quick action or add context, then select Generate.</div></div>
 {% endif %}
-</div>
-<div class="followup-output-footer-v2">
-<div class="followup-panel-v2__heading">Recent</div>
-<div class="followup-recent-list-v2" data-followup-history data-followup-recent-list>
-{% if followup_documents %}
-{% for document in followup_documents %}
-<button type="button" class="followup-recent-item-v2{% if latest_followup_document and document.id == latest_followup_document.id %} is-selected{% endif %}" data-document-id="{{ document.id }}" data-document-kind="followup">
-<span>
-{{ document.title or document.source_quick_action_name or document.follow_up_prompt_text }}
-{% set followup_detail = document.follow_up_prompt_text or document.source_quick_action_name %}
-{% if followup_detail and followup_detail != document.title %}<small>{{ followup_detail }}</small>{% endif %}
-</span>
-<span>{{ document.created_at }} <i data-lucide="chevron-right"></i></span>
-</button>
-{% endfor %}
-{% else %}
-<div class="followup-empty-v2">No follow-ups for this transcript yet.</div>
-{% endif %}
-</div>
 </div>
 <div data-followup-redaction-debug-slot>
 {% if show_redaction_debug and latest_followup_document %}
@@ -627,120 +645,46 @@ data-latest-followup-updated-at="{{ latest_followup_document.updated_at if lates
 </div>
 </section>
 
-<section class="followup-panel-v2 followup-request-v2">
-<div class="followup-step-v2">
-<div class="followup-step-v2__heading-row">
-<div class="followup-step-v2__heading"><span>1</span> Write your follow-up context</div>
-<button type="button" class="btn-ghost-sm" data-quick-action-context-record {% if not active_transcript or not llm_selection or not (active_note_input_available or active_quick_action_input_available) %}disabled{% endif %}>
-<i data-lucide="mic"></i>
-<span data-quick-action-context-record-label>Record context</span>
-</button>
+<aside id="followup-history-rail" class="followup-history-rail-v3" data-followup-history-rail aria-label="Follow Ups history">
+<div class="followup-history-rail-v3__header">
+<h2>Follow Ups</h2>
+<button type="button" class="btn-icon" data-followup-history-toggle aria-label="Collapse Follow Ups history" title="Collapse history" aria-expanded="true"><i data-lucide="panel-right-close" aria-hidden="true"></i></button>
 </div>
-<label class="followup-field-v2">
-<small>Describe what you want the follow-up to say, include, or achieve.</small>
-<textarea name="prompt_text" maxlength="2000" placeholder="Please write a short patient-facing follow-up. Mention key actions, safety-netting, and next steps." class="followup-textarea-v2 followup-context-textarea-v2" {% if not active_transcript or not llm_selection or not (active_note_input_available or active_quick_action_input_available) %}disabled{% endif %} data-quick-action-context-input data-followup-prompt-input></textarea>
+<label class="followup-history-search-v3">
+<span class="sr-only">Search follow-ups</span>
+<i data-lucide="search" aria-hidden="true"></i>
+<input type="search" placeholder="Search follow-ups…" data-followup-history-search autocomplete="off">
 </label>
-<div class="followup-count-row-v2">
-<span data-context-char-count data-custom-prompt-char-count>0 / 2000</span>
-<span class="text-xs text-slate" data-quick-action-context-status></span>
-</div>
-</div>
-<div class="followup-step-v2 followup-step-v2--actions">
-<div class="followup-step-v2__heading-row">
-<div>
-<div class="followup-step-v2__heading"><span>2</span> Choose quick action</div>
-</div>
-<button type="button" class="btn-ghost-sm" data-clear-quick-action>Remove</button>
-</div>
-<div class="followup-search-v2">
-<input type="search" placeholder="Search quick actions..." data-quick-action-search {% if not available_quick_actions %}disabled{% endif %}>
-</div>
-<select
-name="quick_action_id"
-data-quick-action-select
-class="sr-only"
-{% if not active_transcript or not available_quick_actions or not llm_selection or not active_quick_action_input_available %}disabled{% endif %}>
-{% if not available_quick_actions %}
-<option value="">None available</option>
+<div class="followup-recent-list-v2" data-followup-history data-followup-recent-list>
+{% if followup_documents %}
+{% for document in followup_documents %}
+{% if document.generator_type.value == 'followup' and document.title[:10] == 'Follow-up:' %}
+{% set history_title = 'Custom follow-up' %}
+{% elif document.generator_type.value == 'quick_action' and document.title[:13] == 'Quick action:' and document.source_quick_action_name %}
+{% set history_title = document.source_quick_action_name %}
 {% else %}
-<option value="">Select a quick action...</option>
-{% for quick_action in available_quick_actions %}
-<option
-value="{{ quick_action.id }}"
-data-settings-url="/workspace/library/quick-actions?scope={% if quick_action.scope.value == 'team' %}team{% else %}personal{% endif %}&quick_action_id={{ quick_action.id }}">
-{{ quick_action.name }}
-</option>
-{% endfor %}
+{% set history_title = document.title or document.source_quick_action_name or 'Custom follow-up' %}
 {% endif %}
-</select>
-<div class="followup-panel-v2__heading">Quick picks</div>
-<div class="followup-action-list-v2" data-quick-action-card-list data-quick-action-quick-picks>
-{% if available_quick_actions %}
-{% for quick_action in available_quick_actions %}
-{% set quick_action_name = quick_action.name|lower %}
-{% if "sms" in quick_action_name or "text" in quick_action_name or "message" in quick_action_name %}
-{% set quick_action_kind = "sms" %}
-{% elif "referral" in quick_action_name or "letter" in quick_action_name %}
-{% set quick_action_kind = "letter" %}
-{% elif "call" in quick_action_name or "phone" in quick_action_name %}
-{% set quick_action_kind = "call" %}
-{% elif "result" in quick_action_name or "blood" in quick_action_name or "test" in quick_action_name %}
-{% set quick_action_kind = "results" %}
-{% else %}
-{% set quick_action_kind = "general" %}
-{% endif %}
-<div class="followup-action-card-shell-v2" data-quick-action-card-shell>
-<button
-type="button"
-class="followup-action-card-v2"
-data-quick-action-card
-data-quick-action-quick-pick
-data-quick-action-id="{{ quick_action.id }}"
-data-quick-action-name="{{ quick_action.name }}"
-data-quick-action-description="{{ quick_action.description or '' }}"
-aria-pressed="false"
-{% if not active_transcript or not llm_selection or not active_quick_action_input_available %}disabled{% endif %}>
-<span class="followup-action-card-v2__icon" aria-hidden="true">
-{% if quick_action_kind == "sms" %}<i data-lucide="message-square"></i>{% elif quick_action_kind == "letter" %}<i data-lucide="file-text"></i>{% elif quick_action_kind == "call" %}<i data-lucide="phone"></i>{% elif quick_action_kind == "results" %}<i data-lucide="chart-column"></i>{% else %}<i data-lucide="sparkles"></i>{% endif %}
-</span>
-<span class="followup-action-card-v2__copy">
-<span class="followup-action-card-v2__title">{{ quick_action.name }}</span>
-{% if quick_action.description %}<span class="followup-action-card-v2__description">{{ quick_action.description }}</span>{% endif %}
-</span>
-<span class="followup-action-card-v2__check" aria-hidden="true"><i data-lucide="check"></i></span>
+<div class="followup-history-item-v3{% if latest_followup_document and document.id == latest_followup_document.id %} is-selected{% endif %}" data-document-id="{{ document.id }}" data-document-kind="followup" data-followup-search-text="{{ history_title }} {{ document.source_quick_action_name or '' }}">
+<button type="button" class="followup-history-item-v3__select" data-followup-history-select {% if latest_followup_document and document.id == latest_followup_document.id %}aria-current="true"{% endif %} aria-label="Open {{ history_title }}, created {{ document.created_at.strftime("%d/%m/%y, %H:%M") }}">
+<span><strong>{{ history_title }}</strong><small>{{ document.created_at.strftime("%d/%m/%y, %H:%M") }}</small></span>
 </button>
-<button
-type="button"
-class="followup-action-card-run-v2"
-data-quick-action-card-run
-data-quick-action-id="{{ quick_action.id }}"
-aria-label="Generate {{ quick_action.name }} without context"
-hidden
-{% if not active_transcript or not llm_selection or not active_quick_action_input_available %}disabled{% endif %}>
-<i data-lucide="sparkles"></i>
-</button>
+<details class="followup-history-menu-v3" data-followup-history-menu>
+<summary aria-label="More actions for {{ history_title }}" aria-haspopup="menu" aria-expanded="false" title="More actions"><i data-lucide="ellipsis-vertical" aria-hidden="true"></i></summary>
+<div role="menu">
+<button type="button" role="menuitem" data-followup-copy>Copy</button>
+<button type="button" role="menuitem" class="followup-history-menu-v3__delete" data-followup-delete data-generated-document-id="{{ document.id }}">Delete</button>
+</div>
+</details>
 </div>
 {% endfor %}
 {% else %}
-<div class="followup-empty-v2">No quick actions available.</div>
+<div class="followup-empty-v2">No follow-ups yet.</div>
 {% endif %}
+<div class="followup-empty-v2" data-followup-history-no-results hidden>No follow-ups match your search.</div>
 </div>
-</div>
-<div class="followup-step-v2">
-<div class="followup-step-v2__heading-row">
-<div class="followup-step-v2__heading"><span>3</span> LLM request</div>
-<button type="button" class="btn-ghost-sm" data-followup-llm-request-toggle aria-expanded="false">
-<span data-followup-llm-request-toggle-label>Show request</span>
-</button>
-</div>
-<div data-followup-llm-request-slot></div>
-</div>
-<div class="followup-primary-actions-v2">
-<button type="button" class="followup-action-button-v2 followup-action-button-v2--primary" data-run-quick-action-trigger {% if not active_transcript or not llm_selection or not (active_note_input_available or active_quick_action_input_available) %}disabled{% endif %}><i data-lucide="sparkles"></i> Generate</button>
-<button type="button" class="followup-action-button-v2 followup-action-button-v2--secondary" data-followup-clear><i data-lucide="rotate-ccw"></i> Clear</button>
-</div>
-<button type="button" hidden data-generate-followup-trigger {% if not active_transcript or not llm_selection or not active_note_input_available %}disabled{% endif %}></button>
-</section>
+</aside>
+<button type="button" class="followup-history-scrim-v3" data-followup-history-scrim aria-label="Close Follow Ups history" hidden></button>
 </div>
 
 <form method="post" action="/transcribe/run-quick-action" data-run-quick-action-form hidden>
@@ -759,7 +703,7 @@ hidden
 </form>
 </div>
 
-<div class="main-panel h-full" data-tab-panel="history" hidden>
+<div id="workspace-panel-history" class="main-panel h-full" role="tabpanel" aria-labelledby="workspace-tab-history" data-tab-panel="history" hidden>
 <div class="structured-workspace h-full">
 <div class="structured-workspace__header workspace-context-header" data-workspace-context-header>
 <div class="flex items-center justify-between gap-4">

@@ -508,6 +508,12 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
     AuditCase("DELETE", f"/api/v1/generated-documents/{PLACEHOLDER_UUID}", AccessTier.full),
     AuditCase(
         "POST",
+        f"/api/v1/generated-documents/{PLACEHOLDER_UUID}/regenerate",
+        AccessTier.full,
+        json_body=_json(steering_text="Keep it brief"),
+    ),
+    AuditCase(
+        "POST",
         f"/api/v1/transcripts/{PLACEHOLDER_UUID}/generate-output",
         AccessTier.full,
         json_body=_json(template_id=PLACEHOLDER_UUID_2),

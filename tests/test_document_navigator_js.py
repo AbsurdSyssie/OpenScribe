@@ -90,12 +90,12 @@ def test_note_selection_rail_formats_created_at_in_browser_timezone(tmp_path):
               setState: () => {},
             });
 
-            assert.equal(initialTimestamp.textContent, '26-07-28 15:00');
+            assert.equal(initialTimestamp.textContent, '28/07/26, 15:00');
             navigator.renderSelectedNote();
 
-            assert.match(noteSelector.children[0].children[0].innerHTML, /26-07-28 15:00/);
-            assert.match(noteSelector.children[1].children[0].innerHTML, /26-01-28 14:00/);
-            assert.match(noteMeta.textContent, /26-07-28 15:00/);
+            assert.ok(noteSelector.children[0].children[0].innerHTML.includes('28/07/26, 15:00'));
+            assert.ok(noteSelector.children[1].children[0].innerHTML.includes('28/01/26, 14:00'));
+            assert.ok(noteMeta.textContent.includes('28/07/26, 15:00'));
             """
         ).replace(
             "__SOURCE_PATH__",

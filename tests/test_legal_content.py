@@ -240,9 +240,9 @@ def test_legal_markdown_supports_safe_inline_https_and_mailto_links():
 
 
 def test_legal_markdown_round_trip_keeps_link_after_multiline_text():
-    source = """Information Commissioner's Office  
-Wycliffe House  
-Helpline: 0303 123 1113  
+    source = """Information Commissioner's Office\\
+Wycliffe House\\
+Helpline: 0303 123 1113\\
 [ICO complaints](https://www.ico.org.uk/make-a-complaint)
 """
 
@@ -594,6 +594,14 @@ def test_legal_markdown_editor_uses_native_full_width_input_and_server_preview()
 
     assert 'name="markdown_source"' in panel
     assert "legal-markdown-editor" in panel
+    assert 'role="tablist"' in panel
+    assert 'aria-orientation="horizontal"' in panel
+    assert 'id="legal-write-tab"' in panel
+    assert 'aria-controls="legal-write-panel"' in panel
+    assert 'id="legal-preview-tab"' in panel
+    assert 'aria-controls="legal-preview-panel"' in panel
+    assert 'aria-labelledby="legal-write-tab"' in panel
+    assert 'aria-labelledby="legal-preview-tab"' in panel
     assert "min-height: clamp(32rem, 62vh, 58rem)" in admin_template
     assert 'href="/admin?tab=legal"' in admin_template
     assert "/admin/legal-content/preview" in script
@@ -604,6 +612,11 @@ def test_legal_markdown_editor_uses_native_full_width_input_and_server_preview()
     assert "**bold**" in panel
     assert "tables" in panel
     assert "Unsaved changes" in script
+    assert 'event.key === "ArrowLeft"' in script
+    assert 'event.key === "ArrowRight"' in script
+    assert 'event.key === "Home"' in script
+    assert 'event.key === "End"' in script
+    assert "tab.tabIndex = selected ? 0 : -1" in script
     assert "CodeMirror" not in script
     assert "admin-legal-content.css" not in admin_template
 
@@ -620,6 +633,7 @@ def test_public_footer_links_only_published_documents(client, db_session, make_u
     assert first.status_code == 200
     assert 'href="/privacy"' in first.text
     assert 'href="/cookies"' not in first.text
+    assert 'data-browser-storage-notice-version="unpublished:unpublished"' in first.text
 
     publish_legal_document_draft(
         db_session, actor=admin, version_id=draft.id, expected_revision=draft.revision
@@ -628,6 +642,35 @@ def test_public_footer_links_only_published_documents(client, db_session, make_u
     assert 'href="/privacy"' in second.text
     assert 'href="/cookies"' in second.text
     assert 'href="/terms"' not in second.text
+    assert 'data-browser-storage-notice-version="1:unpublished"' in second.text
+
+    profile = update_operator_legal_profile(
+        db_session,
+        actor=admin,
+        payload=OperatorLegalProfileUpdate(cookie_banner_summary="First synthetic summary."),
+    )
+    profile_only = client.get("/login")
+    assert 'data-browser-storage-notice-version="1:1"' in profile_only.text
+
+    profile = update_operator_legal_profile(
+        db_session,
+        actor=admin,
+        payload=OperatorLegalProfileUpdate(
+            expected_revision=profile.revision,
+            cookie_banner_summary="Updated synthetic summary.",
+        ),
+    )
+    summary_update = client.get("/login")
+    assert 'data-browser-storage-notice-version="1:2"' in summary_update.text
+
+    replacement = create_legal_document_draft(
+        db_session, actor=admin, payload=_draft_payload(LegalDocumentKind.cookie_storage)
+    )
+    publish_legal_document_draft(
+        db_session, actor=admin, version_id=replacement.id, expected_revision=replacement.revision
+    )
+    third = client.get("/login")
+    assert 'data-browser-storage-notice-version="2:2"' in third.text
 
 
 def test_security_txt_uses_only_configured_operator_contact_and_canonical(raw_client, db_session, make_user):
@@ -925,12 +968,17 @@ def test_banner_contract_and_admin_warnings_are_non_blocking(client, db_session,
     assert login_page.status_code == 200
     assert "Cookies and browser storage" in login_page.text
     assert 'data-browser-storage-notice' in login_page.text
+    assert 'data-browser-storage-notice-version="unpublished:unpublished"' in login_page.text
     assert 'data-browser-storage-dismiss' in login_page.text
     assert 'type="button"' in login_page.text
+    banner_template = Path("app/templates/_legal_footer_banner.html").read_text()
+    assert "data-browser-storage-notice-version" in banner_template
+    assert "\n  hidden\n" not in banner_template
     banner_script = Path("app/static/js/legal-content-banner.js").read_text()
     assert "openscribe_browser_storage_notice_v1" in banner_script
     assert "window.localStorage.getItem" in banner_script
     assert "window.localStorage.setItem" in banner_script
+    assert "dismissed:${noticeVersion}" in banner_script
     assert "catch (_error)" in banner_script
     assert "notice.hidden = true" in banner_script
     assert "consent" not in banner_script.lower()

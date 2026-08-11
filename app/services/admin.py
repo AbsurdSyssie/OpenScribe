@@ -1446,10 +1446,12 @@ def reactivate_user(db: Session, actor: User, user_id) -> User:
 
 
 def _delete_user_rows(db: Session, actor: User, *, user: User) -> list[UUID]:
+    now = utcnow()
     owns_active_audit_hold = db.scalar(
         select(SecurityAuditEventHold.id).where(
             SecurityAuditEventHold.owner_user_id == user.id,
             SecurityAuditEventHold.released_at.is_(None),
+            SecurityAuditEventHold.expires_at > now,
         ).limit(1)
     )
     if owns_active_audit_hold is not None:
@@ -1458,6 +1460,20 @@ def _delete_user_rows(db: Session, actor: User, *, user: User) -> list[UUID]:
             "conflict",
             "Release or transfer this system administrator's active audit holds before deleting the account",
         )
+
+    expired_audit_holds = db.scalars(
+        select(SecurityAuditEventHold).where(
+            SecurityAuditEventHold.owner_user_id == user.id,
+            SecurityAuditEventHold.released_at.is_(None),
+            SecurityAuditEventHold.expires_at <= now,
+        )
+    )
+    for hold in expired_audit_holds:
+        # A held event no longer has an active hold once its fixed deadline
+        # passes. Mark that state before the owner FK is cleared on deletion.
+        hold.owner_user_id = None
+        hold.released_at = hold.expires_at
+        db.add(hold)
 
     linked_requests = db.scalars(select(AccountRequest).where(AccountRequest.linked_user_id == user.id))
     for request in linked_requests:

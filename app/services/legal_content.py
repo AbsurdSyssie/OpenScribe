@@ -350,21 +350,29 @@ def list_legal_document_versions(
     )
 
 
-def published_legal_links(db: Session) -> tuple[dict[str, str], ...]:
+def published_legal_footer_state(
+    db: Session,
+) -> tuple[tuple[dict[str, str], ...], int | None]:
     routes = {
         LegalDocumentKind.privacy: ("Privacy", "/privacy"),
         LegalDocumentKind.cookie_storage: ("Cookies and browser storage", "/cookies"),
         LegalDocumentKind.terms: ("Terms", "/terms"),
     }
-    kinds = set(
-        db.scalars(
-            select(LegalDocumentRoot.kind)
+    published_versions = {
+        kind: version_no
+        for kind, version_no in db.execute(
+            select(LegalDocumentRoot.kind, LegalDocumentVersion.version_no)
             .join(LegalDocumentVersion)
             .where(LegalDocumentVersion.state == LegalDocumentVersionState.published)
         )
-    )
-    return tuple(
+    }
+    links = tuple(
         {"label": label, "href": href}
         for kind, (label, href) in routes.items()
-        if kind in kinds
+        if kind in published_versions
     )
+    return links, published_versions.get(LegalDocumentKind.cookie_storage)
+
+
+def published_legal_links(db: Session) -> tuple[dict[str, str], ...]:
+    return published_legal_footer_state(db)[0]

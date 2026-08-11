@@ -8,29 +8,6 @@ export function createTranscribeLayout({
   initialPaneState,
   initialSplitRatio,
 }) {
-  const updateWorkspaceSettingsLink = () => {
-    if (!dom.workspaceSettingsLink) return;
-
-    if (getCurrentAssistantTab() === 'history') {
-      dom.workspaceSettingsLink.hidden = true;
-      return;
-    }
-
-    dom.workspaceSettingsLink.hidden = false;
-    if (getCurrentAssistantTab() === 'followups') {
-      const selectedOption = dom.runQuickActionSelect?.selectedOptions?.[0] || null;
-      dom.workspaceSettingsLink.href = selectedOption?.dataset?.settingsUrl || '/workspace/library/quick-actions';
-      dom.workspaceSettingsLink.title = 'Edit quick actions';
-      dom.workspaceSettingsLink.setAttribute('aria-label', 'Edit quick actions');
-      return;
-    }
-
-    const selectedOption = dom.generateOutputTemplateSelect?.selectedOptions?.[0] || null;
-    dom.workspaceSettingsLink.href = selectedOption?.dataset?.settingsUrl || '/workspace/library/templates';
-    dom.workspaceSettingsLink.title = 'Edit templates';
-    dom.workspaceSettingsLink.setAttribute('aria-label', 'Edit templates');
-  };
-
   const clampSplitRatio = (value) => {
     if (!Number.isFinite(value)) return 50;
     return Math.min(72, Math.max(28, value));
@@ -47,6 +24,8 @@ export function createTranscribeLayout({
     dom.triggers.forEach((trigger) => {
       const isActive = trigger.dataset.tabTrigger === target;
       trigger.classList.toggle('active', isActive);
+      trigger.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      trigger.tabIndex = isActive ? 0 : -1;
     });
     dom.panels.forEach((panel) => {
       panel.hidden = panel.dataset.tabPanel !== target;
@@ -54,7 +33,6 @@ export function createTranscribeLayout({
     dom.tabActions?.forEach((action) => {
       action.hidden = action.dataset.tabAction !== target;
     });
-    updateWorkspaceSettingsLink();
   };
 
   const setPaneState = (state) => {
@@ -66,6 +44,25 @@ export function createTranscribeLayout({
   const attach = () => {
     dom.triggers.forEach((trigger) => {
       trigger.addEventListener('click', () => setTab(trigger.dataset.tabTrigger));
+      trigger.addEventListener('keydown', (event) => {
+        const currentIndex = dom.triggers.indexOf(trigger);
+        if (currentIndex < 0) return;
+        let nextIndex = null;
+        if (event.key === 'ArrowLeft') {
+          nextIndex = (currentIndex - 1 + dom.triggers.length) % dom.triggers.length;
+        } else if (event.key === 'ArrowRight') {
+          nextIndex = (currentIndex + 1) % dom.triggers.length;
+        } else if (event.key === 'Home') {
+          nextIndex = 0;
+        } else if (event.key === 'End') {
+          nextIndex = dom.triggers.length - 1;
+        }
+        if (nextIndex === null) return;
+        event.preventDefault();
+        const nextTrigger = dom.triggers[nextIndex];
+        setTab(nextTrigger.dataset.tabTrigger);
+        nextTrigger.focus();
+      });
     });
     dom.paneToggles.forEach((button) => {
       button.addEventListener('click', () => setPaneState(button.dataset.paneToggle));
@@ -122,8 +119,6 @@ export function createTranscribeLayout({
     setSplitRatio(initialSplitRatio);
     setTab(getCurrentAssistantTab());
     setPaneState(initialPaneState);
-    dom.generateOutputTemplateSelect?.addEventListener('change', updateWorkspaceSettingsLink);
-    dom.runQuickActionSelect?.addEventListener('change', updateWorkspaceSettingsLink);
   };
 
   return {

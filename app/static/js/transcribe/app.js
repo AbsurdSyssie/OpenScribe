@@ -1,9 +1,9 @@
-import { attachTranscribeActions } from './actions.js?v=20260719-workspace-switch-save';
+import { attachTranscribeActions } from './actions.js?v=20260810-followups-accessibility';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
-import { createDocumentNavigator, generationLoadingHtml } from './documents.js?v=20260718-note-pill-datetime';
-import { createTranscribeLayout } from './layout.js?v=20260421-pii-refresh';
+import { createDocumentNavigator, formatWorkspaceCreatedAt, generationLoadingHtml } from './documents.js?v=20260810-followups-accessibility';
+import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
 import { createAudioCaptureController } from './media.js?v=20260528-consult-boundary-guard';
-import { createStructuredEditor } from './structured.js?v=20260718-note-pill-datetime';
+import { createStructuredEditor } from './structured.js?v=20260810-copy-toolbar';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
 import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
@@ -64,8 +64,6 @@ import {
       let noteGenerationInFlight = null;
       let noteGenerationBusy = false;
       let noteGenerationCloseDictationAfterCurrentRequest = false;
-      let noteOptionsSaveQueue = Promise.resolve();
-      const noteOptionsPendingSaves = new Set();
       let followupEditorDirty = false;
       let dirtyFollowupDocumentId = null;
       let followupEditVersion = 0;
@@ -171,7 +169,6 @@ import {
       const outputRedactionSlot = document.querySelector('[data-output-redaction-debug-slot]');
       const followupRedactionSlot = document.querySelector('[data-followup-redaction-debug-slot]');
       const outputLlmRequestSlot = document.querySelector('[data-output-llm-request-slot]');
-      const followupLlmRequestSlot = document.querySelector('[data-followup-llm-request-slot]');
       const copyStructuredLinesButton = document.querySelector('[data-copy-structured-lines]');
       const clearStructuredSelectionButton = document.querySelector('[data-clear-structured-selection]');
       const selectStructuredSelectionButton = document.querySelector('[data-select-structured-selection]');
@@ -198,10 +195,6 @@ import {
       const renameTitleInput = document.querySelector('[data-transcript-title-input]');
       const generateOutputForm = document.querySelector('[data-generate-output-form]');
       const generateOutputTemplateSelect = document.querySelector('[data-template-select]');
-      const noteOptionsModelSelect = document.querySelector('[data-note-options-model-select]');
-      const noteOptionsLengthSelect = document.querySelector('[data-note-options-length-select]');
-      const noteOptionsDetailSelect = document.querySelector('[data-note-options-detail-select]');
-      const noteOptionsWarning = document.querySelector('[data-note-options-warning]');
       const templatePickerButton = document.querySelector('[data-template-picker-button]');
       const templatePickerLabel = document.querySelector('[data-template-picker-label]');
       const templatePickerMode = document.querySelector('[data-template-picker-mode]');
@@ -209,31 +202,34 @@ import {
       const templatePickerOptions = [...document.querySelectorAll('[data-template-picker-option]')];
       const templatePickerCloseButtons = [...document.querySelectorAll('[data-template-picker-close]')];
       const generateFollowupForm = document.querySelector('[data-generate-followup-form]');
-      const generateFollowupPromptInput = document.querySelector('[data-followup-prompt-input]');
       const generateFollowupTrigger = document.querySelector('[data-generate-followup-trigger]');
       const runQuickActionForm = document.querySelector('[data-run-quick-action-form]');
       const runQuickActionSelect = document.querySelector('[data-quick-action-select]');
       const runQuickActionTrigger = document.querySelector('[data-run-quick-action-trigger]');
       const quickActionContextInput = document.querySelector('[data-quick-action-context-input]');
+      const quickActionCombobox = document.querySelector('[data-quick-action-combobox]');
+      const quickActionComboboxToggle = document.querySelector('[data-quick-action-combobox-toggle]');
+      const quickActionComboboxLabel = document.querySelector('[data-quick-action-combobox-label]');
+      const quickActionComboboxPanel = document.querySelector('[data-quick-action-combobox-panel]');
+      const quickActionOptions = [...document.querySelectorAll('[data-quick-action-option]')];
+      const quickActionNoResults = document.querySelector('[data-quick-action-no-results]');
       const quickActionSearchInput = document.querySelector('[data-quick-action-search]');
       const quickActionContextRecordButton = document.querySelector('[data-quick-action-context-record]');
       const quickActionContextRecordLabel = document.querySelector('[data-quick-action-context-record-label]');
       const quickActionContextStatus = document.querySelector('[data-quick-action-context-status]');
-      const followupClearButton = document.querySelector('[data-followup-clear]');
       const contextCharCount = document.querySelector('[data-context-char-count]');
-      const customPromptCharCount = document.querySelector('[data-custom-prompt-char-count]');
-      const recordCustomPromptButton = document.querySelector('[data-record-custom-prompt]');
-      const recordCustomPromptLabel = document.querySelector('[data-record-custom-prompt-label]');
-      const followupPromptPreviewTitle = document.querySelector('[data-followup-prompt-preview-title]');
-      const followupPromptPreviewBody = document.querySelector('[data-followup-prompt-preview-body]');
-      const followupPromptPreviewNote = document.querySelector('[data-followup-prompt-preview-note]');
       const clearQuickActionButton = document.querySelector('[data-clear-quick-action]');
       const copyLatestFollowupButton = document.querySelector('[data-copy-latest-followup]');
       const deleteLatestFollowupButton = document.querySelector('[data-followup-delete-latest]');
-      const followupLlmRequestToggles = [...document.querySelectorAll('[data-followup-llm-request-toggle]')];
-      const quickActionQuickPicks = [...document.querySelectorAll('[data-quick-action-quick-pick]')];
-      const quickActionCardRunButtons = [...document.querySelectorAll('[data-quick-action-card-run]')];
-      const workspaceSettingsLink = document.querySelector('[data-workspace-settings-link]');
+      const regenerateLatestFollowupButton = document.querySelector('[data-followup-regenerate-latest]');
+      const followupGenerateLabel = document.querySelector('[data-followup-generate-label]');
+      const followupWorkspace = document.querySelector('[data-followup-workspace]');
+      const followupHistoryRail = document.querySelector('[data-followup-history-rail]');
+      const followupHistoryToggle = document.querySelector('[data-followup-history-toggle]');
+      const followupHistoryOpenButton = document.querySelector('[data-followup-history-open]');
+      const followupHistoryScrim = document.querySelector('[data-followup-history-scrim]');
+      const followupHistorySearch = document.querySelector('[data-followup-history-search]');
+      const followupHistoryNoResults = document.querySelector('[data-followup-history-no-results]');
       const audioActionTrigger = document.querySelector('[data-audio-action-trigger]');
       const dictationAudioActionTrigger = document.querySelector('[data-dictation-audio-action-trigger]');
       const recordingModeSelect = document.querySelector('[data-recording-mode-select]');
@@ -501,15 +497,12 @@ let statusDetailsHideTimer = null;
       const layoutController = createTranscribeLayout({
         dom: {
           dividerGrip,
-          generateOutputTemplateSelect,
           paneToggles,
           panels,
-          runQuickActionSelect,
           shell,
           splitWorkspace,
           tabActions,
           triggers,
-          workspaceSettingsLink,
         },
         getCurrentAssistantTab: () => currentAssistantTab,
         setCurrentAssistantTab: (value) => {
@@ -592,78 +585,6 @@ let statusDetailsHideTimer = null;
         }
         return userAppPreferences;
       };
-
-      const showNoteOptionsWarning = (message) => {
-        if (!noteOptionsWarning) return;
-        noteOptionsWarning.textContent = message || '';
-        noteOptionsWarning.hidden = !message;
-      };
-
-      const runNoteOptionsSaveWithRetry = async (saveTask) => {
-        try {
-          return await saveTask();
-        } catch (_) {
-          return await saveTask();
-        }
-      };
-
-      const enqueueNoteOptionsSave = (saveTask) => {
-        const savePromise = noteOptionsSaveQueue.catch(() => {}).then(() => runNoteOptionsSaveWithRetry(saveTask));
-        noteOptionsSaveQueue = savePromise.catch(() => {});
-        noteOptionsPendingSaves.add(savePromise);
-        savePromise.finally(() => {
-          noteOptionsPendingSaves.delete(savePromise);
-        }).catch(() => {});
-        return savePromise;
-      };
-
-      const waitForPendingNoteOptionSaves = async () => {
-        let saveFailed = false;
-        while (noteOptionsPendingSaves.size) {
-          const results = await Promise.allSettled(Array.from(noteOptionsPendingSaves));
-          if (results.some((result) => result.status === 'rejected')) {
-            saveFailed = true;
-          }
-        }
-        return !saveFailed;
-      };
-
-      const saveNoteGenerationOptions = async () => {
-        if (!noteOptionsLengthSelect || !noteOptionsDetailSelect) return;
-        try {
-          await enqueueNoteOptionsSave(() => persistUserAppPreferences({
-            note_generation_length: noteOptionsLengthSelect.value || 'normal',
-            llm_detail_level: noteOptionsDetailSelect.value || 'balanced',
-          }));
-          showNoteOptionsWarning('');
-        } catch (_) {
-          showNoteOptionsWarning('Options not saved; next note may use previous settings.');
-        }
-      };
-
-      const saveNoteModelPreference = async () => {
-        if (!noteOptionsModelSelect || noteOptionsModelSelect.disabled) return;
-        try {
-          await enqueueNoteOptionsSave(async () => {
-            const response = await csrfFetch('/api/v1/llm-preference', {
-              method: 'POST',
-              credentials: 'include',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ preferred_model_name: noteOptionsModelSelect.value || null }),
-            });
-            if (!response.ok) {
-              throw new Error(await parseErrorMessage(response, 'Could not save your model preference.'));
-            }
-          });
-          showNoteOptionsWarning('');
-        } catch (_) {
-          showNoteOptionsWarning('Options not saved; next note may use previous settings.');
-        }
-      };
-
-      noteOptionsLengthSelect?.addEventListener('change', saveNoteGenerationOptions);
-      noteOptionsDetailSelect?.addEventListener('change', saveNoteGenerationOptions);
-      noteOptionsModelSelect?.addEventListener('change', saveNoteModelPreference);
 
       const persistDictationExplicitly = async () => {
         if (dictationSaveInFlight) {
@@ -847,6 +768,7 @@ let statusDetailsHideTimer = null;
             if (requestVersion === followupEditVersion) {
               clearFollowupEditorDirty();
             }
+            renderSelectedFollowup?.({ preserveEditor: true });
             return savedDocument;
           } catch (error) {
             showFlash(error instanceof Error ? error.message : 'Could not save follow-up edits.', 'error');
@@ -1805,6 +1727,25 @@ let statusDetailsHideTimer = null;
         return saved;
       };
 
+      const saveDictationBeforeGeneration = async () => {
+        if (!transcriptId) {
+          throw new Error('Open a consultation before regenerating.');
+        }
+        if (dictationPendingAudioBlob || dictationRecordingState === 'stopped' || dictationRecordingState === 'transcribing') {
+          throw new Error('Wait for dictation transcription before regenerating.');
+        }
+        if (dictationRecordingState === 'recording' || dictationRecordingState === 'paused') {
+          throw new Error('Stop dictation before regenerating.');
+        }
+        if (dictationSaveInFlight) {
+          const saved = await dictationSaveInFlight;
+          if (!saved) throw new Error('Save dictation before regenerating.');
+        }
+        if (!dictationDirty) return;
+        const saved = await persistDictationExplicitly();
+        if (!saved) throw new Error('Save dictation before regenerating.');
+      };
+
       const renderDictation = (dictation) => {
         const nextText = dictation?.effective_text || '';
         if (dictationCombinedInput && document.activeElement !== dictationCombinedInput && !dictationDirty) {
@@ -2304,13 +2245,14 @@ let statusDetailsHideTimer = null;
           || ['queued', 'transcribing', 'processing', 'uploading'].includes(currentTranscriptStatus || '');
         const selectedTemplateId = generateOutputTemplateSelect?.value || '';
         const selectedQuickActionId = runQuickActionSelect?.value || '';
+        const hasSteeringText = Boolean(quickActionContextInput?.value?.trim());
         const hasGenerationSource = hasDraft || hasWorkingNote || hasDictation || transcriptWaitingForText;
         const canChooseTemplate = Boolean(transcriptId && hasLlmSelection && hasSelectableOptions(generateOutputTemplateSelect));
         const canGenerateNote = Boolean(transcriptId && hasLlmSelection && selectedTemplateId && hasGenerationSource);
-        const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && hasGenerationSource && hasSelectableOptions(runQuickActionSelect));
-        const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasWorkingNote || hasDictation || transcriptWaitingForText));
-        const canUseFollowupRequest = canGenerateFollowup || canRunQuickAction;
-        const canUsePrimaryFollowupAction = selectedQuickActionId ? canRunQuickAction : canGenerateFollowup;
+        const canUseFollowupRequest = Boolean(transcriptId && hasLlmSelection && hasGenerationSource);
+        const canChooseQuickAction = Boolean(canUseFollowupRequest && hasSelectableOptions(runQuickActionSelect));
+        const canGenerateFollowup = Boolean(canUseFollowupRequest && hasSteeringText);
+        const canUsePrimaryFollowupAction = Boolean(canUseFollowupRequest && (selectedQuickActionId || hasSteeringText));
 
         if (generateOutputTemplateSelect) {
           generateOutputTemplateSelect.disabled = generationBusy || !canChooseTemplate;
@@ -2328,7 +2270,10 @@ let statusDetailsHideTimer = null;
         }
 
         if (runQuickActionSelect) {
-          runQuickActionSelect.disabled = !canRunQuickAction;
+          runQuickActionSelect.disabled = generationBusy || !canChooseQuickAction;
+        }
+        if (quickActionComboboxToggle) {
+          quickActionComboboxToggle.disabled = generationBusy || !canChooseQuickAction;
         }
         if (runQuickActionTrigger) {
           runQuickActionTrigger.disabled = !canUsePrimaryFollowupAction;
@@ -2337,21 +2282,10 @@ let statusDetailsHideTimer = null;
           quickActionContextInput.disabled = !canUseFollowupRequest;
         }
         if (quickActionContextRecordButton) {
-          quickActionContextRecordButton.disabled = !canUseFollowupRequest;
+          const voiceUnavailable = quickActionContextRecordButton.dataset.voiceUnavailable === 'true';
+          quickActionContextRecordButton.disabled = !canUseFollowupRequest || voiceUnavailable;
         }
-        if (recordCustomPromptButton) {
-          recordCustomPromptButton.disabled = !canUseFollowupRequest;
-        }
-        quickActionQuickPicks.forEach((button) => {
-          button.disabled = !canRunQuickAction;
-        });
-        quickActionCardRunButtons.forEach((button) => {
-          button.disabled = !canRunQuickAction;
-        });
 
-        if (generateFollowupPromptInput) {
-          generateFollowupPromptInput.disabled = !canGenerateFollowup;
-        }
         if (generateFollowupTrigger) {
           generateFollowupTrigger.disabled = !canGenerateFollowup;
         }
@@ -3001,6 +2935,13 @@ let statusDetailsHideTimer = null;
 
       const renderFollowupOutput = (document) => {
         if (!latestFollowupOutput) return;
+        const status = document?.status || '';
+        const isReady = status === 'ready';
+        const isTerminal = isReady || status === 'failed';
+        latestFollowupOutput.setAttribute('aria-busy', ['queued', 'processing'].includes(status) ? 'true' : 'false');
+        if (copyLatestFollowupButton) copyLatestFollowupButton.disabled = !isReady;
+        if (deleteLatestFollowupButton) deleteLatestFollowupButton.disabled = !isTerminal;
+        if (regenerateLatestFollowupButton) regenerateLatestFollowupButton.disabled = !isTerminal;
         const setTitleInput = (value, disabled = false) => {
           if (!followupOutputTitle) return;
           if (followupOutputTitle instanceof HTMLInputElement || followupOutputTitle instanceof HTMLTextAreaElement) {
@@ -3014,19 +2955,21 @@ let statusDetailsHideTimer = null;
           latestFollowupOutput.dataset.latestFollowupStatus = '';
           latestFollowupOutput.dataset.latestFollowupId = '';
           latestFollowupOutput.dataset.latestFollowupUpdatedAt = '';
-          setTitleInput('Generated follow-up', true);
-          if (followupOutputSubtitle) followupOutputSubtitle.textContent = 'Select or generate a follow-up';
-          latestFollowupOutput.innerHTML = '<div class="empty-state"><div class="empty-state__text">Select a quick action and generate a follow-up.</div></div>';
+          setTitleInput('Custom follow-up', true);
+          if (followupOutputSubtitle) followupOutputSubtitle.textContent = 'No follow-up selected';
+          latestFollowupOutput.innerHTML = '<div class="empty-state"><div class="empty-state__text">Choose a quick action or add context, then select Generate.</div></div>';
           return;
         }
         latestFollowupOutput.dataset.latestFollowupUpdatedAt = document.updated_at || '';
-        setTitleInput(
-          document.title || document.source_quick_action_name || (document.generator_type === 'quick_action' ? 'Quick action' : 'Follow-up'),
-          document.status !== 'ready'
-        );
+        const savedTitle = String(document.title || '');
+        const safeTitle = document.generator_type === 'followup' && savedTitle.startsWith('Follow-up:')
+          ? 'Custom follow-up'
+          : (document.generator_type === 'quick_action' && savedTitle.startsWith('Quick action:') && document.source_quick_action_name
+            ? document.source_quick_action_name
+            : (savedTitle || document.source_quick_action_name || 'Custom follow-up'));
+        setTitleInput(safeTitle, document.status !== 'ready');
         if (followupOutputSubtitle) {
-          const kind = document.generator_type === 'quick_action' ? 'Quick action' : 'Follow-up';
-          followupOutputSubtitle.textContent = [kind, document.created_at || ''].filter(Boolean).join(', ');
+          followupOutputSubtitle.textContent = document.created_at ? `Created ${formatWorkspaceCreatedAt(document.created_at)}` : 'Created';
         }
         if (document.status === 'ready') {
           latestFollowupOutput.innerHTML = `
@@ -3035,24 +2978,21 @@ let statusDetailsHideTimer = null;
           return;
         }
         if (document.status === 'queued') {
-          const waitingMessage = document.generator_type === 'quick_action'
-            ? 'Waiting for transcription to finish before running this quick action.'
-            : 'Waiting for transcription to finish before writing your follow-up.';
-          const message = isTranscriptWaitingForText()
-            ? waitingMessage
-            : "This usually takes a few seconds.<br>We're preparing your follow-up...";
-          latestFollowupOutput.innerHTML = generationLoadingHtml({ label: 'follow-up', message });
+          latestFollowupOutput.innerHTML = generationLoadingHtml({
+            label: 'follow-up',
+            message: 'This may take a few seconds.',
+          });
           return;
         }
         if (document.status === 'processing') {
           latestFollowupOutput.innerHTML = generationLoadingHtml({
             label: 'follow-up',
-            message: "This usually takes a few seconds.<br>We're preparing your follow-up...",
+            message: 'This may take a few seconds.',
           });
           return;
         }
         if (document.status === 'failed') {
-          latestFollowupOutput.innerHTML = `<span class="text-slate">The latest follow-up could not be created${document.error_message ? `: ${escapeHtml(document.error_message)}` : ''}.</span>`;
+          latestFollowupOutput.innerHTML = '<span class="text-slate">We couldn’t create this follow-up. Select Regenerate to try again.</span>';
           return;
         }
         latestFollowupOutput.innerHTML = '<span class="text-slate">No follow-up content yet.</span>';
@@ -3285,7 +3225,6 @@ let statusDetailsHideTimer = null;
           outputRedactionSlot,
           followupRedactionSlot,
           outputLlmRequestSlot,
-          followupLlmRequestSlot,
         },
         helpers: {
           escapeHtml,
@@ -3364,10 +3303,6 @@ let statusDetailsHideTimer = null;
           syncGenerationAvailability(readActiveDraftText());
           syncDictationControls();
           try {
-            if (!(await waitForPendingNoteOptionSaves())) {
-              showNoteOptionsWarning('Options not saved; next note may use previous settings.');
-              showFlash('Could not save note options. Queueing with last saved settings.', 'warning');
-            }
             await saveWorkingNoteBeforeGeneration();
             const response = await csrfFetch(`/api/v1/transcripts/${generationTranscriptId}/generate-output`, {
               method: 'POST',
@@ -3499,6 +3434,14 @@ let statusDetailsHideTimer = null;
           lastRenderedTranscriptId = nextTranscriptId;
           lastDraftRenderSignature = null;
           deferredDraftRenderText = null;
+          if (quickActionContextInput) {
+            quickActionContextInput.value = '';
+            quickActionContextInput.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+          if (runQuickActionSelect) {
+            runQuickActionSelect.value = '';
+            runQuickActionSelect.dispatchEvent(new Event('change', { bubbles: true }));
+          }
         }
         transcriptId = transcript?.id || null;
         workspaceTranscriptPiiEntities = uniquePiiEntities(workspace.active_transcript_pii_entities || []);
@@ -3514,6 +3457,12 @@ let statusDetailsHideTimer = null;
         sttAvailable = Boolean(workspace.stt_available);
         sttHealth = workspace.stt_health || null;
         dictationSttAvailable = Boolean(workspace.dictation_stt_available);
+        if (quickActionContextRecordButton) {
+          const voiceUnavailable = !hasDictationSttSelection || !dictationSttAvailable;
+          quickActionContextRecordButton.dataset.voiceUnavailable = voiceUnavailable ? 'true' : 'false';
+          quickActionContextRecordButton.setAttribute('aria-label', voiceUnavailable ? 'Voice input unavailable' : 'Record context');
+          quickActionContextRecordButton.title = voiceUnavailable ? 'Voice input unavailable' : 'Record context';
+        }
         sttStatusMessage = workspace.stt_status_message || null;
         dictationSttStatusMessage = workspace.dictation_stt_status_message || null;
         latestIngestionJobStatus = transcript?.latest_ingestion_job_status || null;
@@ -3745,6 +3694,12 @@ let statusDetailsHideTimer = null;
       renderDraft(readActiveDraftText().trim());
       lastSavedDictationText = dictationCombinedInput?.value || '';
       syncGenerationAvailability(readActiveDraftText().trim());
+      quickActionContextInput?.addEventListener('input', () => {
+        syncGenerationAvailability(readActiveDraftText().trim());
+      });
+      runQuickActionSelect?.addEventListener('change', () => {
+        syncGenerationAvailability(readActiveDraftText().trim());
+      });
       structuredEditor.syncStructuredTemplateUi();
       syncTemplatePickerUi();
       syncDictationCompactOverflow();
@@ -3860,7 +3815,6 @@ let statusDetailsHideTimer = null;
           followupOutputSubtitle,
           latestFollowupOutput,
           generateFollowupForm,
-          generateFollowupPromptInput,
           generateFollowupTrigger,
           generatedStructuredPanel,
           generateOutputForm,
@@ -3868,25 +3822,30 @@ let statusDetailsHideTimer = null;
           latestGeneratedOutput,
           newSessionForm,
           noteSelector,
+          quickActionCombobox,
+          quickActionComboboxToggle,
+          quickActionComboboxLabel,
+          quickActionComboboxPanel,
+          quickActionOptions,
+          quickActionNoResults,
           quickActionContextRecordButton,
           quickActionContextRecordLabel,
           quickActionContextInput,
           quickActionSearchInput,
-          quickActionQuickPicks,
-          quickActionCardRunButtons,
           quickActionContextStatus,
-          followupClearButton,
           contextCharCount,
-          customPromptCharCount,
-          recordCustomPromptButton,
-          recordCustomPromptLabel,
-          followupPromptPreviewTitle,
-          followupPromptPreviewBody,
-          followupPromptPreviewNote,
           clearQuickActionButton,
           copyLatestFollowupButton,
           deleteLatestFollowupButton,
-          followupLlmRequestToggles,
+          regenerateLatestFollowupButton,
+          followupGenerateLabel,
+          followupWorkspace,
+          followupHistoryRail,
+          followupHistoryToggle,
+          followupHistoryOpenButton,
+          followupHistoryScrim,
+          followupHistorySearch,
+          followupHistoryNoResults,
           recordingModeSelect,
           renameTitleInput,
           runQuickActionForm,
@@ -3918,12 +3877,14 @@ let statusDetailsHideTimer = null;
         setSessionProgress,
         setRetryAvailability,
         reflectBackendStatus,
+        syncGenerationAvailability,
         persistUserAppPreferences,
         handleOutputTemplateChange,
         setMicButtons,
         setTab,
         structuredEditor,
         saveWorkingNoteBeforeGeneration,
+        saveDictationBeforeGeneration,
         clearWorkingNote: async () => {
           if (!transcriptId) return;
           if (!workingNoteHasContent() && !activeWorkingNote?.mode) {

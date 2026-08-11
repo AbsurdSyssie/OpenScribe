@@ -493,6 +493,12 @@ def test_dspt_retention_controls_migration_backfills_and_enforces_schema():
     assert expiry.total_seconds() == 24 * 60 * 60
     assert hold_reasons == ["incident", "contractual_investigation", "legal_hold", "legal_duty", "dispute"]
 
+    with pytest.raises(RuntimeError, match="source-audio retention records exist"):
+        command.downgrade(alembic_config(), "a8b9c0d1e2f3")
+
+    with engine.connect() as connection:
+        assert "source_audio_expires_at" in {column["name"] for column in inspect(connection).get_columns("transcript_ingestion_jobs")}
+
 
 @pytest.mark.migration
 def test_dspt_retention_controls_downgrade_refuses_security_audit_holds():
@@ -530,6 +536,92 @@ def test_dspt_retention_controls_downgrade_refuses_security_audit_holds():
 
     with engine.connect() as connection:
         assert inspect(connection).has_table("security_audit_event_holds")
+
+
+@pytest.mark.migration
+def test_generation_snapshot_downgrade_refuses_encrypted_inputs():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "c0d1e2f3a4b5")
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+                VALUES ('00000000-0000-0000-0000-000000000811', 'Snapshot downgrade', 'snapshot downgrade', 'active', 30, NOW(), NOW())
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000812', 'Snapshot owner', 'snapshot-downgrade@example.com', 'hash',
+                    '00000000-0000-0000-0000-000000000811', 'user', false, 'active', false, 'complete', true, false,
+                    NOW(), NOW(), NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO transcripts (
+                    id, owner_user_id, team_id, title, current_draft_text_encrypted, ingestion_mode, status,
+                    retention_days_applied, retention_expires_at, created_at, next_live_chunk_sequence_no_applied
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000813',
+                    '00000000-0000-0000-0000-000000000812',
+                    '00000000-0000-0000-0000-000000000811',
+                    'Snapshot downgrade visit', 'synthetic', 'whole_file', 'ready', 30, NOW() + INTERVAL '30 days', NOW(), 1
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO transcript_versions (id, transcript_id, version_no, text_encrypted, created_at)
+                VALUES (
+                    '00000000-0000-0000-0000-000000000814',
+                    '00000000-0000-0000-0000-000000000813', 1, 'synthetic', NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO generated_documents (
+                    id, owner_user_id, team_id, transcript_id, transcript_version_id, generator_type,
+                    source_template_name, prompt_snapshot_text, dictation_snapshot_encrypted, status, title, document_mode,
+                    original_output_text_encrypted, edited_output_text_encrypted, is_edited,
+                    retention_expires_at, created_at, updated_at
+                )
+                VALUES (
+                    '00000000-0000-0000-0000-000000000815',
+                    '00000000-0000-0000-0000-000000000812',
+                    '00000000-0000-0000-0000-000000000811',
+                    '00000000-0000-0000-0000-000000000813',
+                    '00000000-0000-0000-0000-000000000814',
+                    'template', 'Snapshot', 'synthetic', 'encrypted-synthetic-input', 'ready', 'Snapshot document', 'freeform',
+                    'synthetic', 'synthetic', false, NOW() + INTERVAL '30 days', NOW(), NOW()
+                )
+                """
+            )
+        )
+
+    with pytest.raises(RuntimeError, match="encrypted generation inputs exist"):
+        command.downgrade(alembic_config(), "b9c0d1e2f3a4")
+
+    with engine.connect() as connection:
+        columns = {column["name"] for column in inspect(connection).get_columns("generated_documents")}
+    assert {"dictation_snapshot_encrypted", "generation_steering_text_encrypted"} <= columns
 
 
 @pytest.mark.migration
@@ -1029,6 +1121,8 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "prompt_snapshot_text",
         "structured_context_json",
         "generation_snapshot_json",
+        "dictation_snapshot_encrypted",
+        "generation_steering_text_encrypted",
         "structured_section_definitions_json",
         "llm_request_payload_json_encrypted",
         "original_output_text_encrypted",

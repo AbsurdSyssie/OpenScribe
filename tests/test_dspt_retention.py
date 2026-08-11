@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import event as sqlalchemy_event, select
+from sqlalchemy.exc import IntegrityError
 
 from app import tasks as celery_tasks
 from app.celery_app import celery_app
@@ -28,6 +29,7 @@ from app.services.audit_retention import (
 )
 from app.services.admin import delete_user
 from app.services.transcripts import (
+    _read_queued_source_audio,
     expire_ingestion_source_audio,
     process_transcript_ingestion_job,
     retry_audio_file_ingestion,
@@ -65,6 +67,71 @@ def _source_job(db_session, *, transcript, status, deadline, source_ref="secret:
     db_session.add(row)
     db_session.commit()
     return row
+
+
+def test_legacy_queued_audio_sets_the_source_expiry_deadline(db_session, make_team, make_user):
+    team = make_team(name="DSPT legacy source deadline")
+    owner = make_user(email="dspt-legacy-deadline@example.com", password="password-1", team=team)
+    transcript = _transcript(db_session, owner=owner, status=TranscriptStatus.transcribing)
+    job = TranscriptIngestionJob(
+        transcript_id=transcript.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="legacy.wav",
+        status=TranscriptIngestionJobStatus.queued,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    before_store = utcnow()
+    assert _read_queued_source_audio(db_session, job, legacy_audio_bytes=b"synthetic legacy audio") == b"synthetic legacy audio"
+    after_store = utcnow()
+
+    db_session.refresh(job)
+    assert job.source_audio_vault_ref is not None
+    assert job.source_audio_expires_at is not None
+    assert before_store + timedelta(hours=24) <= job.source_audio_expires_at <= after_store + timedelta(hours=24)
+
+
+def test_legacy_queued_audio_commit_failure_queues_orphan_cleanup(db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="DSPT legacy source rollback")
+    owner = make_user(email="dspt-legacy-rollback@example.com", password="password-1", team=team)
+    transcript = _transcript(db_session, owner=owner, status=TranscriptStatus.transcribing)
+    job = TranscriptIngestionJob(
+        transcript_id=transcript.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="legacy.wav",
+        status=TranscriptIngestionJobStatus.queued,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    secret_ref = "secret:openscribe/transcript-ingestion/33333333-3333-3333-3333-333333333333/source-audio"
+    original_commit = db_session.commit
+    commit_attempts = 0
+
+    def fail_first_commit():
+        nonlocal commit_attempts
+        commit_attempts += 1
+        if commit_attempts == 1:
+            raise IntegrityError("update", {}, Exception("synthetic commit failure"))
+        return original_commit()
+
+    monkeypatch.setattr("app.services.transcripts.write_transcript_ingestion_source_audio", lambda **_: secret_ref)
+    monkeypatch.setattr(db_session, "commit", fail_first_commit)
+
+    with pytest.raises(IntegrityError, match="synthetic commit failure"):
+        _read_queued_source_audio(db_session, job, legacy_audio_bytes=b"synthetic legacy audio")
+
+    db_session.expire_all()
+    persisted = db_session.get(TranscriptIngestionJob, job.id)
+    assert persisted is not None
+    assert persisted.source_audio_vault_ref is None
+    assert persisted.source_audio_expires_at is None
+    assert db_session.scalar(select(TranscriptAudioCleanupJob).where(TranscriptAudioCleanupJob.secret_ref == secret_ref)) is not None
 
 
 def test_source_audio_expiry_is_at_original_deadline_and_is_idempotent(db_session, make_team, make_user, monkeypatch):
@@ -322,6 +389,136 @@ def test_audit_hold_authority_window_renewal_and_release(db_session, make_user):
     assert released.released_by_user_id == admin.id
 
 
+def test_audit_hold_placement_rolls_back_when_transactional_audit_write_fails(db_session, make_user, monkeypatch):
+    admin = make_user(email="dspt-audit-place-rollback@example.com", password="password-1", is_system_admin=True)
+    event = SecurityAuditEvent(action="synthetic_hold_place_rollback")
+    db_session.add(event)
+    db_session.commit()
+    now = datetime(2026, 8, 5, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "app.services.audit_retention.add_security_event",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("synthetic audit failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic audit failure"):
+        place_security_audit_hold(
+            db_session,
+            actor=admin,
+            event_id=event.id,
+            reason=SecurityAuditHoldReason.incident,
+            reference="INC-ROLLBACK",
+            review_at=now + timedelta(days=1),
+            expires_at=now + timedelta(days=2),
+            now=now,
+        )
+
+    assert db_session.scalar(select(SecurityAuditEventHold).where(SecurityAuditEventHold.security_audit_event_id == event.id)) is None
+
+
+def test_audit_hold_renewal_rolls_back_when_transactional_audit_write_fails(db_session, make_user, monkeypatch):
+    admin = make_user(email="dspt-audit-renew-rollback@example.com", password="password-1", is_system_admin=True)
+    event = SecurityAuditEvent(action="synthetic_hold_renew_rollback")
+    db_session.add(event)
+    db_session.commit()
+    now = datetime(2026, 8, 5, 12, tzinfo=timezone.utc)
+    hold = place_security_audit_hold(
+        db_session,
+        actor=admin,
+        event_id=event.id,
+        reason=SecurityAuditHoldReason.incident,
+        reference="INC-ORIGINAL",
+        review_at=now + timedelta(days=1),
+        expires_at=now + timedelta(days=2),
+        now=now,
+    )
+    original_values = (hold.reason, hold.reference, hold.approved_at, hold.review_at, hold.expires_at, hold.renewal_count)
+    monkeypatch.setattr(
+        "app.services.audit_retention.add_security_event",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("synthetic audit failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic audit failure"):
+        renew_security_audit_hold(
+            db_session,
+            actor=admin,
+            hold_id=hold.id,
+            reason=SecurityAuditHoldReason.legal_duty,
+            reference="LEGAL-CHANGED",
+            review_at=now + timedelta(days=3),
+            expires_at=now + timedelta(days=4),
+            now=now + timedelta(days=1),
+        )
+
+    db_session.refresh(hold)
+    assert (hold.reason, hold.reference, hold.approved_at, hold.review_at, hold.expires_at, hold.renewal_count) == original_values
+
+
+def test_audit_hold_release_rolls_back_when_transactional_audit_write_fails(db_session, make_user, monkeypatch):
+    admin = make_user(email="dspt-audit-release-rollback@example.com", password="password-1", is_system_admin=True)
+    event = SecurityAuditEvent(action="synthetic_hold_release_rollback")
+    db_session.add(event)
+    db_session.commit()
+    now = datetime(2026, 8, 5, 12, tzinfo=timezone.utc)
+    hold = place_security_audit_hold(
+        db_session,
+        actor=admin,
+        event_id=event.id,
+        reason=SecurityAuditHoldReason.incident,
+        reference="INC-RELEASE",
+        review_at=now + timedelta(days=1),
+        expires_at=now + timedelta(days=2),
+        now=now,
+    )
+    monkeypatch.setattr(
+        "app.services.audit_retention.add_security_event",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("synthetic audit failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic audit failure"):
+        release_security_audit_hold(db_session, actor=admin, hold_id=hold.id, now=now + timedelta(hours=1))
+
+    db_session.refresh(hold)
+    assert hold.released_at is None
+    assert hold.released_by_user_id is None
+
+
+def test_audit_retention_rolls_back_deletion_and_expired_hold_release_when_audit_write_fails(
+    db_session, make_user, monkeypatch
+):
+    admin = make_user(email="dspt-audit-expiry-rollback@example.com", password="password-1", is_system_admin=True)
+    now = datetime(2026, 8, 31, 12, tzinfo=timezone.utc)
+    due_event = SecurityAuditEvent(
+        action="synthetic_retention_delete_rollback",
+        created_at=subtract_calendar_months(now, 6) - timedelta(seconds=1),
+    )
+    held_event = SecurityAuditEvent(action="synthetic_expired_hold_release_rollback", created_at=now)
+    db_session.add_all([due_event, held_event])
+    db_session.commit()
+    expired_hold = SecurityAuditEventHold(
+        security_audit_event_id=held_event.id,
+        reason=SecurityAuditHoldReason.legal_hold,
+        owner_user_id=admin.id,
+        created_at=now - timedelta(days=2),
+        approved_at=now - timedelta(days=2),
+        review_at=now - timedelta(days=1),
+        expires_at=now - timedelta(days=1),
+    )
+    db_session.add(expired_hold)
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.services.audit_retention.add_security_event",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("synthetic audit failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic audit failure"):
+        expire_security_audit_events(db_session, now=now)
+
+    assert db_session.get(SecurityAuditEvent, due_event.id) is not None
+    db_session.refresh(expired_hold)
+    assert expired_hold.released_at is None
+    assert expired_hold.released_by_user_id is None
+
+
 def test_dspt_retention_workers_have_timely_control_queue_schedules():
     expected = {
         "expire-ingestion-source-audio-every-10-seconds": "openscribe.expire_ingestion_source_audio",
@@ -459,3 +656,40 @@ def test_user_deletion_is_blocked_while_system_admin_owns_active_audit_hold(
         delete_user(db_session, actor, owner.id)
 
     assert db_session.get(type(owner), owner.id) is not None
+
+
+def test_user_deletion_ignores_expired_unreleased_audit_hold(db_session, make_user):
+    actor = make_user(
+        email="dspt-expired-hold-delete-actor@example.com",
+        password="password-1",
+        is_system_admin=True,
+    )
+    owner = make_user(email="dspt-expired-hold-delete-owner@example.com", password="password-1")
+    event = SecurityAuditEvent(action="synthetic_expired_owner_delete_hold")
+    db_session.add(event)
+    db_session.commit()
+    now = utcnow()
+    db_session.add(
+        SecurityAuditEventHold(
+            security_audit_event_id=event.id,
+            reason=SecurityAuditHoldReason.legal_duty,
+            owner_user_id=owner.id,
+            created_at=now - timedelta(days=3),
+            approved_at=now - timedelta(days=3),
+            review_at=now - timedelta(days=2),
+            expires_at=now - timedelta(days=1),
+        )
+    )
+    db_session.commit()
+    hold = db_session.scalar(select(SecurityAuditEventHold).where(SecurityAuditEventHold.security_audit_event_id == event.id))
+    assert hold is not None
+    hold_id = hold.id
+    expiry = hold.expires_at
+
+    delete_user(db_session, actor, owner.id)
+
+    assert db_session.get(type(owner), owner.id) is None
+    persisted_hold = db_session.get(SecurityAuditEventHold, hold_id)
+    assert persisted_hold is not None
+    assert persisted_hold.owner_user_id is None
+    assert persisted_hold.released_at == expiry

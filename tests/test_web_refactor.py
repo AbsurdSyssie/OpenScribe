@@ -72,70 +72,96 @@ def test_followup_redesign_preserves_required_hooks():
         "data-generate-followup-trigger",
         "data-latest-followup-output",
         "data-followup-history",
-        "data-quick-action-card",
+        "data-quick-action-combobox",
+        "data-followup-history-rail",
+        "data-followup-regenerate-latest",
     ]:
         assert hook in workspace_template
 
-    assert workspace_template.index("followup-output-v2") < workspace_template.index("followup-request-v2")
-    assert workspace_template.index("followup-output-footer-v2") < workspace_template.index("data-followup-history")
-    assert workspace_template.index("followup-output-v2") < workspace_template.index("data-followup-history")
-    assert workspace_template.index("followup-step-v2--actions") < workspace_template.index("data-quick-action-card-list")
-    assert workspace_template.index("data-quick-action-card-list") < workspace_template.index("data-followup-llm-request-slot")
-    assert "data-followup-selected-action-panel" not in workspace_template
+    assert workspace_template.index("followup-composer-v3") < workspace_template.index("followup-output-v3")
+    assert workspace_template.index("followup-output-v3") < workspace_template.index("data-followup-history-rail")
+    assert "Quick action <span>(optional)</span>" in workspace_template
+    assert "Search quick actions…" in workspace_template
+    assert "Context and instructions" in workspace_template
+    assert "Choose a quick action or add context, then select Generate." in workspace_template
     assert "data-followup-output-title" in workspace_template
     assert "data-followup-title-input" in workspace_template
     assert "data-followup-body-input" in workspace_template
     assert "data-latest-followup-updated-at" in workspace_template
-    assert "data-followup-llm-request-toggle-label" in workspace_template
-    assert workspace_template.index("data-followup-llm-request-toggle") < workspace_template.index("data-followup-llm-request-slot")
     assert "data-followup-output-subtitle" in workspace_template
-    assert "data-followup-prompt-preview" not in workspace_template
-    assert "Prompt preview" not in workspace_template
-    assert workspace_template.index("data-followup-llm-request-slot") < workspace_template.index("followup-primary-actions-v2")
-    assert "maxlength=\"2000\"" in workspace_template
+    assert "data-followup-llm-request-toggle" not in workspace_template
+    assert "Show request" not in workspace_template
+    assert "maxlength=\"4000\"" in workspace_template
     assert re.search(
         r"<textarea\b(?=[^>]*data-quick-action-context-input)(?=[^>]*data-followup-prompt-input)[^>]*>",
         workspace_template,
     )
-    assert "data-followup-selected-action-name" not in workspace_template
-    assert "data-selected-quick-action-run" not in workspace_template
-    assert "data-quick-action-card-run" in workspace_template
-    assert "aria-label=\"Generate {{ quick_action.name }} without context\"" in workspace_template
-    assert "data-lucide=\"arrow-left\"" not in workspace_template
+    assert "data-quick-action-card-run" not in workspace_template
+    assert "Quick picks" not in workspace_template
     assert "followup-action-button-v2--primary" in workspace_template
-    assert "dom.followupSelectedActionPanel" not in actions_js
-    assert "dom.selectedQuickActionRunButton" not in actions_js
-    assert "dom.quickActionCardRunButtons?.forEach" in actions_js
+    assert "event.ctrlKey || event.metaKey" in actions_js
+    assert "clearSteeringAfterQueue" in actions_js
+    assert "`/api/v1/generated-documents/${generatedDocumentId}/regenerate`" in actions_js
+    assert "body: JSON.stringify({ steering_text: steeringText || null })" in actions_js
+    assert "await saveWorkingNoteBeforeGeneration?.();" in actions_js
+    assert "openscribe:transcribe:followup-history-open" in actions_js
     assert "dirtyFollowupDocumentId" in Path("app/static/js/transcribe/app.js").read_text()
     assert "hasPendingGeneratedFollowupEdits" in documents_js
     assert "const savedDocument = await persistFollowupEditsSilently?.();" in documents_js
     assert "renderSelectedFollowup({ preserveEditor: preserveDirtyFollowupEditor });" in Path("app/static/js/transcribe/app.js").read_text()
-    assert "quickActionContextOverride = '';" in actions_js
     assert "runQuickActionForm.submit();" not in Path("app/templates/transcribe/_shell_extras.html").read_text()
-    assert ".followup-selected-action-v2" not in transcribe_css
-    assert ".followup-action-card-shell-v2" in transcribe_css
-    assert ".followup-action-card-run-v2" in transcribe_css
+    assert ".followup-composer-v3" in transcribe_css
+    assert ".followup-combobox-v3__panel" in transcribe_css
+    assert ".followup-history-rail-v3" in transcribe_css
     assert ".followup-output-header-v2" in transcribe_css
     assert ".followup-output-title-v2" in transcribe_css
     assert ".followup-output-title-input-v2" in transcribe_css
     assert ".followup-output-body-input-v2" in transcribe_css
-    assert "font-size: 1.05rem;" in transcribe_css
-    assert ".followup-selected-action-v2__generate" not in transcribe_css
-    assert ".followup-action-button-v2--primary" in transcribe_css
-    assert "followup-llm-request-pre-v2" in documents_js
     assert "followupOutputTitle.textContent" in documents_js
     assert "followupOutputTitle.value = title" in documents_js
-    assert "wrapper.hidden = true" in documents_js
-    assert "shouldRestoreOpen" not in documents_js
-    assert "[data-followup-llm-request-slot]" in transcribe_css
-    assert "followup-output-card-v2 followup-llm-request-card-v2" in documents_js
-    assert "panel.hidden = !panel.hidden" in actions_js
-    assert "Hide request" in actions_js
-    assert "Show request" in actions_js
-    assert "flex: 0 0 auto;" in transcribe_css
-    assert ".followup-llm-request-card-v2[hidden]" in transcribe_css
-    assert "display: none;" in transcribe_css
-    assert ".followup-llm-request-card-v2" in transcribe_css
+    assert "document?.follow_up_prompt_text" not in documents_js
+
+
+def test_followup_quick_action_search_uses_an_accessible_combobox_contract():
+    workspace_template = Path("app/templates/transcribe/_workspace.html").read_text()
+    actions_js = Path("app/static/js/transcribe/actions.js").read_text()
+
+    toggle_markup = re.search(
+        r"<button\b(?=[^>]*data-quick-action-combobox-toggle)[^>]*>", workspace_template
+    ).group(0)
+    search_markup = re.search(
+        r"<input\b(?=[^>]*data-quick-action-search)[^>]*>", workspace_template
+    ).group(0)
+
+    # The closed control is a disclosure. The field that accepts a search is the combobox.
+    assert 'role="combobox"' not in toggle_markup
+    assert 'aria-haspopup="listbox"' in toggle_markup
+    assert 'role="combobox"' in search_markup
+    assert 'aria-autocomplete="list"' in search_markup
+    assert 'aria-controls="quick-action-listbox"' in search_markup
+    assert "dom.quickActionSearchInput?.setAttribute('aria-activedescendant', nextOption.id)" in actions_js
+    assert "dom.quickActionComboboxToggle?.setAttribute('aria-activedescendant', nextOption.id)" not in actions_js
+
+
+def test_followup_mobile_focus_trap_ignores_controls_inside_closed_details():
+    actions_js = Path("app/static/js/transcribe/actions.js").read_text()
+
+    assert "const closedDetails = element.closest('details:not([open])');" in actions_js
+    assert "return !closedDetails || element.tagName === 'SUMMARY';" in actions_js
+
+
+def test_followup_context_mic_refreshes_its_accessible_name_with_provider_state():
+    app_js = Path("app/static/js/transcribe/app.js").read_text()
+
+    workspace_update = app_js[app_js.index("if (quickActionContextRecordButton) {"):]
+    assert "quickActionContextRecordButton.setAttribute('aria-label', voiceUnavailable ? 'Voice input unavailable' : 'Record context');" in workspace_update
+
+
+def test_followup_controls_require_a_generation_source():
+    app_js = Path("app/static/js/transcribe/app.js").read_text()
+
+    assert "const canUseFollowupRequest = Boolean(transcriptId && hasLlmSelection && hasGenerationSource);" in app_js
+    assert "const canChooseQuickAction = Boolean(canUseFollowupRequest && hasSelectableOptions(runQuickActionSelect));" in app_js
 
 
 def test_followup_llm_request_wraps_without_horizontal_scroll():
@@ -146,6 +172,76 @@ def test_followup_llm_request_wraps_without_horizontal_scroll():
     assert "overflow-y: auto;" in transcribe_css
     assert "white-space: pre-wrap;" in transcribe_css
     assert "overflow-wrap: anywhere;" in transcribe_css
+
+
+def test_followup_detailing_keeps_controls_aligned_and_output_scrollable():
+    """Lock the Follow Ups layout fixes behind the detailing cache revision."""
+    head_assets = Path("app/templates/transcribe/_head_assets.html").read_text()
+    transcribe_css = Path("app/static/css/transcribe.css").read_text()
+    documents_js = Path("app/static/js/transcribe/documents.js").read_text()
+
+    assert 'transcribe.css?v=20260810-followups-menu-layer' in head_assets
+
+    # Desktop composer fields share label, helper, control and meta rows.
+    assert ".followup-composer-v3 {\ngrid-template-rows: auto auto auto auto;" in transcribe_css
+    assert ".followup-composer-field-v3 {\ndisplay: grid;\ngrid-row: 1 / span 4;\ngrid-template-rows: subgrid;" in transcribe_css
+    assert ".followup-composer-v3__generate {\ngrid-row: 3;\nalign-self: start;" in transcribe_css
+    assert ".followup-composer-field-v3__helper-spacer {\ndisplay: none;" in transcribe_css
+
+    # Clear is a distinct flex item, so it cannot overlap the selection toggle.
+    assert ".followup-combobox-v3__control {\ndisplay: flex;\nalign-items: stretch;" in transcribe_css
+    assert ".followup-combobox-v3__toggle {\ndisplay: grid;\ngrid-template-columns: auto minmax(0, 1fr) auto;\nflex: 1 1 auto;" in transcribe_css
+    assert ".followup-combobox-v3__clear {\ndisplay: inline-flex;\nflex: 0 0 auto;" in transcribe_css
+    assert ".followup-combobox-v3__clear {\nposition:" not in transcribe_css
+
+    # Selection states remain legible: pale accent and dark foreground text.
+    assert ".followup-combobox-v3__option.is-selected {" in transcribe_css
+    assert "background: var(--accent-pale);\ncolor: var(--fg);" in transcribe_css
+    assert ".followup-history-item-v3.is-selected {" in transcribe_css
+    assert ".followup-history-item-v3.is-selected .followup-history-item-v3__select small {\ncolor: var(--muted);" in transcribe_css
+
+    # The output grows into the available height; the textarea owns overflow.
+    assert ".followup-workspace-v3 {\nposition: relative;\ndisplay: grid;\nflex: 1;\ngrid-template-columns:" in transcribe_css
+    assert ".followup-output-v3 {\ndisplay: flex;\nflex-direction: column;\nmin-width: 0;\nmin-height: 0;" in transcribe_css
+    assert ".followup-output-card-v2 {\ndisplay: flex;\nflex-direction: column;\nflex: 1 1 auto;\nmin-height: 0;" in transcribe_css
+    assert ".followup-output-body-input-v2 {\nwidth: 100%;\nheight: 100%;\nmin-height: 0;\noverflow: auto;\nresize: none;" in transcribe_css
+
+    # History and subtitle timestamps are readable dates, not raw API timestamps.
+    assert "export const formatWorkspaceCreatedAt = (value) => {" in documents_js
+    assert "if (!Number.isFinite(timestamp)) return value;" in documents_js
+    assert "new Intl.DateTimeFormat('en-GB', {" in documents_js
+    assert "hourCycle: 'h23'," in documents_js
+    assert "Created ${formatWorkspaceCreatedAt(selectedFollowup.created_at)}" in documents_js
+
+
+def test_collapsed_followup_history_opener_keeps_clear_of_output_actions():
+    """The reopen control shares the action row, so it cannot cover Delete."""
+    workspace_template = Path("app/templates/transcribe/_workspace.html").read_text()
+    transcribe_css = Path("app/static/css/transcribe.css").read_text()
+    actions_js = Path("app/static/js/transcribe/actions.js").read_text()
+
+    # The opener is a sibling of Delete in the flex-wrapping output action row.
+    # It is not absolutely positioned over that row when the rail is collapsed.
+    actions_markup = re.search(
+        r'<div class="followup-output-actions-v2">(?P<actions>.*?)</div>',
+        workspace_template,
+        re.DOTALL,
+    ).group("actions")
+    assert actions_markup.index("data-followup-delete-latest") < actions_markup.index("data-followup-history-open")
+    assert ".followup-history-open-v3 {\ndisplay: inline-flex;\nalign-items: center;\njustify-content: center;\nflex: 0 0 2.75rem;" in transcribe_css
+    assert ".followup-history-open-v3 {\nposition:" not in transcribe_css
+
+    # Do not regress the keyboard and screen-reader route back into the rail.
+    opener_markup = re.search(
+        r"<button\b(?=[^>]*data-followup-history-open)[^>]*>", workspace_template
+    ).group(0)
+    assert 'aria-label="Open Follow Ups history"' in opener_markup
+    assert 'aria-controls="followup-history-rail"' in opener_markup
+    assert 'aria-expanded="false"' in opener_markup
+    assert 'id="followup-history-rail"' in workspace_template
+    assert "dom.followupHistoryOpenButton.setAttribute('aria-expanded', next ? 'true' : 'false');" in actions_js
+    assert "dom.followupHistoryOpenButton?.addEventListener('click', openHistoryRail);" in actions_js
+    assert "(historyRailReturnFocus || dom.followupHistoryOpenButton)?.focus?.();" in actions_js
 
 
 def test_clinical_note_empty_state_uses_flat_output_only():
@@ -178,24 +274,22 @@ def test_generation_loading_replaces_plain_text_placeholders():
     shell_extras = Path("app/templates/transcribe/_shell_extras.html").read_text()
 
     assert "note-generation-loading" in workspace_template
-    assert "Generating your {{ label }}" in workspace_template
+    assert "Creating{% else %}Generating{% endif %} your {{ label }}" in workspace_template
     assert "generation_loading('note'" in workspace_template
     assert "generation_loading('follow-up'" in workspace_template
     assert "We're preparing your clinical note..." in workspace_template
-    assert "We're preparing your follow-up..." in workspace_template
+    assert "This may take a few seconds." in workspace_template
     assert "Your note is waiting to be written." not in workspace_template
     assert "Your note is being written." not in workspace_template
     assert "Your follow-up is being written." not in workspace_template
-    assert "Your note is waiting to be written." not in structured_js
-    assert "Your note is being written." not in structured_js
+    assert "generationLoadingHtml({ label: 'note'" in structured_js
+    assert "label: 'follow-up'" in app_js
     assert "Your follow-up is waiting to be written." not in app_js
     assert "Your follow-up is being written." not in app_js
     assert "generationLoadingHtml" in documents_js
-    assert "generationLoadingHtml({ label: 'note'" in structured_js
-    assert "generationLoadingHtml({ label: 'follow-up'" in app_js
-    assert "structured.js?v=20260718-note-pill-datetime" in app_js
-    assert "documents.js?v=20260718-note-pill-datetime" in app_js
-    assert "/static/js/transcribe/app.js?v=20260730-local-time" in shell_extras
+    assert "structured.js?v=20260810-copy-toolbar" in app_js
+    assert "documents.js?v=20260810-followups-accessibility" in app_js
+    assert "/static/js/transcribe/app.js?v=20260810-followups-accessibility" in shell_extras
     assert ".note-generation-loading" in transcribe_css
     assert "@keyframes note-generation-orbit" in transcribe_css
     assert 'data-transcription-loading' in workspace_template
@@ -256,7 +350,7 @@ def test_splash_and_transcribe_styles_are_cacheable_static_assets():
     assert ".cta-panel" in splash_css
     assert '<link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">' in head_assets
     assert '<link rel="stylesheet" href="/static/css/components.css?v=20260718-brand-lockup">' in head_assets
-    assert '<link rel="stylesheet" href="/static/css/transcribe.css?v=20260719-session-panel-align">' in head_assets
+    assert '<link rel="stylesheet" href="/static/css/transcribe.css?v=20260810-followups-menu-layer">' in head_assets
     assert "<style" not in head_assets
     assert "font-family: var(--font-body);" in transcribe_css
     assert ".structured-statement-list" in transcribe_css
@@ -284,10 +378,9 @@ def test_transcribe_note_pills_use_compact_24_hour_timestamps():
 
     assert 'datetime="{{ document.created_at.isoformat() }}"' in workspace_template
     assert 'data-note-created-at="{{ document.created_at.isoformat() }}"' in workspace_template
-    assert "const formatNoteCreatedAt = (value) => {" in documents_js
-    assert "getFullYear()" in documents_js
-    assert "getHours()" in documents_js
-    assert "getMinutes()" in documents_js
+    assert "export const formatWorkspaceCreatedAt = (value) => {" in documents_js
+    assert "new Intl.DateTimeFormat('en-GB', {" in documents_js
+    assert "hourCycle: 'h23'," in documents_js
     assert 'data-note-hover-delete' in workspace_template
     assert "deleteButton.dataset.noteHoverDelete = 'true';" in documents_js
     assert "selectDocumentFromUi('note', documentId)" in actions_js

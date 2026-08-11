@@ -4,9 +4,11 @@
   const dismiss = document.querySelector("[data-browser-storage-dismiss]");
   if (!notice || !dismiss) return;
 
+  const noticeVersion = notice.dataset.browserStorageNoticeVersion || "unpublished";
+  const dismissalValue = `dismissed:${noticeVersion}`;
   let dismissed = false;
   try {
-    dismissed = window.localStorage.getItem(STORAGE_KEY) === "dismissed";
+    dismissed = window.localStorage.getItem(STORAGE_KEY) === dismissalValue;
   } catch (_error) {
     dismissed = false;
   }
@@ -14,7 +16,7 @@
 
   dismiss.addEventListener("click", () => {
     try {
-      window.localStorage.setItem(STORAGE_KEY, "dismissed");
+      window.localStorage.setItem(STORAGE_KEY, dismissalValue);
     } catch (_error) {
       // Storage may be blocked. Dismiss for this page without blocking use.
     }

@@ -213,11 +213,14 @@ class TestNoUnsafeRendering:
             "structured.js has unescaped error_message in innerHTML"
         )
 
-    def test_error_message_escaped_in_app_js(self):
-        """Verify app.js already escapes error_message (was correct)."""
-        text = Path("app/static/js/transcribe/app.js").read_text()
-        assert "escapeHtml(document.error_message)" in text, (
-            "app.js must escape error_message before innerHTML"
+    def test_error_message_escaped_in_generated_document_renderer(self):
+        """The renderer escapes an error message before inserting generated-document HTML."""
+        text = Path("app/static/js/transcribe/structured.js").read_text()
+        assert "escapeHtml(generatedDocument.error_message)" in text, (
+            "structured.js must escape error_message before innerHTML"
+        )
+        assert '`: ${generatedDocument.error_message}`' not in text, (
+            "structured.js has unescaped error_message in innerHTML"
         )
 
     def test_workspace_html_uses_tojson_forceescape(self):

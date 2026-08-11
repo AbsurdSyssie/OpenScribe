@@ -745,7 +745,7 @@ def test_admin_quota_posts_require_system_admin_and_history_escapes_reason_after
     assert str(admin.id) in history.text
 
 
-def test_user_home_shows_team_stt_selection_when_configured(client, make_team, make_user, make_stt_config, make_stt_selection):
+def test_user_home_hides_team_stt_provider_name(client, make_team, make_user, make_stt_config, make_stt_selection):
     team = make_team(name="Clinic North")
     admin = make_user(email="admin@example.com", password="password-1", is_system_admin=True)
     config = make_stt_config(team=team, actor=admin, label="Clinic STT", model_name="whisper-1")
@@ -757,7 +757,7 @@ def test_user_home_shows_team_stt_selection_when_configured(client, make_team, m
     page = client.get("/home")
 
     assert page.status_code == 200
-    assert "Clinic STT" in page.text
+    assert "Clinic STT" not in page.text
 
 
 def test_home_restyled_preview_route_renders_for_signed_in_non_admin(client, make_team, make_user):
@@ -3382,7 +3382,7 @@ def test_transcribe_documents_show_hallucination_check_panel():
 
     assert "Hallucination check" in documents_js
     assert "Debug payload not available. Set HALLUCINATION_CHECK_DEBUG_UI=1 before generating the note" in documents_js
-    assert "documents.js?v=20260718-note-pill-datetime" in app_js
+    assert "documents.js?v=20260810-followups-accessibility" in app_js
 
 
 def test_admin_llm_draft_flow_hides_key_after_saved_and_shows_pending_state(
@@ -3922,10 +3922,9 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'data-copy-transcript' in page.text
     assert 'data-template-picker-button' in page.text
     assert 'data-template-picker-modal' in page.text
-    assert 'data-note-options-menu' in page.text
-    assert 'data-note-options-length-select' in page.text
-    assert 'data-note-options-detail-select' in page.text
-    assert "Note options" in page.text
+    assert 'data-workspace-settings-link' not in page.text
+    assert 'data-note-options-menu' not in page.text
+    assert "Note options" not in page.text
     assert 'data-note-selector' in page.text
     assert 'Copy transcript' in page.text
     assert 'data-select-structured-selection' in page.text
@@ -3954,8 +3953,30 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' not in page.text
     assert 'aria-label="Workspace navigation"' in page.text
     assert "My Library" in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260730-local-time"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260810-followups-accessibility"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
+
+
+def test_transcribe_note_header_places_create_after_template_and_keeps_runtime_wired():
+    root = Path(__file__).resolve().parents[1]
+    workspace_html = (root / "app" / "templates" / "transcribe" / "_workspace.html").read_text(encoding="utf-8")
+    app_js = (root / "app" / "static" / "js" / "transcribe" / "app.js").read_text(encoding="utf-8")
+    actions_js = (root / "app" / "static" / "js" / "transcribe" / "actions.js").read_text(encoding="utf-8")
+    structured_js = (root / "app" / "static" / "js" / "transcribe" / "structured.js").read_text(encoding="utf-8")
+
+    template_button_index = workspace_html.index("data-template-picker-button")
+    create_form_index = workspace_html.index("data-generate-output-form")
+    right_controls_index = workspace_html.index('class="note-header-right"')
+
+    assert template_button_index < create_form_index < right_controls_index
+    assert "Select the note lines you want to copy." not in workspace_html
+    assert "const noteCopyStatusDefault = '';" in structured_js
+    assert "const persistUserAppPreferences = async (patch) => {" in app_js
+    assert "persistUserAppPreferences," in app_js
+    assert "structuredEditor.clearStructuredSelection();" in actions_js
+    assert "structuredEditor.selectStructuredSelection();" in actions_js
+    assert "checkbox.checked = false;" in structured_js
+    assert "checkbox.checked = true;" in structured_js
 
 
 
@@ -4265,7 +4286,7 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
 
     assert page.status_code == 200
     assert "/static/css/tokens.css?v=20260701-token-harmonise" in page.text
-    assert "/static/css/transcribe.css?v=20260719-session-panel-align" in page.text
+    assert "/static/css/transcribe.css?v=20260810-followups-menu-layer" in page.text
     assert "/static/css/transcribe-mobile.css" in page.text
     assert "/static/js/workspace/app.js" in page.text
     assert "/static/js/transcribe/mobile.js" not in page.text
@@ -4310,7 +4331,7 @@ def test_user_transcribe_page_namespaces_legacy_note_tabs(client, make_team, mak
     assert 'data-tab-panel="output"' in page.text
 
 
-def test_user_transcribe_page_exposes_home_and_context_settings_controls(
+def test_user_transcribe_page_exposes_workspace_navigation_and_asset_context(
     client,
     db_session,
     make_team,
@@ -4342,8 +4363,8 @@ def test_user_transcribe_page_exposes_home_and_context_settings_controls(
     assert 'href="/home"' not in page.text
     assert 'href="/workspace/account"' in page.text
     assert 'href="/workspace/preferences"' in page.text
-    assert 'data-workspace-settings-link' in page.text
-    assert 'justify-between border-b border-stone bg-white px-4 gap-3' in page.text
+    assert 'data-workspace-settings-link' not in page.text
+    assert 'flex items-center border-b border-stone bg-white px-4 gap-3' in page.text
     assert f'data-settings-url="/workspace/library/templates?scope=personal&template_id=' in page.text
     assert 'return_view=transcribe' not in page.text
     assert 'queued_transcript_id=' not in page.text
@@ -4680,7 +4701,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260730-local-time" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260810-followups-accessibility" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -4816,7 +4837,7 @@ def test_user_transcribe_page_prioritises_latest_note_and_emis_driven_generation
     assert 'name="context_investigations"' not in page.text
 
 
-def test_user_transcribe_page_shows_stt_config_label(
+def test_user_transcribe_page_hides_stt_config_label(
     client,
     db_session,
     make_team,
@@ -4851,8 +4872,9 @@ def test_user_transcribe_page_shows_stt_config_label(
     page = client.get(f"/transcribe?transcript_id={transcript.id}")
 
     assert page.status_code == 200
-    assert "Speech service:" in page.text
-    assert "Parakeet Local" in page.text
+    assert 'data-stt-provider-label' not in page.text
+    assert "Speech service:" not in page.text
+    assert "Parakeet Local" not in page.text
 
 
 def test_user_transcribe_page_shows_idle_status_with_team_stt_selected(
@@ -4891,7 +4913,7 @@ def test_user_transcribe_page_shows_idle_status_with_team_stt_selected(
     assert 'disabled title="Could not reach the STT provider health endpoint"' not in page.text
 
 
-def test_user_transcribe_page_shows_resolved_user_llm_model(
+def test_user_llm_model_stays_in_preferences_not_transcriber(
     client,
     db_session,
     make_team,
@@ -4923,9 +4945,12 @@ def test_user_transcribe_page_shows_resolved_user_llm_model(
 
     client.post("/login", data={"email": "member@example.com", "password": "password-3"}, follow_redirects=False)
     page = client.get("/transcribe")
+    preferences_page = client.get("/workspace/preferences")
 
     assert page.status_code == 200
-    assert "blaifa/InternVL3_5:8b" in page.text
+    assert "blaifa/InternVL3_5:8b" not in page.text
+    assert preferences_page.status_code == 200
+    assert "blaifa/InternVL3_5:8b" in preferences_page.text
     assert "embeddinggemma:latest" not in page.text
 
 
@@ -5035,7 +5060,7 @@ def test_user_transcribe_page_truncates_document_switcher_labels(client, db_sess
             source_template_name="Follow-up",
             follow_up_prompt_text="Please arrange a review appointment with the duty clinician tomorrow morning",
             status=GeneratedDocumentStatus.ready,
-            title="Follow-up v1",
+            title="Follow-up: Please arrange a review appointment with the duty clinician tomorrow morning",
             document_mode=TemplateMode.freeform,
             original_output_text_encrypted="Latest follow-up",
             edited_output_text_encrypted="Latest follow-up",
@@ -5048,7 +5073,8 @@ def test_user_transcribe_page_truncates_document_switcher_labels(client, db_sess
     page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=followups")
 
     assert page.status_code == 200
-    assert "Please arrange a review appointment with the duty" in page.text
+    assert "Please arrange a review appointment with the duty" not in page.text
+    assert "Custom follow-up" in page.text
     assert "Latest follow-up" in page.text
 
 
@@ -5884,9 +5910,9 @@ def test_user_transcribe_page_enables_followups_from_structured_note_content(
     assert 'data-quick-action-context-record-label' in page.text
     assert 'data-quick-action-context-stop' not in page.text
     assert 'data-followup-prompt-input' in page.text
-    assert 'data-run-quick-action-trigger\ndisabled' not in page.text
+    assert 'data-run-quick-action-trigger\ndisabled' in page.text
     assert 'data-quick-action-select\nclass="sr-only"\n>' in page.text
-    assert 'data-quick-action-card-list' in page.text
+    assert 'data-quick-action-listbox' in page.text
 
 
 def test_user_transcribe_page_enables_followups_from_freeform_note_content(
@@ -5958,7 +5984,7 @@ def test_user_transcribe_page_enables_followups_from_freeform_note_content(
     assert page.status_code == 200
     assert 'data-run-quick-action-trigger' in page.text
     assert 'data-quick-action-context-input' in page.text
-    assert 'data-run-quick-action-trigger\ndisabled' not in page.text
+    assert 'data-run-quick-action-trigger\ndisabled' in page.text
     assert re.search(
         r"<textarea\b(?=[^>]*data-quick-action-context-input)(?=[^>]*data-followup-prompt-input)[^>]*></textarea>",
         page.text,
@@ -6031,7 +6057,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const currentSelectionBoxes = () => sessionList ? [...sessionList.querySelectorAll('[data-session-select]')] : [];" in app_js
     assert "sessionList?.addEventListener('change', (event) => {" in app_js
     assert "dom.sessionList?.addEventListener('click', async (event) => {" in actions_js
-    assert actions_js.count("!(await persistPendingEditorsBeforeWorkspaceSwitch())") == 2
+    assert actions_js.count("!(await persistPendingEditorsBeforeWorkspaceSwitch())") == 3
     assert "const persistPendingEditorsBeforeWorkspaceSwitch = async () => {" in app_js
     assert "await persistNoteEditsUntilDrained({ keepalive: false });" in app_js
     assert "await persistFollowupEditsUntilDrained({ keepalive: false });" in app_js
@@ -6170,12 +6196,13 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "data-structured-context-hidden" not in workspace_html
     assert "syncStructuredContextHiddenInputs" not in structured_js
     assert "const hasGenerationSource = hasDraft || hasWorkingNote || hasDictation || transcriptWaitingForText;" in app_js
-    assert "const canRunQuickAction = Boolean(transcriptId && hasLlmSelection && hasGenerationSource && hasSelectableOptions(runQuickActionSelect));" in app_js
-    assert "const canGenerateFollowup = Boolean(transcriptId && hasLlmSelection && (hasDraft || hasWorkingNote || hasDictation || transcriptWaitingForText));" in app_js
+    assert "const canUseFollowupRequest = Boolean(transcriptId && hasLlmSelection && hasGenerationSource);" in app_js
+    assert "const canChooseQuickAction = Boolean(canUseFollowupRequest && hasSelectableOptions(runQuickActionSelect));" in app_js
+    assert "const canGenerateFollowup = Boolean(canUseFollowupRequest && hasSteeringText);" in app_js
     assert "runQuickActionTrigger.disabled = !canUsePrimaryFollowupAction;" in app_js
-    assert "if (dom.generateFollowupTrigger?.disabled) {" in actions_js
-    assert "showFlash('Select a quick action first.', 'warning');" in actions_js
-    assert "./actions.js?v=20260719-workspace-switch-save" in app_js
+    assert "if (!dom.quickActionContextInput?.value?.trim()) {" in actions_js
+    assert "showFlash('Choose a quick action or add context.', 'warning');" in actions_js
+    assert "./actions.js?v=20260810-followups-accessibility" in app_js
     assert "const isDiscardableEmptyWorkingNoteDraft = () => (" in app_js
     assert "return { kind: 'working_note_empty_draft_discarded' };" in app_js
     assert "Empty working-note draft ignored." in app_js
@@ -6215,18 +6242,9 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "let noteGenerationInFlight = null;" in app_js
     assert "let noteGenerationBusy = false;" in app_js
     assert "let noteGenerationCloseDictationAfterCurrentRequest = false;" in app_js
-    assert "let noteOptionsSaveQueue = Promise.resolve();" in app_js
-    assert "const noteOptionsPendingSaves = new Set();" in app_js
-    assert "const runNoteOptionsSaveWithRetry = async (saveTask) => {" in app_js
-    assert "return await saveTask();" in app_js
-    assert "then(() => runNoteOptionsSaveWithRetry(saveTask))" in app_js
-    assert "const enqueueNoteOptionsSave = (saveTask) => {" in app_js
-    assert "const waitForPendingNoteOptionSaves = async () => {" in app_js
-    assert "if (!(await waitForPendingNoteOptionSaves())) {" in app_js
-    assert "Could not save note options. Queueing with last saved settings." in app_js
-    assert app_js.index("if (!(await waitForPendingNoteOptionSaves())) {") < app_js.index(
-        "const response = await csrfFetch(`/api/v1/transcripts/${generationTranscriptId}/generate-output`, {"
-    )
+    assert "noteOptionsSaveQueue" not in app_js
+    assert "waitForPendingNoteOptionSaves" not in app_js
+    assert "Could not save note options." not in app_js
     assert "const queued = await enqueueTemplateGeneration({ templateId });" in actions_js
     assert "if (!queued) return;" in actions_js
     assert "body: JSON.stringify({ template_id: templateId })," in app_js
@@ -6245,19 +6263,19 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "generateOutputTemplateSelect.disabled = generationBusy || !canChooseTemplate;" in app_js
     assert "templatePickerButton.disabled = generationBusy || !canChooseTemplate;" in app_js
     assert "button.disabled = generationBusy || !canChooseTemplate;" in app_js
-    assert "runQuickActionSelect.disabled = !canRunQuickAction;" in app_js
+    assert "runQuickActionSelect.disabled = generationBusy || !canChooseQuickAction;" in app_js
     assert "quickActionContextInput.disabled = !canUseFollowupRequest;" in app_js
-    assert "quickActionContextRecordButton.disabled = !canUseFollowupRequest;" in app_js
-    assert "recordCustomPromptButton.disabled = !canUseFollowupRequest;" in app_js
-    assert "quickActionQuickPicks.forEach((button) => {\n          button.disabled = !canRunQuickAction;" in app_js
-    assert "quickActionCardRunButtons.forEach((button) => {\n          button.disabled = !canRunQuickAction;" in app_js
-    assert "generateFollowupPromptInput.disabled = !canGenerateFollowup;" in app_js
+    assert "quickActionContextRecordButton.disabled = !canUseFollowupRequest || voiceUnavailable;" in app_js
+    assert "recordCustomPromptButton" not in app_js
+    assert "quickActionQuickPicks" not in app_js
+    assert "quickActionCardRunButtons" not in app_js
+    assert "generateFollowupPromptInput.disabled = !canGenerateFollowup;" not in app_js
     assert "generateFollowupTrigger.disabled = !canGenerateFollowup;" in app_js
     assert "runQuickActionTrigger.disabled = generationBusy ||" not in app_js
     assert "quickActionContextInput.disabled = generationBusy ||" not in app_js
     assert "generateFollowupTrigger.disabled = generationBusy || !canGenerateFollowup;" not in app_js
     assert "if (noteGenerationBusy || !generateOutputTemplateSelect || !templateId) return;" in app_js
-    assert "syncGenerationAvailability," not in actions_js
+    assert "syncGenerationAvailability," in actions_js
     assert "const NOTE_GENERATION_CLICK_GUARD_MS" not in actions_js
     assert "noteGenerationGuarded" not in app_js
     assert "noteGenerationGuardUntil" not in actions_js
@@ -6307,7 +6325,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "activateNoteTab('note')" not in workspace_html
     assert "data-generated-structured-sections" in workspace_html
     assert "data-followup-history" in workspace_html
-    assert 'data-lucide="settings"' in workspace_html
+    assert 'data-lucide="settings"' not in workspace_html
     assert 'data-lucide="message-square-text"' in workspace_html
     assert 'data-lucide="sparkles"' in workspace_html
     assert '<div class="transcript-review-grid' in workspace_html
@@ -6377,8 +6395,8 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const savedDocument = await persistNoteEditsSilently?.();" in documents_js
     assert "if (!savedDocument) {" in documents_js
     assert "clearNoteEditorDirty?.();" in documents_js
-    assert "card.className = `followup-recent-item-v2${item.id === selectedId ? \" is-selected\" : \"\"}`;" in documents_js
-    assert "followupHistory.innerHTML = '<div class=\"followup-empty-v2\">No follow-ups for this transcript yet.</div>';" in documents_js
+    assert "card.className = `followup-history-item-v3${item.id === selectedId ? \" is-selected\" : \"\"}`;" in documents_js
+    assert 'No follow-ups yet.</div><div class="followup-empty-v2" data-followup-history-no-results' in documents_js
     assert "window.refreshLucideIcons?.(root);" in app_js
     assert "const getRecordToggleIcon = () => document.querySelector('[data-record-toggle-icon]');" in app_js
     assert "const recordToggleIcon = getRecordToggleIcon();" in app_js
@@ -6422,7 +6440,7 @@ def test_transcribe_session_panel_uses_structural_lower_row_without_content_sign
     assert '<div class="transcribe-lower-row">\n{% include "transcribe/_session_panel.html" %}' in workspace_html
     assert workspace_html.index('data-tab-trigger="history"') < workspace_html.index('class="transcribe-lower-row"')
     assert workspace_html.count('data-workspace-context-header') == 3
-    assert 'class="followup-output-header-v2 workspace-context-header" data-workspace-context-header' in workspace_html
+    assert 'class="followup-composer-v3 workspace-context-header" data-workspace-context-header' in workspace_html
     assert "var sessionPanelHeader = document.querySelector('[data-session-panel-header]');" in shell_extras
     assert "document.querySelector('[data-tab-panel]:not([hidden]) [data-workspace-context-header]')" in shell_extras
     assert "sessionPanel.style.setProperty('--workspace-context-header-height', headerHeight + 'px');" in shell_extras
@@ -6468,7 +6486,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260730-local-time" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260810-followups-accessibility" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():
@@ -6720,7 +6738,8 @@ def test_user_transcribe_page_shows_transcript_and_followup_empty_states(
     assert page.status_code == 200
     assert "No note content yet." in page.text
     assert "Select a template and start recording. Add note lines here as the consultation unfolds." not in page.text
-    assert "No follow-ups yet. Pick a quick action or write a custom request to create one from the current consultation." in page.text
+    assert "Choose a quick action or add context, then select Generate." in page.text
+    assert "No follow-ups yet." in page.text
 
 
 def test_user_transcribe_page_shows_history_tab_empty_state(
@@ -7260,8 +7279,8 @@ def test_user_transcribe_page_can_queue_followup_generation(
     page = client.get(generated.headers["location"])
     assert page.status_code == 200
     assert "Queued follow-up generation." in page.text
-    assert "Generating your follow-up" in page.text
-    assert "preparing your follow-up..." in page.text
+    assert "Creating your follow-up" in page.text
+    assert "This may take a few seconds." in page.text
     assert "queued" in page.text
 
 
@@ -7475,18 +7494,17 @@ def test_user_transcribe_page_can_run_quick_action(
     page = client.get(generated.headers["location"])
     assert page.status_code == 200
     assert "Queued quick action generation." in page.text
-    assert "Quick picks" in page.text
-    assert page.text.count('data-quick-action-quick-pick') >= 4
-    assert 'data-lucide="message-square"' in page.text
-    assert 'data-lucide="file-text"' in page.text
-    assert 'data-lucide="phone"' in page.text
-    assert 'data-lucide="sparkles"' in page.text
+    assert "Quick picks" not in page.text
+    assert page.text.count('data-quick-action-option') >= 4
+    assert page.text.count('data-lucide="zap"') >= 4
     assert "Arrange review" in page.text
     assert "queued" in page.text
 
     persisted_document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript.id))
     assert persisted_document is not None
-    assert persisted_document.prompt_snapshot_text == "Write a short follow-up arranging a GP review if symptoms persist.\n\nAdditional context:\nMention the follow-up call."
+    assert persisted_document.prompt_snapshot_text == "Write a short follow-up arranging a GP review if symptoms persist."
+    assert is_encrypted_envelope(persisted_document.generation_steering_text_encrypted)
+    assert "Mention the follow-up call" not in persisted_document.generation_steering_text_encrypted
 
 
 def test_user_transcribe_page_rejects_oversized_quick_action_context_on_form_submit(

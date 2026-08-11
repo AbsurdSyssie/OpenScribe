@@ -276,8 +276,6 @@ leader saved a writing assistant and a team-default model.
 2. Click **Working note** and review the source text.
 3. Click the **Daily Driver** template button at the top of the note panel.
 4. In **Choose a template**, select **Synthetic EMIS consultation note**.
-5. Open **Note options** if you want to change length or detail.
-6. Keep **Normal** and **Balanced** for the shortest predictable tour.
 
 #### Generate and review
 

@@ -137,9 +137,16 @@ def _read_retry_source_audio(job: TranscriptIngestionJob) -> bytes:
 def _read_queued_source_audio(db: Session, job: TranscriptIngestionJob, *, legacy_audio_bytes: bytes | None = None) -> bytes:
     if not job.source_audio_vault_ref:
         if legacy_audio_bytes is not None:
-            job.source_audio_vault_ref = write_transcript_ingestion_source_audio(job_id=job.id, audio_bytes=legacy_audio_bytes)
+            source_audio_vault_ref = write_transcript_ingestion_source_audio(job_id=job.id, audio_bytes=legacy_audio_bytes)
+            job.source_audio_vault_ref = source_audio_vault_ref
+            job.source_audio_expires_at = utcnow() + INGESTION_SOURCE_AUDIO_MAX_AGE
             db.add(job)
-            db.commit()
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+                queue_orphan_transcript_audio_after_rollback(db, secret_ref=source_audio_vault_ref)
+                raise
             db.refresh(job)
             return legacy_audio_bytes
         raise AppError(

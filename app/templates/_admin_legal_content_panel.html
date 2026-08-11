@@ -190,12 +190,16 @@
       class="legal-editor-tabs"
       role="tablist"
       aria-label="Legal document editor view"
+      aria-orientation="horizontal"
     >
       <button
         class="tab active"
         type="button"
         role="tab"
+        id="legal-write-tab"
         aria-selected="true"
+        aria-controls="legal-write-panel"
+        tabindex="0"
         data-legal-write-tab
       >
         Write
@@ -204,14 +208,24 @@
         class="tab"
         type="button"
         role="tab"
+        id="legal-preview-tab"
         aria-selected="false"
+        aria-controls="legal-preview-panel"
+        tabindex="-1"
         data-legal-preview-tab
       >
         Preview
       </button>
     </div>
 
-    <div data-legal-write-panel role="tabpanel">
+    <div
+      id="legal-write-panel"
+      data-legal-write-panel
+      role="tabpanel"
+      aria-labelledby="legal-write-tab"
+      aria-hidden="false"
+      tabindex="0"
+    >
       <label class="legal-markdown-label" for="legal-markdown-source"
         >Markdown</label
       >
@@ -240,9 +254,13 @@
     </div>
 
     <div
+      id="legal-preview-panel"
       class="legal-preview-panel"
       data-legal-preview-panel
       role="tabpanel"
+      aria-labelledby="legal-preview-tab"
+      aria-hidden="true"
+      tabindex="0"
       hidden
     >
       <p

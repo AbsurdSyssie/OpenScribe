@@ -358,6 +358,7 @@ Owner generation/document routes:
 - `GET /api/v1/transcripts/{transcript_id}/generated-documents`
 - `PATCH /api/v1/generated-documents/{generated_document_id}`
 - `DELETE /api/v1/generated-documents/{generated_document_id}`
+- `POST /api/v1/generated-documents/{generated_document_id}/regenerate`
 - `GET /api/v1/generated-documents/{generated_document_id}/redaction-debug` (localhost seeded-development owner only)
 
 Cross-cutting transcript rules:
@@ -432,6 +433,8 @@ Template, follow-up, and Quick Action requests are owner-only. Saved transcript,
 Generation limits default to `20/3 minutes` and `200/day` per authenticated owner bucket. Provider quotas are separate authoritative accounting controls.
 
 Generated-document edits use optimistic concurrency (`expected_updated_at`). Deleting an originating Template/Quick Action does not invalidate already queued/generated work because required snapshots are retained and source references can be cleared.
+
+Regeneration applies a saved follow-up or Quick Action task to the current consultation sources. It snapshots the latest transcript, Working note, and dictation, resolves the user's current LLM policy, and creates a new generated document. Optional `steering_text` applies only to the new run. Regeneration never reuses old steering, clinician edits, or generated output. Dictation and steering snapshots are encrypted with the owner's content key.
 
 ## Security and caching
 

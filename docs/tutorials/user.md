@@ -113,13 +113,13 @@ Use post-consultation dictation for a clinician summary/assessment/plan source s
 - You can edit the combined text; generation then uses that edited version exactly.
 - Clearing edited combined text intentionally removes dictation influence.
 
-Quick-action context recording is transient: it inserts transcription into the existing additional-context field and is redacted before the LLM request.
+Quick Action voice input does not store separate audio. It inserts transcription into the context field. When you generate a draft, OpenScribe encrypts that context as part of the request snapshot and redacts it before sending it to the LLM.
 
-## Choose note options and a template
+## Choose preferences and a template
 
 Templates define document shape and instructions. Select one approved for the intended destination.
 
-Note options can include:
+Set these under **Preferences** before you create a note:
 
 - writing assistant/model from the active team policy;
 - approximate length (`short`, `normal`, `long`);
@@ -127,12 +127,12 @@ Note options can include:
 
 OpenAI-compatible/Ollama adapters map length to bounded output caps. Gemini currently saves/snapshots the preference but uses its fixed provider ceiling; length is not a guarantee of exact output size.
 
-Settings save for future note requests. If a save fails, OpenScribe warns and the next request may use the previous preference.
+These settings apply to future note requests. Choose the template in the transcriber workspace.
 
 ## Generate and monitor a note
 
 1. confirm the correct consultation and source content;
-2. choose the intended template/options;
+2. choose the intended template;
 3. create the note;
 4. wait for queued/processing status to finish;
 5. open the generated document;
@@ -171,6 +171,14 @@ Empty sections may be omitted. Do not fill a section merely to make it non-empty
 ## Follow-ups and quick actions
 
 Follow-ups and Quick Actions create additional draft text from the authorized consultation source.
+
+In the **Follow Ups** tab, choose a Quick Action or add context and instructions. Quick Actions are optional when you add context. Select **Generate** to start a new draft. OpenScribe clears the context after it accepts the request but keeps the chosen Quick Action for the next task.
+
+Use the search box in the Quick Action menu to narrow the list. The history rail lists drafts for the current consultation only. You can collapse the rail, search its titles, or use a draft's menu to copy or delete it. Editing a draft changes that draft only.
+
+**Regenerate** starts a new draft with the original task or Quick Action and the consultation's latest transcript, Working note, and dictation. Add context first when you want the new draft changed in a specific way. If the context field is empty, OpenScribe reruns the original task with those fresh sources.
+
+If voice input is available, use the microphone in the context field. OpenScribe inserts the text at the cursor and does not start generation. Voice input uses the team's post-consultation dictation service without showing its provider name.
 
 Possible uses:
 

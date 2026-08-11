@@ -53,14 +53,12 @@ def upgrade() -> None:
         "transcript_ingestion_jobs",
         "source_audio_expired_at IS NULL OR source_audio_expires_at IS NOT NULL",
     )
-    with op.get_context().autocommit_block():
-        op.create_index(
-            "ix_transcript_ingestion_jobs_source_audio_expiry",
-            "transcript_ingestion_jobs",
-            ["source_audio_expires_at"],
-            postgresql_where=sa.text("source_audio_vault_ref IS NOT NULL OR source_audio_blob IS NOT NULL"),
-            postgresql_concurrently=True,
-        )
+    op.create_index(
+        "ix_transcript_ingestion_jobs_source_audio_expiry",
+        "transcript_ingestion_jobs",
+        ["source_audio_expires_at"],
+        postgresql_where=sa.text("source_audio_vault_ref IS NOT NULL OR source_audio_blob IS NOT NULL"),
+    )
 
     security_audit_hold_reason.create(op.get_bind(), checkfirst=True)
     op.create_table(
@@ -119,6 +117,20 @@ def downgrade() -> None:
     if hold is not None:
         raise RuntimeError(
             "Cannot downgrade DSPT retention controls while security-audit holds exist; release and retain evidence first"
+        )
+    source_retention = op.get_bind().execute(
+        sa.text(
+            """
+            SELECT 1
+            FROM transcript_ingestion_jobs
+            WHERE source_audio_expires_at IS NOT NULL OR source_audio_expired_at IS NOT NULL
+            LIMIT 1
+            """
+        )
+    ).first()
+    if source_retention is not None:
+        raise RuntimeError(
+            "Cannot downgrade DSPT retention controls while source-audio retention records exist; expire and clean source audio first"
         )
     op.drop_index("ix_security_audit_event_holds_expiry", table_name="security_audit_event_holds")
     op.drop_index("uq_security_audit_event_holds_unreleased", table_name="security_audit_event_holds")

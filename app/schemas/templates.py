@@ -271,4 +271,18 @@ class GenerateQuickActionRequest(BaseModel):
         return trimmed or None
 
 
+class RegenerateGeneratedDocumentRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    steering_text: str | None = Field(default=None, max_length=4000)
+
+    @field_validator("steering_text")
+    @classmethod
+    def validate_steering_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
+
+
 GeneratedDocumentDetail.model_rebuild()

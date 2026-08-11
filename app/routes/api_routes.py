@@ -1697,6 +1697,33 @@ def delete_generated_document(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@api.post(
+    "/generated-documents/{generated_document_id}/regenerate",
+    response_model=GeneratedDocumentDetail,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses=error_responses,
+)
+@LLM_GENERATION_DAILY_RATE_LIMIT
+@LLM_GENERATION_BURST_RATE_LIMIT
+def regenerate_generated_document(
+    request: Request,
+    generated_document_id: UUID,
+    payload: RegenerateGeneratedDocumentRequest = Body(
+        default_factory=RegenerateGeneratedDocumentRequest
+    ),
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    document = queue_generated_document_regeneration_service(
+        db,
+        context.user,
+        generated_document_id=generated_document_id,
+        steering_text=payload.steering_text,
+        request=request,
+    )
+    return generated_document_response(db, document, actor=context.user)
+
+
 @api.post("/transcripts/{transcript_id}/generate-output", response_model=GeneratedDocumentDetail, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
 @LLM_GENERATION_DAILY_RATE_LIMIT
 @LLM_GENERATION_BURST_RATE_LIMIT

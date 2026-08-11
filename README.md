@@ -80,7 +80,7 @@ Primary references:
 
 Copyright © 2026 MemRe Ltd.
 
-OpenScribe is licensed under the GNU Affero General Public License, version 3 only (`AGPL-3.0-only`). Read the full licence in [LICENSE](LICENSE). The running application always links to its configured source offer and release identifier in its footer. Operators must set `APP_SOURCE_CODE_URL` to complete corresponding source for the deployed release, including their changes, and set `APP_RELEASE` to that release's immutable identifier. See [docs/environment.md](docs/environment.md).
+OpenScribe is licensed under the GNU Affero General Public License, version 3 only (`AGPL-3.0-only`). Read the full licence in [LICENSE](LICENSE). The running application always links to its configured source offer and release identifier in its footer. Deploy with `scripts/deploy-compose.sh`; it accepts only a clean, pushed Git commit and sets the source link and release identifier from that commit. Forks must set `APP_SOURCE_REPOSITORY_URL` to their public source repository. See [docs/environment.md](docs/environment.md).
 
 Third-party browser asset provenance, checksums, and licence locations are recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 

@@ -21,8 +21,10 @@ This preserves the current local architecture. It is not a production reference 
 ```bash
 cp .env.example .env
 # Review APP_PUBLIC_URL, ALLOWED_HOSTS, BOOTSTRAP_ADMIN_TOKEN, secrets, mail, proxy trust, and Docker settings.
-docker compose --profile runtime up -d --build
+scripts/deploy-compose.sh
 ```
+
+The deployment script accepts only a clean commit available on the current branch's upstream. It passes the commit SHA and its source URL to the recreated application container. Run the same command for every release.
 
 The web application publishes on `127.0.0.1:8080` by default.
 

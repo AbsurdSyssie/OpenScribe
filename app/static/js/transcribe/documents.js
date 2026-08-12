@@ -29,6 +29,42 @@ export const formatWorkspaceCreatedAt = (value) => {
   }).format(new Date(timestamp));
 };
 
+const canonicalNoteVersionMarker = (value) => {
+  const marker = String(value || '');
+  const timestamp = Date.parse(marker);
+  return Number.isFinite(timestamp) ? String(timestamp) : marker;
+};
+
+export const createInitialNoteRenderPreserver = (initialRender = {}) => {
+  const initial = {
+    targetId: String(initialRender.targetId || ''),
+    documentMode: String(initialRender.documentMode || ''),
+    kind: String(initialRender.kind || ''),
+    status: String(initialRender.status || ''),
+    updatedAt: canonicalNoteVersionMarker(initialRender.updatedAt),
+  };
+  let pending = Boolean(
+    initialRender.hasEditorDom
+    && initial.targetId
+    && initial.documentMode
+    && initial.kind
+    && initial.status === 'ready'
+    && initial.updatedAt
+  );
+
+  return (nextRender = {}) => {
+    if (!pending) return false;
+    pending = false;
+    return (
+      String(nextRender.targetId || '') === initial.targetId
+      && String(nextRender.documentMode || '') === initial.documentMode
+      && String(nextRender.kind || '') === initial.kind
+      && String(nextRender.status || '') === initial.status
+      && canonicalNoteVersionMarker(nextRender.updatedAt) === initial.updatedAt
+    );
+  };
+};
+
 const structuredDefinitionsSnapshot = (definitions = []) => {
   const sections = (Array.isArray(definitions) ? definitions : [])
     .map((section, index) => {
@@ -80,6 +116,7 @@ export function createDocumentNavigator({
   hasPendingGeneratedNoteEdits,
   persistNoteEditsSilently,
   shouldPreserveNoteEditorRender,
+  shouldInitializeHydratedNoteEditor,
   clearFollowupEditorDirty,
   hasPendingGeneratedFollowupEdits,
   persistFollowupEditsSilently,
@@ -107,6 +144,7 @@ export function createDocumentNavigator({
   const {
     escapeHtml,
     renderGeneratedOutput,
+    initializeHydratedGeneratedDocument,
     renderFollowupOutput,
     renderPiiEntities,
     renderRedactionDebugPanel,
@@ -322,7 +360,7 @@ export function createDocumentNavigator({
     const selectedNoteId = selectedNote?.id || '';
     const selectedEditorId = selectedNoteId || (state.hasActiveTranscript ? workingNoteTargetId(state.activeTranscriptId || '') : null);
     const preserveCurrentEditorRender = Boolean(
-      forcePreserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId)
+      forcePreserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId, selectedNote)
     );
     setState({ selectedNoteDocumentId: selectedEditorId });
     if (latestGeneratedOutput) {
@@ -331,7 +369,9 @@ export function createDocumentNavigator({
       latestGeneratedOutput.dataset.latestGeneratedMode = selectedNote?.document_mode || "";
       latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || "";
       latestGeneratedOutput.dataset.latestGeneratedKind = selectedNote?.kind || "generated_note";
-      if (!preserveCurrentEditorRender) {
+      if (preserveCurrentEditorRender && shouldInitializeHydratedNoteEditor?.(selectedNote)) {
+        initializeHydratedGeneratedDocument?.(selectedNote);
+      } else if (!preserveCurrentEditorRender) {
         renderGeneratedOutput(selectedNote, selectedNote?.kind === "working_note" ? {} : (state.workspaceStructuredContext || {}));
       }
     }

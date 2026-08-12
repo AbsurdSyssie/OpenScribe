@@ -1,4 +1,4 @@
-import { generationLoadingHtml } from './documents.js?v=20260810-followups-accessibility';
+import { generationLoadingHtml } from './documents.js?v=20260812-long-note-editor';
 
 export function createStructuredEditor({
   dom,
@@ -35,6 +35,8 @@ export function createStructuredEditor({
   let copyReviewViewportCheckScheduled = false;
   let copyReviewRefreshScheduled = false;
   let statementAutosizeObserver = null;
+  const pendingStatementAutosizeTextareas = new Set();
+  let copyReviewLayoutCheck = null;
 
   const noteCopyStatusDefault = '';
   const EAGER_AUTOSIZE_EDITOR_LIMIT = 80;
@@ -43,11 +45,17 @@ export function createStructuredEditor({
     if (!textarea) return;
     textarea.style.height = 'auto';
     textarea.style.height = `${Math.max(textarea.scrollHeight, 22)}px`;
+    const wasPending = pendingStatementAutosizeTextareas.delete(textarea);
+    if (wasPending) {
+      statementAutosizeObserver?.unobserve(textarea);
+      copyReviewLayoutCheck?.();
+    }
   };
 
   const disconnectStatementAutosizeObserver = () => {
     statementAutosizeObserver?.disconnect();
     statementAutosizeObserver = null;
+    pendingStatementAutosizeTextareas.clear();
   };
 
   const autosizeStatementEditorsIn = (container) => {
@@ -70,11 +78,13 @@ export function createStructuredEditor({
         entries.forEach((entry) => {
           if (!entry.isIntersecting || !(entry.target instanceof HTMLTextAreaElement)) return;
           autosizeStatementEditor(entry.target);
-          statementAutosizeObserver?.unobserve(entry.target);
         });
       }, { rootMargin: '600px 0px' });
     }
-    deferredTextareas.forEach((textarea) => statementAutosizeObserver.observe(textarea));
+    deferredTextareas.forEach((textarea) => {
+      pendingStatementAutosizeTextareas.add(textarea);
+      statementAutosizeObserver.observe(textarea);
+    });
   };
 
   const focusStatementEditor = (textarea) => {
@@ -229,6 +239,19 @@ export function createStructuredEditor({
     return rect.bottom <= viewportHeight + 2 && rect.top < viewportHeight;
   };
 
+  const copyReviewTargetHasPendingLayout = (target) => {
+    if (!(target instanceof HTMLElement)) return false;
+    let pending = false;
+    pendingStatementAutosizeTextareas.forEach((textarea) => {
+      if (!textarea.isConnected) {
+        pendingStatementAutosizeTextareas.delete(textarea);
+        return;
+      }
+      if (target.contains(textarea)) pending = true;
+    });
+    return pending;
+  };
+
   const normalizedCopyReviewLines = (container, selector) => {
     if (!(container instanceof HTMLElement)) return [];
     return [...container.querySelectorAll(selector)]
@@ -350,10 +373,13 @@ export function createStructuredEditor({
   const markCopyReviewTargetViewed = (target) => {
     if (!(target instanceof HTMLElement)) return;
     if (!copyReviewObservationReady) return;
+    if (copyReviewTargetHasPendingLayout(target)) return;
     const section = target.closest('[data-generated-structured-section]');
     if (section instanceof HTMLElement) {
       const sections = [...document.querySelectorAll('[data-generated-structured-section]')];
       const viewedThroughIndex = sections.indexOf(section);
+      const viewedSections = viewedThroughIndex >= 0 ? sections.slice(0, viewedThroughIndex + 1) : [];
+      if (viewedSections.some((candidate) => copyReviewTargetHasPendingLayout(candidate))) return;
       sections.forEach((candidate, index) => {
         if (viewedThroughIndex >= 0 && index > viewedThroughIndex) return;
         const sectionKey = candidate.dataset.sectionKey || '';
@@ -385,6 +411,7 @@ export function createStructuredEditor({
       copyReviewResizeListener = null;
     }
     copyReviewViewportCheckScheduled = false;
+    copyReviewLayoutCheck = null;
     if (!generatedCopyReviewRequired()) {
       syncCopyReviewUi();
       return;
@@ -415,6 +442,7 @@ export function createStructuredEditor({
         checkTargets();
       });
     };
+    copyReviewLayoutCheck = scheduleViewportCheck;
     if ('IntersectionObserver' in window) {
       copyReviewObserver = new window.IntersectionObserver((entries) => {
         entries.forEach((entry) => {
@@ -629,6 +657,95 @@ export function createStructuredEditor({
     return false;
   };
 
+  const statementRowForEvent = (event, container) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return null;
+    const row = target.closest('[data-structured-statement-row], [data-freeform-note-row]');
+    return row instanceof HTMLElement && container.contains(row) ? row : null;
+  };
+
+  const emitStatementRowChange = (row) => {
+    const checkbox = row.querySelector('[data-structured-line-checkbox], [data-freeform-note-checkbox]');
+    const textarea = row.querySelector('[data-structured-line-input], [data-freeform-note-input]');
+    if (!(checkbox instanceof HTMLInputElement) || !(textarea instanceof HTMLTextAreaElement)) return;
+    syncStatementRowVisualState(row);
+    autosizeStatementEditor(textarea);
+    row._openscribeStatementCallbacks?.onChange?.({ row, checkbox, textarea });
+  };
+
+  const handleStatementEditorKeydown = (event, row, textarea) => {
+    const callbacks = row._openscribeStatementCallbacks;
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      callbacks?.onAddAfter?.(row);
+      return;
+    }
+    if ((event.key === 'Backspace' || event.key === 'Escape') && textarea.value.length === 0) {
+      event.preventDefault();
+      callbacks?.onEmptyDelete?.(row);
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      const position = textarea.selectionStart ?? 0;
+      if (!textarea.value.slice(0, position).includes('\n')) {
+        const previousRow = getAdjacentStatementRow(row, 'previous');
+        if (previousRow) {
+          event.preventDefault();
+          focusStatementEditor(previousRow.querySelector('[data-structured-line-input], [data-freeform-note-input]'));
+        }
+      }
+      return;
+    }
+    if (event.key === 'ArrowDown') {
+      const position = textarea.selectionEnd ?? textarea.value.length;
+      if (!textarea.value.slice(position).includes('\n')) {
+        const nextRow = getAdjacentStatementRow(row, 'next');
+        if (nextRow) {
+          event.preventDefault();
+          focusStatementEditor(nextRow.querySelector('[data-structured-line-input], [data-freeform-note-input]'));
+        }
+      }
+      return;
+    }
+    if (event.key === 'Tab') {
+      const moved = focusAdjacentSectionArea(row, event.shiftKey ? 'previous' : 'next');
+      if (moved) {
+        event.preventDefault();
+      }
+    }
+  };
+
+  const bindStatementEditorContainer = (container) => {
+    if (!(container instanceof HTMLElement) || container.dataset.statementEditorDelegated === 'true') return;
+    container.addEventListener('click', (event) => {
+      const row = statementRowForEvent(event, container);
+      const target = event.target;
+      if (!row || target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement || target instanceof HTMLButtonElement) {
+        return;
+      }
+      focusStatementEditor(row.querySelector('[data-structured-line-input], [data-freeform-note-input]'));
+    });
+    container.addEventListener('change', (event) => {
+      const row = statementRowForEvent(event, container);
+      if (!row || !(event.target instanceof HTMLInputElement)) return;
+      if (!event.target.matches('[data-structured-line-checkbox], [data-freeform-note-checkbox]')) return;
+      emitStatementRowChange(row);
+    });
+    container.addEventListener('input', (event) => {
+      const row = statementRowForEvent(event, container);
+      if (!row || !(event.target instanceof HTMLTextAreaElement)) return;
+      if (!event.target.matches('[data-structured-line-input], [data-freeform-note-input]')) return;
+      emitStatementRowChange(row);
+    });
+    container.addEventListener('keydown', (event) => {
+      const row = statementRowForEvent(event, container);
+      if (!row || !(event.target instanceof HTMLTextAreaElement)) return;
+      if (!event.target.matches('[data-structured-line-input], [data-freeform-note-input]')) return;
+      handleStatementEditorKeydown(event, row, event.target);
+    });
+    container.dataset.statementEditorDelegated = 'true';
+  };
+
   const bindStatementRow = ({
     row,
     checkbox,
@@ -660,68 +777,7 @@ export function createStructuredEditor({
     checkbox.setAttribute('aria-label', `Select ${sectionLabel} statement`);
     textarea.dataset.sectionKey = sectionKey;
     textarea.dataset.sectionLabel = sectionLabel;
-
-    if (row.dataset.statementEditorBound === 'true') {
-      syncStatementRowVisualState(row);
-      return row;
-    }
-
-    const emitChange = () => {
-      syncStatementRowVisualState(row);
-      autosizeStatementEditor(textarea);
-      onChange?.({ row, checkbox, textarea });
-    };
-
-    row.addEventListener('click', (event) => {
-      const target = event.target;
-      if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement || target instanceof HTMLButtonElement) {
-        return;
-      }
-      focusStatementEditor(textarea);
-    });
-    checkbox.addEventListener('change', emitChange);
-    textarea.addEventListener('input', emitChange);
-    textarea.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        onAddAfter?.(row);
-        return;
-      }
-      if ((event.key === 'Backspace' || event.key === 'Escape') && textarea.value.length === 0) {
-        event.preventDefault();
-        onEmptyDelete?.(row);
-        return;
-      }
-      if (event.key === 'ArrowUp') {
-        const position = textarea.selectionStart ?? 0;
-        if (!textarea.value.slice(0, position).includes('\n')) {
-          const previousRow = getAdjacentStatementRow(row, 'previous');
-          if (previousRow) {
-            event.preventDefault();
-            focusStatementEditor(previousRow.querySelector('[data-structured-line-input], [data-freeform-note-input]'));
-          }
-        }
-        return;
-      }
-      if (event.key === 'ArrowDown') {
-        const position = textarea.selectionEnd ?? textarea.value.length;
-        if (!textarea.value.slice(position).includes('\n')) {
-          const nextRow = getAdjacentStatementRow(row, 'next');
-          if (nextRow) {
-            event.preventDefault();
-            focusStatementEditor(nextRow.querySelector('[data-structured-line-input], [data-freeform-note-input]'));
-          }
-        }
-        return;
-      }
-      if (event.key === 'Tab') {
-        const moved = focusAdjacentSectionArea(row, event.shiftKey ? 'previous' : 'next');
-        if (moved) {
-          event.preventDefault();
-        }
-      }
-    });
-
+    row._openscribeStatementCallbacks = { onChange, onAddAfter, onEmptyDelete };
     row.dataset.statementEditorBound = 'true';
     syncStatementRowVisualState(row);
     return row;
@@ -1037,22 +1093,29 @@ export function createStructuredEditor({
     blankRows.slice(0, -1).forEach((row) => row.remove());
   };
 
-  const structuredRowCallbacks = (sectionContainer) => ({
+  const structuredSectionForRow = (row) => row?.closest?.('[data-generated-structured-section]') || null;
+
+  const structuredRowCallbacks = () => ({
     onChange: ({ row, textarea, checkbox }) => {
       syncGeneratedStructuredDraftLineFromDom(row, textarea, checkbox);
       handleStructuredContextChanged();
       if (dom.structuredCopyStatus) {
         dom.structuredCopyStatus.textContent = noteCopyStatusDefault;
       }
-      invalidateCopyReviewForEdit({ mode: 'structured', sectionKey: sectionContainer.dataset.sectionKey || '' });
+      const sectionContainer = structuredSectionForRow(row);
+      invalidateCopyReviewForEdit({ mode: 'structured', sectionKey: sectionContainer?.dataset?.sectionKey || '' });
     },
     onAddAfter: (currentRow) => {
+      const sectionContainer = structuredSectionForRow(currentRow);
+      if (!(sectionContainer instanceof HTMLElement)) return;
       const nextRow = addGeneratedStructuredLine(sectionContainer, '', currentRow, true);
       window.requestAnimationFrame(() => {
         focusStatementEditor(nextRow?.querySelector('[data-structured-line-input]'));
       });
     },
     onEmptyDelete: (currentRow) => {
+      const sectionContainer = structuredSectionForRow(currentRow);
+      if (!(sectionContainer instanceof HTMLElement)) return;
       const previousRow = getAdjacentStatementRow(currentRow, 'previous');
       if (!(previousRow instanceof HTMLElement)) {
         return;
@@ -1121,7 +1184,7 @@ export function createStructuredEditor({
       lineInputAttr: 'data-structured-line-input',
       lineCheckboxAttr: 'data-structured-line-checkbox',
       lineRowAttr: 'data-structured-statement-row',
-      ...structuredRowCallbacks(sectionContainer),
+      ...structuredRowCallbacks(),
     });
     row._openscribeDraftLine = draftLine;
     if (!options.draftLine) {
@@ -1275,7 +1338,7 @@ export function createStructuredEditor({
           textarea,
           sectionLabel: sectionElement.dataset.sectionLabel || 'Section',
           sectionKey: sectionElement.dataset.sectionKey || '',
-          ...structuredRowCallbacks(sectionElement),
+          ...structuredRowCallbacks(),
         });
       });
     });
@@ -1466,6 +1529,19 @@ export function createStructuredEditor({
     syncNoteEditorToolbar();
   };
 
+  const initializeHydratedGeneratedDocument = (generatedDocument) => {
+    currentRenderedDocument = generatedDocument || null;
+    currentRenderRequiresCopyReview = Boolean(generatedDocument?.id && generatedDocument?.kind !== 'working_note');
+    copyReviewObservationReady = false;
+    // Bootstrap runs before the first workspace payload establishes whether the
+    // server-rendered rows belong to a generated note or a Working note. Reset
+    // even for the same ID so a generated note starts unreviewed.
+    copyReviewDocumentId = null;
+    resetCopyReviewStateForDocument();
+    setCopyReviewStatus();
+    observeCopyReviewTargets();
+  };
+
   const syncTemplateModeBadge = () => {
     const isStructuredTemplate = selectedOutputTemplateMode() === 'structured';
     if (dom.templateModeBadge) {
@@ -1641,6 +1717,9 @@ export function createStructuredEditor({
     return collectSelectedNoteLines({ includeUnselected: true }).some((line) => String(line.text || '').trim().length > 0);
   };
 
+  bindStatementEditorContainer(dom.generatedStructuredPanel);
+  bindStatementEditorContainer(dom.generatedFreeformPanel);
+
   return {
     notifyNoteRowsChanged,
     getLineContextFromInput,
@@ -1658,6 +1737,7 @@ export function createStructuredEditor({
     collectStructuredContext,
     getGeneratedStructuredDraft: () => generatedStructuredDraft,
     hasNoteInputContent,
+    initializeHydratedGeneratedDocument,
     renderGeneratedOutput,
     renderStructuredSections,
     noteCopyReviewBlocker,

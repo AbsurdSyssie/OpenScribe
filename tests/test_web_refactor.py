@@ -287,9 +287,9 @@ def test_generation_loading_replaces_plain_text_placeholders():
     assert "Your follow-up is waiting to be written." not in app_js
     assert "Your follow-up is being written." not in app_js
     assert "generationLoadingHtml" in documents_js
-    assert "structured.js?v=20260810-copy-toolbar" in app_js
-    assert "documents.js?v=20260810-followups-accessibility" in app_js
-    assert "/static/js/transcribe/app.js?v=20260810-followups-accessibility" in shell_extras
+    assert "structured.js?v=20260812-long-note-editor" in app_js
+    assert "documents.js?v=20260812-long-note-editor" in app_js
+    assert "/static/js/transcribe/app.js?v=20260812-long-note-editor" in shell_extras
     assert ".note-generation-loading" in transcribe_css
     assert "@keyframes note-generation-orbit" in transcribe_css
     assert 'data-transcription-loading' in workspace_template
@@ -492,6 +492,23 @@ def test_workspace_refresh_burst_uses_polling_fallback_only():
     assert "workspaceRefreshBurstTimeoutIds = workspaceRefreshBurstTimeoutIds.filter((value) => value !== timeoutId);\n            if (!shouldUseWorkspacePollingFallback()) return;\n            void fetchWorkspace();" in app_js
     assert "workspaceEventSource.addEventListener('open', () => {\n          workspaceStreamFallbackPolling = false;\n          clearWorkspaceRefreshBurst();" in app_js
     assert "if (transcriptId && shouldUseWorkspacePollingFallback())" in app_js
+
+
+def test_initial_workspace_refresh_does_not_start_duplicate_requests():
+    app_js = Path("app/static/js/transcribe/app.js").read_text()
+
+    assert "const workspaceFetchesByEndpoint = new Map();" in app_js
+    assert "if (workspaceFetchesByEndpoint.has(endpoint)) {\n          return workspaceFetchesByEndpoint.get(endpoint);\n        }" in app_js
+    assert "workspaceFetchesByEndpoint.delete(endpoint);" in app_js
+    assert "if (!hasAppliedInitialWorkspacePayload) {\n          void fetchWorkspace();\n        }" in app_js
+    assert "window.setTimeout(fetchWorkspace, 250);" not in app_js
+
+
+def test_workspace_marks_initial_payload_applied_only_after_processing_completes():
+    app_js = Path("app/static/js/transcribe/app.js").read_text()
+    apply_workspace = app_js.split("      const applyWorkspacePayload = (workspace) => {", 1)[1].split("\n\n      async function fetchWorkspace", 1)[0]
+
+    assert apply_workspace.rfind("hasAppliedInitialWorkspacePayload = true;") > apply_workspace.rfind("syncWorkspaceRealtimeConnection();")
 
 
 def test_transcribe_loading_animation_respects_reduced_motion():

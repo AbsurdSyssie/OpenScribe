@@ -3382,7 +3382,7 @@ def test_transcribe_documents_show_hallucination_check_panel():
 
     assert "Hallucination check" in documents_js
     assert "Debug payload not available. Set HALLUCINATION_CHECK_DEBUG_UI=1 before generating the note" in documents_js
-    assert "documents.js?v=20260810-followups-accessibility" in app_js
+    assert "documents.js?v=20260812-long-note-editor" in app_js
 
 
 def test_admin_llm_draft_flow_hides_key_after_saved_and_shows_pending_state(
@@ -3953,7 +3953,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' not in page.text
     assert 'aria-label="Workspace navigation"' in page.text
     assert "My Library" in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260810-followups-accessibility"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260812-long-note-editor"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -4701,7 +4701,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260810-followups-accessibility" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260812-long-note-editor" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -6176,12 +6176,17 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "requestVersion === noteEditVersion" in app_js
     assert "renderWorkingNote(" not in app_js
     assert "const markNoteEditorDirty = () => {" in app_js
-    assert "const shouldPreserveNoteEditorRender = (nextSelectedNoteDocumentId = currentRenderedNoteTargetId()) => {" in app_js
+    assert "const preserveInitialRender = initialNoteRenderPreserver({" in app_js
+    assert "initialNoteRenderMode === 'freeform'" in app_js
+    assert "&& !generatedFreeformPanel?.hidden" in app_js
+    assert "initialNoteRenderMode === 'structured'" in app_js
+    assert "&& !generatedStructuredPanel?.hidden" in app_js
+    assert "status: nextSelectedNote?.status || ''," in app_js
     assert "dirtyNoteDocumentId" not in app_js
     assert "const hasProtectedWorkingNoteEditor = () => (" not in app_js
     assert "const validNoteTargets = [...(transcriptId ? [{ id: workingNoteTargetId(transcriptId) }] : []), ...noteDocuments];" in app_js
     assert "const selectedEditorId = selectedNoteId || (state.hasActiveTranscript ? workingNoteTargetId(state.activeTranscriptId || '') : null);" in documents_js
-    assert "shouldPreserveNoteEditorRender?.(selectedEditorId)" in documents_js
+    assert "shouldPreserveNoteEditorRender?.(selectedEditorId, selectedNote)" in documents_js
     assert "const workingNoteDocument = (state) => {" in documents_js
     assert "export function workingNoteToEditorDocument" in documents_js
     assert "id: workingNoteTargetId(transcriptId || '')," in documents_js
@@ -6368,8 +6373,8 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "generatedDocument.status === 'ready' && generatedDocument.document_mode === 'freeform'" in structured_js
     assert "generatedDocument.status === 'ready' && generatedDocument.document_mode === 'freeform' && Boolean(generatedDocument.edited_output_text_encrypted)" not in structured_js
     assert "const autosizeStatementEditorsIn = (container) => {" in structured_js
-    assert "autosizeStatementEditorsIn(dom.generatedStructuredPanel);" in structured_js
-    assert "autosizeStatementEditorsIn(dom.generatedFreeformPanel);" in structured_js
+    assert "const finalizeStructuredEditorRows = (panel) => {" in structured_js
+    assert "autosizeStatementEditorsIn(panel);" in structured_js
     assert "...((generatedDocument ? generatedSectionMap.get(section.key) : structuredContext[section.key]) || [])" in structured_js
     assert "renderStructuredSections(null);" in structured_js
     assert "renderFreeformLines(null);" in structured_js
@@ -6386,7 +6391,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const renderSelectedNote = ({ forcePreserveEditor = false } = {}) => {" in documents_js
     assert "latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || \"\";" in documents_js
     assert "const preserveCurrentEditorRender = Boolean(" in documents_js
-    assert "forcePreserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId)" in documents_js
+    assert "forcePreserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId, selectedNote)" in documents_js
     assert "if (!preserveCurrentEditorRender) {" in documents_js
     assert "wrapper.className = 'followup-output-card-v2 followup-llm-request-card-v2';" in documents_js
     assert "wrapper.dataset.generatedDocumentId = document.id || '';" in documents_js
@@ -6486,7 +6491,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260810-followups-accessibility" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260812-long-note-editor" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

@@ -34,7 +34,7 @@ def test_initial_autosize_is_bounded_and_deferred_for_long_notes():
 
 def test_typing_updates_linked_draft_lines_without_full_note_rescan():
     source = _structured_editor_source()
-    structured_callbacks = _between(source, "  const structuredRowCallbacks = (sectionContainer) => ({", "\n\n  const freeformRowCallbacks")
+    structured_callbacks = _between(source, "  const structuredRowCallbacks = () => ({", "\n\n  const freeformRowCallbacks")
     freeform_callbacks = _between(source, "  const freeformRowCallbacks = () => ({", "\n\n  const addGeneratedStructuredLine")
 
     assert "syncGeneratedStructuredDraftLineFromDom" in structured_callbacks

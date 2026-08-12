@@ -4,6 +4,193 @@ import textwrap
 from pathlib import Path
 
 
+def test_initial_note_render_preserver_is_one_shot_and_requires_exact_note_version(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    runner = tmp_path / "initial_note_render_preserver_runner.mjs"
+    runner.write_text(
+        textwrap.dedent(
+            """
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import vm from 'node:vm';
+
+            const sourcePath = __SOURCE_PATH__;
+            const source = fs.readFileSync(sourcePath, 'utf8')
+              .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';", '')
+              .replaceAll('export const ', 'var ')
+              .replace('export function workingNoteToEditorDocument', 'function workingNoteToEditorDocument')
+              .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
+            const sandbox = { Boolean, String };
+            sandbox.globalThis = sandbox;
+            vm.createContext(sandbox);
+            vm.runInContext(source, sandbox, { filename: sourcePath });
+
+            const initial = {
+              targetId: 'note-1',
+              documentMode: 'freeform',
+              kind: 'generated_note',
+              status: 'ready',
+              updatedAt: '2026-08-12T10:00:00+00:00',
+              hasEditorDom: true,
+            };
+            const sameNote = { ...initial };
+
+            const exactMatch = sandbox.createInitialNoteRenderPreserver(initial);
+            assert.equal(exactMatch(sameNote), true);
+            assert.equal(exactMatch(sameNote), false, 'the server DOM may only skip the first client render');
+
+            const equivalentUtcMarker = sandbox.createInitialNoteRenderPreserver(initial);
+            assert.equal(
+              equivalentUtcMarker({ ...sameNote, updatedAt: '2026-08-12T10:00:00Z' }),
+              true,
+              'Jinja and API datetime formats must resolve to the same version marker',
+            );
+
+            for (const changedField of ['targetId', 'documentMode', 'kind', 'status', 'updatedAt']) {
+              const preserve = sandbox.createInitialNoteRenderPreserver(initial);
+              assert.equal(
+                preserve({ ...sameNote, [changedField]: `different-${changedField}` }),
+                false,
+                `${changedField} must identify the same canonical note`,
+              );
+            }
+
+            const absentDom = sandbox.createInitialNoteRenderPreserver({ ...initial, hasEditorDom: false });
+            assert.equal(absentDom(sameNote), false);
+
+            const unfinishedNote = sandbox.createInitialNoteRenderPreserver({ ...initial, status: 'processing' });
+            assert.equal(unfinishedNote({ ...sameNote, status: 'processing' }), false);
+            """
+        ).replace(
+            "__SOURCE_PATH__",
+            repr(str(root / "app" / "static" / "js" / "transcribe" / "documents.js")),
+        ),
+        encoding="utf-8",
+    )
+
+    subprocess.run(["node", str(runner)], check=True, cwd=root)
+
+
+def test_document_navigator_preserves_matching_server_note_once_but_updates_metadata(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    runner = tmp_path / "initial_note_navigator_runner.mjs"
+    runner.write_text(
+        textwrap.dedent(
+            """
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import vm from 'node:vm';
+
+            const root = __OPENSCRIBE_ROOT__;
+            const documentsPath = `${root}/app/static/js/transcribe/documents.js`;
+            const noteTargetsPath = `${root}/app/static/js/transcribe/noteTargets.js`;
+            const noteTargetsSource = fs.readFileSync(noteTargetsPath, 'utf8').replaceAll('export const ', 'var ');
+            const documentsSource = fs.readFileSync(documentsPath, 'utf8')
+              .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';", '')
+              .replaceAll('export const ', 'var ')
+              .replace('export function workingNoteToEditorDocument', 'function workingNoteToEditorDocument')
+              .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
+            const makeElement = () => ({
+              dataset: {}, hidden: false, innerHTML: '', textContent: '', children: [],
+              append(...children) { this.children.push(...children); },
+              appendChild(child) { this.children.push(child); },
+              insertAdjacentHTML() {},
+              querySelectorAll() { return []; },
+              setAttribute(name, value) { this[name] = value; },
+            });
+            const fakeDocument = {
+              activeElement: null,
+              createElement: () => makeElement(),
+              dispatchEvent: () => {},
+              querySelector: () => null,
+            };
+            const sandbox = {
+              Array, Boolean, CustomEvent: class CustomEvent {}, Date, JSON, Map, Number, String,
+              window: { document: fakeDocument },
+            };
+            sandbox.globalThis = sandbox;
+            vm.createContext(sandbox);
+            vm.runInContext(noteTargetsSource, sandbox, { filename: noteTargetsPath });
+            vm.runInContext(documentsSource, sandbox, { filename: documentsPath });
+
+            const note = {
+              id: 'note-1',
+              document_mode: 'freeform',
+              updated_at: '2026-08-12T10:00:00+00:00',
+              status: 'ready',
+              title: 'Long note',
+            };
+            const latestGeneratedOutput = makeElement();
+            const renderCalls = [];
+            const hydratedLifecycleCalls = [];
+            const preserveInitial = sandbox.createInitialNoteRenderPreserver({
+              targetId: note.id,
+              documentMode: note.document_mode,
+              kind: 'generated_note',
+              status: note.status,
+              updatedAt: note.updated_at,
+              hasEditorDom: true,
+            });
+            let pendingHydratedLifecycle = false;
+            const state = {
+              hasActiveTranscript: true,
+              activeTranscriptId: 'transcript-1',
+              selectedNoteDocumentId: note.id,
+              workspaceNoteDocuments: [note],
+              workspaceStructuredContext: {},
+            };
+            const navigator = sandbox.createDocumentNavigator({
+              dom: {
+                latestGeneratedOutput,
+                noteHistory: makeElement(),
+                noteMeta: makeElement(),
+                noteSelector: makeElement(),
+                noteSelectorCount: makeElement(),
+                noteSelectorWrap: makeElement(),
+                outputLlmRequestSlot: makeElement(),
+                outputRedactionSlot: makeElement(),
+              },
+              helpers: {
+                escapeHtml: (value) => String(value || ''),
+                refreshIcons: () => {},
+                renderGeneratedOutput: (...args) => renderCalls.push(args),
+                initializeHydratedGeneratedDocument: (document) => hydratedLifecycleCalls.push(document),
+                renderRedactionDebugPanel: () => {},
+              },
+              getState: () => state,
+              setState: () => {},
+              shouldPreserveNoteEditorRender: (targetId, selectedNote) => preserveInitial({
+                targetId,
+                documentMode: selectedNote?.document_mode,
+                kind: selectedNote?.kind || 'generated_note',
+                status: selectedNote?.status,
+                updatedAt: selectedNote?.updated_at,
+              }) && (pendingHydratedLifecycle = true),
+              shouldInitializeHydratedNoteEditor: (selectedNote) => {
+                if (!pendingHydratedLifecycle || selectedNote?.id !== note.id) return false;
+                pendingHydratedLifecycle = false;
+                return true;
+              },
+            });
+
+            navigator.renderSelectedNote();
+            assert.equal(renderCalls.length, 0, 'matching server-rendered note should stay mounted');
+            assert.deepEqual(hydratedLifecycleCalls, [note], 'preserved server DOM must initialise editor lifecycle state');
+            assert.equal(latestGeneratedOutput.dataset.latestGeneratedId, note.id);
+            assert.equal(latestGeneratedOutput.dataset.latestGeneratedMode, note.document_mode);
+            assert.equal(latestGeneratedOutput.dataset.latestGeneratedUpdatedAt, note.updated_at);
+
+            navigator.renderSelectedNote();
+            assert.equal(renderCalls.length, 1, 'later renders must use current workspace content');
+            assert.equal(hydratedLifecycleCalls.length, 1, 'only the one-shot preserved render initialises hydrated lifecycle state');
+            """
+        ).replace("__OPENSCRIBE_ROOT__", repr(str(root))),
+        encoding="utf-8",
+    )
+
+    subprocess.run(["node", str(runner)], check=True, cwd=root)
+
+
 def test_note_selection_rail_formats_created_at_in_browser_timezone(tmp_path):
     root = Path(__file__).resolve().parents[1]
     runner = tmp_path / "note_created_at_runner.mjs"

@@ -288,7 +288,7 @@ File or symbol discovery
 Documentation lookups
 Web research
 Fact extraction
-Summaries
+Summaries and daily notes
 Simple factual investigation
 Small, clearly bounded analysis tasks
 
@@ -307,6 +307,7 @@ Code review
 Contained debugging
 Multi-file changes with clear requirements
 Changes requiring editing and several coordinated steps
+Documentation or user facing text
 Sol Handles Directly
 
 Sol should retain work involving:

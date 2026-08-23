@@ -459,6 +459,7 @@ export function createDocumentNavigator({
       setState({ selectedNoteDocumentId: documentId });
       renderSelectedNote();
       setTab("output");
+      window.document.dispatchEvent(new window.CustomEvent('transcribe:document-selected', { detail: { kind: 'note', documentId } }));
       return true;
     }
     const state = getState();
@@ -475,6 +476,7 @@ export function createDocumentNavigator({
     setState({ selectedFollowupDocumentId: documentId });
     renderSelectedFollowup();
     setTab("followups");
+    window.document.dispatchEvent(new window.CustomEvent('transcribe:document-selected', { detail: { kind: 'followup', documentId } }));
     return true;
   };
 

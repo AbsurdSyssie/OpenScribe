@@ -6,7 +6,7 @@
   <title>OpenScribe Login</title>
   <link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">
   <link rel="stylesheet" href="/static/css/components.css?v=20260701-home-components">
-  <link rel="stylesheet" href="/static/css/auth.css?v=20260701-auth-extract">
+  <link rel="stylesheet" href="/static/css/auth.css?v=20260821-social-sign-in-spacing">
 </head>
 <body class="auth-page auth-page--login">
   <main>
@@ -88,6 +88,23 @@
           <button type="submit">Sign in</button>
         </div>
       </form>
+      {% if oidc_providers %}
+      <div class="auth-divider" aria-hidden="true"><span>or</span></div>
+      <div class="auth-provider-list" aria-label="Other sign-in options">
+        {% for provider in oidc_providers %}
+        <form class="auth-provider-form" method="post" action="/auth/oidc/{{ provider.key }}/login">
+          <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+          {% if provider.key == "google" %}
+          <button class="auth-provider-button auth-provider-button--google" type="submit" aria-label="Sign in with Google">
+            <img src="/static/google-sign-in.svg" alt="" aria-hidden="true">
+          </button>
+          {% else %}
+          <button class="auth-provider-button" type="submit">Sign in with {{ provider.name }}</button>
+          {% endif %}
+        </form>
+        {% endfor %}
+      </div>
+      {% endif %}
       <p class="footer-note">Some accounts will be asked to finish setup before reaching the main app.
         {% if password_reset_email_enabled %}
         <a href="/forgot-password">Reset password</a>.

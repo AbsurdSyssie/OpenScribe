@@ -18,7 +18,14 @@ This document records implemented security boundaries and operational requiremen
 OpenScribe uses opaque browser tokens with server-side state:
 
 - `openscribe_session` is the authentication bearer token; PostgreSQL stores only its hash.
-- `openscribe_trusted_device` is a separate bearer token used only to skip TOTP after a correct password login; PostgreSQL stores only its hash.
+- `openscribe_trusted_device` is a separate bearer token used only to skip TOTP after correct password or linked-OIDC primary authentication; PostgreSQL stores only its hash.
+- Optional OIDC login uses authorization code flow, discovery, provider-bound one-time state, nonce, `S256` PKCE, strict issuer validation, an asymmetric signing-algorithm allowlist, and signed ID-token validation.
+- Users must link an OIDC subject from a full owner session after password and active-TOTP reauthentication. Email claims never create or link accounts.
+- OIDC access, refresh, and ID tokens are held only for callback validation and are not persisted or written to audit events. Raw `sub` claims are replaced by versioned, issuer-bound HMAC-SHA-256 digests before persistence. Production accepts only `form_post` callbacks so codes do not appear in access-log URLs.
+- OIDC lifecycle logs contain only the configured provider key, login/link purpose, outcome, bounded reason and protocol-stage codes, and status. They do not contain authorization codes, state, PKCE verifiers, cookies, tokens, claims, email addresses, or subjects.
+- OIDC client secrets come from provider-scoped Vault KV-v2 paths by default and remain in process memory only for the life of the web process. Environment values are explicit compatibility overrides. Google and Microsoft issue their client secrets; Vault stores but does not generate them.
+- The shared OIDC subject-hash key comes from a fixed platform Vault path. OpenScribe creates it once with KV-v2 compare-and-set when absent. All web instances must share that key. Losing or rotating it without an identity migration makes existing links unusable.
+- Microsoft email-domain restrictions are an eligibility policy applied to signed claims on every exchange. Email and UPN claims remain mutable attributes: they are neither stored nor used for account lookup. The signed tenant UUID must match the signed tenant-specific issuer.
 - `openscribe_csrf` and `openscribe_csrf_anon` are CSRF controls, not authentication tokens.
 - Session levels explicitly distinguish onboarding, pending MFA, and full access.
 - Suspension, disable/lock handling, password/account recovery, and sensitive account changes revoke the applicable sessions and trusted-device records.

@@ -3,7 +3,7 @@ import os
 from dataclasses import dataclass
 from ipaddress import ip_address
 from typing import Annotated
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
@@ -319,6 +319,7 @@ from .services.csrf import (
     session_csrf_token,
     verify_csrf_token,
 )
+from .services.oidc import oidc_configured_for_environment
 from .services.auth_email import (
     GENERIC_PASSWORD_RESET_MESSAGE,
     PASSWORD_RESET_EMAIL_DISABLED_MESSAGE,
@@ -454,6 +455,7 @@ def _allowed_hosts_for_environment() -> list[str]:
 enforce_production_cookie_security()
 csrf_secret_configured_for_environment()
 audit_subject_hash_secret_configured_for_environment()
+oidc_configured_for_environment()
 app = FastAPI(title="OpenScribe MVP", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts_for_environment())
 LOCALHOST_NAMES = {"localhost", "127.0.0.1", "::1", "testserver", "testclient"}
@@ -798,6 +800,7 @@ SENSITIVE_NO_STORE_PATH_PREFIXES = (
     "/api/v1/transcripts",
     "/api/v1/generated-documents",
     "/api/v1/post-consultation-dictation",
+    "/auth/oidc/",
     "/workspace",
 )
 PUBLIC_NO_STORE_PATHS = {
@@ -977,6 +980,34 @@ async def ensure_csrf_cookie(request: Request, call_next):
         path="/",
     )
     return response
+
+
+@app.middleware("http")
+async def redact_oidc_callback_query_from_access_log(request: Request, call_next):
+    if (
+        request.method == "GET"
+        and request.url.path.startswith("/auth/oidc/")
+        and request.url.path.endswith("/callback")
+        and request.scope.get("query_string")
+    ):
+        raw_query = request.scope["query_string"]
+        parsed: dict[str, str] = {}
+        if len(raw_query) <= 4096:
+            try:
+                pairs = parse_qsl(
+                    raw_query.decode("ascii"),
+                    keep_blank_values=True,
+                    max_num_fields=8,
+                )
+                if len({key for key, _value in pairs}) == len(pairs):
+                    parsed = dict(pairs)
+            except (UnicodeDecodeError, ValueError):
+                parsed = {}
+        request.state.oidc_callback_query = parsed
+        # Uvicorn builds its access-log target from the mutable ASGI scope when
+        # the response starts. Remove one-time codes and state before that point.
+        request.scope["query_string"] = b""
+    return await call_next(request)
 
 
 def _set_session_cookie(request: Request, response: Response, token: str) -> None:
@@ -1311,6 +1342,7 @@ error_responses = {
 from .routes import api_routes as _api_routes  # noqa: F401
 from .routes import web_admin as _web_admin  # noqa: F401
 from .routes import web_home_transcribe as _web_home_transcribe  # noqa: F401
+from .routes import web_oidc as _web_oidc  # noqa: F401
 from .routes import web_pages as _web_pages  # noqa: F401
 from .routes import web_team_management as _web_team_management  # noqa: F401
 from .routes import web_transcribe as _web_transcribe  # noqa: F401

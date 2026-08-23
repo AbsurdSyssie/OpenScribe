@@ -1,1 +1,176 @@
-<section class="settings-section" data-settings-panel="team-members" {% if settings_tab not in ['team-members', 'team-management'] %}hidden{% endif %}><div class="settings-section__intro"><span class="settings-kicker">Team</span><h2>Team members</h2><p>Manage access for {{ current_user.team.name if current_user.team else 'your team' }}.</p></div><article class="settings-card"><details><summary>Create team member</summary><form method="post" action="/home/users"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="team-members"><label>Full name<input name="full_name" maxlength="255"></label><label>Email<input type="email" name="email" required></label><label>Temporary password<input type="password" name="temporary_password" required minlength="12" autocomplete="new-password" data-generated-password></label><label>Role<select name="team_role"><option value="user">user</option><option value="leader">leader</option></select></label><label>Status<select name="status"><option value="active">active</option><option value="suspended">suspended</option><option value="locked">locked</option><option value="disabled">disabled</option></select></label><label><input type="checkbox" name="mfa_required" value="true" checked>Require MFA</label><button class="btn-primary-sm" type="submit">Create</button></form></details><div class="member-list">{% for user in manageable_users %}<article class="member-row"><div class="member-avatar">{{ (user.full_name or user.email)[0]|upper }}</div><div class="member-identity"><strong>{{ user.full_name or user.email }}</strong><small>{{ user.email }} · {{ user.team_role.value if user.team_role else 'user' }} · {{ user.status.value }}</small></div><details class="member-menu"><summary aria-label="Manage {{ user.full_name or user.email }}"><i data-lucide="ellipsis"></i></summary><div class="member-menu__panel">{% if user.status.value == 'active' %}<form method="post" action="/home/users/{{ user.id }}/suspend"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="team-members"><button type="submit">Suspend</button></form>{% elif user.status.value in ('suspended', 'disabled') %}<form method="post" action="/home/users/{{ user.id }}/reactivate"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="team-members"><button type="submit">Reactivate</button></form>{% endif %}<form method="post" action="/home/users/{{ user.id }}/send-activation"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="team-members"><button type="submit">Send setup link</button></form>{% if email_recovery_enabled %}<form method="post" action="/home/users/{{ user.id }}/send-password-reset"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="team-members"><button type="submit">Send password reset email</button></form><form method="post" action="/home/users/{{ user.id }}/send-account-recovery"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="team-members"><button type="submit">Send account recovery email</button></form>{% endif %}{% if break_glass_recovery_enabled %}<form method="post" action="/home/users/{{ user.id }}/break-glass-password-reset"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="team-members"><input name="reason" required minlength="3" maxlength="500" placeholder="Reason"><input name="mfa_code" required inputmode="numeric" autocomplete="one-time-code" minlength="6" maxlength="8" placeholder="Your TOTP code"><label><input type="checkbox" name="confirm_email_unavailable" value="true" required>Email unavailable</label><button type="submit">Generate break-glass password</button></form><form method="post" action="/home/users/{{ user.id }}/break-glass-account-recovery" data-confirm-submit="Generate a break-glass password and reset MFA for this user?"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="team-members"><input name="reason" required minlength="3" maxlength="500" placeholder="Reason"><input name="mfa_code" required inputmode="numeric" autocomplete="one-time-code" minlength="6" maxlength="8" placeholder="Your TOTP code"><label><input type="checkbox" name="confirm_email_unavailable" value="true" required>Email unavailable</label><button type="submit">Break-glass password + reset MFA</button></form>{% endif %}<form method="post" action="/home/users/{{ user.id }}/reset-mfa" data-confirm-submit="Reset MFA for this user and revoke sessions?"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="team-members"><button type="submit">Reset MFA</button></form><form method="post" action="/home/users/{{ user.id }}/delete" data-confirm-submit="Delete this user and all owned transcript content immediately?"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="team-members"><button type="submit">Delete</button></form></div></details></article>{% endfor %}</div></article></section>
+<section class="settings-section" data-settings-panel="team-members" {% if settings_tab not in ['team-members', 'team-management'] %}hidden{% endif %}>
+  <div class="settings-section__intro">
+    <span class="settings-kicker">Team</span>
+    <h2>Team members</h2>
+    <p>Manage access for {{ current_user.team.name if current_user.team else 'your team' }}.</p>
+  </div>
+
+  <article class="settings-card">
+    <details>
+      <summary>Create team member</summary>
+      <form method="post" action="/home/users">
+        <input type="hidden" name="return_view" value="workspace">
+        <input type="hidden" name="return_tab" value="team-members">
+        <label>Full name<input name="full_name" maxlength="255"></label>
+        <label>Email<input type="email" name="email" required></label>
+        <label>Temporary password<input type="password" name="temporary_password" required minlength="12" autocomplete="new-password" data-generated-password></label>
+        <label>Role<select name="team_role"><option value="user">user</option><option value="leader">leader</option></select></label>
+        <label>Status<select name="status"><option value="active">active</option><option value="suspended">suspended</option><option value="locked">locked</option><option value="disabled">disabled</option></select></label>
+        <label><input type="checkbox" name="mfa_required" value="true" checked>Require MFA</label>
+        <button class="btn-primary-sm" type="submit">Create</button>
+      </form>
+    </details>
+
+    <div class="member-list">
+      {% for user in manageable_users %}
+      {% set member_name = user.full_name or user.email %}
+      <article class="member-row">
+        <div class="member-avatar">{{ member_name[0]|upper }}</div>
+        <div class="member-identity">
+          <strong>{{ member_name }}</strong>
+          <small>{{ user.email }} · {{ user.team_role.value if user.team_role else 'user' }} · {{ user.status.value }}</small>
+        </div>
+
+        <div class="member-menu" data-member-menu>
+          <button
+            class="member-menu__trigger"
+            id="member-menu-trigger-{{ user.id }}"
+            type="button"
+            aria-label="Manage {{ member_name }}"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="member-menu-panel-{{ user.id }}"
+            data-member-menu-trigger
+          ><i data-lucide="ellipsis" aria-hidden="true"></i></button>
+
+          <div
+            class="member-menu__panel"
+            id="member-menu-panel-{{ user.id }}"
+            popover="manual"
+            role="menu"
+            aria-labelledby="member-menu-trigger-{{ user.id }}"
+            data-member-menu-panel
+          >
+            <p class="member-menu__label" role="none">Account actions</p>
+
+            {% if user.status.value == 'active' %}
+            <form class="member-menu__form" method="post" action="/home/users/{{ user.id }}/suspend" role="none">
+              <input type="hidden" name="return_view" value="workspace">
+              <input type="hidden" name="return_tab" value="team-members">
+              <button class="member-menu__item member-menu__item--warning" type="submit" role="menuitem" tabindex="-1" data-member-menu-item><i data-lucide="user-x" aria-hidden="true"></i><span>Suspend</span></button>
+            </form>
+            {% elif user.status.value in ('suspended', 'disabled') %}
+            <form class="member-menu__form" method="post" action="/home/users/{{ user.id }}/reactivate" role="none">
+              <input type="hidden" name="return_view" value="workspace">
+              <input type="hidden" name="return_tab" value="team-members">
+              <button class="member-menu__item" type="submit" role="menuitem" tabindex="-1" data-member-menu-item><i data-lucide="user-check" aria-hidden="true"></i><span>Reactivate</span></button>
+            </form>
+            {% endif %}
+
+            <form class="member-menu__form" method="post" action="/home/users/{{ user.id }}/send-activation" role="none">
+              <input type="hidden" name="return_view" value="workspace">
+              <input type="hidden" name="return_tab" value="team-members">
+              <button class="member-menu__item" type="submit" role="menuitem" tabindex="-1" data-member-menu-item><i data-lucide="mail" aria-hidden="true"></i><span>Send setup link</span></button>
+            </form>
+
+            {% if email_recovery_enabled %}
+            <form class="member-menu__form" method="post" action="/home/users/{{ user.id }}/send-password-reset" role="none">
+              <input type="hidden" name="return_view" value="workspace">
+              <input type="hidden" name="return_tab" value="team-members">
+              <button class="member-menu__item" type="submit" role="menuitem" tabindex="-1" data-member-menu-item><i data-lucide="key" aria-hidden="true"></i><span>Send password reset</span></button>
+            </form>
+            <form class="member-menu__form" method="post" action="/home/users/{{ user.id }}/send-account-recovery" role="none">
+              <input type="hidden" name="return_view" value="workspace">
+              <input type="hidden" name="return_tab" value="team-members">
+              <button class="member-menu__item" type="submit" role="menuitem" tabindex="-1" data-member-menu-item><i data-lucide="shield-check" aria-hidden="true"></i><span>Send account recovery</span></button>
+            </form>
+            {% endif %}
+
+            <div class="member-menu__divider" role="separator"></div>
+
+            {% if break_glass_recovery_enabled %}
+            <button class="member-menu__item member-menu__item--warning" type="button" role="menuitem" tabindex="-1" data-member-menu-item data-member-dialog-action="break-glass-password" aria-controls="member-action-dialog-{{ user.id }}"><i data-lucide="key" aria-hidden="true"></i><span>Break-glass password</span></button>
+            <button class="member-menu__item member-menu__item--danger" type="button" role="menuitem" tabindex="-1" data-member-menu-item data-member-dialog-action="break-glass-recovery" aria-controls="member-action-dialog-{{ user.id }}"><i data-lucide="shield-alert" aria-hidden="true"></i><span>Break-glass recovery</span></button>
+            {% endif %}
+
+            <button class="member-menu__item member-menu__item--warning" type="button" role="menuitem" tabindex="-1" data-member-menu-item data-member-dialog-action="reset-mfa" aria-controls="member-action-dialog-{{ user.id }}"><i data-lucide="refresh-cw" aria-hidden="true"></i><span>Reset MFA</span></button>
+            <button class="member-menu__item member-menu__item--danger" type="button" role="menuitem" tabindex="-1" data-member-menu-item data-member-dialog-action="delete" aria-controls="member-action-dialog-{{ user.id }}"><i data-lucide="trash-2" aria-hidden="true"></i><span>Delete user</span></button>
+          </div>
+        </div>
+
+        <dialog class="member-action-dialog" id="member-action-dialog-{{ user.id }}" aria-labelledby="member-action-dialog-title-{{ user.id }}" data-member-action-dialog>
+          <div class="member-action-dialog__frame">
+            <header class="member-action-dialog__header">
+              <div>
+                <span class="settings-kicker">Team member</span>
+                <h2 id="member-action-dialog-title-{{ user.id }}">Manage {{ member_name }}</h2>
+              </div>
+              <button class="member-action-dialog__close" type="button" aria-label="Close" data-member-dialog-close><i data-lucide="x" aria-hidden="true"></i></button>
+            </header>
+
+            {% if break_glass_recovery_enabled %}
+            <section class="member-action-dialog__section" data-member-dialog-section="break-glass-password" hidden>
+              <h3>Generate a break-glass password?</h3>
+              <p>Use this only when the user cannot receive recovery email. The temporary password is shown once.</p>
+              <form class="member-action-dialog__form" method="post" action="/home/users/{{ user.id }}/break-glass-password-reset">
+                <input type="hidden" name="return_view" value="workspace">
+                <input type="hidden" name="return_tab" value="team-members">
+                <label>Reason<input name="reason" required minlength="3" maxlength="500" autocomplete="off"></label>
+                <label>Your authenticator code<input name="mfa_code" required inputmode="numeric" autocomplete="one-time-code" minlength="6" maxlength="8"></label>
+                <label class="member-action-dialog__check"><input type="checkbox" name="confirm_email_unavailable" value="true" required>Confirm that email recovery is unavailable</label>
+                <div class="member-action-dialog__actions">
+                  <button class="btn-ghost-sm" type="button" data-member-dialog-close data-member-dialog-cancel>Cancel</button>
+                  <button class="btn-primary-sm" type="submit">Generate password</button>
+                </div>
+              </form>
+            </section>
+
+            <section class="member-action-dialog__section" data-member-dialog-section="break-glass-recovery" hidden>
+              <h3>Generate a password and reset MFA?</h3>
+              <p>This creates a temporary password, resets MFA, and revokes the user's sessions and trusted devices.</p>
+              <form class="member-action-dialog__form" method="post" action="/home/users/{{ user.id }}/break-glass-account-recovery">
+                <input type="hidden" name="return_view" value="workspace">
+                <input type="hidden" name="return_tab" value="team-members">
+                <label>Reason<input name="reason" required minlength="3" maxlength="500" autocomplete="off"></label>
+                <label>Your authenticator code<input name="mfa_code" required inputmode="numeric" autocomplete="one-time-code" minlength="6" maxlength="8"></label>
+                <label class="member-action-dialog__check"><input type="checkbox" name="confirm_email_unavailable" value="true" required>Confirm that email recovery is unavailable</label>
+                <div class="member-action-dialog__actions">
+                  <button class="btn-ghost-sm" type="button" data-member-dialog-close data-member-dialog-cancel>Cancel</button>
+                  <button class="btn-danger-sm" type="submit">Generate and reset MFA</button>
+                </div>
+              </form>
+            </section>
+            {% endif %}
+
+            <section class="member-action-dialog__section" data-member-dialog-section="reset-mfa" hidden>
+              <h3>Reset MFA for {{ member_name }}?</h3>
+              <p>This revokes all sessions and trusted devices. The user must set up MFA again.</p>
+              <form class="member-action-dialog__form" method="post" action="/home/users/{{ user.id }}/reset-mfa">
+                <input type="hidden" name="return_view" value="workspace">
+                <input type="hidden" name="return_tab" value="team-members">
+                <div class="member-action-dialog__actions">
+                  <button class="btn-ghost-sm" type="button" data-member-dialog-close data-member-dialog-cancel>Cancel</button>
+                  <button class="btn-primary-sm" type="submit">Reset MFA</button>
+                </div>
+              </form>
+            </section>
+
+            <section class="member-action-dialog__section" data-member-dialog-section="delete" hidden>
+              <h3>Delete {{ member_name }}?</h3>
+              <p>Delete this user and all owned transcript content immediately? This cannot be undone.</p>
+              <form class="member-action-dialog__form" method="post" action="/home/users/{{ user.id }}/delete">
+                <input type="hidden" name="return_view" value="workspace">
+                <input type="hidden" name="return_tab" value="team-members">
+                <div class="member-action-dialog__actions">
+                  <button class="btn-ghost-sm" type="button" data-member-dialog-close data-member-dialog-cancel>Cancel</button>
+                  <button class="btn-danger-sm" type="submit">Delete user</button>
+                </div>
+              </form>
+            </section>
+          </div>
+        </dialog>
+      </article>
+      {% endfor %}
+    </div>
+  </article>
+</section>

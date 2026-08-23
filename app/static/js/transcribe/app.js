@@ -1,9 +1,9 @@
 import { attachTranscribeActions } from './actions.js?v=20260810-followups-accessibility';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
-import { createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationLoadingHtml } from './documents.js?v=20260812-long-note-editor';
+import { createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationLoadingHtml } from './documents.js?v=20260821-mobile-production-2';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
 import { createAudioCaptureController } from './media.js?v=20260528-consult-boundary-guard';
-import { createStructuredEditor } from './structured.js?v=20260812-long-note-editor';
+import { createStructuredEditor } from './structured.js?v=20260821-mobile-document-mode';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
 import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
@@ -246,7 +246,6 @@ import {
       const dictationRetryTranscriptionButton = document.querySelector('[data-dictation-retry-transcription]');
       const localBusyProtected = [...document.querySelectorAll('[data-local-busy-protected]')];
       const newSessionControls = [newSessionButton].filter(Boolean);
-      const copyToast = document.querySelector('#copy-toast');
       const guideStartButtons = [...document.querySelectorAll('[data-start-guide]')];
       const tourOverlay = document.querySelector('[data-tour-overlay]');
       const tourScrims = {
@@ -294,6 +293,7 @@ import {
       let captureController = null;
       let localStatusLabel = null;
       let micIssue = null;
+      let dictationModalOpener = null;
       let lastRenderedTranscriptId = transcriptId || null;
       let statusDetailsVisible = false;
 let statusDetailsHideTimer = null;
@@ -595,12 +595,7 @@ let statusDetailsHideTimer = null;
       ).message;
 
       const showCopyToast = () => {
-        if (!copyToast) return;
-        copyToast.classList.add('show');
-        window.clearTimeout(showCopyToast._timer);
-        showCopyToast._timer = window.setTimeout(() => {
-          copyToast.classList.remove('show');
-        }, 1400);
+        window.showToast?.('Copied', 'success', 2000);
       };
 
       const persistUserAppPreferences = async (patch) => {
@@ -775,6 +770,9 @@ let statusDetailsHideTimer = null;
         if (followupSaveInFlight) {
           followupSaveQueued = true;
           return followupSaveInFlight;
+        }
+        if (!followupEditorDirty) {
+          return null;
         }
         const saveRequest = buildFollowupSavePayload();
         if (!saveRequest) {
@@ -1308,14 +1306,31 @@ let statusDetailsHideTimer = null;
         });
       };
 
-      const setDictationModalOpen = (isOpen) => {
+      const isRestorableDictationFocusTarget = (element) => Boolean(
+        element
+        && element.isConnected
+        && !element.hidden
+        && !element.disabled
+        && element.getAttribute('aria-disabled') !== 'true'
+        && !element.closest('[hidden], [inert]')
+        && element.getClientRects().length
+      );
+
+      const setDictationModalOpen = (isOpen, { restoreFocus = true } = {}) => {
         if (!dictationModal) return;
         dictationModal.hidden = !isOpen;
         document.body.classList.toggle('modal-open', isOpen);
         if (isOpen) {
+          document.dispatchEvent(new CustomEvent('openscribe:dictation-modal-opening'));
           dictationCreatedTranscriptForModal = false;
           dictationCombinedInput?.focus({ preventScroll: true });
           refreshIcons(dictationModal);
+        } else {
+          const opener = dictationModalOpener;
+          dictationModalOpener = null;
+          if (restoreFocus && document.visibilityState === 'visible' && isRestorableDictationFocusTarget(opener)) {
+            window.requestAnimationFrame(() => opener.focus({ preventScroll: true }));
+          }
         }
       };
 
@@ -1346,6 +1361,8 @@ let statusDetailsHideTimer = null;
           return;
         }
         try {
+          const activeElement = document.activeElement;
+          dictationModalOpener = isRestorableDictationFocusTarget(activeElement) ? activeElement : null;
           if (!transcriptId) {
             await createDictationOnlySession();
           }
@@ -1383,7 +1400,7 @@ let statusDetailsHideTimer = null;
           dictationCombinedInput.value = lastSavedDictationText || '';
         }
         dictationDirty = false;
-        setDictationModalOpen(false);
+        setDictationModalOpen(false, { restoreFocus: !force });
         syncDictationControls();
         return true;
       };

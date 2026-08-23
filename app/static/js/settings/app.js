@@ -1,6 +1,7 @@
 import { initTemplateIO } from './template-io.js?v=20260724-portability-guards';
 import { initQuickActionIO } from './quick-action-io.js?v=20260724-portability-guards';
 import { initSmartPhraseIO } from './smart-phrase-io.js?v=20260724-portability-guards';
+import { initMemberMenus } from './member-menu.js?v=20260821-member-actions-2';
 
 function snapshot(form) {
   const data = new FormData(form); data.delete('_csrf_token'); return new URLSearchParams(data).toString();
@@ -15,3 +16,4 @@ window.lucide?.createIcons();
 initTemplateIO();
 initQuickActionIO();
 initSmartPhraseIO();
+initMemberMenus();

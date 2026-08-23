@@ -20,6 +20,28 @@ function backToScribeUrl(anchor) {
   return url;
 }
 
+function isVisibleSessionToggle(element) {
+  return Boolean(
+    element
+    && !element.disabled
+    && !element.hidden
+    && !element.closest('[hidden], [inert]')
+    && element.getClientRects().length,
+  );
+}
+
+function preferredSessionPanelToggle() {
+  const toggles = [...document.querySelectorAll('[data-session-panel-toggle]')];
+  const mobile = window.matchMedia('(max-width: 767px)').matches;
+  if (mobile) {
+    const mobileToggle = toggles.find((toggle) => (
+      toggle.closest('.workspace-mobile-header') && isVisibleSessionToggle(toggle)
+    ));
+    if (mobileToggle) return mobileToggle;
+  }
+  return toggles.find(isVisibleSessionToggle) || null;
+}
+
 document.querySelectorAll('[data-back-to-scribe]').forEach((anchor) => {
   anchor.addEventListener('click', (event) => {
     if (anchor.getAttribute('aria-disabled') === 'true') return;
@@ -32,7 +54,7 @@ function openRecentFromQuery() {
   if (document.body.dataset.workspaceSection !== 'scribe') return;
   const url = new URL(window.location.href);
   if (url.searchParams.get('open_recent') !== '1') return;
-  const toggle = document.querySelector('[data-session-panel-toggle]');
+  const toggle = preferredSessionPanelToggle();
   if (toggle?.getAttribute('aria-expanded') !== 'true') toggle?.click();
   url.searchParams.delete('open_recent');
   window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
@@ -87,9 +109,14 @@ function initDrawer() {
     drawer.toggleAttribute('inert', mobile.matches && !actual);
     if (actual) drawer.focus(); else if (restoreFocus) toggle.focus();
   };
-  toggle.addEventListener('click', () => setOpen(toggle.getAttribute('aria-expanded') !== 'true'));
+  toggle.addEventListener('click', () => {
+    const opening = toggle.getAttribute('aria-expanded') !== 'true';
+    if (opening) document.dispatchEvent(new CustomEvent('workspace:drawer-opening'));
+    setOpen(opening);
+  });
   close.addEventListener('click', () => setOpen(false, true));
   drawer.addEventListener('click', (event) => { if (mobile.matches && event.target.closest('a, button[type="submit"]')) setOpen(false); });
+  document.addEventListener('workspace:drawer-close', () => setOpen(false));
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && toggle.getAttribute('aria-expanded') === 'true') setOpen(false, true); });
   mobile.addEventListener?.('change', () => setOpen(false));
   setOpen(false);

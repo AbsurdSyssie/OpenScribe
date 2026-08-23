@@ -78,6 +78,7 @@ from ..services.audit_detection import (
     summarize_security_audit_events as summarize_security_audit_events_service,
 )
 from ..services.auth_email import email_password_reset_enabled as email_password_reset_enabled_service
+from ..services.oidc import oidc_configs
 from ..services.llm import (
     active_team_llm_selection as active_team_llm_selection_service,
     get_team_hallucination_check_selection as get_team_hallucination_check_selection_service,
@@ -826,10 +827,15 @@ def render_auth_page(
     message_kind: str = "error",
     status_code: int = 200,
 ):
+    configured_oidc = oidc_configs()
     context = {
         "request": request,
         "bootstrap_allowed": bootstrap_admin_is_configured() and user_count_service(db) == 0,
         "password_reset_email_enabled": email_password_reset_enabled_service(),
+        "oidc_providers": tuple(
+            {"key": config.provider_key, "name": config.provider_name}
+            for config in configured_oidc
+        ),
         "message": message,
         "message_kind": message_kind,
     }

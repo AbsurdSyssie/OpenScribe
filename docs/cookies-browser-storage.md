@@ -2,7 +2,7 @@
 
 This document records the browser-side storage used by the current OpenScribe application. It supports the operator cookie/browser-storage notice and DSPT evidence. It does not describe every cookie or log that a reverse proxy, CDN, identity provider, or modified deployment may add.
 
-Last reviewed: 10 August 2026.
+Last reviewed: 21 August 2026.
 
 ## Scope and method
 
@@ -18,6 +18,8 @@ No application use of IndexedDB, Cache Storage, service workers, advertising sto
 | `openscribe_trusted_device` | Opaque token for the optional remembered-device MFA flow. It cannot authenticate by itself. | Up to 30 days | Optional sign-in convenience and security | `HttpOnly`, `SameSite=Lax`, path `/`; `Secure` is mandatory in production |
 | `openscribe_csrf` | Signed CSRF value bound to the anonymous nonce or authenticated session. It is not authentication authority. | Browser session | Essential request-integrity protection | `HttpOnly`, `SameSite=Lax`, path `/`; `Secure` is mandatory in production |
 | `openscribe_csrf_anon` | Random nonce used to bind an anonymous CSRF value before sign-in. | Browser session | Essential request-integrity protection | `HttpOnly`, `SameSite=Lax`, path `/`; deleted when an authenticated session is issued |
+| `openscribe_oidc_state` | One-time random value binding an OIDC callback to the browser, provider, and server-side authorization request. | Up to 10 minutes | Essential only while OIDC sign-in/linking is in progress | `HttpOnly`, provider-specific callback path; `SameSite=None; Secure` for production `form_post`, or `SameSite=Lax` for local query mode; deleted on callback |
+| `openscribe_oidc_verifier` | One-time PKCE verifier. The database stores only its SHA-256 digest. | Up to 10 minutes | Essential only while OIDC sign-in/linking is in progress | Same provider-specific callback protection and deletion rule as `openscribe_oidc_state` |
 
 Published `/privacy`, `/cookies`, and `/terms` pages, public metadata routes, and static assets do not issue OpenScribe CSRF cookies. Public account-request and sign-in pages do issue anonymous CSRF cookies because they contain state-changing forms.
 
@@ -78,6 +80,7 @@ Subject to retained deployment evidence, the public notice may say that Cloudfla
 - `app/main.py`
 - `app/services/auth.py`
 - `app/services/csrf.py`
+- `app/services/oidc.py`
 - `app/static/js/legal-content-banner.js`
 - `app/static/js/workspace/app.js`
 - `app/static/js/transcribe/`

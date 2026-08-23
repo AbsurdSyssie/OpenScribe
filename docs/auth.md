@@ -7,9 +7,9 @@ This document describes the implemented authentication, onboarding, account reco
 - Browser authentication uses an opaque `openscribe_session` cookie.
 - The browser never receives serialized user or permission state in that cookie.
 - PostgreSQL stores only the hashed session token plus explicit auth level, status, and expiry metadata.
-- Login uses email and password.
+- Login uses email and password. A deployment may also enable Google, Microsoft, and one custom OpenID Connect (OIDC) provider for accounts that users have linked themselves.
 - Completed MFA-enabled accounts normally require a TOTP challenge after password verification.
-- A fresh trusted-device record can skip the TOTP challenge only after a successful password login.
+- A fresh trusted-device record can skip the TOTP challenge after successful password or linked-OIDC primary authentication.
 - The first system administrator can be created only while the database contains zero users. Production also requires `BOOTSTRAP_ADMIN_TOKEN`; the submitted deployment credential must match it.
 - Normal managed accounts are created by a leader/system administrator or from an approved account request.
 
@@ -54,7 +54,7 @@ Login verifies the submitted password against Argon2id work even when the email 
 
 For an onboarded account:
 
-1. password verification succeeds;
+1. password verification or linked-OIDC authentication succeeds;
 2. OpenScribe checks for a non-revoked trusted-device record for the same user;
 3. without fresh trust, it creates a `pending_mfa` session and redirects to `/mfa/challenge`;
 4. successful TOTP verification rotates that session to `full`;
@@ -163,6 +163,40 @@ Normal users and team leaders can update their own account from `/workspace/acco
 - Email uniqueness is checked against normalized database identity.
 - Successful email/password changes revoke all sessions and trusted devices and issue one replacement session to the initiating browser.
 - Audit events record action/outcome/field metadata, not submitted names, emails, passwords, or TOTP codes.
+
+When OIDC is enabled, normal users and team leaders can link or remove each configured provider from `/workspace/account`. One account may link both Google and Microsoft.
+
+- Linking starts from a full owner session and requires the current password. The provider then authenticates the second account. OpenScribe does not ask for another TOTP code during this flow.
+- The authorization callback is bound to that user, that session, one-time state, a nonce, and an `S256` PKCE verifier.
+- OpenScribe keys a linked identity by the provider issuer and its case-sensitive `sub` claim. It never links or creates an account from an email claim.
+- Google accepts any account. Microsoft uses the `common` tenant endpoint but requires a signed `email` or `preferred_username` claim in `nhs.net`, `nhs.uk`, or a real subdomain of `nhs.uk` by default. This eligibility check runs on linking and every login. The claim is not stored or used as identity.
+- Microsoft discovery uses its documented issuer template. Microsoft documents S256 PKCE support but omits the PKCE capability field from its `common` discovery document, so the built-in Microsoft profile accepts that omission only; OpenScribe still sends and verifies S256 PKCE, and every other provider must advertise it. Each signed token must contain a UUID `tid` whose value matches the tenant segment in the signed `iss` claim.
+- OIDC login is available only after linking. It still applies account status, onboarding, TOTP, trusted-device, and local-development account checks.
+- Linking or removal revokes all sessions and trusted devices, then gives the initiating browser one replacement session.
+- The database stores no provider access, refresh, or ID token. It stores only the issuer, a versioned issuer-bound HMAC of the subject, provider label, owner, and use timestamps.
+- System-administrator accounts cannot link OIDC through the normal-user account page.
+- Logout ends the OpenScribe session only. Provider logout and OIDC back-channel logout are not implemented.
+
+### Microsoft NHS rollout status
+
+Microsoft sign-in for NHS accounts is implemented but remains a deployment task. An NHS tenant can block an unapproved multi-tenant app even when OpenScribe and the Entra registration are configured correctly. Before enabling Microsoft sign-in for NHS users in production:
+
+1. register the production HTTPS callback in the Entra application;
+2. request only the OIDC scopes OpenScribe uses: `openid profile email`;
+3. give the NHS tenant administrator the application ID, callback, requested scopes, privacy information, and publisher details they require;
+4. obtain tenant consent or approval under that tenant's app-consent policy;
+5. test linking and login with an NHS account before enabling the provider for users.
+
+This approval sits outside OpenScribe. Until it is granted, keep Microsoft disabled in that deployment or treat it as unavailable. Microsoft explains the tenant consent model in its [user and admin consent guide](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/user-admin-consent-overview).
+
+Browser routes:
+
+- `POST /auth/oidc/{provider_key}/login`
+- `GET|POST /auth/oidc/{provider_key}/callback` (`POST`/`form_post` is required in production)
+- `POST /settings/account/oidc/{provider_key}/link`
+- `POST /settings/account/oidc/{provider_key}/unlink`
+
+The callback verifies that the route provider matches the provider stored with the one-time authorization request. Existing password login and recovery remain available.
 
 Pending-address verification is not implemented; an accepted email change applies immediately after strong reauthentication.
 

@@ -1,5 +1,5 @@
 <section class="settings-section" data-settings-panel="account" {% if settings_tab != 'account' %}hidden{% endif %}>
-  <div class="settings-section__intro"><span class="settings-kicker">Personal</span><h2>Account</h2><p>Update your name, sign-in email, or password.</p></div>
+  <div class="settings-section__intro"><span class="settings-kicker">Personal</span><h2>Account</h2><p>Update your name, sign-in email, password, or linked sign-in method.</p></div>
   <div class="account-settings-grid">
     <article class="settings-card account-settings-card">
       <div><h3>Name</h3><p>Used to identify you inside OpenScribe.</p></div>
@@ -28,4 +28,50 @@
       </form>
     </article>
   </div>
+  <div class="settings-section__intro connected-accounts-heading"><h2>Connected accounts</h2><p>Add or remove another way to sign in.</p></div>
+  <div class="settings-card connected-account-list">
+    {% for provider in oidc_providers %}
+    <details class="connected-account" data-provider-key="{{ provider.key }}">
+      <summary>
+        <span class="connected-account__mark" aria-hidden="true">{{ provider.name[0] }}</span>
+        <span class="connected-account__identity">
+          <strong>{{ provider.name }}</strong>
+          <small>{% if provider.key == 'google' %}Use your Google account to sign in.{% elif provider.key == 'microsoft' %}Use an eligible NHS Microsoft account.{% else %}Use this provider to sign in.{% endif %}</small>
+        </span>
+        <span class="connected-account__status connected-account__status--{% if provider.linked %}linked{% else %}available{% endif %}">{% if provider.linked %}Connected{% else %}Not connected{% endif %}</span>
+        <span class="connected-account__action">{% if provider.linked %}Disconnect{% else %}Connect{% endif %}</span>
+      </summary>
+      <div class="connected-account__confirmation">
+        {% if provider.linked %}
+        <p>Confirm this change. It removes {{ provider.name }} as a sign-in option and signs out your other sessions.</p>
+        {% else %}
+        <p>Enter your OpenScribe password, then sign in with {{ provider.name }} to confirm the account you want to link.</p>
+        {% endif %}
+        <form method="post" action="/settings/account/oidc/{{ provider.key }}/{% if provider.linked %}unlink{% else %}link{% endif %}" data-oidc-account-form data-provider-name="{{ provider.name }}" data-oidc-action="{% if provider.linked %}remove{% else %}link{% endif %}">
+          <label>Current password<input type="password" name="current_password" required autocomplete="current-password"></label>
+          {% if provider.linked %}
+          <label>Authenticator code <span class="field-hint">Required when active</span><input name="mfa_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*"></label>
+          {% endif %}
+          <button class="{% if provider.linked %}btn-danger-sm{% else %}btn-primary-sm{% endif %}" type="submit" data-oidc-submit>{% if provider.linked %}Disconnect {{ provider.name }}{% else %}Continue to {{ provider.name }}{% endif %}</button>
+          <p role="status" aria-live="polite" data-oidc-status hidden></p>
+        </form>
+      </div>
+    </details>
+    {% else %}
+    <p class="settings-empty">Your administrator has not enabled an external sign-in provider.</p>
+    {% endfor %}
+  </div>
 </section>
+<script nonce="{{ csp_nonce }}">
+  document.querySelectorAll("[data-oidc-account-form]").forEach((form) => {
+    form.addEventListener("submit", () => {
+      const button = form.querySelector("[data-oidc-submit]");
+      const status = form.querySelector("[data-oidc-status]");
+      const provider = form.dataset.providerName;
+      const action = form.dataset.oidcAction;
+      button.disabled = true;
+      status.hidden = false;
+      status.textContent = action === "link" ? `Opening ${provider}…` : `Disconnecting ${provider}…`;
+    });
+  });
+</script>

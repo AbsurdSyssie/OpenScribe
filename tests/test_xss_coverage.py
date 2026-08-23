@@ -161,6 +161,15 @@ class TestCspContract:
         csp = content_security_policy("test-nonce")
         assert "base-uri 'self'" in csp
 
+    def test_form_action_allows_only_self_and_builtin_oidc_providers(self):
+        from app.security_headers import content_security_policy
+
+        csp = content_security_policy("test-nonce")
+        assert (
+            "form-action 'self' https://accounts.google.com "
+            "https://login.microsoftonline.com"
+        ) in csp
+
 
 class TestNoUnsafeRendering:
     """Verify no |safe filter, no unescaped innerHTML patterns."""

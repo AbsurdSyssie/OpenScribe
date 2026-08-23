@@ -54,7 +54,7 @@ Do not add tests that call public provider endpoints or the public internet duri
 Authentication, cookies, CSRF, and headers:
 
 ```bash
-pytest -q tests/test_auth_service.py tests/test_auth_email.py tests/test_cookie_csrf_security.py
+pytest -q tests/test_auth_service.py tests/test_auth_email.py tests/test_oidc.py tests/test_cookie_csrf_security.py
 ```
 
 DSPT legal-content and lifecycle controls:

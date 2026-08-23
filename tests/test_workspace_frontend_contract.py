@@ -73,6 +73,35 @@ def test_settings_module_initializers_are_target_scoped():
     assert "data-settings-menu" not in script
 
 
+def test_team_member_actions_use_one_top_layer_menu_and_explicit_dialogs():
+    markup = read("app/templates/settings/_team_members.html")
+    script = read("app/static/js/settings/member-menu.js")
+    styles = read("app/static/css/settings.css")
+
+    assert 'data-member-menu-trigger' in markup
+    assert 'aria-haspopup="menu"' in markup
+    assert 'popover="manual"' in markup
+    assert 'role="menu"' in markup
+    assert 'data-member-action-dialog' in markup
+    assert 'data-member-dialog-action="reset-mfa"' in markup
+    assert 'data-member-dialog-action="delete"' in markup
+    assert '<details class="member-menu">' not in markup
+
+    assert "showPopover()" in script
+    assert "hidePopover()" in script
+    assert "fallbackOpen" in script
+    assert "activeMenu" in script
+    assert "event.key === 'Escape'" in script
+    assert "event.key === 'ArrowDown'" in script
+    assert "window.addEventListener('resize'" in script
+    assert "window.addEventListener('scroll'" in script
+
+    assert ".member-menu__panel:popover-open" in styles
+    assert ".member-menu__panel[data-fallback-open]" in styles
+    assert "position: fixed" in styles
+    assert ".member-action-dialog::backdrop" in styles
+
+
 def test_workspace_library_partials_use_canonical_urls_and_return_view():
     templates = read("app/templates/settings/_template_library.html")
     quick_actions = read("app/templates/settings/_quick_action_library.html") + read("app/templates/settings/_quick_action_editor.html")

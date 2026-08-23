@@ -120,7 +120,11 @@ Current tables/services cover:
 - encrypted TOTP methods;
 - hashed recovery codes;
 - hashed single-use activation/reset/recovery email tokens;
+- user-owned OIDC identities, unique by issuer/subject and by user/provider slot;
+- short-lived OIDC authorization requests containing a provider key, hashed state and PKCE-verifier values, plus link-only user/session bindings;
 - security audit metadata.
+
+OIDC access, refresh, ID tokens, and raw subject claims are not persisted. The subject lookup uses a versioned, issuer-bound HMAC-SHA-256 digest with a dedicated deployment secret. Expired authorization requests are removed when a new flow starts; a callback consumes its row once. User deletion cascades linked identities and outstanding link requests.
 
 Exact names/columns are defined by current models/migrations, not this summary.
 

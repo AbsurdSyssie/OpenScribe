@@ -1553,12 +1553,23 @@ export function createStructuredEditor({
     const isStructuredTemplate = selectedOutputTemplateMode() === 'structured';
     const hasGeneratedNote = Boolean(dom.latestGeneratedOutput?.dataset.latestGeneratedId);
     const generatedMode = activeGeneratedDocumentMode();
+    const generatedStatus = dom.latestGeneratedOutput?.dataset?.latestGeneratedStatus || '';
     syncTemplateModeBadge();
     if (currentRenderedDocument?.kind === 'working_note') {
       const nextDocument = currentRenderedDocument.mode_locked
         ? currentRenderedDocument
         : { ...currentRenderedDocument, document_mode: selectedOutputTemplateMode() };
       renderGeneratedOutput(nextDocument, {});
+    } else if (hasGeneratedNote && generatedStatus === 'ready' && generatedMode === 'freeform') {
+      // A selected saved note owns the editor mode. Do not expose a blank
+      // sectioned template before an already-rendered free-text note.
+      dom.generatedStructuredPanel.hidden = true;
+      dom.generatedFreeformPanel.hidden = false;
+    } else if (hasGeneratedNote && generatedStatus === 'ready' && generatedMode === 'structured') {
+      // Mirror the free-text case: the selected ready document wins over the
+      // currently selected template until the user creates a new document.
+      dom.generatedFreeformPanel.hidden = true;
+      dom.generatedStructuredPanel.hidden = false;
     } else if (isStructuredTemplate) {
       if (hasGeneratedNote && generatedMode === 'structured' && !generatedStructuredDraft) {
         generatedStructuredDraft = buildGeneratedStructuredDraftFromDom() || generatedStructuredDraft;

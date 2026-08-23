@@ -881,7 +881,7 @@ def test_settings_role_scopes_user_and_leader_sections(client, make_team, make_u
     assert user_page.status_code == 200
     assert user_page.headers["Cache-Control"] == "no-store"
     assert '<link rel="stylesheet" href="/static/css/components.css?v=20260718-brand-lockup">' in user_page.text
-    assert '<link rel="stylesheet" href="/static/css/settings.css?v=20260724-import-celebration">' in user_page.text
+    assert '<link rel="stylesheet" href="/static/css/settings.css?v=20260821-member-actions-2">' in user_page.text
     assert 'aria-current="page"' in user_page.text
     assert "Preferences" in user_page.text
     assert '<div class="workspace-nav__group"><p data-sidebar-full>My Library</p>' in user_page.text
@@ -917,6 +917,11 @@ def test_settings_role_scopes_user_and_leader_sections(client, make_team, make_u
     assert f'action="/home/users/{member.id}/reset-mfa"' in leader_page.text
     assert f'action="/home/users/{member.id}/delete"' in leader_page.text
     assert "Delete this user and all owned transcript content immediately?" in leader_page.text
+    assert f'id="member-menu-panel-{member.id}"' in leader_page.text
+    assert 'popover="manual"' in leader_page.text
+    assert f'id="member-action-dialog-{member.id}"' in leader_page.text
+    assert 'data-member-dialog-section="reset-mfa"' in leader_page.text
+    assert 'data-member-dialog-section="delete"' in leader_page.text
 
 
 def test_settings_normal_user_sees_same_team_templates_read_only(
@@ -3382,7 +3387,7 @@ def test_transcribe_documents_show_hallucination_check_panel():
 
     assert "Hallucination check" in documents_js
     assert "Debug payload not available. Set HALLUCINATION_CHECK_DEBUG_UI=1 before generating the note" in documents_js
-    assert "documents.js?v=20260812-long-note-editor" in app_js
+    assert "documents.js?v=20260821-mobile-production-2" in app_js
 
 
 def test_admin_llm_draft_flow_hides_key_after_saved_and_shows_pending_state(
@@ -3953,7 +3958,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' not in page.text
     assert 'aria-label="Workspace navigation"' in page.text
     assert "My Library" in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260812-long-note-editor"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260823-mobile-toast"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -4286,10 +4291,10 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
 
     assert page.status_code == 200
     assert "/static/css/tokens.css?v=20260701-token-harmonise" in page.text
-    assert "/static/css/transcribe.css?v=20260810-followups-menu-layer" in page.text
+    assert "/static/css/transcribe.css?v=20260823-modal-close" in page.text
     assert "/static/css/transcribe-mobile.css" in page.text
     assert "/static/js/workspace/app.js" in page.text
-    assert "/static/js/transcribe/mobile.js" not in page.text
+    assert page.text.count("/static/js/transcribe/mobile.js?v=20260823-mobile-toast") == 1
     assert 'data-workspace-endpoint="' in page.text
 
 
@@ -4701,7 +4706,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260812-long-note-editor" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260823-mobile-toast" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -6068,7 +6073,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert 'data-session-list' in session_panel_html
     assert 'data-sidebar-empty' in session_panel_html
     assert 'data-session-panel-close' in session_panel_html
-    assert "transcribe:mobile-sidebar-close" in (root / "app" / "static" / "js" / "transcribe" / "mobile.js").read_text(encoding="utf-8")
+    assert "workspace:drawer-close" in shell_extras
     assert ".transcribe-sidebar-collapse-toggle" in transcribe_css
     assert "[data-sidebar-collapsed-control]" in transcribe_css
     assert ".session-panel-close" in transcribe_css
@@ -6491,7 +6496,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260812-long-note-editor" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260823-mobile-toast" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

@@ -6,7 +6,7 @@
   <title>Settings · OpenScribe</title>
   <link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">
   <link rel="stylesheet" href="/static/css/components.css?v=20260718-primary-hover">
-  <link rel="stylesheet" href="/static/css/settings.css?v=20260724-import-celebration">
+  <link rel="stylesheet" href="/static/css/settings.css?v=20260821-member-actions-2">
   <link rel="stylesheet" href="/static/css/settings-smart-phrases.css?v=20260724-import-celebration">
 </head>
 <body class="settings-page">
@@ -71,6 +71,7 @@
   })();
   </script>
   <script src="/static/js/generated-password.js?v=20260712-infield-controls"></script>
+  <script type="module" nonce="{{ request.state.csp_nonce }}">import { initMemberMenus } from '/static/js/settings/member-menu.js?v=20260821-member-actions-2'; initMemberMenus();</script>
   <script type="module" src="/static/js/settings/smart-phrases.js?v=20260718-library-editor"></script>
   {% include "_template_editor_script.html" %}
   {% include "_csrf_script.html" %}

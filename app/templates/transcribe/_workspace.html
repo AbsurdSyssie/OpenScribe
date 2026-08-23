@@ -19,8 +19,8 @@
 {%- endmacro %}
 
 <main data-workspace-scribe-main class="flex-1 flex flex-col min-w-0 min-h-0 overflow-visible relative z-30">
-<header class="bg-white border-b border-stone px-4 py-3 flex flex-col gap-3 flex-shrink-0">
-<div class="flex items-start justify-between gap-4">
+<header class="transcribe-capture-header bg-white border-b border-stone px-4 py-3 flex flex-col gap-3 flex-shrink-0" data-mobile-capture-screen>
+<div class="transcribe-capture-header__title-row flex items-center justify-between gap-4">
 <div class="min-w-0 flex-1">
 {% if active_transcript %}
 <form method="post" action="/transcribe/sessions/{{ active_transcript.id }}/title" data-transcript-title-form>
@@ -41,11 +41,7 @@ data-transcript-title-input>
 <div class="font-display text-2xl font-medium text-ink" data-session-title-display>New consultation</div>
 {% endif %}
 </div>
-<div></div>
-</div>
-
-<div class="flex flex-wrap items-center justify-between gap-3">
-<div class="flex flex-wrap items-center gap-2" data-tour-target="record-controls">
+<div class="transcribe-capture-status">
 {% set active_status_display = active_transcript.status.value if active_transcript else 'idle' %}
 {% if active_transcript and active_status_display == 'recording' %}
 {% set active_status_display = 'idle' %}
@@ -66,6 +62,11 @@ data-transcript-title-input>
 <span class="text-sm font-medium text-slate" data-active-status>{{ active_status_display }}</span>
 </div>
 {% endif %}
+</div>
+</div>
+
+<div class="flex flex-wrap items-center justify-between gap-3">
+<div class="transcribe-capture-controls flex flex-wrap items-center gap-2" data-tour-target="record-controls">
 <button
 type="button"
 class="btn-upload"
@@ -74,11 +75,16 @@ data-local-busy-protected
 {% if active_transcript and active_transcript.ingestion_mode.value == 'live_chunked' %}hidden{% endif %}
 {% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value != 'whole_file') %}disabled title="{{ stt_status_message or 'Uploaded recording is not available for this consultation.' }}"{% endif %}>
 <i class="w-4 h-4" data-lucide="upload"></i>
-Upload
+<span class="mobile-capture-action__label">Upload audio</span>
+<span class="mobile-capture-action__copy">Choose a recording</span>
 </button>
 <div class="record-split-button"
 data-record-split-button
 {% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value not in ['whole_file', 'live_chunked']) %}data-disabled{% endif %}>
+<div class="mobile-capture-hero__timer" aria-hidden="true">
+<span data-mobile-capture-timer>00:00</span>
+<small>Consultation recording</small>
+</div>
 <button
 type="button"
 class="record-split-button__main"
@@ -94,7 +100,12 @@ class="record-split-button__dropdown"
 data-record-mode-dropdown
 aria-haspopup="true"
 aria-expanded="false"
+aria-label="Change recording mode"
+title="Change recording mode"
 {% if not active_transcript %}disabled{% endif %}>
+<span class="record-split-button__mobile-mode" data-mobile-record-mode-label>
+{% if (active_transcript and active_transcript.ingestion_mode.value == 'live_chunked') or (not active_transcript and preferred_recording_mode == 'live_chunked') %}Live capture{% else %}Recorded upload{% endif %}
+</span>
 <i class="w-4 h-4" data-lucide="chevron-down"></i>
 </button>
 <div class="record-split-button__menu" data-record-mode-menu hidden>
@@ -128,13 +139,12 @@ Try transcription again
 
 <button type="button" class="dictation-global-cta" data-dictation-cta data-local-busy-protected {% if active_transcript and (not dictation_stt_selected or not dictation_stt_available) %}title="Recording unavailable. You can type dictation manually."{% endif %}>
 <i class="w-4 h-4" data-lucide="mic-2" aria-hidden="true"></i>
-<span data-dictation-cta-label>{% if post_consultation_dictation and post_consultation_dictation.effective_text %}Edit dictation{% else %}Add dictation{% endif %}</span>
+<span class="mobile-capture-action__label" data-dictation-cta-label>{% if post_consultation_dictation and post_consultation_dictation.effective_text %}Edit dictation{% else %}Add dictation{% endif %}</span>
+<span class="mobile-capture-action__copy">Notes after the consultation</span>
 </button>
 
 <span class="dictation-global-cta__status" data-dictation-cta-status hidden></span>
-</div>
-<div class="flex flex-wrap items-center gap-2 text-sm text-slate">
-<div>Duration: <span class="font-medium text-ink" data-mic-timer>00:00</span></div>
+<div class="transcribe-capture-duration text-sm text-slate">Duration: <span class="font-medium text-ink" data-mic-timer>00:00</span></div>
 </div>
 </div>
 
@@ -234,12 +244,13 @@ Ready to upload a recording or capture one from your microphone.
 </div>
 
 <div class="flex-1 flex flex-col min-h-0 overflow-hidden" data-split-workspace>
-<div class="flex items-center border-b border-stone bg-white px-4 gap-3">
-<div class="flex gap-1 min-w-0" role="tablist" aria-label="Consultation workspace">
+<div class="transcribe-tab-bar flex items-center border-b border-stone bg-white px-4 gap-3">
+<div class="transcribe-tab-list flex gap-1 min-w-0" role="tablist" aria-label="Consultation workspace">
 <button type="button" id="workspace-tab-output" class="main-tab active" role="tab" aria-selected="true" aria-controls="workspace-panel-output" data-tab-trigger="output" data-tour-target="note-tab">Clinical Note</button>
 <button type="button" id="workspace-tab-followups" class="main-tab" role="tab" aria-selected="false" aria-controls="workspace-panel-followups" tabindex="-1" data-tab-trigger="followups" data-tour-target="messages-tab">Follow Ups</button>
 <button type="button" id="workspace-tab-history" class="main-tab" role="tab" aria-selected="false" aria-controls="workspace-panel-history" tabindex="-1" data-tab-trigger="history">Transcript</button>
 </div>
+
 </div>
 
 <div class="transcribe-lower-row">
@@ -253,6 +264,7 @@ Ready to upload a recording or capture one from your microphone.
 {% set selected_template_version = latest_template_version %}
 <div class="note-header-row">
 <div class="note-header-left">
+<button type="button" class="mobile-note-versions" data-mobile-note-versions aria-controls="mobile-note-selector-sheet" aria-expanded="false">Versions</button>
 <button
 type="button"
 class="template-picker-button--compact"
@@ -286,7 +298,7 @@ data-note-editor-header-toolbar
 <div class="note-editor-toolbar__actions flex items-center gap-2">
 <button type="button" class="btn-ghost-sm" data-clear-structured-selection>Clear</button>
 <button type="button" class="btn-ghost-sm" data-select-structured-selection>Select all</button>
-<button type="button" class="btn-primary-sm" data-copy-structured-lines>Copy selected</button>
+<button type="button" class="btn-primary-sm" data-copy-structured-lines aria-label="Copy selected note lines"><span class="note-copy-label-full">Copy selected</span><span class="mobile-note-copy-label">Copy</span></button>
 </div>
 </div>
 </div>
@@ -315,8 +327,11 @@ data-settings-url="/workspace/library/templates?scope={% if template.scope.value
 </select>
 </div>
 </div>
+<button type="button" class="mobile-sheet-scrim" data-mobile-note-versions-close aria-label="Close note versions" tabindex="-1" hidden></button>
 <div class="structured-workspace__body">
 <div class="assistant-subsection space-y-2" data-note-selector-wrap{% if not active_transcript %} hidden{% endif %}>
+<div id="mobile-note-selector-sheet" data-mobile-note-selector-sheet>
+<div class="mobile-sheet-heading"><span>Note versions</span><button type="button" data-mobile-note-versions-close aria-label="Close note versions"><i data-lucide="x" aria-hidden="true"></i></button></div>
 <div class="flex items-start justify-between gap-3" data-note-selector-row>
 <div class="min-w-0 flex-1">
 <div class="document-switcher" data-note-selector>
@@ -355,6 +370,7 @@ title="{{ document.title }}">
 </button>
 </div>
 {% endfor %}
+</div>
 </div>
 </div>
 </div>
@@ -420,7 +436,7 @@ data-settings-url="/workspace/library/templates?scope={% if template.scope.value
 <div
 class="structured-sections-panel"
 data-generated-structured-panel
-{% if not (latest_generated_document and latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections) and not active_structured_context and not (selected_template_version and selected_template_version.mode.value == "structured") %}hidden{% endif %}>
+{% if (latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.document_mode.value == "freeform") or (not (latest_generated_document and latest_generated_document.document_mode.value == "structured" and latest_generated_document.sections) and not active_structured_context and not (selected_template_version and selected_template_version.mode.value == "structured")) %}hidden{% endif %}>
 <div class="structured-sections-list" data-generated-structured-sections>
 {% for section in structured_editor_sections %}
 <div class="structured-section-block" data-generated-structured-section data-section-key="{{ section.key }}" data-section-label="{{ section.label }}">
@@ -450,7 +466,7 @@ data-generated-structured-panel
 <div
 class="freeform-note-panel"
 data-generated-freeform-panel
-{% if not (latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text) and not (selected_template_version and selected_template_version.mode.value == "freeform") %}hidden{% endif %}>
+{% if (latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.document_mode.value == "structured") or (not (latest_generated_document and latest_generated_document.status.value == "ready" and latest_generated_document.document_mode.value == "freeform" and latest_generated_document.edited_output_text) and not (selected_template_version and selected_template_version.mode.value == "freeform")) %}hidden{% endif %}>
 <div class="freeform-note-list" data-generated-freeform-rows>
 {% for row in freeform_editor_rows %}
 <div class="statement-row freeform-note-row" data-freeform-note-row>
@@ -712,6 +728,7 @@ data-latest-followup-updated-at="{{ latest_followup_document.updated_at if lates
 <p class="text-xs text-slate mt-1">Transcript, identified PII, and post-consultation dictation.</p>
 </div>
 <button type="button" class="btn-ghost-sm" data-copy-transcript>Copy transcript</button>
+<div class="mobile-transcript-actions"><button type="button" class="mobile-transcript-details" data-mobile-pii-open aria-controls="mobile-pii-sheet" aria-expanded="false">Details</button><button type="button" class="mobile-transcript-details" data-mobile-dictation-open aria-expanded="false">Dictation</button></div>
 </div>
 </div>
 <div class="structured-workspace__body">
@@ -739,7 +756,9 @@ data-transcript-empty
 {{ active_transcript.current_draft_text }}
 {% endif %}
 </div>
+<button type="button" class="mobile-sheet-scrim" data-mobile-dictation-close aria-label="Close dictation" tabindex="-1" hidden></button>
 <section class="dictation-compact" data-dictation-compact>
+<div class="mobile-sheet-heading"><span>Post-consultation dictation</span><button type="button" data-mobile-dictation-close aria-label="Close dictation"><i data-lucide="x" aria-hidden="true"></i></button></div>
 <div class="dictation-compact__header">
 <div>
 <div class="pii-sidebar__kicker">Separate source</div>
@@ -757,7 +776,9 @@ No post-consultation dictation yet.
 <button type="button" class="dictation-compact__more" data-dictation-compact-more hidden>Show more</button>
 </section>
 </section>
-<aside class="pii-sidebar" data-pii-sidebar>
+<button type="button" class="mobile-sheet-scrim" data-mobile-pii-close aria-label="Close transcript details" tabindex="-1" hidden></button>
+<aside id="mobile-pii-sheet" class="pii-sidebar" data-pii-sidebar>
+<div class="mobile-sheet-heading"><span>Transcript details</span><button type="button" data-mobile-pii-close aria-label="Close transcript details"><i data-lucide="x" aria-hidden="true"></i></button></div>
 <div class="pii-sidebar__header">
 <div>
 <div class="pii-sidebar__kicker">PII</div>
@@ -849,7 +870,17 @@ Clinical NLP has not run for this transcript yet.
 </div>
 </div>
 </div>
+<nav class="mobile-scribe-destinations" aria-label="Consultation destinations" data-mobile-destinations>
+<button type="button" data-mobile-destination="capture" aria-current="page"><i data-lucide="mic" aria-hidden="true"></i><span>Capture</span></button>
+<button type="button" data-mobile-destination="history"><i data-lucide="scroll-text" aria-hidden="true"></i><span>Transcript</span></button>
+<button type="button" data-mobile-destination="output"><i data-lucide="file-text" aria-hidden="true"></i><span>Note</span></button>
+<button type="button" data-mobile-destination="followups"><i data-lucide="message-square-text" aria-hidden="true"></i><span>Follow-ups</span></button>
+</nav>
 <input type="file" accept="audio/*" data-dictation-audio-file-input hidden>
+<div class="mobile-recording-strip" data-mobile-recording-strip hidden>
+<button type="button" data-mobile-capture-return><i data-lucide="audio-lines" aria-hidden="true"></i><span>Recording <strong data-mobile-recording-timer>00:00</strong></span></button>
+<button type="button" data-mobile-recording-stop>Stop</button>
+</div>
 <div class="dictation-modal" data-dictation-modal hidden>
 <div class="dictation-modal__backdrop" data-dictation-modal-close></div>
 <section class="dictation-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="dictation-modal-title">
@@ -910,5 +941,5 @@ Clinical NLP has not run for this transcript yet.
 </footer>
 </section>
 </div>
-<div class="toast-container" data-toast-container></div>
+<div class="toast-container" data-toast-container aria-label="Notifications"></div>
 </main>

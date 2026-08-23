@@ -35,6 +35,8 @@ pip install -r requirements-dev.txt
 
 Local Vault root-token and unseal material are stored under `.local/vault/`. They are ignored by Git and must not be used as production credentials.
 
+For local Google or Microsoft login, register the HTTP localhost callback with the provider and set its response mode to `query`. The `form_post` mode requires HTTPS. Then use the hidden-input commands in [docker.md](docker.md#oidc-secrets-in-vault) to store each issued client secret in local Vault. Keep the corresponding client ID, callback URL, enable switch, and non-secret Vault reference in `.env`; do not put the client secret there.
+
 ## Expected local settings
 
 The checked-in sample uses:

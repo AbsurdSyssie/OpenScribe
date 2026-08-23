@@ -1,5 +1,11 @@
 <header class="workspace-mobile-header">
   <button type="button" data-workspace-drawer-toggle aria-controls="workspace-sidebar" aria-expanded="false" aria-label="Open workspace navigation"><i data-lucide="menu" aria-hidden="true"></i></button>
-  <span>{{ workspace_page_title|default('OpenScribe') }}</span>
+  {% if active_workspace_section == 'scribe' %}
+  <span class="workspace-mobile-header__consultation" data-mobile-session-title>{{ active_transcript.title if active_transcript and active_transcript.title else 'New consultation' }}</span>
+  <span class="workspace-mobile-header__status" data-mobile-session-status>{{ active_transcript.status.value if active_transcript else 'idle' }}</span>
+  {% else %}<span>{{ workspace_page_title|default('OpenScribe') }}</span>{% endif %}
+  {% if active_workspace_section == 'scribe' %}
+  <button type="button" class="workspace-mobile-header__recent" data-session-panel-toggle aria-controls="session-panel" aria-expanded="false" aria-label="Open recent consultations" title="Recent consultations"><i data-lucide="list-checks" aria-hidden="true"></i></button>
+  {% endif %}
 </header>
 <button type="button" class="workspace-drawer-scrim" data-workspace-drawer-close aria-label="Close workspace navigation" tabindex="-1"></button>

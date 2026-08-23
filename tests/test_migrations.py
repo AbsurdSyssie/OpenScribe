@@ -59,6 +59,7 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "auth_email_tokens",
         "account_requests",
         "operator_legal_profiles",
+        "oidc_authorization_requests",
         "legal_document_roots",
         "legal_document_versions",
         "legal_document_version_holds",
@@ -97,6 +98,7 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "templates",
         "users",
         "user_llm_preferences",
+        "user_oidc_identities",
         "user_encryption_keys",
         "user_app_preferences",
         "user_quota_policy_events",
@@ -181,6 +183,67 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
     assert stt_auth_modes == ["bearer", "none"]
     assert llm_auth_modes == ["bearer", "none", "google_adc", "google_service_account"]
     assert llm_adapter_kinds == ["openai_chat", "ollama_chat", "bedrock_chat", "gemini_enterprise"]
+
+
+@pytest.mark.migration
+def test_oidc_identity_migration_creates_constrained_owner_and_transaction_tables():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "head")
+
+    inspector = inspect(engine)
+    assert {column["name"] for column in inspector.get_columns("user_oidc_identities")} == {
+        "id",
+        "user_id",
+        "provider_key",
+        "issuer",
+        "issuer_hash",
+        "subject_hash",
+        "created_at",
+        "last_used_at",
+    }
+    assert {column["name"] for column in inspector.get_columns("oidc_authorization_requests")} == {
+        "id",
+        "provider_key",
+        "state_hash",
+        "nonce",
+        "code_verifier_hash",
+        "purpose",
+        "user_id",
+        "user_session_id",
+        "expires_at",
+        "created_at",
+    }
+    transaction_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("oidc_authorization_requests")
+    }
+    assert transaction_columns["provider_key"]["nullable"] is False
+    identity_uniques = {
+        constraint["name"] for constraint in inspector.get_unique_constraints("user_oidc_identities")
+    }
+    assert {
+        "uq_user_oidc_identities_issuer_subject_hash",
+        "uq_user_oidc_identities_user_provider",
+    } <= identity_uniques
+    transaction_uniques = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("oidc_authorization_requests")
+    }
+    assert "uq_oidc_authorization_requests_state_hash" in transaction_uniques
+    transaction_checks = {
+        constraint["name"] for constraint in inspector.get_check_constraints("oidc_authorization_requests")
+    }
+    assert {
+        "ck_oidc_authorization_requests_binding",
+        "ck_oidc_authorization_requests_purpose",
+    } <= transaction_checks
+    for table_name in ("user_oidc_identities", "oidc_authorization_requests"):
+        foreign_keys = inspector.get_foreign_keys(table_name)
+        assert foreign_keys
+        assert all(
+            foreign_key["options"].get("ondelete") == "CASCADE"
+            for foreign_key in foreign_keys
+        )
 
 
 @pytest.mark.migration

@@ -44,6 +44,57 @@ The persistent Compose runtime replaces only addresses that must use Docker serv
 
 `FORWARDED_ALLOW_IPS`, documented under Docker, controls which proxy addresses Uvicorn trusts. It does not by itself enable the CSRF, audit, or rate-limit trust switches above. Enable a rate-limit trust switch only after the named proxy/CDN is the sole route to the origin and overwrites that header. Otherwise a direct caller can choose another client's rate-limit bucket.
 
+## OpenID Connect login
+
+OIDC is off by default. Register the exact callback with the provider before enabling it. Users then link the provider from `/workspace/account`; OpenScribe does not create accounts from provider claims.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OIDC_SUBJECT_HASH_SECRET` | unset | Optional environment override for the stable 32-4096-byte subject-hash key. When set, it takes precedence over Vault. Use only for local development or an existing deployment that already injects this key. Losing or changing it requires users to relink. |
+| `OIDC_SUBJECT_HASH_SECRET_VAULT_REF` | `secret:openscribe/platform/oidc-subject-hash` | Vault KV-v2 reference for the shared subject-hash key. When the environment override is unset, OpenScribe reads this key or creates it once with compare-and-set. The field is `subject_hash_secret`. |
+| `GOOGLE_OIDC_ENABLED` | `false` | Enables the built-in Google OIDC profile. |
+| `GOOGLE_OIDC_CLIENT_ID` | unset | Google OAuth client identifier. |
+| `GOOGLE_OIDC_CLIENT_SECRET` | unset | Optional environment override for the Google client secret. When set, it takes precedence over Vault. |
+| `GOOGLE_OIDC_CLIENT_SECRET_VAULT_REF` | `secret:openscribe/oidc/google` | Vault KV-v2 reference for the Google client secret. The path must be exactly `openscribe/oidc/google` and the field is `client_secret`. |
+| `GOOGLE_OIDC_REDIRECT_URI` | unset | Exact registered callback: `https://<host>/auth/oidc/google/callback`. Production requires HTTPS. |
+| `GOOGLE_OIDC_RESPONSE_MODE` | `query` outside production; `form_post` in production | Callback mode. `form_post` requires an HTTPS redirect URI; production requires `form_post`. Use `query` for an HTTP localhost callback. |
+| `MICROSOFT_OIDC_ENABLED` | `false` | Enables the built-in Microsoft identity-platform profile through the `common` tenant endpoint. |
+| `MICROSOFT_OIDC_CLIENT_ID` | unset | Microsoft application client identifier. |
+| `MICROSOFT_OIDC_CLIENT_SECRET` | unset | Optional environment override for the Microsoft client secret. When set, it takes precedence over Vault. |
+| `MICROSOFT_OIDC_CLIENT_SECRET_VAULT_REF` | `secret:openscribe/oidc/microsoft` | Vault KV-v2 reference for the Microsoft client secret. The path must be exactly `openscribe/oidc/microsoft` and the field is `client_secret`. |
+| `MICROSOFT_OIDC_REDIRECT_URI` | unset | Exact registered callback: `https://<host>/auth/oidc/microsoft/callback`. Production requires HTTPS. |
+| `MICROSOFT_OIDC_RESPONSE_MODE` | `query` outside production; `form_post` in production | Callback mode. `form_post` requires an HTTPS redirect URI; production requires `form_post`. Use `query` for an HTTP localhost callback. |
+| `MICROSOFT_ALLOWED_EMAIL_DOMAINS` | `nhs.net,nhs.uk,*.nhs.uk` | Comma-separated eligibility allowlist checked against signed `email`, then `preferred_username`, on linking and each login. `*.nhs.uk` permits real subdomains but not `nhs.uk` itself; the default lists both. |
+| `OIDC_ENABLED` | `false` | Enables one custom OIDC provider, which may run alongside Google and Microsoft. |
+| `OIDC_PROVIDER_KEY` | `oidc` | Stable lowercase audit/configuration and route label, 1-64 characters. It must differ from `google` and `microsoft` when those profiles are enabled. |
+| `OIDC_PROVIDER_NAME` | `Single sign-on` | Custom provider name shown on login and account pages. |
+| `OIDC_ISSUER` | unset | Exact case-sensitive issuer expected in discovery and signed ID tokens. |
+| `OIDC_DISCOVERY_URL` | `<issuer>/.well-known/openid-configuration` | Optional exact custom-provider discovery URL. |
+| `OIDC_CLIENT_ID` | unset | Custom provider client identifier. |
+| `OIDC_CLIENT_SECRET` | unset | Optional environment override for a custom provider client secret used by `client_secret_basic` or `client_secret_post`. |
+| `OIDC_CLIENT_SECRET_VAULT_REF` | `secret:openscribe/oidc/oidc` | Vault KV-v2 reference for a custom provider secret. Its exact path must be `openscribe/oidc/<OIDC_PROVIDER_KEY>` and its field is `client_secret`; change this default when changing the provider key. |
+| `OIDC_CLIENT_AUTH_METHOD` | `client_secret_basic` | `client_secret_basic`, `client_secret_post`, or `none`; the custom provider must advertise the method. |
+| `OIDC_REDIRECT_URI` | unset | Exact callback `https://<host>/auth/oidc/<OIDC_PROVIDER_KEY>/callback`. Production requires HTTPS. |
+| `OIDC_SCOPES` | `openid profile email` | Space-separated scopes. `openid` is required. OpenScribe uses only signed issuer and `sub` claims for account identity. |
+| `OIDC_RESPONSE_MODE` | `query` outside production; `form_post` in production | Callback mode. `form_post` requires an HTTPS redirect URI; production requires `form_post`. Use `query` for an HTTP localhost callback. |
+| `OIDC_ALLOWED_ID_TOKEN_ALGORITHMS` | `RS256` | Comma-separated asymmetric signing-algorithm allowlist. The provider must advertise at least one listed value. Symmetric and unsigned ID tokens are rejected. |
+| `OIDC_ACR_VALUES` | unset | Optional space-separated authentication-context values requested from the provider. |
+| `OIDC_REQUIRED_ACR_VALUES` | unset | Optional accepted ACR values. Each value must also appear in `OIDC_ACR_VALUES`; a missing or different `acr` claim fails login. |
+
+Discovery, authorization, token, and JWKS endpoints must use HTTPS when the configured issuer uses HTTPS. Each provider must support authorization code flow, `S256` PKCE, the chosen response mode, and its configured client authentication method. Register each callback exactly; callback paths contain the provider key. Client secrets are cached in each web process, so restart or roll the web processes after changing one in Vault.
+
+Vault cannot invent the Google or Microsoft client secret because it must match the value issued by that provider. Store the issued value under the provider's fixed path. The app's runtime Vault identity needs `read` on those provider paths. It needs `read`, `create`, and `update` on the subject-hash path so the first enabled instance can create the shared key. Keep production operator write credentials separate from the app's runtime identity.
+
+Google accepts any Google account, but an existing OpenScribe user must link it first. Microsoft accepts accounts whose signed email or preferred username matches the configured allowlist. Neither provider claim creates an account, matches an OpenScribe email, changes team membership, or grants an OpenScribe role.
+
+### NHS CIS2
+
+CIS2 publishes an OIDC discovery document and supports authorization code flow, `S256` PKCE, signed ID tokens, and registered client-secret methods. Register OpenScribe with the required CIS2 environment, then set the provider name, exact issuer and discovery URL, assigned client ID and secret, exact callback, scopes, and any ACR values agreed during onboarding. Use `form_post` and the client authentication method in the registration.
+
+Set `OIDC_PROVIDER_KEY=nhs_cis2` and `OIDC_PROVIDER_NAME=NHS Care Identity` for a CIS2 deployment. Keep OpenScribe roles and team membership authoritative: this integration authenticates a linked CIS2 subject but does not import national RBAC or create a user. NHS England's current [CIS2 sign-in guide](https://digital.nhs.uk/services/care-identity-service/applications-and-services/cis2-authentication/integrate/design-and-build/sign-in-journey) and [discovery guide](https://digital.nhs.uk/services/care-identity-service/applications-and-services/cis2-authentication/integrate/design-and-build/discovery) contain the registration and environment details.
+
+OpenScribe does not implement CIS2 back-channel logout or redirect local logout to the CIS2 end-session endpoint. Treat those as separate integration work if the deployment requires national single logout.
+
 ## Database, Redis, Celery, and durable dispatch
 
 | Variable | Local default | Purpose |
@@ -137,7 +188,7 @@ Google SDK identity is configured through standard Google variables rather than 
 
 ## Dependency installation
 
-`requirements.txt` pins the runtime `python-multipart` and `idna` versions and installs the pinned `en_core_web_sm` 3.8.0 wheel directly. Do not run a separate `spacy download` command after installing requirements. The Docker smoke workflow runs `pip-audit` against `requirements.txt`.
+`requirements.txt` pins the runtime `python-multipart`, `idna`, and Authlib versions and installs the pinned `en_core_web_sm` 3.8.0 wheel directly. Authlib handles OAuth/OIDC protocol and JOSE validation; do not replace it with custom token parsing. Do not run a separate `spacy download` command after installing requirements. The Docker smoke workflow runs `pip-audit` against `requirements.txt`.
 
 ## Persistent Docker runtime
 

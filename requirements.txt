@@ -5,6 +5,7 @@ pydantic==2.12.5
 itsdangerous==2.2.0
 alembic==1.14.0
 argon2-cffi==23.1.0
+Authlib==1.7.2
 cryptography==50.0.0
 email-validator==2.2.0
 python-multipart==0.0.32

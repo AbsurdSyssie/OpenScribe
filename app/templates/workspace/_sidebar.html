@@ -48,6 +48,7 @@
   </nav>
   <div class="workspace-sidebar__footer">
     {% if active_workspace_section == 'scribe' %}<button type="button" data-start-guide aria-label="Open workspace guide"><i class="workspace-nav__icon" data-lucide="circle-help" aria-hidden="true"></i><span data-sidebar-full>Guide</span></button>{% endif %}
+    {% if active_workspace_section == 'scribe' %}<details class="workspace-sidebar__legal"><summary>Legal information</summary><div>{% set workspace_legal_links = request.state.legal_footer_links if request.state.legal_footer_links is defined else () %}{% for link in workspace_legal_links %}<a href="{{ link.href }}">{{ link.label }}</a>{% endfor %}<a href="{{ source_code_url() }}">Source code</a></div></details>{% endif %}
     <form method="post" action="/logout"><button type="submit" aria-label="Sign out"><i class="workspace-nav__icon" data-lucide="log-out" aria-hidden="true"></i><span data-sidebar-full>Sign out</span></button></form>
   </div>
 </aside>

@@ -1,12 +1,13 @@
 import base64
 import os
+import re
 import secrets
+from functools import lru_cache
 from pathlib import Path
 from uuid import UUID
 
-import httpx
-import re
 import hvac
+import httpx
 from hvac import exceptions as hvac_exceptions
 
 from app.errors import AppError
@@ -19,6 +20,9 @@ VAULT_KV_MOUNT = os.getenv("VAULT_KV_MOUNT", "secret")
 VAULT_TRANSIT_MOUNT = os.getenv("VAULT_TRANSIT_MOUNT", "transit")
 VAULT_USER_CONTENT_KEK_KEY_NAME = os.getenv("VAULT_USER_CONTENT_KEK_KEY_NAME", "openscribe-user-content-kek")
 DEFAULT_CSRF_SECRET_REF = f"{VAULT_KV_MOUNT}:openscribe/platform/csrf"
+DEFAULT_OIDC_SUBJECT_HASH_SECRET_REF = (
+    f"{VAULT_KV_MOUNT}:openscribe/platform/oidc-subject-hash"
+)
 DEFAULT_LOCAL_VAULT_TOKEN_FILE = Path(__file__).resolve().parents[2] / ".local" / "vault" / "root-token"
 
 
@@ -562,21 +566,39 @@ def _read_platform_secret_value(*, secret_ref: str, field: str) -> str | None:
     if response.status_code >= 400:
         raise AppError(502, "vault_read_failed", "Vault secret read failed")
 
-    payload = response.json()
-    value = (((payload.get("data") or {}).get("data") or {}).get(field))
-    return str(value) if value else None
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise AppError(502, "vault_read_failed", "Vault secret read failed") from exc
+    if not isinstance(payload, dict):
+        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+    envelope = payload.get("data")
+    if not isinstance(envelope, dict):
+        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+    value = data.get(field)
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+    return value
 
 
-def get_or_create_platform_csrf_secret(*, secret_ref: str | None = None) -> str:
-    resolved_ref = secret_ref or os.getenv("CSRF_SECRET_VAULT_REF") or DEFAULT_CSRF_SECRET_REF
-    field = "csrf_secret"
-    existing = _read_platform_secret_value(secret_ref=resolved_ref, field=field)
+def _get_or_create_platform_secret(
+    *,
+    secret_ref: str,
+    field: str,
+    generated: str,
+    failure_message: str,
+) -> str:
+    existing = _read_platform_secret_value(secret_ref=secret_ref, field=field)
     if existing:
         return existing
 
-    mount, path = _split_secret_ref(resolved_ref)
+    mount, path = _split_secret_ref(secret_ref)
     url = _kv_url_for_path(mount=mount, path=path)
-    generated = secrets.token_urlsafe(48)
     try:
         response = httpx.post(
             url,
@@ -590,10 +612,75 @@ def get_or_create_platform_csrf_secret(*, secret_ref: str | None = None) -> str:
         return generated
 
     # Another instance may have created it first.
-    existing = _read_platform_secret_value(secret_ref=resolved_ref, field=field)
+    existing = _read_platform_secret_value(secret_ref=secret_ref, field=field)
     if existing:
         return existing
-    raise AppError(502, "vault_write_failed", "Vault CSRF secret write failed")
+    raise AppError(502, "vault_write_failed", failure_message)
+
+
+def get_or_create_platform_csrf_secret(*, secret_ref: str | None = None) -> str:
+    resolved_ref = secret_ref or os.getenv("CSRF_SECRET_VAULT_REF") or DEFAULT_CSRF_SECRET_REF
+    return _get_or_create_platform_secret(
+        secret_ref=resolved_ref,
+        field="csrf_secret",
+        generated=secrets.token_urlsafe(48),
+        failure_message="Vault CSRF secret write failed",
+    )
+
+
+@lru_cache(maxsize=8)
+def get_or_create_platform_oidc_subject_hash_secret(
+    *,
+    secret_ref: str | None = None,
+) -> str:
+    resolved_ref = (
+        secret_ref
+        or os.getenv("OIDC_SUBJECT_HASH_SECRET_VAULT_REF")
+        or DEFAULT_OIDC_SUBJECT_HASH_SECRET_REF
+    )
+    mount, path = _split_secret_ref(resolved_ref)
+    if (
+        mount != VAULT_KV_MOUNT.strip("/")
+        or path != "openscribe/platform/oidc-subject-hash"
+    ):
+        raise AppError(
+            500,
+            "vault_ref_invalid",
+            "OIDC subject-hash Vault reference is invalid",
+        )
+    return _get_or_create_platform_secret(
+        secret_ref=resolved_ref,
+        field="subject_hash_secret",
+        generated=secrets.token_urlsafe(48),
+        failure_message="Vault OIDC subject-hash secret write failed",
+    )
+
+
+@lru_cache(maxsize=16)
+def read_oidc_client_secret(*, secret_ref: str, provider_key: str) -> str:
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", provider_key):
+        raise AppError(500, "vault_ref_invalid", "OIDC provider key is invalid")
+    mount, path = _split_secret_ref(secret_ref)
+    if (
+        mount != VAULT_KV_MOUNT.strip("/")
+        or path != f"openscribe/oidc/{provider_key}"
+    ):
+        raise AppError(
+            500,
+            "vault_ref_invalid",
+            "OIDC provider Vault reference is invalid",
+        )
+    value = _read_platform_secret_value(
+        secret_ref=secret_ref,
+        field="client_secret",
+    )
+    if not value:
+        raise AppError(
+            502,
+            "vault_read_failed",
+            "OIDC provider credential is missing",
+        )
+    return value
 
 
 def transcript_ingestion_source_audio_path(job_id: UUID) -> str:

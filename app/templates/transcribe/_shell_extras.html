@@ -2,10 +2,6 @@
 <input type="hidden" name="ingestion_mode" value="{{ preferred_recording_mode or 'whole_file' }}">
 </form>
 
-<div id="copy-toast" class="copy-toast fixed bottom-6 left-1/2 px-4 py-2 bg-ink text-white text-sm rounded-lg shadow-lg z-50">
-Copied to clipboard
-</div>
-
 <script nonce="{{ request.state.csp_nonce }}">
 (function() {
 window.refreshLucideIcons = function(root) {
@@ -15,17 +11,78 @@ window.lucide.createIcons(root ? { root: root } : undefined);
 window.refreshLucideIcons();
 var toastContainer = document.querySelector('[data-toast-container]');
 window.showToast = function(message, kind, duration) {
-if (!toastContainer) return;
-kind = kind || 'success';
-duration = duration || 4000;
+if (!toastContainer || !message) return null;
+var allowedKinds = ['success', 'info', 'warning', 'error'];
+kind = allowedKinds.indexOf(kind) >= 0 ? kind : 'success';
+var durations = { success: 2500, info: 4000, warning: 6000, error: 0 };
+var timeout = typeof duration === 'number' ? Math.max(0, duration) : durations[kind];
+var isMobile = window.matchMedia('(max-width: 767px)').matches;
+var activeToasts = Array.prototype.slice.call(toastContainer.querySelectorAll('.toast'));
+var activeError = activeToasts.find(function(candidate) { return candidate.classList.contains('error'); });
+if (isMobile && activeError && kind !== 'error') return activeError;
+if (isMobile || kind === 'error') {
+activeToasts.forEach(function(candidate) {
+window.clearTimeout(candidate._dismissTimer);
+candidate.remove();
+});
+} else {
+while (activeToasts.length >= 3) {
+var oldest = activeToasts.shift();
+window.clearTimeout(oldest._dismissTimer);
+oldest.remove();
+}
+}
 var toast = document.createElement('div');
 toast.className = 'toast ' + kind;
-toast.textContent = message;
-toastContainer.appendChild(toast);
-setTimeout(function() {
+toast.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+toast.setAttribute('aria-live', kind === 'error' ? 'assertive' : 'polite');
+toast.setAttribute('aria-atomic', 'true');
+
+var icon = document.createElement('i');
+icon.className = 'toast__icon';
+icon.setAttribute('aria-hidden', 'true');
+icon.setAttribute('data-lucide', {
+success: 'circle-check',
+info: 'info',
+warning: 'triangle-alert',
+error: 'circle-alert'
+}[kind]);
+toast.appendChild(icon);
+
+var messageNode = document.createElement('span');
+messageNode.className = 'toast__message';
+messageNode.textContent = message;
+toast.appendChild(messageNode);
+
+var dismiss = function(immediate) {
+if (!toast.isConnected || toast.dataset.dismissing === 'true') return;
+toast.dataset.dismissing = 'true';
+window.clearTimeout(toast._dismissTimer);
+if (immediate) {
+toast.remove();
+return;
+}
 toast.classList.add('hiding');
-setTimeout(function() { toast.remove(); }, 200);
-}, duration);
+window.setTimeout(function() { toast.remove(); }, 200);
+};
+
+if (kind === 'error') {
+var close = document.createElement('button');
+close.type = 'button';
+close.className = 'toast__close';
+close.setAttribute('aria-label', 'Dismiss notification');
+var closeIcon = document.createElement('i');
+closeIcon.setAttribute('data-lucide', 'x');
+closeIcon.setAttribute('aria-hidden', 'true');
+close.appendChild(closeIcon);
+close.addEventListener('click', function() { dismiss(false); });
+toast.appendChild(close);
+}
+
+toastContainer.appendChild(toast);
+window.refreshLucideIcons?.(toast);
+if (timeout > 0) toast._dismissTimer = window.setTimeout(function() { dismiss(false); }, timeout);
+return toast;
 };
 var flashWrap = document.querySelector('[data-flash-wrap]');
 var flashBanner = document.querySelector('[data-flash]');
@@ -172,9 +229,10 @@ syncRecordButtonLabel();
     }
   });
 
-  var sessionPanelToggle = document.querySelector('[data-session-panel-toggle]');
+  var sessionPanelToggles = document.querySelectorAll('[data-session-panel-toggle]');
   var sessionPanel = document.querySelector('[data-session-panel]');
   var sessionPanelClose = document.querySelector('[data-session-panel-close]');
+  var sessionPanelScrim = document.querySelector('[data-session-panel-scrim]');
   var sessionPanelHeader = document.querySelector('[data-session-panel-header]');
   var workspaceContextHeaders = document.querySelectorAll('[data-workspace-context-header]');
   var workspaceTabPanels = document.querySelectorAll('[data-tab-panel]');
@@ -189,6 +247,7 @@ syncRecordButtonLabel();
   var sidebarCollapseThreshold = 112;
   var desktopSidebarMedia = window.matchMedia('(min-width: 768px)');
   var sessionPanelStorageKey = 'openscribe:transcribe:consultations-open';
+  var sessionPanelTrigger = null;
 
   function normalizedSidebarWidth(value) {
     if (!Number.isFinite(value) || value <= sidebarCollapseThreshold) return sidebarCollapsedWidth;
@@ -307,14 +366,36 @@ syncRecordButtonLabel();
       return false;
     }
   }
+  function isFocusableSessionPanelToggle(toggle) {
+    return Boolean(
+      toggle
+      && !toggle.disabled
+      && !toggle.hidden
+      && !toggle.closest('[hidden], [inert]')
+      && toggle.getClientRects().length,
+    );
+  }
+  function fallbackSessionPanelTrigger() {
+    var mobileHeaderToggle = Array.from(sessionPanelToggles).find(function(toggle) {
+      return toggle.closest('.workspace-mobile-header') && isFocusableSessionPanelToggle(toggle);
+    });
+    return mobileHeaderToggle || Array.from(sessionPanelToggles).find(isFocusableSessionPanelToggle) || null;
+  }
+  function focusSessionPanelTrigger() {
+    (isFocusableSessionPanelToggle(sessionPanelTrigger) ? sessionPanelTrigger : fallbackSessionPanelTrigger())?.focus();
+  }
   function setSessionPanelOpen(open, options) {
-    if (!sessionPanel || !sessionPanelToggle) return;
+    if (!sessionPanel || !sessionPanelToggles.length) return;
     options = options || {};
     if (options.withoutAnimation) sessionPanel.style.transition = 'none';
-    sessionPanelToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    sessionPanelToggles.forEach(function(toggle) {
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
     sessionPanel.setAttribute('aria-hidden', open ? 'false' : 'true');
     sessionPanel.toggleAttribute('inert', !open);
     sessionPanel.classList.toggle('is-collapsed', !open);
+    sessionPanelScrim?.toggleAttribute('hidden', !open || desktopSidebarMedia.matches);
+    document.body.classList.toggle('session-panel-open', Boolean(open && !desktopSidebarMedia.matches));
     if (options.persist && desktopSidebarMedia.matches) {
       try {
         window.localStorage.setItem(sessionPanelStorageKey, open ? 'true' : 'false');
@@ -322,9 +403,9 @@ syncRecordButtonLabel();
         // Browser privacy settings can deny localStorage; panel still works for this page.
       }
     }
-    window.refreshLucideIcons?.(open ? sessionPanel : sessionPanelToggle);
+    window.refreshLucideIcons?.(open ? sessionPanel : sessionPanelToggles[0]);
     if (open && !desktopSidebarMedia.matches) {
-      document.dispatchEvent(new CustomEvent('transcribe:mobile-sidebar-close'));
+      document.dispatchEvent(new CustomEvent('workspace:drawer-close'));
       sessionPanel.querySelector('[data-session-panel-close]')?.focus();
     }
     if (open) requestAnimationFrame(function() {
@@ -342,19 +423,34 @@ syncRecordButtonLabel();
       { withoutAnimation: true },
     );
   }
-  sessionPanelToggle?.addEventListener('click', function() {
-    setSessionPanelOpen(sessionPanelToggle.getAttribute('aria-expanded') !== 'true', { persist: true });
+  sessionPanelToggles.forEach(function(toggle) {
+    toggle.addEventListener('click', function() {
+      sessionPanelTrigger = toggle;
+      setSessionPanelOpen(toggle.getAttribute('aria-expanded') !== 'true', { persist: true });
+    });
   });
   sessionPanelClose?.addEventListener('click', function() {
     setSessionPanelOpen(false, { persist: true });
-    if (desktopSidebarMedia.matches) sessionPanelToggle?.focus();
-    else document.querySelector('[data-mobile-sidebar-toggle]')?.focus();
+    focusSessionPanelTrigger();
+  });
+  sessionPanelScrim?.addEventListener('click', function() {
+    setSessionPanelOpen(false, { persist: true });
+    focusSessionPanelTrigger();
   });
   document.addEventListener('keydown', function(event) {
-    if (event.key !== 'Escape' || sessionPanelToggle?.getAttribute('aria-expanded') !== 'true') return;
+    if (event.key !== 'Escape' || sessionPanelToggles[0]?.getAttribute('aria-expanded') !== 'true') return;
     setSessionPanelOpen(false, { persist: true });
-    if (desktopSidebarMedia.matches) sessionPanelToggle?.focus();
-    else document.querySelector('[data-mobile-sidebar-toggle]')?.focus();
+    focusSessionPanelTrigger();
+  });
+  document.addEventListener('workspace:drawer-opening', function() {
+    if (!desktopSidebarMedia.matches && sessionPanelToggles[0]?.getAttribute('aria-expanded') === 'true') {
+      setSessionPanelOpen(false);
+    }
+  });
+  document.addEventListener('openscribe:dictation-modal-opening', function() {
+    if (!desktopSidebarMedia.matches && sessionPanelToggles[0]?.getAttribute('aria-expanded') === 'true') {
+      setSessionPanelOpen(false);
+    }
   });
   if ('ResizeObserver' in window) {
     var sessionPanelHeaderObserver = new ResizeObserver(syncSessionPanelHeaderHeight);
@@ -429,5 +525,6 @@ syncRecordButtonLabel();
     } | tojson }}
   </script>
   <script src="/static/vendor/sortable/Sortable.min.js?v=1.15.2"></script>
-  <script type="module" src="/static/js/transcribe/app.js?v=20260812-long-note-editor"></script>
+  <script type="module" src="/static/js/transcribe/app.js?v=20260823-mobile-toast"></script>
+  <script type="module" src="/static/js/transcribe/mobile.js?v=20260823-mobile-toast"></script>
   {% include "_csrf_script.html" %}

@@ -438,6 +438,14 @@ class User(Base):
         foreign_keys="AccountRequest.reviewed_by_user_id",
     )
     sessions: Mapped[list["UserSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    oidc_identities: Mapped[list["UserOidcIdentity"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    oidc_authorization_requests: Mapped[list["OidcAuthorizationRequest"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     auth_email_tokens: Mapped[list["AuthEmailToken"]] = relationship(
         back_populates="user",
         foreign_keys="AuthEmailToken.user_id",
@@ -772,6 +780,67 @@ class UserSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     user: Mapped[User] = relationship(back_populates="sessions")
+
+
+class UserOidcIdentity(Base):
+    __tablename__ = "user_oidc_identities"
+    __table_args__ = (
+        UniqueConstraint(
+            "issuer_hash",
+            "subject_hash",
+            name="uq_user_oidc_identities_issuer_subject_hash",
+        ),
+        UniqueConstraint("user_id", "provider_key", name="uq_user_oidc_identities_user_provider"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    issuer: Mapped[str] = mapped_column(String(2048), nullable=False)
+    issuer_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject_hash: Mapped[str] = mapped_column(String(96), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="oidc_identities")
+
+
+class OidcAuthorizationRequest(Base):
+    __tablename__ = "oidc_authorization_requests"
+    __table_args__ = (
+        UniqueConstraint("state_hash", name="uq_oidc_authorization_requests_state_hash"),
+        CheckConstraint("purpose IN ('login', 'link')", name="ck_oidc_authorization_requests_purpose"),
+        CheckConstraint(
+            "(purpose = 'login' AND user_id IS NULL AND user_session_id IS NULL) OR "
+            "(purpose = 'link' AND user_id IS NOT NULL AND user_session_id IS NOT NULL)",
+            name="ck_oidc_authorization_requests_binding",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    provider_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    nonce: Mapped[str] = mapped_column(String(128), nullable=False)
+    code_verifier_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(16), nullable=False)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    user_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("user_sessions.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    user: Mapped[User | None] = relationship(back_populates="oidc_authorization_requests")
 
 
 class AuthEmailToken(Base):

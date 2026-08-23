@@ -27,6 +27,22 @@ def _reauthenticate(db: Session, user: User, *, current_password: str, mfa_code:
     verify_active_totp_for_user(db, user, code=mfa_code.strip())
 
 
+def reauthenticate_for_account_change(
+    db: Session,
+    user: User,
+    *,
+    current_password: str,
+    mfa_code: str = "",
+) -> None:
+    _reauthenticate(db, user, current_password=current_password, mfa_code=mfa_code)
+
+
+def reauthenticate_for_oidc_link(user: User, *, current_password: str) -> None:
+    """Confirm the local account before the provider authenticates the identity to link."""
+    if not verify_password(current_password, user.password_hash):
+        raise AppError(401, "reauthentication_failed", "Current password is incorrect")
+
+
 def update_own_name(db: Session, user: User, *, full_name: str) -> User:
     normalized_name = _whitespace_re.sub(" ", unicodedata.normalize("NFKC", full_name).strip())
     if len(normalized_name) > 255:

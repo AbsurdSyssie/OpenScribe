@@ -139,6 +139,37 @@ docker compose --profile runtime up -d
 
 See [environment.md](environment.md) for all mapped settings and code defaults.
 
+## OIDC secrets in Vault
+
+Google and Microsoft issue their own OAuth client secrets. Vault stores those values; it cannot generate replacements that the providers will accept. OpenScribe does generate its separate subject-hash key on first use and stores it at `secret:openscribe/platform/oidc-subject-hash` with KV-v2 compare-and-set.
+
+For the bundled local Vault, store each issued client secret through the hidden prompt. The command neither accepts the value as an argument nor prints it:
+
+```bash
+.venv/bin/python scripts/set_oidc_client_secret.py google
+.venv/bin/python scripts/set_oidc_client_secret.py microsoft
+```
+
+In production, run the same command only from an operator environment with a short-lived Vault write token. Do not grant provider-secret write access to the OpenScribe runtime identity. That identity needs the following KV-v2 policy when both providers are enabled:
+
+```hcl
+path "secret/data/openscribe/platform/oidc-subject-hash" {
+  capabilities = ["create", "read", "update"]
+}
+
+path "secret/data/openscribe/oidc/google" {
+  capabilities = ["read"]
+}
+
+path "secret/data/openscribe/oidc/microsoft" {
+  capabilities = ["read"]
+}
+```
+
+Keep client IDs, callback URLs, enable switches, and Vault references in deployment configuration. Leave `GOOGLE_OIDC_CLIENT_SECRET`, `MICROSOFT_OIDC_CLIENT_SECRET`, and `OIDC_SUBJECT_HASH_SECRET` empty. The references are locators, not credentials. Restart or roll all web processes after changing a provider secret because each process caches it until exit.
+
+Never delete or replace the subject-hash secret independently of the database. Existing linked identities depend on it and would otherwise need to be linked again.
+
 ## Google Application Default Credentials
 
 Gemini Enterprise can use ADC. Do not copy credential JSON into the image or `.env`.

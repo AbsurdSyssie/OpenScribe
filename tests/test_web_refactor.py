@@ -122,6 +122,17 @@ def test_followup_redesign_preserves_required_hooks():
     assert "document?.follow_up_prompt_text" not in documents_js
 
 
+def test_workspace_page_exit_does_not_save_an_unchanged_followup():
+    app_js = Path("app/static/js/transcribe/app.js").read_text()
+
+    followup_save_start = app_js.index("const persistFollowupEditsSilently = async")
+    followup_save_end = app_js.index("const persistFollowupEditsUntilDrained", followup_save_start)
+    followup_save = app_js[followup_save_start:followup_save_end]
+
+    assert "if (!followupEditorDirty)" in followup_save
+    assert followup_save.index("if (!followupEditorDirty)") < followup_save.index("buildFollowupSavePayload()")
+
+
 def test_followup_quick_action_search_uses_an_accessible_combobox_contract():
     workspace_template = Path("app/templates/transcribe/_workspace.html").read_text()
     actions_js = Path("app/static/js/transcribe/actions.js").read_text()
@@ -180,7 +191,7 @@ def test_followup_detailing_keeps_controls_aligned_and_output_scrollable():
     transcribe_css = Path("app/static/css/transcribe.css").read_text()
     documents_js = Path("app/static/js/transcribe/documents.js").read_text()
 
-    assert 'transcribe.css?v=20260810-followups-menu-layer' in head_assets
+    assert 'transcribe.css?v=20260823-modal-close' in head_assets
 
     # Desktop composer fields share label, helper, control and meta rows.
     assert ".followup-composer-v3 {\ngrid-template-rows: auto auto auto auto;" in transcribe_css
@@ -287,9 +298,9 @@ def test_generation_loading_replaces_plain_text_placeholders():
     assert "Your follow-up is waiting to be written." not in app_js
     assert "Your follow-up is being written." not in app_js
     assert "generationLoadingHtml" in documents_js
-    assert "structured.js?v=20260812-long-note-editor" in app_js
-    assert "documents.js?v=20260812-long-note-editor" in app_js
-    assert "/static/js/transcribe/app.js?v=20260812-long-note-editor" in shell_extras
+    assert "structured.js?v=20260821-mobile-document-mode" in app_js
+    assert "documents.js?v=20260821-mobile-production-2" in app_js
+    assert "/static/js/transcribe/app.js?v=20260823-mobile-toast" in shell_extras
     assert ".note-generation-loading" in transcribe_css
     assert "@keyframes note-generation-orbit" in transcribe_css
     assert 'data-transcription-loading' in workspace_template
@@ -350,7 +361,7 @@ def test_splash_and_transcribe_styles_are_cacheable_static_assets():
     assert ".cta-panel" in splash_css
     assert '<link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">' in head_assets
     assert '<link rel="stylesheet" href="/static/css/components.css?v=20260718-brand-lockup">' in head_assets
-    assert '<link rel="stylesheet" href="/static/css/transcribe.css?v=20260810-followups-menu-layer">' in head_assets
+    assert '<link rel="stylesheet" href="/static/css/transcribe.css?v=20260823-modal-close">' in head_assets
     assert "<style" not in head_assets
     assert "font-family: var(--font-body);" in transcribe_css
     assert ".structured-statement-list" in transcribe_css

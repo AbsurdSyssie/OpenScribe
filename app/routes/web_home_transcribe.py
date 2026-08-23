@@ -19,6 +19,7 @@ from ..main import (
 )
 from ..services.account import update_own_email, update_own_name, update_own_password
 from ..services.auth import create_session, revoke_sessions_for_user, revoke_trusted_devices_for_user
+from ..services.oidc import linked_oidc_identity, oidc_configs
 from ..services.security_audit import record_security_event
 from ..services.templates import fork_team_quick_action_to_personal as fork_team_quick_action_to_personal_service
 from ..stt_normalization import normalize_stt_language
@@ -263,12 +264,24 @@ def _workspace_section_page(
         return HTMLResponse("Workspace section unavailable", status_code=status.HTTP_403_FORBIDDEN)
     if section == WORKSPACE_ACCOUNT:
         safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
+        configured_oidc = oidc_configs()
         return render_workspace(
             request,
             db,
             current_user=context.user,
             active_section=section,
-            section_context={"message": message, "message_kind": safe_message_kind},
+            section_context={
+                "message": message,
+                "message_kind": safe_message_kind,
+                "oidc_providers": tuple(
+                    {
+                        "key": config.provider_key,
+                        "name": config.provider_name,
+                        "linked": linked_oidc_identity(db, context.user, config) is not None,
+                    }
+                    for config in configured_oidc
+                ),
+            },
         )
     valid_scope = scope if scope in {"personal", "team"} else None
     valid_template_id = _valid_workspace_editor_id(template_id)

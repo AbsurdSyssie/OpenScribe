@@ -196,6 +196,15 @@ def _redirect_uri(prefix: str, provider_key: str, *, production: bool) -> str:
     return value
 
 
+def _cis2_response_mode() -> str:
+    response_mode = os.getenv("CIS2_OIDC_RESPONSE_MODE", "query").strip()
+    if response_mode != "query":
+        raise RuntimeError(
+            "CIS2_OIDC_RESPONSE_MODE must be query because CIS2 does not support form_post"
+        )
+    return response_mode
+
+
 def _client_id(prefix: str) -> str:
     client_id = os.getenv(f"{prefix}_CLIENT_ID", "").strip()
     if not client_id or len(client_id) > 512 or any(ord(character) < 0x20 for character in client_id):
@@ -378,12 +387,86 @@ def _microsoft_oidc_config(secret: bytes, *, production: bool) -> OidcConfig | N
     )
 
 
+def _cis2_oidc_config(secret: bytes, *, production: bool) -> OidcConfig | None:
+    if not _env_enabled("CIS2_OIDC_ENABLED"):
+        return None
+    provider_key = "cis2"
+    prefix = "CIS2_OIDC"
+    issuer_raw = os.getenv(f"{prefix}_ISSUER", "").strip()
+    if not issuer_raw:
+        raise RuntimeError(f"{prefix}_ISSUER is required when {prefix}_ENABLED=true")
+    client_auth_method = os.getenv(f"{prefix}_CLIENT_AUTH_METHOD", "client_secret_post").strip()
+    if client_auth_method != "client_secret_post":
+        raise RuntimeError(
+            f"{prefix}_CLIENT_AUTH_METHOD must be client_secret_post; "
+            "private_key_jwt is not implemented"
+        )
+
+    client_id, client_secret = _client_credentials(prefix, provider_key)
+    issuer = _configured_url(f"{prefix}_ISSUER", issuer_raw, require_https=production)
+    if urlsplit(issuer).query:
+        raise RuntimeError(f"{prefix}_ISSUER must not contain a query string")
+    discovery_default = f"{issuer.rstrip('/')}/.well-known/openid-configuration"
+    discovery_url = _configured_url(
+        f"{prefix}_DISCOVERY_URL",
+        os.getenv(f"{prefix}_DISCOVERY_URL", "").strip() or discovery_default,
+        require_https=production,
+    )
+    scopes = tuple(dict.fromkeys(os.getenv(f"{prefix}_SCOPES", "openid").split()))
+    if "openid" not in scopes or len(scopes) > 20 or any(
+        OIDC_SCOPE_PATTERN.fullmatch(scope) is None for scope in scopes
+    ):
+        raise RuntimeError(f"{prefix}_SCOPES must contain openid and no more than 20 bounded scope values")
+
+    algorithms = tuple(
+        dict.fromkeys(
+            item.strip()
+            for item in os.getenv(f"{prefix}_ALLOWED_ID_TOKEN_ALGORITHMS", "RS256").split(",")
+            if item.strip()
+        )
+    )
+    if not algorithms or any(item not in OIDC_ASYMMETRIC_SIGNING_ALGORITHMS for item in algorithms):
+        raise RuntimeError(
+            f"{prefix}_ALLOWED_ID_TOKEN_ALGORITHMS must contain only supported asymmetric algorithms"
+        )
+
+    requested_acr_values = tuple(dict.fromkeys(os.getenv(f"{prefix}_ACR_VALUES", "").split()))
+    required_acr_values = frozenset(os.getenv(f"{prefix}_REQUIRED_ACR_VALUES", "").split())
+    if (
+        len(requested_acr_values) > 20
+        or len(required_acr_values) > 20
+        or any(len(value) > 256 or not value.isascii() for value in requested_acr_values)
+        or any(len(value) > 256 or not value.isascii() for value in required_acr_values)
+    ):
+        raise RuntimeError(f"{prefix} ACR settings may contain at most 20 values")
+    if required_acr_values and not required_acr_values.issubset(set(requested_acr_values)):
+        raise RuntimeError(f"{prefix}_REQUIRED_ACR_VALUES must be a subset of {prefix}_ACR_VALUES")
+
+    return OidcConfig(
+        provider_key=provider_key,
+        provider_name="Care Identity",
+        issuer=issuer,
+        discovery_url=discovery_url,
+        client_id=client_id,
+        client_secret=client_secret,
+        subject_hash_secret=secret,
+        client_auth_method=client_auth_method,
+        redirect_uri=_redirect_uri(prefix, provider_key, production=production),
+        scopes=scopes,
+        response_mode=_cis2_response_mode(),
+        allowed_signing_algorithms=algorithms,
+        requested_acr_values=requested_acr_values,
+        required_acr_values=required_acr_values,
+    )
+
+
 def oidc_configs() -> tuple[OidcConfig, ...]:
     production = app_environment() in {"production", "prod"}
     enabled = (
         _env_enabled("OIDC_ENABLED")
         or _env_enabled("GOOGLE_OIDC_ENABLED")
         or _env_enabled("MICROSOFT_OIDC_ENABLED")
+        or _env_enabled("CIS2_OIDC_ENABLED")
     )
     if not enabled:
         return ()
@@ -393,6 +476,7 @@ def oidc_configs() -> tuple[OidcConfig, ...]:
         for config in (
             _google_oidc_config(secret, production=production),
             _microsoft_oidc_config(secret, production=production),
+            _cis2_oidc_config(secret, production=production),
             _custom_oidc_config(secret, production=production),
         )
         if config is not None

@@ -27,6 +27,7 @@ These documents are maintained as descriptions of implemented behavior or an exp
 | Area | Reference |
 | --- | --- |
 | Authentication and access control | [auth.md](auth.md) |
+| NHS Care Identity (CIS2) deployment | [cis2.md](cis2.md) |
 | Account recovery | [account_recovery_brief.md](account_recovery_brief.md) |
 | Security model | [security.md](security.md) |
 | Clinical safety | [SAFETY.md](../SAFETY.md) |

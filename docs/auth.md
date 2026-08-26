@@ -7,7 +7,7 @@ This document describes the implemented authentication, onboarding, account reco
 - Browser authentication uses an opaque `openscribe_session` cookie.
 - The browser never receives serialized user or permission state in that cookie.
 - PostgreSQL stores only the hashed session token plus explicit auth level, status, and expiry metadata.
-- Login uses email and password. A deployment may also enable Google, Microsoft, and one custom OpenID Connect (OIDC) provider for accounts that users have linked themselves.
+- Login uses email and password. A deployment may also enable Google, Microsoft, NHS Care Identity (CIS2), and one custom OpenID Connect (OIDC) provider for accounts that users have linked themselves.
 - Completed MFA-enabled accounts normally require a TOTP challenge after password verification.
 - A fresh trusted-device record can skip the TOTP challenge after successful password or linked-OIDC primary authentication.
 - The first system administrator can be created only while the database contains zero users. Production also requires `BOOTSTRAP_ADMIN_TOKEN`; the submitted deployment credential must match it.
@@ -164,13 +164,14 @@ Normal users and team leaders can update their own account from `/workspace/acco
 - Successful email/password changes revoke all sessions and trusted devices and issue one replacement session to the initiating browser.
 - Audit events record action/outcome/field metadata, not submitted names, emails, passwords, or TOTP codes.
 
-When OIDC is enabled, normal users and team leaders can link or remove each configured provider from `/workspace/account`. One account may link both Google and Microsoft.
+When OIDC is enabled, normal users and team leaders can link or remove each configured provider from `/workspace/account`. One account may link Google, Microsoft, Care Identity, and a custom provider.
 
 - Linking starts from a full owner session and requires the current password. The provider then authenticates the second account. OpenScribe does not ask for another TOTP code during this flow.
 - The authorization callback is bound to that user, that session, one-time state, a nonce, and an `S256` PKCE verifier.
 - OpenScribe keys a linked identity by the provider issuer and its case-sensitive `sub` claim. It never links or creates an account from an email claim.
 - Google accepts any account. Microsoft uses the `common` tenant endpoint but requires a signed `email` or `preferred_username` claim in `nhs.net`, `nhs.uk`, or a real subdomain of `nhs.uk` by default. This eligibility check runs on linking and every login. The claim is not stored or used as identity.
 - Microsoft discovery uses its documented issuer template. Microsoft documents S256 PKCE support but omits the PKCE capability field from its `common` discovery document, so the built-in Microsoft profile accepts that omission only; OpenScribe still sends and verifies S256 PKCE, and every other provider must advertise it. Each signed token must contain a UUID `tid` whose value matches the tenant segment in the signed `iss` claim.
+- The dedicated Care Identity provider uses deployment-supplied CIS2 registration details and the fixed `/auth/oidc/cis2/callback` path. It authenticates an issuer-bound OIDC subject; it does not treat an NHS.net address as identity proof or import national RBAC. See [cis2.md](cis2.md).
 - OIDC login is available only after linking. It still applies account status, onboarding, TOTP, trusted-device, and local-development account checks.
 - Linking or removal revokes all sessions and trusted devices, then gives the initiating browser one replacement session.
 - The database stores no provider access, refresh, or ID token. It stores only the issuer, a versioned issuer-bound HMAC of the subject, provider label, owner, and use timestamps.

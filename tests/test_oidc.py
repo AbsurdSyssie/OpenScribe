@@ -3,6 +3,7 @@ import hashlib
 import logging
 from dataclasses import replace
 from datetime import timedelta
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -24,6 +25,7 @@ from app.models import (
     utcnow,
 )
 from app.services.auth import SESSION_COOKIE_NAME, session_token_hash
+from app.services.csrf import CSRF_COOKIE_NAME
 from app.services import oidc, vault
 from app.services.oidc import (
     OIDC_CODE_VERIFIER_COOKIE_NAME,
@@ -66,6 +68,19 @@ OIDC_ENV_NAMES = (
     "MICROSOFT_OIDC_REDIRECT_URI",
     "MICROSOFT_OIDC_RESPONSE_MODE",
     "MICROSOFT_ALLOWED_EMAIL_DOMAINS",
+    "CIS2_OIDC_ENABLED",
+    "CIS2_OIDC_ISSUER",
+    "CIS2_OIDC_DISCOVERY_URL",
+    "CIS2_OIDC_CLIENT_ID",
+    "CIS2_OIDC_CLIENT_SECRET",
+    "CIS2_OIDC_CLIENT_SECRET_VAULT_REF",
+    "CIS2_OIDC_CLIENT_AUTH_METHOD",
+    "CIS2_OIDC_REDIRECT_URI",
+    "CIS2_OIDC_SCOPES",
+    "CIS2_OIDC_RESPONSE_MODE",
+    "CIS2_OIDC_ALLOWED_ID_TOKEN_ALGORITHMS",
+    "CIS2_OIDC_ACR_VALUES",
+    "CIS2_OIDC_REQUIRED_ACR_VALUES",
 )
 
 
@@ -125,6 +140,25 @@ def _set_google_microsoft_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "MICROSOFT_OIDC_RESPONSE_MODE": "query",
         "MICROSOFT_ALLOWED_EMAIL_DOMAINS": "nhs.net,nhs.uk,*.nhs.uk",
     }
+    monkeypatch.setenv("APP_ENV", "test")
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+
+def _set_cis2_environment(monkeypatch: pytest.MonkeyPatch, **overrides: str) -> None:
+    for name in OIDC_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    values = {
+        "OIDC_SUBJECT_HASH_SECRET": "synthetic-subject-hash-secret-32-bytes",
+        "CIS2_OIDC_ENABLED": "true",
+        "CIS2_OIDC_ISSUER": "https://care-identity.invalid",
+        "CIS2_OIDC_CLIENT_ID": "cis2-client",
+        "CIS2_OIDC_CLIENT_SECRET": "cis2-secret",
+        "CIS2_OIDC_REDIRECT_URI": "https://openscribe.invalid/auth/oidc/cis2/callback",
+        "CIS2_OIDC_RESPONSE_MODE": "query",
+        "CIS2_OIDC_ALLOWED_ID_TOKEN_ALGORITHMS": "RS256",
+    }
+    values.update(overrides)
     monkeypatch.setenv("APP_ENV", "test")
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -276,6 +310,85 @@ def test_builtin_oidc_providers_use_shared_default_subject_key_and_scoped_client
         "vault-microsoft-client-secret",
     ]
     assert len({config.subject_hash_secret for config in configs}) == 1
+
+
+def test_cis2_disabled_does_not_expose_a_partially_configured_provider(monkeypatch):
+    for name in OIDC_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CIS2_OIDC_ENABLED", "false")
+    monkeypatch.setenv("CIS2_OIDC_ISSUER", "https://care-identity.invalid")
+    monkeypatch.setenv("CIS2_OIDC_CLIENT_ID", "cis2-client")
+    monkeypatch.setenv("CIS2_OIDC_CLIENT_SECRET_VAULT_REF", "secret:openscribe/oidc/cis2")
+
+    assert oidc.oidc_configs() == ()
+
+
+def test_cis2_config_uses_its_dedicated_secure_defaults(monkeypatch):
+    _set_cis2_environment(monkeypatch, CIS2_OIDC_CLIENT_SECRET="")
+    monkeypatch.setenv("CIS2_OIDC_CLIENT_SECRET_VAULT_REF", "secret:openscribe/oidc/cis2")
+    calls = []
+
+    def client_secret(*, secret_ref, provider_key):
+        calls.append((secret_ref, provider_key))
+        return "vault-cis2-client-secret"
+
+    monkeypatch.setattr(oidc, "read_oidc_client_secret", client_secret)
+
+    config = oidc.oidc_config("cis2")
+
+    assert config is not None
+    assert config.provider_key == "cis2"
+    assert config.provider_name == "Care Identity"
+    assert config.discovery_url == "https://care-identity.invalid/.well-known/openid-configuration"
+    assert config.client_auth_method == "client_secret_post"
+    assert config.client_secret == "vault-cis2-client-secret"
+    assert config.scopes == ("openid",)
+    assert config.allowed_signing_algorithms == ("RS256",)
+    assert calls == [("secret:openscribe/oidc/cis2", "cis2")]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"CIS2_OIDC_ISSUER": ""}, "CIS2_OIDC_ISSUER is required"),
+        ({"CIS2_OIDC_CLIENT_ID": ""}, "CIS2_OIDC_CLIENT_ID"),
+        ({"CIS2_OIDC_CLIENT_AUTH_METHOD": "client_secret_basic"}, "must be client_secret_post"),
+        ({"CIS2_OIDC_RESPONSE_MODE": "form_post"}, "must be query"),
+        (
+            {"CIS2_OIDC_CLIENT_SECRET": ""},
+            "CIS2_OIDC_CLIENT_SECRET.*CIS2_OIDC_CLIENT_SECRET_VAULT_REF.*required",
+        ),
+        ({"CIS2_OIDC_REDIRECT_URI": ""}, "CIS2_OIDC_REDIRECT_URI is required"),
+        ({"CIS2_OIDC_REDIRECT_URI": "https://openscribe.invalid/auth/oidc/callback"}, "path must be /auth/oidc/cis2/callback"),
+        ({"CIS2_OIDC_SCOPES": "profile"}, "CIS2_OIDC_SCOPES must contain openid"),
+        ({"CIS2_OIDC_ALLOWED_ID_TOKEN_ALGORITHMS": "HS256"}, "supported asymmetric algorithms"),
+        ({"CIS2_OIDC_ACR_VALUES": "aal2", "CIS2_OIDC_REQUIRED_ACR_VALUES": "aal3"}, "must be a subset"),
+    ],
+)
+def test_cis2_configuration_fails_closed(monkeypatch, overrides, message):
+    _set_cis2_environment(monkeypatch, **overrides)
+
+    with pytest.raises(RuntimeError, match=message):
+        oidc.oidc_config("cis2")
+
+
+def test_cis2_requires_https_callback_in_production(monkeypatch):
+    _set_cis2_environment(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("CIS2_OIDC_REDIRECT_URI", "http://openscribe.invalid/auth/oidc/cis2/callback")
+
+    with pytest.raises(RuntimeError, match="absolute HTTPS URL"):
+        oidc.oidc_config("cis2")
+
+
+def test_cis2_uses_supported_query_response_mode_in_production(monkeypatch):
+    _set_cis2_environment(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "production")
+
+    config = oidc.oidc_config("cis2")
+
+    assert config is not None
+    assert config.response_mode == "query"
 
 
 def test_custom_oidc_provider_reads_its_scoped_vault_client_secret(monkeypatch):
@@ -585,7 +698,7 @@ def test_short_vault_subject_hash_secret_fails_closed_without_disclosure(monkeyp
     assert short_secret not in repr(rejected.value)
 
 
-def test_google_and_microsoft_can_be_configured_and_routed_together(
+def test_google_microsoft_and_cis2_can_be_configured_and_routed_together(
     client,
     db_session,
     make_team,
@@ -593,15 +706,23 @@ def test_google_and_microsoft_can_be_configured_and_routed_together(
     monkeypatch,
 ):
     _set_google_microsoft_environment(monkeypatch)
+    monkeypatch.setenv("CIS2_OIDC_ENABLED", "true")
+    monkeypatch.setenv("CIS2_OIDC_ISSUER", "https://care-identity.invalid")
+    monkeypatch.setenv("CIS2_OIDC_CLIENT_ID", "cis2-client")
+    monkeypatch.setenv("CIS2_OIDC_CLIENT_SECRET", "cis2-secret")
+    monkeypatch.setenv("CIS2_OIDC_REDIRECT_URI", "http://testserver/auth/oidc/cis2/callback")
+    monkeypatch.setenv("CIS2_OIDC_RESPONSE_MODE", "query")
 
     configs = oidc.oidc_configs()
     assert [(config.provider_key, config.provider_name) for config in configs] == [
         ("google", "Google"),
         ("microsoft", "Microsoft"),
+        ("cis2", "Care Identity"),
     ]
     assert oidc.oidc_config() is None
     assert oidc.oidc_config("GOOGLE") == configs[0]
     assert oidc.oidc_config("microsoft") == configs[1]
+    assert oidc.oidc_config("cis2") == configs[2]
 
     team = make_team(name="Multi-provider UI team")
     user = make_user(email="multi-provider@example.invalid", password="password-1", team=team)
@@ -610,11 +731,15 @@ def test_google_and_microsoft_can_be_configured_and_routed_together(
     assert login_page.status_code == 200
     assert 'action="/auth/oidc/google/login"' in login_page.text
     assert 'action="/auth/oidc/microsoft/login"' in login_page.text
+    assert 'action="/auth/oidc/cis2/login"' in login_page.text
     assert login_page.text.count('class="auth-divider"') == 1
     assert 'aria-label="Other sign-in options"' in login_page.text
     assert 'aria-label="Sign in with Google"' in login_page.text
     assert 'src="/static/google-sign-in.svg"' in login_page.text
     assert "Sign in with Microsoft" in login_page.text
+    assert "Sign in with Care Identity" in login_page.text
+    assert "smartcard" not in login_page.text.lower()
+    assert "nhs.net" not in login_page.text.lower()
     assert "Continue with" not in login_page.text
 
     assert client.post(
@@ -626,10 +751,13 @@ def test_google_and_microsoft_can_be_configured_and_routed_together(
     assert account_page.status_code == 200
     assert 'action="/settings/account/oidc/google/link"' in account_page.text
     assert 'action="/settings/account/oidc/microsoft/link"' in account_page.text
-    assert account_page.text.count('class="connected-account"') == 2
-    assert account_page.text.count("Not connected") == 2
+    assert 'action="/settings/account/oidc/cis2/link"' in account_page.text
+    assert account_page.text.count('class="connected-account"') == 3
+    assert account_page.text.count("Not connected") == 3
     assert "Continue to Google" in account_page.text
     assert "Continue to Microsoft" in account_page.text
+    assert "Continue to Care Identity" in account_page.text
+    assert "Use Care Identity to sign in." in account_page.text
     # Only the email and password change forms ask for TOTP while both providers are unlinked.
     assert account_page.text.count('name="mfa_code"') == 2
     assert "Opening ${provider}…" in account_page.text
@@ -1159,6 +1287,57 @@ def test_oidc_exchange_classifies_token_endpoint_failure_without_leaking_detail(
     assert secret_detail not in repr(rejected.value)
 
 
+def test_cis2_client_secret_post_sends_credentials_in_the_token_form_not_authorization_header():
+    config = OidcConfig(
+        provider_key="cis2",
+        provider_name="Care Identity",
+        issuer="https://care-identity.invalid",
+        discovery_url="https://care-identity.invalid/.well-known/openid-configuration",
+        client_id="cis2-client",
+        client_secret="synthetic-cis2-client-secret",
+        subject_hash_secret=b"synthetic-subject-hash-secret-32-bytes",
+        client_auth_method="client_secret_post",
+        redirect_uri="https://openscribe.invalid/auth/oidc/cis2/callback",
+        scopes=("openid",),
+        response_mode="query",
+        allowed_signing_algorithms=("RS256",),
+        requested_acr_values=(),
+        required_acr_values=frozenset(),
+    )
+    captured = {}
+
+    async def token_endpoint(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization")
+        captured["form"] = parse_qs(request.content.decode("ascii"), keep_blank_values=True)
+        return httpx.Response(200, json={"access_token": "synthetic-token", "token_type": "Bearer"})
+
+    async def exchange() -> None:
+        client = oidc.AsyncOAuth2Client(
+            client_id=config.client_id,
+            client_secret=config.client_secret,
+            token_endpoint_auth_method=config.client_auth_method,
+            redirect_uri=config.redirect_uri,
+            state="synthetic-state",
+            transport=httpx.MockTransport(token_endpoint),
+        )
+        try:
+            token = await client.fetch_token(
+                "https://care-identity.invalid/token",
+                authorization_response=f"{config.redirect_uri}?code=synthetic-code&state=synthetic-state",
+                code_verifier="synthetic-verifier",
+            )
+        finally:
+            await client.aclose()
+        assert token["access_token"] == "synthetic-token"
+
+    asyncio.run(exchange())
+
+    assert captured["authorization"] is None
+    assert captured["form"]["client_id"] == [config.client_id]
+    assert captured["form"]["client_secret"] == [config.client_secret]
+    assert captured["form"]["grant_type"] == ["authorization_code"]
+
+
 def test_browser_oidc_login_start_sets_bounded_callback_cookies(client, monkeypatch):
     import app.routes.web_oidc as web_oidc
 
@@ -1546,6 +1725,131 @@ def test_browser_oidc_link_callback_requires_the_bound_full_session_and_rotates_
     db_session.refresh(original_session)
     assert original_session.status is SessionStatus.revoked
     assert client.cookies.get(SESSION_COOKIE_NAME) != original_token
+
+
+def test_browser_cis2_link_then_login_uses_the_linked_issuer_and_subject_only(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+):
+    import app.routes.web_oidc as web_oidc
+
+    _set_cis2_environment(monkeypatch)
+    config = oidc.oidc_config("cis2")
+    assert config is not None
+    team = make_team(name="CIS2 browser flow team")
+    user = make_user(
+        email="care-identity-owner@example.invalid",
+        password="password-1",
+        team=team,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+    email_matching_user = make_user(
+        email="care-identity-subject@example.invalid",
+        password="password-1",
+        team=team,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+    subject = email_matching_user.email
+    assert client.post(
+        "/login",
+        data={"email": user.email, "password": "password-1"},
+        follow_redirects=False,
+    ).status_code == 303
+    original_token = client.cookies.get(SESSION_COOKIE_NAME)
+    original_session = db_session.scalar(
+        select(UserSession).where(UserSession.session_token_hash == session_token_hash(original_token))
+    )
+    assert original_session is not None
+
+    starts = []
+
+    async def begin(db, supplied_config, *, purpose, user=None, user_session=None):
+        assert supplied_config == config
+        state = f"cis2-{purpose}-state"
+        verifier = f"cis2-{purpose}-verifier"
+        starts.append((purpose, user.id if user is not None else None))
+        db.add(
+            OidcAuthorizationRequest(
+                provider_key="cis2",
+                state_hash=hashlib.sha256(state.encode("utf-8")).hexdigest(),
+                nonce=f"cis2-{purpose}-nonce",
+                code_verifier_hash=hashlib.sha256(verifier.encode("utf-8")).hexdigest(),
+                purpose=purpose,
+                user_id=user.id if user is not None else None,
+                user_session_id=user_session.id if user_session is not None else None,
+                expires_at=utcnow() + timedelta(minutes=5),
+            )
+        )
+        db.commit()
+        return OidcAuthorizationStart(
+            authorization_url="https://care-identity.invalid/authorize?synthetic=true",
+            state=state,
+            code_verifier=verifier,
+        )
+
+    async def exchange(supplied_config, **kwargs):
+        assert supplied_config == config
+        assert kwargs["state"].startswith("cis2-")
+        return OidcVerifiedIdentity(
+            subject=subject,
+            issuer=config.issuer,
+            email=None,
+            acr=None,
+        )
+
+    monkeypatch.setattr(web_oidc, "begin_oidc_authorization", begin)
+    monkeypatch.setattr(web_oidc, "exchange_oidc_code_for_identity", exchange)
+
+    link_start = client.post(
+        "/settings/account/oidc/cis2/link",
+        data={"current_password": "password-1"},
+        follow_redirects=False,
+    )
+    assert link_start.status_code == 303
+    assert link_start.headers["location"] == "https://care-identity.invalid/authorize?synthetic=true"
+    link_callback = client.get(
+        "/auth/oidc/cis2/callback?code=synthetic-link-code&state=cis2-link-state",
+        follow_redirects=False,
+    )
+    assert link_callback.status_code == 303
+    assert "Single+sign-on+linked" in link_callback.headers["location"]
+    identity = db_session.scalar(
+        select(UserOidcIdentity).where(UserOidcIdentity.provider_key == "cis2")
+    )
+    assert identity is not None
+    assert identity.user_id == user.id
+    assert identity.issuer == config.issuer
+    assert identity.subject_hash == oidc.oidc_subject_hash(config, subject)
+    db_session.refresh(original_session)
+    assert original_session.status is SessionStatus.revoked
+    assert client.cookies.get(SESSION_COOKIE_NAME) != original_token
+
+    # The subject happens to equal another account's email, but CIS2 email is
+    # absent and the linked issuer-and-subject pair must still select the owner.
+    client.cookies.delete(SESSION_COOKIE_NAME)
+    client.cookies.delete(CSRF_COOKIE_NAME)
+    login_start = client.post("/auth/oidc/cis2/login", follow_redirects=False)
+    assert login_start.status_code == 303
+    assert login_start.headers["location"] == "https://care-identity.invalid/authorize?synthetic=true"
+    login_callback = client.get(
+        "/auth/oidc/cis2/callback?code=synthetic-login-code&state=cis2-login-state",
+        follow_redirects=False,
+    )
+    assert login_callback.status_code == 303
+    assert login_callback.headers["location"] == "/workspace"
+    login_token = client.cookies.get(SESSION_COOKIE_NAME)
+    login_session = db_session.scalar(
+        select(UserSession).where(UserSession.session_token_hash == session_token_hash(login_token))
+    )
+    assert login_session is not None
+    assert login_session.user_id == user.id
+    assert login_session.user_id != email_matching_user.id
+    assert starts == [("link", user.id), ("login", None)]
 
 
 def test_oidc_callback_query_is_removed_from_the_asgi_access_log_target():

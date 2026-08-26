@@ -67,6 +67,48 @@ def test_oidc_secret_script_uses_hidden_confirmation_and_exact_scoped_payload(
     assert raw_secret not in captured.err
 
 
+def test_oidc_secret_script_stores_cis2_at_its_fixed_vault_path_without_printing_the_secret(
+    monkeypatch,
+    capsys,
+):
+    raw_secret = "synthetic-cis2-client-secret"
+    prompts = []
+    writes = []
+    answers = iter((raw_secret, raw_secret))
+
+    def hidden_prompt(prompt):
+        prompts.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr(set_oidc_client_secret.getpass, "getpass", hidden_prompt)
+    monkeypatch.setattr(
+        set_oidc_client_secret,
+        "vault_client",
+        lambda: _FakeVaultClient(lambda **kwargs: writes.append(kwargs)),
+    )
+    monkeypatch.setattr(
+        set_oidc_client_secret.sys,
+        "argv",
+        ["set_oidc_client_secret.py", "cis2"],
+    )
+
+    set_oidc_client_secret.main()
+
+    captured = capsys.readouterr()
+    assert prompts == ["Care Identity OIDC client secret: ", "Confirm client secret: "]
+    assert writes == [
+        {
+            "path": "openscribe/oidc/cis2",
+            "secret": {"client_secret": raw_secret},
+            "mount_point": set_oidc_client_secret.VAULT_KV_MOUNT.strip("/"),
+        }
+    ]
+    assert "Care Identity" in captured.out
+    assert "openscribe/oidc/cis2" in captured.out
+    assert raw_secret not in captured.out
+    assert raw_secret not in captured.err
+
+
 def test_oidc_secret_script_confirmation_mismatch_prevents_vault_write(
     monkeypatch,
     capsys,

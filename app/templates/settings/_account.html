@@ -36,7 +36,7 @@
         <span class="connected-account__mark" aria-hidden="true">{{ provider.name[0] }}</span>
         <span class="connected-account__identity">
           <strong>{{ provider.name }}</strong>
-          <small>{% if provider.key == 'google' %}Use your Google account to sign in.{% elif provider.key == 'microsoft' %}Use an eligible NHS Microsoft account.{% else %}Use this provider to sign in.{% endif %}</small>
+          <small>{% if provider.key == 'google' %}Use your Google account to sign in.{% elif provider.key == 'microsoft' %}Use an eligible NHS Microsoft account.{% elif provider.key == 'cis2' %}Use Care Identity to sign in.{% else %}Use this provider to sign in.{% endif %}</small>
         </span>
         <span class="connected-account__status connected-account__status--{% if provider.linked %}linked{% else %}available{% endif %}">{% if provider.linked %}Connected{% else %}Not connected{% endif %}</span>
         <span class="connected-account__action">{% if provider.linked %}Disconnect{% else %}Connect{% endif %}</span>

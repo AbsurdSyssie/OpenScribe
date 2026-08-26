@@ -65,6 +65,19 @@ OIDC is off by default. Register the exact callback with the provider before ena
 | `MICROSOFT_OIDC_REDIRECT_URI` | unset | Exact registered callback: `https://<host>/auth/oidc/microsoft/callback`. Production requires HTTPS. |
 | `MICROSOFT_OIDC_RESPONSE_MODE` | `query` outside production; `form_post` in production | Callback mode. `form_post` requires an HTTPS redirect URI; production requires `form_post`. Use `query` for an HTTP localhost callback. |
 | `MICROSOFT_ALLOWED_EMAIL_DOMAINS` | `nhs.net,nhs.uk,*.nhs.uk` | Comma-separated eligibility allowlist checked against signed `email`, then `preferred_username`, on linking and each login. `*.nhs.uk` permits real subdomains but not `nhs.uk` itself; the default lists both. |
+| `CIS2_OIDC_ENABLED` | `false` | Enables the dedicated NHS Care Identity (CIS2) OIDC profile. See [cis2.md](cis2.md). |
+| `CIS2_OIDC_ISSUER` | unset | Exact case-sensitive issuer supplied for the registered CIS2 environment. OpenScribe does not supply an NHS environment URL. |
+| `CIS2_OIDC_DISCOVERY_URL` | `<issuer>/.well-known/openid-configuration` | Optional exact discovery URL for the registered CIS2 environment. |
+| `CIS2_OIDC_CLIENT_ID` | unset | Client identifier issued to the deploying organisation. |
+| `CIS2_OIDC_CLIENT_SECRET` | unset | Optional environment override for the deployment's CIS2 client secret. When set, it takes precedence over Vault. |
+| `CIS2_OIDC_CLIENT_SECRET_VAULT_REF` | `secret:openscribe/oidc/cis2` | Vault KV-v2 reference for the CIS2 client secret. The path must be exactly `openscribe/oidc/cis2` and the field is `client_secret`. |
+| `CIS2_OIDC_CLIENT_AUTH_METHOD` | `client_secret_post` | The initial CIS2 integration supports only `client_secret_post`. `private_key_jwt` is tracked as production hardening and fails closed if selected now. |
+| `CIS2_OIDC_REDIRECT_URI` | unset | Exact registered callback: `https://<host>/auth/oidc/cis2/callback`. Production requires HTTPS. |
+| `CIS2_OIDC_SCOPES` | `openid` | Space-separated scopes agreed during CIS2 onboarding. `openid` is required. Do not add guessed scopes. |
+| `CIS2_OIDC_RESPONSE_MODE` | `query` | CIS2 supports `query`; other modes fail configuration. OpenScribe removes callback query parameters from the ASGI access-log target before the response starts. |
+| `CIS2_OIDC_ALLOWED_ID_TOKEN_ALGORITHMS` | `RS256` | Comma-separated asymmetric signing-algorithm allowlist. It must match the registered environment's discovery metadata. |
+| `CIS2_OIDC_ACR_VALUES` | unset | Space-separated authentication-context values agreed with NHS England and requested from CIS2. |
+| `CIS2_OIDC_REQUIRED_ACR_VALUES` | unset | Accepted returned ACR values. Each must also appear in `CIS2_OIDC_ACR_VALUES`; a missing or different claim fails login. |
 | `OIDC_ENABLED` | `false` | Enables one custom OIDC provider, which may run alongside Google and Microsoft. |
 | `OIDC_PROVIDER_KEY` | `oidc` | Stable lowercase audit/configuration and route label, 1-64 characters. It must differ from `google` and `microsoft` when those profiles are enabled. |
 | `OIDC_PROVIDER_NAME` | `Single sign-on` | Custom provider name shown on login and account pages. |
@@ -83,17 +96,13 @@ OIDC is off by default. Register the exact callback with the provider before ena
 
 Discovery, authorization, token, and JWKS endpoints must use HTTPS when the configured issuer uses HTTPS. Each provider must support authorization code flow, `S256` PKCE, the chosen response mode, and its configured client authentication method. Register each callback exactly; callback paths contain the provider key. Client secrets are cached in each web process, so restart or roll the web processes after changing one in Vault.
 
-Vault cannot invent the Google or Microsoft client secret because it must match the value issued by that provider. Store the issued value under the provider's fixed path. The app's runtime Vault identity needs `read` on those provider paths. It needs `read`, `create`, and `update` on the subject-hash path so the first enabled instance can create the shared key. Keep production operator write credentials separate from the app's runtime identity.
+Vault cannot invent a Google, Microsoft, or CIS2 client secret because it must match the value issued by that provider. Store the issued value under the provider's fixed path. The app's runtime Vault identity needs `read` on those provider paths. It needs `read`, `create`, and `update` on the subject-hash path so the first enabled instance can create the shared key. Keep production operator write credentials separate from the app's runtime identity.
 
 Google accepts any Google account, but an existing OpenScribe user must link it first. Microsoft accepts accounts whose signed email or preferred username matches the configured allowlist. Neither provider claim creates an account, matches an OpenScribe email, changes team membership, or grants an OpenScribe role.
 
 ### NHS CIS2
 
-CIS2 publishes an OIDC discovery document and supports authorization code flow, `S256` PKCE, signed ID tokens, and registered client-secret methods. Register OpenScribe with the required CIS2 environment, then set the provider name, exact issuer and discovery URL, assigned client ID and secret, exact callback, scopes, and any ACR values agreed during onboarding. Use `form_post` and the client authentication method in the registration.
-
-Set `OIDC_PROVIDER_KEY=nhs_cis2` and `OIDC_PROVIDER_NAME=NHS Care Identity` for a CIS2 deployment. Keep OpenScribe roles and team membership authoritative: this integration authenticates a linked CIS2 subject but does not import national RBAC or create a user. NHS England's current [CIS2 sign-in guide](https://digital.nhs.uk/services/care-identity-service/applications-and-services/cis2-authentication/integrate/design-and-build/sign-in-journey) and [discovery guide](https://digital.nhs.uk/services/care-identity-service/applications-and-services/cis2-authentication/integrate/design-and-build/discovery) contain the registration and environment details.
-
-OpenScribe does not implement CIS2 back-channel logout or redirect local logout to the CIS2 end-session endpoint. Treat those as separate integration work if the deployment requires national single logout.
+Use the dedicated `CIS2_OIDC_*` settings, not the custom `OIDC_*` provider workaround. OpenScribe roles and team membership remain authoritative. See [cis2.md](cis2.md) for the implemented boundary, deployment steps, and remaining compatibility work.
 
 ## Database, Redis, Celery, and durable dispatch
 

@@ -15,12 +15,17 @@ if str(ROOT_DIR) not in sys.path:
 from app.services.vault import VAULT_KV_MOUNT, vault_client
 
 
-SUPPORTED_PROVIDERS = ("google", "microsoft")
+SUPPORTED_PROVIDERS = ("google", "microsoft", "cis2")
+PROVIDER_NAMES = {
+    "google": "Google",
+    "microsoft": "Microsoft",
+    "cis2": "Care Identity",
+}
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Store a Google or Microsoft OIDC client secret in Vault.",
+        description="Store a Google, Microsoft, or Care Identity OIDC client secret in Vault.",
     )
     parser.add_argument("provider", choices=SUPPORTED_PROVIDERS)
     return parser
@@ -28,7 +33,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _parser().parse_args()
-    secret = getpass.getpass(f"{args.provider.title()} OIDC client secret: ")
+    provider_name = PROVIDER_NAMES[args.provider]
+    secret = getpass.getpass(f"{provider_name} OIDC client secret: ")
     if not secret:
         raise SystemExit("Client secret must not be empty")
     confirmation = getpass.getpass("Confirm client secret: ")
@@ -48,7 +54,7 @@ def main() -> None:
         raise SystemExit("Vault is unavailable") from None
 
     print(
-        f"Stored {args.provider} OIDC client secret at "
+        f"Stored {provider_name} OIDC client secret at "
         f"{VAULT_KV_MOUNT}:openscribe/oidc/{args.provider}; value not printed."
     )
 

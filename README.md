@@ -102,7 +102,7 @@ Third-party browser asset provenance, checksums, and licence locations are recor
 
 Successful normal-user and team-leader login lands directly on `/workspace`. Legacy `GET /home`, `/transcribe`, and `/settings` links redirect into canonical `/workspace` routes; `/home` is no longer a separately rendered landing page. The former `/transcribe-claude`, `/transcribe-glm-2`, and `/transcriber_col_changes` prototype routes have been removed. `/workspace` is the only Scribe product surface.
 
-Deployments may enable Google, Microsoft, and one custom OpenID Connect provider such as NHS CIS2 at the same time. Existing users link each provider from `/workspace/account`; OpenScribe never creates or links an account from a provider email claim. Password login and recovery remain available. See [docs/auth.md](docs/auth.md) and [docs/environment.md](docs/environment.md#openid-connect-login).
+Deployments may enable Google, Microsoft, the dedicated NHS Care Identity (CIS2) provider, and one custom OpenID Connect provider at the same time. Existing users link each provider from `/workspace/account`; OpenScribe never creates or links an account from a provider email claim. Password login and recovery remain available. See [docs/auth.md](docs/auth.md), [docs/cis2.md](docs/cis2.md), and [docs/environment.md](docs/environment.md#openid-connect-login).
 
 ## Quick start
 

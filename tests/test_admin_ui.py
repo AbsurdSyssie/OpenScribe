@@ -6572,7 +6572,7 @@ def test_auth_recovery_pages_use_current_shell_styling():
     mfa_html = (root / "app" / "templates" / "mfa_challenge.html").read_text(encoding="utf-8")
     auth_css = (root / "app" / "static" / "css" / "auth.css").read_text(encoding="utf-8")
 
-    unchanged_auth_pages = (login_html, request_access_html, onboarding_html, reset_request_html, reset_confirm_html)
+    unchanged_auth_pages = (request_access_html, onboarding_html, reset_request_html, reset_confirm_html)
     for html in (*unchanged_auth_pages, mfa_html):
         assert '<link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">' in html
         assert '<link rel="stylesheet" href="/static/css/components.css?v=20260701-home-components">' in html
@@ -6582,6 +6582,7 @@ def test_auth_recovery_pages_use_current_shell_styling():
 
     for html in unchanged_auth_pages:
         assert '<link rel="stylesheet" href="/static/css/auth.css?v=20260701-auth-extract">' in html
+    assert '<link rel="stylesheet" href="/static/css/auth.css?v=20260821-social-sign-in-spacing">' in login_html
     assert '<link rel="stylesheet" href="/static/css/auth.css?v=20260718-mfa-code-slots">' in mfa_html
 
     assert "font-family: var(--font-display);" in auth_css

@@ -924,7 +924,15 @@ async def add_security_headers(request: Request, call_next):
     response.headers.setdefault("X-Robots-Tag", SECURITY_HEADER_X_ROBOTS_TAG)
     response.headers.setdefault(
         "Content-Security-Policy",
-        content_security_policy(request.state.csp_nonce, upgrade_insecure_requests=is_https),
+        content_security_policy(
+            request.state.csp_nonce,
+            upgrade_insecure_requests=is_https,
+            oidc_form_action_origins=getattr(
+                request.state,
+                "oidc_form_action_origins",
+                (),
+            ),
+        ),
     )
     _set_cache_headers(request, response)
 

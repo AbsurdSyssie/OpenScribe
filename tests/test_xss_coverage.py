@@ -16,6 +16,8 @@ import sys
 from html import escape
 from pathlib import Path
 
+import pytest
+
 
 class TestEscapeHtmlContract:
     """Tests that escapeHtml function (used in JS) escapes all dangerous chars."""
@@ -169,6 +171,38 @@ class TestCspContract:
             "form-action 'self' https://accounts.google.com "
             "https://login.microsoftonline.com"
         ) in csp
+
+    def test_form_action_adds_only_the_supplied_oidc_redirect_origin(self):
+        from app.security_headers import content_security_policy, oidc_form_action_origin
+
+        origin = oidc_form_action_origin(
+            "https://identity.example.invalid/authorize?client_id=secret"
+        )
+        csp = content_security_policy(
+            "test-nonce",
+            oidc_form_action_origins=(origin,),
+        )
+
+        assert "https://identity.example.invalid" in csp
+        assert "/authorize" not in csp
+        assert "client_id=secret" not in csp
+
+    @pytest.mark.parametrize(
+        "authorization_url",
+        (
+            "javascript:alert(1)",
+            "https://user:password@identity.example.invalid/authorize",
+            "https://identity.example.invalid:bad/authorize",
+            "https://identity.example.invalid;script-src/authorize",
+            "https://[bad/authorize",
+            "/relative/authorize",
+        ),
+    )
+    def test_oidc_form_action_origin_rejects_unsafe_urls(self, authorization_url):
+        from app.security_headers import oidc_form_action_origin
+
+        with pytest.raises(ValueError, match="safe CSP origin"):
+            oidc_form_action_origin(authorization_url)
 
 
 class TestNoUnsafeRendering:

@@ -868,6 +868,58 @@ def test_custom_provider_still_requires_advertised_s256_pkce(monkeypatch):
         asyncio.run(oidc._load_provider_metadata(config))
 
 
+@pytest.mark.parametrize(
+    "authorization_endpoint",
+    (
+        "https://identity.invalid:bad/authorize",
+        "https://identity.invalid;script-src/authorize",
+        "https://[bad/authorize",
+    ),
+)
+def test_oidc_discovery_rejects_authorization_hosts_unsafe_for_redirect_and_csp(
+    monkeypatch,
+    authorization_endpoint,
+):
+    config = _config(response_mode="query")
+    metadata = {
+        "issuer": config.issuer,
+        "authorization_endpoint": authorization_endpoint,
+        "token_endpoint": "https://identity.invalid/token",
+        "jwks_uri": "https://identity.invalid/jwks",
+        "response_types_supported": ["code"],
+        "code_challenge_methods_supported": ["S256"],
+        "response_modes_supported": ["query"],
+        "token_endpoint_auth_methods_supported": ["client_secret_basic"],
+        "id_token_signing_alg_values_supported": ["RS256"],
+    }
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return metadata
+
+    class FakeMetadataClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, _url, *, headers):
+            assert headers == {"Accept": "application/json"}
+            return FakeResponse()
+
+    monkeypatch.setattr(oidc.httpx, "AsyncClient", FakeMetadataClient)
+
+    with pytest.raises(OidcProtocolError, match="invalid authorization_endpoint"):
+        asyncio.run(oidc._load_provider_metadata(config))
+
+
 def test_microsoft_common_issuer_requires_matching_signed_tenant(monkeypatch):
     _set_google_microsoft_environment(monkeypatch)
     config = oidc.oidc_config("microsoft")
@@ -1364,6 +1416,8 @@ def test_browser_oidc_login_start_sets_bounded_callback_cookies(client, monkeypa
 
     assert response.status_code == 303
     assert response.headers["location"] == "https://identity.invalid/authorize?synthetic=true"
+    assert "https://identity.invalid" in response.headers["Content-Security-Policy"]
+    assert "synthetic=true" not in response.headers["Content-Security-Policy"]
     assert seen == {"config": config, "purpose": "login", "user": None, "user_session": None}
     cookies = "\n".join(response.headers.get_list("set-cookie")).lower()
     assert f"{OIDC_STATE_COOKIE_NAME}=browser-state" in cookies
@@ -1425,6 +1479,7 @@ def test_browser_oidc_link_start_reauthenticates_and_binds_current_session(
 
     assert response.status_code == 303
     assert response.headers["location"] == "https://identity.invalid/link"
+    assert "https://identity.invalid" in response.headers["Content-Security-Policy"]
     assert seen["purpose"] == "link"
     assert seen["user_id"] == user.id
     assert seen["user_session_id"] is not None

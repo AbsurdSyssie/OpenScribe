@@ -34,6 +34,7 @@ from app.models import (
     UserStatus,
     utcnow,
 )
+from app.security_headers import oidc_form_action_origin
 from app.services.vault import (
     get_or_create_platform_oidc_subject_hash_secret,
     read_oidc_client_secret,
@@ -134,11 +135,18 @@ def _env_enabled(name: str, default: str = "false") -> bool:
 def _configured_url(name: str, value: str, *, require_https: bool) -> str:
     if len(value) > OIDC_URL_MAX_LENGTH:
         raise RuntimeError(f"{name} must not exceed {OIDC_URL_MAX_LENGTH} characters")
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a valid absolute URL") from exc
     if parsed.scheme not in ({"https"} if require_https else {"http", "https"}):
         raise RuntimeError(f"{name} must be an absolute {'HTTPS' if require_https else 'HTTP(S)'} URL")
     if not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
         raise RuntimeError(f"{name} must be an absolute URL without credentials or a fragment")
+    try:
+        oidc_form_action_origin(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must contain a valid ASCII DNS or IP host and port") from exc
     return value
 
 

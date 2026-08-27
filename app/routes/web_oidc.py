@@ -16,6 +16,7 @@ from ..main import (
     LOGIN_RATE_LIMIT,
 )
 from ..cookie_security import should_set_secure_cookie
+from ..security_headers import oidc_form_action_origin
 from ..services.account import reauthenticate_for_account_change, reauthenticate_for_oidc_link
 from ..services.auth import (
     create_session,
@@ -203,6 +204,9 @@ async def oidc_login_start(
         url=started.authorization_url,
         status_code=status.HTTP_303_SEE_OTHER,
     )
+    request.state.oidc_form_action_origins = (
+        oidc_form_action_origin(started.authorization_url),
+    )
     _set_oidc_transaction_cookies(
         request,
         response,
@@ -285,6 +289,9 @@ async def oidc_link_start(
     response = RedirectResponse(
         url=started.authorization_url,
         status_code=status.HTTP_303_SEE_OTHER,
+    )
+    request.state.oidc_form_action_origins = (
+        oidc_form_action_origin(started.authorization_url),
     )
     _set_oidc_transaction_cookies(
         request,

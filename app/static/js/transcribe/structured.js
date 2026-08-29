@@ -226,7 +226,34 @@ export function createStructuredEditor({
     }
   };
 
-  const visibleBottomReached = (element) => {
+  const copyReviewContentBoundary = (target) => {
+    if (!(target instanceof HTMLElement)) return target;
+    if (target.hasAttribute('data-generated-structured-section')) {
+      const rows = target.querySelectorAll('[data-structured-statement-row]');
+      return rows[rows.length - 1] || target;
+    }
+    if (target.hasAttribute('data-generated-freeform-panel')) {
+      const rows = target.querySelectorAll('[data-freeform-note-row]');
+      return rows[rows.length - 1] || target;
+    }
+    return target;
+  };
+
+  const visibleBottomFor = (element) => {
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    let bottom = viewportHeight;
+    for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      const overflowY = window.getComputedStyle(ancestor).overflowY;
+      if (!['auto', 'clip', 'hidden', 'scroll'].includes(overflowY)) continue;
+      if (ancestor.clientHeight <= 0) continue;
+      const rect = ancestor.getBoundingClientRect();
+      bottom = Math.min(bottom, rect.top + ancestor.clientTop + ancestor.clientHeight);
+    }
+    return bottom;
+  };
+
+  const visibleBottomReached = (target) => {
+    const element = copyReviewContentBoundary(target);
     if (!(element instanceof HTMLElement)) return false;
     if (element.closest('[hidden]') || element.getClientRects().length === 0) {
       return false;
@@ -235,8 +262,8 @@ export function createStructuredEditor({
     if (rect.width <= 0 || rect.height <= 0) {
       return false;
     }
-    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
-    return rect.bottom <= viewportHeight + 2 && rect.top < viewportHeight;
+    const visibleBottom = visibleBottomFor(element);
+    return rect.bottom <= visibleBottom + 2 && rect.top < visibleBottom;
   };
 
   const copyReviewTargetHasPendingLayout = (target) => {

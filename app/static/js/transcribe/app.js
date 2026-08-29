@@ -4014,7 +4014,7 @@ let statusDetailsHideTimer = null;
         setSessionProgress,
         setRetryAvailability,
         reflectBackendStatus,
-        syncGenerationAvailability,
+        syncGenerationAvailability: () => syncGenerationAvailability(readActiveDraftText().trim()),
         persistUserAppPreferences,
         handleOutputTemplateChange,
         setMicButtons,

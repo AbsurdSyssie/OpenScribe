@@ -223,6 +223,111 @@ def test_editing_a_moved_row_relocks_its_destination_section(static_repo_server)
     assert "Scroll to the bottom" in result["afterEdit"]
 
 
+def test_copy_review_unlocks_when_final_structured_row_reaches_viewport(static_repo_server):
+    with _browser_page(static_repo_server) as page:
+        _install_editor(page, static_repo_server)
+        page.wait_for_timeout(50)
+
+        result = page.evaluate(
+            """async () => {
+              const section = document.querySelector('[data-generated-structured-section]');
+              const finalRow = section.querySelector('[data-structured-statement-row]:last-child');
+              const input = finalRow.querySelector('[data-structured-line-input]');
+              const sectionRect = {
+                bottom: 930, height: 930, left: 0, right: 500, top: 0, width: 500,
+              };
+              const rowRect = {
+                bottom: 899, height: 40, left: 0, right: 500, top: 859, width: 500,
+              };
+              section.getBoundingClientRect = () => sectionRect;
+              section.getClientRects = () => [sectionRect];
+              finalRow.getBoundingClientRect = () => rowRect;
+              finalRow.getClientRects = () => [rowRect];
+
+              input.value += ' changed';
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              await new Promise((resolve) => requestAnimationFrame(resolve));
+              await new Promise((resolve) => requestAnimationFrame(resolve));
+
+              const copyObserver = window.testObservers.find((observer) => observer.targets.has(section));
+              copyObserver.trigger([section]);
+              return {
+                blocker: window.testEditor.noteCopyReviewBlocker({ section }),
+                sectionBottom: sectionRect.bottom,
+                finalRowBottom: rowRect.bottom,
+                viewportHeight: window.innerHeight,
+              };
+            }"""
+        )
+
+    assert result["sectionBottom"] > result["viewportHeight"]
+    assert result["finalRowBottom"] <= result["viewportHeight"]
+    assert result["blocker"] is None
+
+
+def test_copy_review_uses_the_clipping_scroll_container_bottom(static_repo_server):
+    with _browser_page(static_repo_server) as page:
+        _install_editor(page, static_repo_server)
+        page.wait_for_timeout(50)
+
+        result = page.evaluate(
+            """async () => {
+              const section = document.querySelector('[data-generated-structured-section]');
+              const finalRow = section.querySelector('[data-structured-statement-row]:last-child');
+              const input = finalRow.querySelector('[data-structured-line-input]');
+              const scrollContainer = document.createElement('div');
+              scrollContainer.style.overflowY = 'auto';
+              section.parentElement.insertBefore(scrollContainer, section);
+              scrollContainer.appendChild(section);
+              Object.defineProperties(scrollContainer, {
+                clientHeight: { configurable: true, value: 600 },
+                clientTop: { configurable: true, value: 0 },
+              });
+              const scrollRect = {
+                bottom: 700, height: 600, left: 0, right: 500, top: 100, width: 500,
+              };
+              const sectionRect = {
+                bottom: 850, height: 850, left: 0, right: 500, top: 0, width: 500,
+              };
+              let finalRowBottom = 750;
+              scrollContainer.getBoundingClientRect = () => scrollRect;
+              section.getBoundingClientRect = () => sectionRect;
+              section.getClientRects = () => [sectionRect];
+              finalRow.getBoundingClientRect = () => ({
+                bottom: finalRowBottom,
+                height: 40,
+                left: 0,
+                right: 500,
+                top: finalRowBottom - 40,
+                width: 500,
+              });
+              finalRow.getClientRects = () => [finalRow.getBoundingClientRect()];
+
+              input.value += ' changed';
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              await new Promise((resolve) => requestAnimationFrame(resolve));
+              await new Promise((resolve) => requestAnimationFrame(resolve));
+
+              const copyObserver = window.testObservers.find((observer) => observer.targets.has(section));
+              copyObserver.trigger([section]);
+              const beforeRowReachesContainerBottom = window.testEditor.noteCopyReviewBlocker({ section });
+              finalRowBottom = 700;
+              copyObserver.trigger([section]);
+              return {
+                beforeRowReachesContainerBottom,
+                afterRowReachesContainerBottom: window.testEditor.noteCopyReviewBlocker({ section }),
+                finalRowBottom,
+                scrollContainerBottom: scrollRect.bottom,
+                viewportHeight: window.innerHeight,
+              };
+            }"""
+        )
+
+    assert result["scrollContainerBottom"] < result["viewportHeight"]
+    assert "Scroll to the bottom" in result["beforeRowReachesContainerBottom"]
+    assert result["afterRowReachesContainerBottom"] is None
+
+
 def test_copy_stays_locked_until_deferred_rows_are_laid_out(static_repo_server):
     with _browser_page(static_repo_server) as page:
         _install_editor(page, static_repo_server, lines_per_section=81)
@@ -243,9 +348,14 @@ def test_copy_stays_locked_until_deferred_rows_are_laid_out(static_repo_server):
             """() => {
               const sections = [...document.querySelectorAll('[data-generated-structured-section]')];
               const section = sections[1];
+              const finalRow = section.querySelector('[data-structured-statement-row]:last-child');
               section.getBoundingClientRect = () => ({
                 bottom: 100, height: 100, left: 0, right: 500, top: 0, width: 500,
               });
+              finalRow.getBoundingClientRect = () => ({
+                bottom: 100, height: 40, left: 0, right: 500, top: 60, width: 500,
+              });
+              finalRow.getClientRects = () => [finalRow.getBoundingClientRect()];
               const autosizeObserver = window.testObservers.find((observer) =>
                 [...observer.targets].some((target) => target instanceof HTMLTextAreaElement)
               );
@@ -366,9 +476,20 @@ def test_hydrated_generated_note_starts_copy_review_without_rebuilding_rows(stat
                 templateModeBadge: document.querySelector('[data-badge]'),
               };
               const originalRows = [...dom.generatedFreeformRows.children];
+              const finalRow = originalRows.at(-1);
+              let finalRowBottom = 1000;
               dom.generatedFreeformPanel.getBoundingClientRect = () => ({
                 bottom: 1000, height: 1000, left: 0, right: 500, top: 0, width: 500,
               });
+              finalRow.getBoundingClientRect = () => ({
+                bottom: finalRowBottom,
+                height: 40,
+                left: 0,
+                right: 500,
+                top: finalRowBottom - 40,
+                width: 500,
+              });
+              finalRow.getClientRects = () => [finalRow.getBoundingClientRect()];
               const { createStructuredEditor } = await import(moduleUrl);
               const editor = createStructuredEditor({
                 dom,
@@ -389,6 +510,7 @@ def test_hydrated_generated_note_starts_copy_review_without_rebuilding_rows(stat
               const panel = dom.generatedFreeformPanel;
               const beforeReview = editor.noteCopyReviewBlocker();
               panel.getBoundingClientRect = () => ({ bottom: 100, height: 100, left: 0, right: 500, top: 0, width: 500 });
+              finalRowBottom = 100;
               const copyObserver = observers.find((observer) => observer.targets.has(panel));
               copyObserver.trigger([panel]);
               const afterReview = editor.noteCopyReviewBlocker();

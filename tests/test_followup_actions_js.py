@@ -16,6 +16,7 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
 
             const actionsPath = __ACTIONS_PATH__;
             const documentsPath = __DOCUMENTS_PATH__;
+            const appPath = __APP_PATH__;
             const actionsSource = fs.readFileSync(actionsPath, 'utf8')
               .replace("import { csrfFetch } from '../csrf.js';", '')
               .replace('export function attachTranscribeActions', 'function attachTranscribeActions');
@@ -176,6 +177,8 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
               followupHistory,
             };
             const requests = [];
+            const availabilityDrafts = [];
+            const liveDraftText = 'Synthetic transcript source';
             let failNextRequest = false;
             let flushDictationCalls = 0;
             let failNextDictationFlush = false;
@@ -211,7 +214,7 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
               setSessionProgress: () => {},
               setRetryAvailability: () => {},
               reflectBackendStatus: () => {},
-              syncGenerationAvailability: () => {},
+              syncGenerationAvailability: () => availabilityDrafts.push(liveDraftText),
               persistUserAppPreferences: async () => {},
               handleOutputTemplateChange: () => {},
               setMicButtons: () => {},
@@ -347,6 +350,7 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
             assert.equal(flushDictationCalls, 7);
             assert.equal(requests.length, requestsBeforeQuickActionDictationFailure);
             assert.equal(contextInput.value, 'Keep quick action steering after dictation save failure');
+            assert.equal(availabilityDrafts.at(-1), liveDraftText);
 
             // Regeneration first flushes fresh dictation before it can queue a new document.
             contextInput.value = 'Regenerate with another tone';
@@ -442,9 +446,19 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
             navigator.renderSelectedFollowup();
             assert.match(history.children[0].innerHTML, /Synthetic action/);
             assert.doesNotMatch(history.children[0].innerHTML, /old field must not label history/);
+
+            // Follow-up completion must ask the app to recompute availability from the live transcript
+            // after both a queued Quick Action and a rejected one.
+            assert.ok(availabilityDrafts.length >= 8);
+            assert.equal(availabilityDrafts.at(-1), liveDraftText);
+            const appSource = fs.readFileSync(appPath, 'utf8');
+            assert.ok(appSource.includes(
+              'syncGenerationAvailability: () => syncGenerationAvailability(readActiveDraftText().trim())',
+            ));
             """
         )
         .replace("__ACTIONS_PATH__", repr(str(root / "app" / "static" / "js" / "transcribe" / "actions.js")))
+        .replace("__APP_PATH__", repr(str(root / "app" / "static" / "js" / "transcribe" / "app.js")))
         .replace("__DOCUMENTS_PATH__", repr(str(root / "app" / "static" / "js" / "transcribe" / "documents.js"))),
         encoding="utf-8",
     )

@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
-from app.models import GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, LlmConfigSetupStatus, LlmProviderPreset, ProviderSecretCleanupKind, Team, TeamHallucinationCheckSelection, TeamLlmConfig, TeamLlmSelection, TeamRole, User, UserLlmPreference, utcnow
+from app.models import GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, LlmConfigSetupStatus, LlmProviderPreset, ProviderSecretCleanupKind, Team, TeamHallucinationCheckSelection, TeamLlmConfig, TeamLlmSelection, TeamRole, TemplateSuggestionJob, TemplateSuggestionStatus, User, UserLlmPreference, utcnow
 from app.schemas import HallucinationCheckSelectionUpsert, LlmConfigDraftCreate, LlmConfigDraftReplaceCredential, LlmConfigFinalize, LlmConfigInspectResult, LlmConfigUpsert, LlmInspectRequest, LlmModelOption, LlmSelectionUpsert, UserLlmPreferenceUpsert
 from app.services.llm_presets import (
     apply_provider_defaults,
@@ -688,10 +688,18 @@ def update_llm_config_details(
 
 
 def _llm_config_has_in_flight_jobs(db: Session, *, config_id: UUID) -> bool:
-    return db.scalar(
+    generated_document_id = db.scalar(
         select(GeneratedDocument.id).where(
             GeneratedDocument.llm_config_id == config_id,
             GeneratedDocument.status.in_([GeneratedDocumentStatus.queued, GeneratedDocumentStatus.processing]),
+        ).limit(1)
+    )
+    if generated_document_id is not None:
+        return True
+    return db.scalar(
+        select(TemplateSuggestionJob.id).where(
+            TemplateSuggestionJob.llm_config_id == config_id,
+            TemplateSuggestionJob.status.in_([TemplateSuggestionStatus.queued, TemplateSuggestionStatus.processing]),
         ).limit(1)
     ) is not None
 

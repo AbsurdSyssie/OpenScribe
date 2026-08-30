@@ -99,7 +99,8 @@
         </label>
         <label class="field--wide">
           Description
-          <input type="text" name="description" value="{{ editor_form_values.get('description', '') if editor_form_values else (current_template.description if current_template else '') }}">
+          <input type="text" name="description" placeholder="e.g. Mental health follow-up consultations and medication reviews" aria-describedby="template-description-help" value="{{ editor_form_values.get('description', '') if editor_form_values else (current_template.description if current_template else '') }}">
+          <small id="template-description-help">This helps AI understand what your template is for.</small>
         </label>
       </div>
       <label class="template-prompt-field">

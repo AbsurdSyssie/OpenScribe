@@ -20,6 +20,7 @@ from app.models import (
     TranscriptIngestionJobStatus,
     TranscriptIngestionMode,
     TranscriptManualPiiEntity,
+    TemplateSuggestionJob,
     TranscriptStatus,
     TranscriptVersion,
     TranscriptWorkingNoteMode,
@@ -1395,6 +1396,7 @@ def delete_transcripts(
         db,
         generated_document_ids=list(db.scalars(select(GeneratedDocument.id).where(GeneratedDocument.transcript_id.in_(deleting_transcript_ids)))),
         ingestion_job_ids=list(db.scalars(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id.in_(deleting_transcript_ids)))),
+        template_suggestion_job_ids=list(db.scalars(select(TemplateSuggestionJob.id).where(TemplateSuggestionJob.transcript_id.in_(deleting_transcript_ids)))),
     )
     deleted_count = len(transcripts)
     deleted_ids = [str(transcript.id) for transcript in transcripts]
@@ -1439,6 +1441,7 @@ def delete_expired_transcripts(
         db,
         generated_document_ids=list(db.scalars(select(GeneratedDocument.id).where(GeneratedDocument.transcript_id.in_(transcript_ids)))),
         ingestion_job_ids=list(db.scalars(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id.in_(transcript_ids)))),
+        template_suggestion_job_ids=list(db.scalars(select(TemplateSuggestionJob.id).where(TemplateSuggestionJob.transcript_id.in_(transcript_ids)))),
     )
     for transcript in transcripts:
         db.delete(transcript)
@@ -1881,6 +1884,7 @@ def _delete_expired_ingestion_transcript(db: Session, *, transcript: Transcript)
         db,
         generated_document_ids=list(db.scalars(select(GeneratedDocument.id).where(GeneratedDocument.transcript_id == transcript.id))),
         ingestion_job_ids=list(db.scalars(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id == transcript.id))),
+        template_suggestion_job_ids=list(db.scalars(select(TemplateSuggestionJob.id).where(TemplateSuggestionJob.transcript_id == transcript.id))),
     )
     db.delete(transcript)
     db.commit()

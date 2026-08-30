@@ -751,6 +751,24 @@ border-radius: 0.25rem;
 display: inline-flex;
 }
 
+.template-suggestion {
+display: flex;
+align-items: center;
+justify-content: space-between;
+gap: 0.75rem;
+margin: 0.65rem 1rem 0;
+padding: 0.65rem 0.8rem;
+border: 1px solid rgba(61, 122, 140, 0.35);
+border-radius: 0.65rem;
+background: rgba(224, 242, 245, 0.58);
+color: var(--fg);
+font-size: 0.86rem;
+}
+
+.template-suggestion[hidden] { display: none; }
+.template-suggestion p { margin: 0; }
+.template-suggestion__actions { display: flex; align-items: center; gap: 0.4rem; flex: 0 0 auto; }
+
 .btn-primary--compact {
 padding: 0.4rem 0.75rem;
 background: var(--accent);

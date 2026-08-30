@@ -352,6 +352,7 @@ Owner PII/redaction routes:
 
 Owner generation/document routes:
 
+- `POST|GET /api/v1/transcripts/{transcript_id}/template-suggestion`
 - `POST /api/v1/transcripts/{transcript_id}/generate-output`
 - `POST /api/v1/transcripts/{transcript_id}/generate-followup`
 - `POST /api/v1/transcripts/{transcript_id}/run-quick-action`
@@ -435,6 +436,12 @@ Generation limits default to `20/3 minutes` and `200/day` per authenticated owne
 Generated-document edits use optimistic concurrency (`expected_updated_at`). Deleting an originating Template/Quick Action does not invalidate already queued/generated work because required snapshots are retained and source references can be cleared.
 
 Regeneration applies a saved follow-up or Quick Action task to the current consultation sources. It snapshots the latest transcript, Working note, and dictation, resolves the user's current LLM policy, and creates a new generated document. Optional `steering_text` applies only to the new run. Regeneration never reuses old steering, clinician edits, or generated output. Dictation and steering snapshots are encrypted with the owner's content key.
+
+## Template-suggestion lifecycle
+
+Once an owner transcript reaches 1,200 characters, `POST .../template-suggestion` atomically creates or returns its sole suggestion job. The job stores the first eligible excerpt in an owner-encrypted field. It snapshots accessible template metadata and provider execution metadata, then commits its quota reservation, provider attempt, and deterministic outbox row together. The endpoint returns without waiting for the provider. `GET .../template-suggestion` returns `not_eligible`, `queued`, `processing`, `completed`, or `failed`; completed responses contain either one currently accessible template or no suggestion.
+
+The worker applies the normal de-identification path and saved manual PII rules before provider dispatch. It validates the model response, rejects inaccessible or invented template IDs, and returns the current database template name. Low confidence and malformed or failed provider responses produce no suggestion. Accepting a suggestion only changes the existing browser template selection; it never starts note generation.
 
 ## Security and caching
 

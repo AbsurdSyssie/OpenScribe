@@ -2477,6 +2477,7 @@ def _generation_request_snapshot(
     user_message: str,
     output_token_cap: int | None = None,
     response_json_schema: dict[str, object] | None = None,
+    temperature: float = 0.2,
 ) -> dict[str, object]:
     messages = [
         {"role": "system", "content": system_message},
@@ -2485,7 +2486,7 @@ def _generation_request_snapshot(
     if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
         request_body: dict[str, object] = {
             "model": model,
-            "temperature": 0.2,
+            "temperature": temperature,
             "max_completion_tokens": output_token_cap or NOTE_GENERATION_LENGTH_TOKEN_CAPS[DEFAULT_NOTE_GENERATION_LENGTH],
             "user": str(user_id),
             "messages": messages,
@@ -2513,7 +2514,7 @@ def _generation_request_snapshot(
                 model=model,
                 system_message=system_message,
                 user_message=user_message,
-                temperature=0.2,
+                temperature=temperature,
                 max_output_tokens=provider_output_token_cap,
                 expect_json=response_json_schema is not None,
                 response_json_schema=response_json_schema,

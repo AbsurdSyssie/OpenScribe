@@ -3,7 +3,8 @@ from uuid import UUID
 
 from app.celery_app import celery_app
 from app.db import SessionLocal
-from app.models import GeneratedDocument, TranscriptIngestionJob, utcnow
+from app.models import GeneratedDocument, TemplateSuggestionJob, TranscriptIngestionJob, utcnow
+from app.services.template_suggestions import process_template_suggestion
 from app.services.templates import GeneratedDocumentWaitingForTranscript, process_generated_document
 from app.services.transcripts import delete_expired_transcripts, expire_ingestion_source_audio, process_transcript_audio_cleanup_jobs, process_transcript_ingestion_job
 from app.services.audit_retention import expire_security_audit_events
@@ -46,6 +47,13 @@ def process_generated_document_task(self, *, document_id: str) -> None:
 
 def enqueue_generated_document_job(*, document_id: UUID):
     return process_generated_document_task.delay(document_id=str(document_id))
+
+
+@celery_app.task(name="openscribe.process_template_suggestion")
+def process_template_suggestion_task(*, job_id: str) -> None:
+    with SessionLocal() as db:
+        _stamp_worker_received(db, model_class=TemplateSuggestionJob, record_id=UUID(job_id))
+        process_template_suggestion(db, job_id=UUID(job_id))
 
 
 @celery_app.task(name="openscribe.process_task_dispatch_outbox")

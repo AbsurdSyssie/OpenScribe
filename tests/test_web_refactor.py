@@ -300,7 +300,7 @@ def test_generation_loading_replaces_plain_text_placeholders():
     assert "generationLoadingHtml" in documents_js
     assert "structured.js?v=20260821-mobile-document-mode" in app_js
     assert "documents.js?v=20260821-mobile-production-2" in app_js
-    assert "/static/js/transcribe/app.js?v=20260823-mobile-toast" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260830-template-suggestion-observability" in shell_extras
     assert ".note-generation-loading" in transcribe_css
     assert "@keyframes note-generation-orbit" in transcribe_css
     assert 'data-transcription-loading' in workspace_template

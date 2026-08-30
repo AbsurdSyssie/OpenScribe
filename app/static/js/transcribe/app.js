@@ -10,6 +10,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
 import { csrfFetch } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
+import { createTemplateSuggestionController } from './templateSuggestions.js?v=20260830-template-suggestion-observability';
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,
@@ -201,6 +202,10 @@ import {
       const templatePickerModal = document.querySelector('[data-template-picker-modal]');
       const templatePickerOptions = [...document.querySelectorAll('[data-template-picker-option]')];
       const templatePickerCloseButtons = [...document.querySelectorAll('[data-template-picker-close]')];
+      const templateSuggestionRegion = document.querySelector('[data-template-suggestion]');
+      const templateSuggestionMessage = document.querySelector('[data-template-suggestion-message]');
+      const templateSuggestionUse = document.querySelector('[data-template-suggestion-use]');
+      const templateSuggestionDismiss = document.querySelector('[data-template-suggestion-dismiss]');
       const generateFollowupForm = document.querySelector('[data-generate-followup-form]');
       const generateFollowupTrigger = document.querySelector('[data-generate-followup-trigger]');
       const runQuickActionForm = document.querySelector('[data-run-quick-action-form]');
@@ -2123,6 +2128,17 @@ let statusDetailsHideTimer = null;
         generateOutputTemplateSelect.dispatchEvent(new Event('change', { bubbles: true }));
         closeTemplatePicker();
       };
+
+      createTemplateSuggestionController({
+        transcriptText: activeDraft,
+        templateSelect: generateOutputTemplateSelect,
+        suggestionRegion: templateSuggestionRegion,
+        suggestionMessage: templateSuggestionMessage,
+        useButton: templateSuggestionUse,
+        dismissButton: templateSuggestionDismiss,
+        getTranscriptId: () => transcriptId,
+        chooseTemplate: chooseTemplateFromPicker,
+      }).attach();
 
       const syncDictationTemplateSelect = () => {
         if (!dictationTemplateSelect || !generateOutputTemplateSelect) return;

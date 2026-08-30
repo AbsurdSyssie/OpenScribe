@@ -172,6 +172,8 @@ Recording lifecycle events disable marked navigation controls and install an unl
 
 Workspace refresh and polling reconcile server state, refresh owner transcript/history data, and enable generation controls when meaningful source content becomes available.
 
+At 1,200 transcript characters, the browser may claim the transcript's one durable template-suggestion job. The server stores the first eligible excerpt as owner-encrypted transcript content and dispatches classification through the quota-backed task outbox. The worker redacts the excerpt, including saved manual PII, before sending it to the selected LLM. The browser polls the owner-only job and may offer one accessible template. Dismissal and acceptance remain browser state; accepting uses the ordinary template picker and does not generate a note.
+
 ## Redaction and PII
 
 A transcript version can have a redaction run containing encrypted redacted text and encrypted detected values. The owner workspace exposes a minimized PII table. Original values require a separate owner-only POST+CSRF reveal path and sensitive responses are `no-store`.
@@ -180,7 +182,7 @@ Owners can add/delete manual PII values. Values are encrypted and duplicate dete
 
 ## Retention, deletion, and cleanup
 
-- The transcript root owns versions, jobs, generated documents, redaction/PII data, working notes, dictation, and related content.
+- The transcript root owns versions, ingestion and template-suggestion jobs, generated documents, redaction/PII data, working notes, dictation, and related content.
 - Content services reject expired roots before the 10-second retention worker physically deletes them.
 - Transcript deletion is immediate from the user's perspective and uses relational cascades/service cleanup.
 - Temporary source audio and provider secrets use durable cleanup queues with retries and live-reference guards. Failed whole-file retry audio has an absolute maximum lifetime of 24 hours from its original Vault write.

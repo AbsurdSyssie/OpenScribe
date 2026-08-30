@@ -12,6 +12,7 @@ This document records implemented security boundaries and operational requiremen
 - User and team deletion follow implemented hard-delete semantics and must not be described as recoverable soft deletion.
 - Provider credentials, mail credentials, session tokens, trusted-device tokens, auth email tokens, recovery codes, and password material are never stored as recoverable plaintext when hashing or Vault references are sufficient.
 - Audit records must contain bounded metadata only, never credentials, cookies, request bodies, prompt text, transcript-derived text, or provider responses.
+- Template classification stores its first eligible excerpt and result in owner-encrypted transcript-owned fields. Task, outbox, quota, attempt, usage, and audit rows contain metadata only. The worker applies normal redaction and saved manual PII before LLM dispatch.
 
 ## Authentication boundary
 

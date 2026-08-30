@@ -8,6 +8,7 @@ This module never handles transcript-derived payloads.
 from __future__ import annotations
 
 import os
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol
@@ -32,6 +33,24 @@ RETRY_BASE_SECONDS = 10
 RETRY_MAX_SECONDS = 3600
 PUBLISH_ERROR_CODE = "task_publish_failed"
 _TASK_ID_NAMESPACE = UUID("7dd776d3-4e6b-4c50-bb51-df76be4a5c52")
+logger = logging.getLogger("openscribe.task_outbox")
+
+
+def _log_template_suggestion_dispatch(event: str, dispatch: TaskDispatchOutbox, **metadata: object) -> None:
+    """Log only durable dispatch metadata; task payloads never contain content."""
+    if dispatch.dispatch_kind is not TaskDispatchKind.template_suggestion:
+        return
+    logger.info(
+        event,
+        extra={
+            "event": event,
+            "dispatch_task_id": str(dispatch.task_id),
+            "template_suggestion_job_id": str(dispatch.source_id),
+            "dispatch_state": dispatch.state.value,
+            "dispatch_attempt_count": dispatch.attempt_count,
+            **metadata,
+        },
+    )
 
 
 class TaskDispatchPayloadMismatchError(ValueError):
@@ -49,7 +68,7 @@ class CeleryTaskDispatchPublisher:
 
     def publish(self, dispatch: TaskDispatchOutbox) -> None:
         # Import lazily: app.tasks registers this worker and imports this module.
-        from app.tasks import process_generated_document_task, process_transcript_ingestion_job_task
+        from app.tasks import process_generated_document_task, process_template_suggestion_task, process_transcript_ingestion_job_task
 
         task_id = str(dispatch.task_id)
         source_id = str(dispatch.source_id)
@@ -65,6 +84,12 @@ class CeleryTaskDispatchPublisher:
                 task_id=task_id,
             )
             return
+        if dispatch.dispatch_kind is TaskDispatchKind.template_suggestion:
+            process_template_suggestion_task.apply_async(
+                kwargs={"job_id": source_id},
+                task_id=task_id,
+            )
+            return
         raise ValueError("unsupported task dispatch kind")
 
 
@@ -73,6 +98,8 @@ def _expected_source_kind(dispatch_kind: TaskDispatchKind) -> TaskDispatchSource
         return TaskDispatchSourceKind.generated_document
     if dispatch_kind is TaskDispatchKind.ingestion:
         return TaskDispatchSourceKind.transcript_ingestion_job
+    if dispatch_kind is TaskDispatchKind.template_suggestion:
+        return TaskDispatchSourceKind.template_suggestion_job
     raise ValueError("unsupported task dispatch kind")
 
 
@@ -188,6 +215,7 @@ def publish_pending_task_dispatches(
         if dispatch is None:
             break
         try:
+            _log_template_suggestion_dispatch("template_suggestion_dispatch_publish_started", dispatch, dispatch_path="scheduled")
             publisher.publish(dispatch)
         except Exception:
             # Exception details can contain provider/task content. Persist code only.
@@ -199,12 +227,19 @@ def publish_pending_task_dispatches(
             else:
                 dispatch.next_attempt_at = _retry_at(now, dispatch.attempt_count)
             db.commit()
+            _log_template_suggestion_dispatch(
+                "template_suggestion_dispatch_publish_failed",
+                dispatch,
+                dispatch_path="scheduled",
+                reason_code=PUBLISH_ERROR_CODE,
+            )
             continue
 
         dispatch.state = TaskDispatchState.published
         dispatch.published_at = now
         dispatch.last_error_code = None
         db.commit()
+        _log_template_suggestion_dispatch("template_suggestion_dispatch_published", dispatch, dispatch_path="scheduled")
         published += 1
     return published
 
@@ -243,8 +278,10 @@ def publish_task_dispatch(
     if dispatch.state is not TaskDispatchState.pending:
         # Already published, cancelled, or failed by an earlier round. Do not
         # duplicate or replay; the Beat fallback remains the recovery lane.
+        _log_template_suggestion_dispatch("template_suggestion_dispatch_publish_skipped", dispatch, reason_code="dispatch_not_pending", dispatch_path="fast")
         return False
     try:
+        _log_template_suggestion_dispatch("template_suggestion_dispatch_publish_started", dispatch, dispatch_path="fast")
         publisher.publish(dispatch)
     except Exception:
         # Exception details can contain provider/task content. Persist code only.
@@ -256,12 +293,19 @@ def publish_task_dispatch(
         else:
             dispatch.next_attempt_at = _retry_at(now, dispatch.attempt_count)
         db.commit()
+        _log_template_suggestion_dispatch(
+            "template_suggestion_dispatch_publish_failed",
+            dispatch,
+            dispatch_path="fast",
+            reason_code=PUBLISH_ERROR_CODE,
+        )
         return False
 
     dispatch.state = TaskDispatchState.published
     dispatch.published_at = now
     dispatch.last_error_code = None
     db.commit()
+    _log_template_suggestion_dispatch("template_suggestion_dispatch_published", dispatch, dispatch_path="fast")
     return True
 
 
@@ -334,24 +378,18 @@ def try_publish_task_dispatch_safely(task_id) -> None:
     Beat-driven publisher remains the fallback. Caller context is logged with
     tones that never leak confidential content.
     """
-    import logging
-
-    logger = logging.getLogger("openscribe.task_outbox")
     try:
         with SessionLocal() as db:
             publish_task_dispatch(db, task_id=task_id)
     except Exception:
         logger.warning(
             "task_dispatch_fast_path_skipped",
-            extra={"event": "task_dispatch_fast_path_skipped"},
+            extra={"event": "task_dispatch_fast_path_skipped", "dispatch_task_id": str(task_id)},
         )
 
 
 def try_wake_published_generation_task_dispatch_safely(task_id) -> None:
     """Best-effort wake-up for generation work already sent to Celery."""
-    import logging
-
-    logger = logging.getLogger("openscribe.task_outbox")
     try:
         with SessionLocal() as db:
             wake_published_generation_task_dispatch(db, task_id=task_id)

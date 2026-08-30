@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     AttemptOutcome,
+    AttemptKind,
     AttemptStatus,
     GeneratedDocument,
     GeneratedDocumentStatus,
@@ -26,6 +27,8 @@ from app.models import (
     TaskDispatchOutbox,
     TaskDispatchSourceKind,
     TaskDispatchState,
+    TemplateSuggestionJob,
+    TemplateSuggestionStatus,
     Transcript,
     TranscriptIngestionJob,
     TranscriptIngestionJobStatus,
@@ -135,19 +138,23 @@ def cancel_pending_dispatches_for_sources(
     *,
     generated_document_ids: tuple[UUID, ...] | list[UUID] = (),
     ingestion_job_ids: tuple[UUID, ...] | list[UUID] = (),
+    template_suggestion_job_ids: tuple[UUID, ...] | list[UUID] = (),
     now: datetime | None = None,
 ) -> int:
     """Cancel pending source dispatches only. Published dispatches are immutable."""
     now = _utc(now)
     document_ids = tuple(set(generated_document_ids))
     job_ids = tuple(set(ingestion_job_ids))
-    if not document_ids and not job_ids:
+    suggestion_ids = tuple(set(template_suggestion_job_ids))
+    if not document_ids and not job_ids and not suggestion_ids:
         return 0
     clauses = []
     if document_ids:
         clauses.append((TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.generated_document) & (TaskDispatchOutbox.source_id.in_(document_ids)))
     if job_ids:
         clauses.append((TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.transcript_ingestion_job) & (TaskDispatchOutbox.source_id.in_(job_ids)))
+    if suggestion_ids:
+        clauses.append((TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.template_suggestion_job) & (TaskDispatchOutbox.source_id.in_(suggestion_ids)))
     from sqlalchemy import or_
     dispatches = db.scalars(
         select(TaskDispatchOutbox).where(TaskDispatchOutbox.state == TaskDispatchState.pending, or_(*clauses))
@@ -165,11 +172,13 @@ def delete_dispatches_for_sources(
     *,
     generated_document_ids: tuple[UUID, ...] | list[UUID] = (),
     ingestion_job_ids: tuple[UUID, ...] | list[UUID] = (),
+    template_suggestion_job_ids: tuple[UUID, ...] | list[UUID] = (),
 ) -> int:
     """Delete polymorphic dispatch metadata before its source is hard-deleted."""
     document_ids = tuple(set(generated_document_ids))
     job_ids = tuple(set(ingestion_job_ids))
-    if not document_ids and not job_ids:
+    suggestion_ids = tuple(set(template_suggestion_job_ids))
+    if not document_ids and not job_ids and not suggestion_ids:
         return 0
     clauses = []
     if document_ids:
@@ -181,6 +190,11 @@ def delete_dispatches_for_sources(
         clauses.append(
             (TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.transcript_ingestion_job)
             & TaskDispatchOutbox.source_id.in_(job_ids)
+        )
+    if suggestion_ids:
+        clauses.append(
+            (TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.template_suggestion_job)
+            & TaskDispatchOutbox.source_id.in_(suggestion_ids)
         )
     from sqlalchemy import or_
 
@@ -244,6 +258,14 @@ def _reconcile_sources(db: Session, attempts: list[ProviderAttempt], now: dateti
             changed += _fail_document(db, attempt.generated_document_id, error, now)
         if attempt.transcript_ingestion_job_id is not None:
             changed += _fail_ingestion_job(db, attempt.transcript_ingestion_job_id, error, now)
+        if attempt.attempt_kind is AttemptKind.llm_template_suggestion:
+            job = db.scalar(select(TemplateSuggestionJob).where(TemplateSuggestionJob.id == attempt.correlation_id).with_for_update())
+            if job is not None and job.status in {TemplateSuggestionStatus.queued, TemplateSuggestionStatus.processing}:
+                job.status = TemplateSuggestionStatus.failed
+                job.error_code = error
+                job.completed_at = now
+                cancel_pending_dispatches_for_sources(db, template_suggestion_job_ids=(job.id,), now=now)
+                changed += 1
     return changed
 
 

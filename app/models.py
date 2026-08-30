@@ -227,6 +227,13 @@ class GeneratedDocumentStatus(str, enum.Enum):
     failed = "failed"
 
 
+class TemplateSuggestionStatus(str, enum.Enum):
+    queued = "queued"
+    processing = "processing"
+    completed = "completed"
+    failed = "failed"
+
+
 class HallucinationCheckStatus(str, enum.Enum):
     not_applicable = "not_applicable"
     skipped_not_configured = "skipped_not_configured"
@@ -277,6 +284,7 @@ class UserQuotaReasonCode(str, enum.Enum):
 class AttemptKind(str, enum.Enum):
     llm_generation = "llm_generation"
     llm_hallucination_check = "llm_hallucination_check"
+    llm_template_suggestion = "llm_template_suggestion"
     stt_conversation = "stt_conversation"
     stt_post_consultation_dictation = "stt_post_consultation_dictation"
     stt_prompt_context = "stt_prompt_context"
@@ -306,6 +314,7 @@ class ProviderSettlementBasis(str, enum.Enum):
 class TaskDispatchKind(str, enum.Enum):
     generation = "generation"
     ingestion = "ingestion"
+    template_suggestion = "template_suggestion"
 
 
 class TaskDispatchState(str, enum.Enum):
@@ -318,6 +327,7 @@ class TaskDispatchState(str, enum.Enum):
 class TaskDispatchSourceKind(str, enum.Enum):
     generated_document = "generated_document"
     transcript_ingestion_job = "transcript_ingestion_job"
+    template_suggestion_job = "template_suggestion_job"
 
 
 class AuthEmailTokenPurpose(str, enum.Enum):
@@ -1452,6 +1462,9 @@ class Transcript(Base):
         back_populates="transcript",
         cascade="all, delete-orphan",
     )
+    template_suggestion_job: Mapped["TemplateSuggestionJob | None"] = relationship(
+        back_populates="transcript", uselist=False, cascade="all, delete-orphan"
+    )
     post_consultation_dictation: Mapped["PostConsultationDictation | None"] = relationship(
         back_populates="transcript",
         uselist=False,
@@ -1612,6 +1625,44 @@ class TranscriptManualPiiEntity(Base):
     transcript: Mapped[Transcript] = relationship(back_populates="manual_pii_entities")
     owner: Mapped[User] = relationship(back_populates="manual_pii_entities")
     team: Mapped[Team] = relationship()
+
+
+class TemplateSuggestionJob(Base):
+    __tablename__ = "template_suggestion_jobs"
+    __table_args__ = (
+        UniqueConstraint("transcript_id", name="uq_template_suggestion_jobs_transcript"),
+        CheckConstraint(
+            "(status = 'queued' AND started_at IS NULL AND completed_at IS NULL) OR "
+            "(status = 'processing' AND started_at IS NOT NULL AND completed_at IS NULL) OR "
+            "(status IN ('completed', 'failed') AND completed_at IS NOT NULL)",
+            name="ck_template_suggestion_jobs_state_timestamps",
+        ),
+        CheckConstraint("error_code IS NULL OR char_length(error_code) <= 128", name="ck_template_suggestion_jobs_error_code_length"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False
+    )
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    status: Mapped[TemplateSuggestionStatus] = mapped_column(Enum(TemplateSuggestionStatus), nullable=False)
+    excerpt_snapshot_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    candidates_snapshot_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    suggestion_result_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    llm_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("team_llm_configs.id"), nullable=True)
+    model_used: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    llm_adapter_kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    llm_base_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    llm_provider_config_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    worker_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    transcript: Mapped[Transcript] = relationship(back_populates="template_suggestion_job")
 
 
 class TranscriptIngestionJob(Base):

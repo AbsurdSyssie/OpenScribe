@@ -498,6 +498,8 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
     ),
     AuditCase("DELETE", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/working-note", AccessTier.full),
     AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/generated-documents", AccessTier.full),
+    AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/template-suggestion", AccessTier.full),
+    AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/template-suggestion", AccessTier.full),
     AuditCase("GET", f"/api/v1/generated-documents/{PLACEHOLDER_UUID}/redaction-debug", AccessTier.local_debug),
     AuditCase(
         "PATCH",

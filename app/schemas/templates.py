@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, StrictInt, field_validator
@@ -27,6 +28,17 @@ EMIS_SECTION_LABELS = {
     "tasks": "Tasks",
     "investigations": "Investigations",
 }
+
+
+class TemplateSuggestionCandidate(BaseModel):
+    template_id: UUID
+    template_name: str
+    confidence: Literal["medium", "high"]
+
+
+class TemplateSuggestionResponse(BaseModel):
+    status: Literal["not_eligible", "queued", "processing", "completed", "failed"]
+    suggestion: TemplateSuggestionCandidate | None = None
 
 
 class StructuredTemplateSectionConfig(BaseModel):

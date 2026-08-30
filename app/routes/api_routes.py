@@ -1,6 +1,7 @@
 """JSON/API routes extracted from app.main."""
 
 import json
+import logging
 
 from fastapi import Body
 
@@ -33,6 +34,13 @@ from ..services.llm import (
     set_team_hallucination_check_selection as set_team_hallucination_check_selection_service,
 )
 from ..schemas.transcripts import WorkingNoteClear, WorkingNoteDetail, WorkingNoteUpdate
+from ..schemas.templates import TemplateSuggestionResponse
+from ..services.template_suggestions import (
+    get_template_suggestion as get_template_suggestion_service,
+    queue_template_suggestion as queue_template_suggestion_service,
+)
+
+template_suggestion_logger = logging.getLogger("openscribe.template_suggestion")
 from ..services.smart_phrases import (
     create_personal_smart_phrase as create_personal_smart_phrase_service,
     delete_personal_smart_phrase as delete_personal_smart_phrase_service,
@@ -1659,6 +1667,77 @@ async def stream_transcribe_workspace(
 @api.get("/transcripts/{transcript_id}/generated-documents", response_model=list[GeneratedDocumentDetail], responses=error_responses)
 def list_generated_documents_for_transcript(transcript_id: UUID, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
     return [generated_document_response(db, document, actor=context.user) for document in list_generated_documents_for_transcript_service(db, context.user, transcript_id=transcript_id)]
+
+
+def _template_suggestion_response(db: Session, actor: User, *, transcript_id: UUID) -> TemplateSuggestionResponse:
+    job, suggestion = get_template_suggestion_service(db, actor, transcript_id=transcript_id)
+    return TemplateSuggestionResponse(
+        status=job.status.value if job is not None else "not_eligible",
+        suggestion=suggestion,
+    )
+
+
+@api.post(
+    "/transcripts/{transcript_id}/template-suggestion",
+    response_model=TemplateSuggestionResponse,
+    responses=error_responses,
+)
+def queue_template_suggestion(
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    template_suggestion_logger.info(
+        "template_suggestion_request_received",
+        extra={
+            "event": "template_suggestion_request_received",
+            "transcript_id": str(transcript_id),
+            "owner_user_id": str(context.user.id),
+            "team_id": str(context.user.team_id),
+        },
+    )
+    queue_template_suggestion_service(db, context.user, transcript_id=transcript_id)
+    payload = _template_suggestion_response(db, context.user, transcript_id=transcript_id)
+    template_suggestion_logger.info(
+        "template_suggestion_request_responded",
+        extra={
+            "event": "template_suggestion_request_responded",
+            "transcript_id": str(transcript_id),
+            "owner_user_id": str(context.user.id),
+            "team_id": str(context.user.team_id),
+            "status": payload.status,
+            "has_suggestion": payload.suggestion is not None,
+        },
+    )
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED if payload.status in {"queued", "processing"} else status.HTTP_200_OK,
+        content=payload.model_dump(mode="json"),
+    )
+
+
+@api.get(
+    "/transcripts/{transcript_id}/template-suggestion",
+    response_model=TemplateSuggestionResponse,
+    responses=error_responses,
+)
+def get_template_suggestion(
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    payload = _template_suggestion_response(db, context.user, transcript_id=transcript_id)
+    template_suggestion_logger.info(
+        "template_suggestion_poll_responded",
+        extra={
+            "event": "template_suggestion_poll_responded",
+            "transcript_id": str(transcript_id),
+            "owner_user_id": str(context.user.id),
+            "team_id": str(context.user.team_id),
+            "status": payload.status,
+            "has_suggestion": payload.suggestion is not None,
+        },
+    )
+    return payload
 
 
 @api.get("/generated-documents/{generated_document_id}/redaction-debug", response_model=GeneratedDocumentRedactionDebugDetail, responses=error_responses)

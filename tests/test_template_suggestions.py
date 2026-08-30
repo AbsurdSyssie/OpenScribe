@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app.errors import AppError
 from app.models import (
     AttemptStatus, ProviderAttempt, TaskDispatchOutbox, TemplateSuggestionJob,
-    TemplateSuggestionStatus, Transcript, TranscriptIngestionMode, TranscriptStatus,
+    TemplateSuggestionStatus, Transcript, TranscriptIngestionMode, TranscriptStatus, UserAppPreference,
     transcript_expiry,
 )
 from app.services.template_suggestions import (
@@ -33,8 +33,17 @@ def _transcript(db, owner, text):
     return item
 
 
+def _enabled_user(make_user, **kwargs):
+    user = make_user(**kwargs)
+    user.app_preferences = UserAppPreference(
+        user_id=user.id,
+        preferences_json={"template_suggestions_enabled": True},
+    )
+    return user
+
+
 def _configured_user(make_user, make_llm_config, make_llm_selection):
-    user = make_user(email=f"suggest-{uuid4()}@example.com")
+    user = _enabled_user(make_user, email=f"suggest-{uuid4()}@example.com")
     config = make_llm_config(team=user.team)
     make_llm_selection(config=config)
     return user
@@ -45,7 +54,7 @@ def _templates(make_template, user, count=2):
 
 
 def test_below_threshold_does_not_claim_or_resolve_provider(db_session, make_user, monkeypatch):
-    user = make_user(email="suggest-short@example.com")
+    user = _enabled_user(make_user, email="suggest-short@example.com")
     transcript = _transcript(db_session, user, "x" * 1199)
     monkeypatch.setattr("app.services.template_suggestions.resolve_user_llm", lambda *_: pytest.fail("provider resolved"))
 
@@ -55,10 +64,92 @@ def test_below_threshold_does_not_claim_or_resolve_provider(db_session, make_use
     assert db_session.scalar(select(TaskDispatchOutbox)) is None
 
 
+def test_disabled_template_suggestions_do_not_create_job_attempt_or_outbox(
+    client, db_session, make_user, make_template, make_llm_config, make_llm_selection, make_user_app_preference, monkeypatch,
+):
+    user = make_user(email=f"suggest-disabled-{uuid4()}@example.com")
+    config = make_llm_config(team=user.team)
+    make_llm_selection(config=config)
+    transcript = _transcript(db_session, user, "x" * 1300)
+    _templates(make_template, user)
+    make_user_app_preference(user=user, preferences_json={"template_suggestions_enabled": False})
+    monkeypatch.setattr("app.services.template_suggestions.resolve_user_llm", lambda *_: pytest.fail("provider resolved"))
+
+    login = client.post("/api/v1/auth/login", json={"email": user.email, "password": "password-1"})
+    assert login.status_code == 200
+    response = client.post(f"/api/v1/transcripts/{transcript.id}/template-suggestion")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "not_eligible", "suggestion": None}
+    assert db_session.scalar(select(TemplateSuggestionJob)) is None
+    assert db_session.scalar(select(ProviderAttempt)) is None
+    assert db_session.scalar(select(TaskDispatchOutbox)) is None
+
+
+def test_enabled_template_suggestions_queue_job_and_outbox(
+    db_session, make_user, make_template, make_llm_config, make_llm_selection, monkeypatch,
+):
+    user = _configured_user(make_user, make_llm_config, make_llm_selection)
+    transcript = _transcript(db_session, user, "x" * 1300)
+    _templates(make_template, user)
+    monkeypatch.setattr("app.services.template_suggestions.try_publish_task_dispatch_safely", lambda *_: None)
+
+    job = queue_template_suggestion(db_session, user, transcript_id=transcript.id)
+
+    assert job is not None
+    assert job.status is TemplateSuggestionStatus.queued
+    assert db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job.id)) is not None
+    assert db_session.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_id == job.id)) is not None
+
+
+def test_missing_template_suggestion_preference_defaults_to_enabled(
+    db_session, make_user, make_template, make_llm_config, make_llm_selection, monkeypatch,
+):
+    user = make_user(email=f"suggest-default-on-{uuid4()}@example.com")
+    config = make_llm_config(team=user.team)
+    make_llm_selection(config=config)
+    transcript = _transcript(db_session, user, "x" * 1300)
+    _templates(make_template, user)
+    monkeypatch.setattr("app.services.template_suggestions.try_publish_task_dispatch_safely", lambda *_: None)
+
+    job = queue_template_suggestion(db_session, user, transcript_id=transcript.id)
+
+    assert job is not None
+    assert job.status is TemplateSuggestionStatus.queued
+
+
+def test_disabling_preference_cancels_queued_job_before_redaction(
+    client, db_session, make_user, make_template, make_llm_config, make_llm_selection, monkeypatch,
+):
+    user = _configured_user(make_user, make_llm_config, make_llm_selection)
+    transcript = _transcript(db_session, user, "x" * 1300)
+    _templates(make_template, user)
+    monkeypatch.setattr("app.services.template_suggestions.try_publish_task_dispatch_safely", lambda *_: None)
+    job = queue_template_suggestion(db_session, user, transcript_id=transcript.id)
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job.id))
+    monkeypatch.setattr(
+        "app.services.template_suggestions.redact_transient_text",
+        lambda *_args, **_kwargs: pytest.fail("redaction must not run after opt-out"),
+    )
+
+    login = client.post("/api/v1/auth/login", json={"email": user.email, "password": "password-1"})
+    assert login.status_code == 200
+    saved = client.post("/api/v1/app-preferences", json={"template_suggestions_enabled": False})
+
+    assert saved.status_code == 200
+    assert saved.json()["template_suggestions_enabled"] is False
+    db_session.refresh(job)
+    db_session.refresh(attempt)
+    assert job.status is TemplateSuggestionStatus.failed
+    assert job.error_code == "template_suggestion_preference_disabled"
+    assert attempt.status is AttemptStatus.cancelled
+    assert process_template_suggestion(db_session, job_id=job.id).status is TemplateSuggestionStatus.failed
+
+
 def test_too_few_candidates_is_durable_completed_null_without_dispatch(
     db_session, make_user, make_template, monkeypatch,
 ):
-    user = make_user(email="suggest-one@example.com")
+    user = _enabled_user(make_user, email="suggest-one@example.com")
     transcript = _transcript(db_session, user, "x" * 1200)
     make_template(owner=user, actor=user, name="Only template")
     monkeypatch.setattr("app.services.template_suggestions.resolve_user_llm", lambda *_: pytest.fail("provider resolved"))
@@ -211,10 +302,10 @@ def test_suggestion_lifecycle_logs_transitions_without_content(
         make_template(
             owner=user,
             actor=user,
-            name="Sensitive Template Name",
+            name=f"Sensitive Template Name {index}",
             description="Sensitive template description",
         )
-        for _ in range(2)
+        for index in range(2)
     ]
     monkeypatch.setattr("app.services.template_suggestions.try_publish_task_dispatch_safely", lambda *_: None)
     monkeypatch.setattr("app.services.template_suggestions.redact_transient_text", lambda *_args, **_kwargs: {"redacted_text": "safe", "phi_index": []})

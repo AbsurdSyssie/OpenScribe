@@ -7786,6 +7786,7 @@ def test_user_can_set_get_and_clear_app_preferences(
             "note_generation_length": "long",
             "preferred_recording_mode": "live_chunked",
             "preferred_transcribe_tab": "followups",
+            "template_suggestions_enabled": True,
         },
     )
     assert saved.status_code == 200
@@ -7798,6 +7799,7 @@ def test_user_can_set_get_and_clear_app_preferences(
     assert body["note_generation_length"] == "long"
     assert body["preferred_recording_mode"] == "live_chunked"
     assert body["preferred_transcribe_tab"] == "followups"
+    assert body["template_suggestions_enabled"] is True
 
     persisted = db_session.scalar(select(UserAppPreference).where(UserAppPreference.user_id == user.id))
     assert persisted is not None
@@ -7819,10 +7821,32 @@ def test_user_can_set_get_and_clear_app_preferences(
     assert fetched.status_code == 200
     assert fetched.json()["id"] == str(persisted.id)
     assert fetched.json()["favorite_quick_action_ids"] == [str(team_quick_action.id), str(personal_quick_action.id)]
+    assert fetched.json()["template_suggestions_enabled"] is True
 
     cleared = client.delete("/api/v1/app-preferences")
     assert cleared.status_code == 204
     assert db_session.scalar(select(UserAppPreference).where(UserAppPreference.user_id == user.id)) is None
+
+
+def test_user_app_preferences_default_template_suggestions_to_enabled_and_persist_explicit_opt_out(client, db_session, make_user):
+    user = make_user(email="suggestion-preference-default@example.com", password="password-1")
+    login(client, email=user.email, password="password-1")
+
+    saved = client.post("/api/v1/app-preferences", json={})
+
+    assert saved.status_code == 200
+    assert saved.json()["template_suggestions_enabled"] is True
+    persisted = db_session.scalar(select(UserAppPreference).where(UserAppPreference.user_id == user.id))
+    assert persisted is not None
+    fetched = client.get("/api/v1/app-preferences")
+    assert fetched.status_code == 200
+    assert fetched.json()["template_suggestions_enabled"] is True
+
+    disabled = client.post("/api/v1/app-preferences", json={"template_suggestions_enabled": False})
+    assert disabled.status_code == 200
+    assert disabled.json()["template_suggestions_enabled"] is False
+    db_session.refresh(persisted)
+    assert persisted.preferences_json["template_suggestions_enabled"] is False
 
 
 def test_user_app_preferences_reject_unavailable_assets_and_system_admin(

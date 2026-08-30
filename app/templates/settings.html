@@ -68,6 +68,7 @@
       form.addEventListener('submit', () => { submitting = true; });
       window.addEventListener('beforeunload', (event) => { if (submitting || snapshot() === initial) return; event.preventDefault(); event.returnValue = ''; });
     });
+    document.querySelector('[data-template-suggestion-preference]')?.addEventListener('change', (event) => event.target.form?.requestSubmit());
   })();
   </script>
   <script src="/static/js/generated-password.js?v=20260712-infield-controls"></script>

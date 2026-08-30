@@ -46,6 +46,7 @@ These documents are maintained as descriptions of implemented behavior or an exp
 | User-workspace migration history and legacy `/home` redirects | [home_brief.md](home_brief.md) |
 | Scribe workspace summary | [transcribe_brief.md](transcribe_brief.md) |
 | Transcript capture contracts and remaining roadmap | [transcript-capture.md](transcript-capture.md) |
+| Template-suggestion preference | [template-suggestion-preference.md](template-suggestion-preference.md) |
 | Live chunked STT behavior | [live_stt.md](live_stt.md) |
 | Working note implementation contract/history | [working_note_implementation.md](working_note_implementation.md) |
 | Structured EMIS notes | [emis-roadmap.md](emis-roadmap.md) |

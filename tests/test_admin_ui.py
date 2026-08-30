@@ -1346,6 +1346,37 @@ def test_settings_llm_preference_clear_returns_to_settings(client, db_session, m
     assert db_session.scalar(select(UserLlmPreference).where(UserLlmPreference.user_id == user.id)) is None
 
 
+def test_settings_template_suggestion_toggle_defaults_on_and_saves_immediately(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Template Suggestion Preference")
+    user = make_user(
+        email="template-suggestion-toggle@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.user,
+    )
+    client.post("/login", data={"email": user.email, "password": "password-1"}, follow_redirects=False)
+
+    page = client.get("/workspace/preferences")
+    assert 'action="/home/template-suggestion-preference"' in page.text
+    assert 'data-template-suggestion-preference checked' in page.text
+    assert "Suggest a template based on the consultation" in page.text
+    assert "AI will suggest which of your templates matches the consultation" in page.text
+
+    saved = client.post(
+        "/home/template-suggestion-preference",
+        data={"template_suggestions_enabled": "false", "return_view": "workspace", "return_tab": "preferences"},
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    assert saved.headers["location"] == "/workspace/preferences"
+    preference = db_session.scalar(select(UserAppPreference).where(UserAppPreference.user_id == user.id))
+    assert preference is not None
+    assert preference.preferences_json["template_suggestions_enabled"] is False
+
+    updated_page = client.get("/workspace/preferences")
+    assert 'data-template-suggestion-preference checked' not in updated_page.text
+
+
 def test_settings_visible_style_form_drops_stale_model_override(
     client,
     db_session,

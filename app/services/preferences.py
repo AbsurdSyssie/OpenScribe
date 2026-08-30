@@ -50,6 +50,8 @@ def _serialize_preferences_payload(payload: UserAppPreferencesUpsert) -> dict[st
         preferences["default_quick_action_id"] = str(payload.default_quick_action_id)
     if payload.default_template_id is not None:
         preferences["default_template_id"] = str(payload.default_template_id)
+    if not payload.template_suggestions_enabled:
+        preferences["template_suggestions_enabled"] = False
     if payload.llm_detail_level is not None:
         preferences["llm_detail_level"] = payload.llm_detail_level.value
     if payload.note_generation_length is not None:
@@ -133,6 +135,9 @@ def _validate_preferences_json(db: Session, actor: User, preferences_json: dict[
             else:
                 normalized["default_template_id"] = str(default_template_id)
 
+    if preferences_json.get("template_suggestions_enabled") is False:
+        normalized["template_suggestions_enabled"] = False
+
     raw_llm_detail_level = preferences_json.get("llm_detail_level")
     if isinstance(raw_llm_detail_level, str) and raw_llm_detail_level in {"concise", "balanced", "detailed"}:
         normalized["llm_detail_level"] = raw_llm_detail_level
@@ -166,11 +171,24 @@ def get_user_app_preferences(db: Session, actor: User) -> UserAppPreference | No
     return preference
 
 
+def template_suggestions_enabled(db: Session, actor: User) -> bool:
+    """Return whether suggestions are enabled without exposing preference content."""
+    _require_user_app_preference_scope(actor)
+    preference = db.scalar(select(UserAppPreference).where(UserAppPreference.user_id == actor.id))
+    return preference is None or preference.preferences_json.get("template_suggestions_enabled") is not False
+
+
 def set_user_app_preferences(db: Session, actor: User, payload: UserAppPreferencesUpsert) -> UserAppPreference:
     _require_user_app_preference_scope(actor)
     serialized = _serialize_preferences_payload(payload)
     normalized = _validate_preferences_json(db, actor, serialized, strict=True)
     preference = db.scalar(select(UserAppPreference).where(UserAppPreference.user_id == actor.id))
+    was_template_suggestions_enabled = preference is None or preference.preferences_json.get("template_suggestions_enabled") is not False
+    will_template_suggestions_enabled = normalized.get("template_suggestions_enabled") is not False
+    if was_template_suggestions_enabled and not will_template_suggestions_enabled:
+        from app.services.template_suggestions import cancel_queued_template_suggestions_for_owner
+
+        cancel_queued_template_suggestions_for_owner(db, actor)
     if preference is None:
         preference = UserAppPreference(id=uuid4(), user_id=actor.id, preferences_json=normalized)
     else:

@@ -41,6 +41,7 @@ class UserAppPreferencesUpsert(BaseModel):
     favorite_template_ids: list[UUID] = Field(default_factory=list)
     default_quick_action_id: UUID | None = None
     default_template_id: UUID | None = None
+    template_suggestions_enabled: bool = True
     llm_detail_level: LlmDetailLevel | None = None
     note_generation_length: NoteGenerationLength | None = None
     preferred_recording_mode: TranscriptIngestionMode | None = None
@@ -64,6 +65,7 @@ class UserAppPreferencesDetail(BaseModel):
     favorite_template_ids: list[UUID]
     default_quick_action_id: UUID | None
     default_template_id: UUID | None
+    template_suggestions_enabled: bool
     llm_detail_level: LlmDetailLevel | None
     note_generation_length: NoteGenerationLength | None
     preferred_recording_mode: TranscriptIngestionMode | None

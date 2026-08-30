@@ -3,6 +3,14 @@
     <span class="settings-kicker">Personal</span><h2>Preferences</h2><p>Choose writing assistant preferences for your consultations.</p>
   </div>
   <article class="settings-card">
+    {% if not current_user.is_system_admin and current_user.team_id %}
+    {% set template_suggestions_enabled = user_app_preferences_json.get('template_suggestions_enabled', true) %}
+    <form class="setting-row setting-row--toggle" method="post" action="/home/template-suggestion-preference" data-template-suggestion-preference-form>
+      <input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="preferences">
+      <div><h3>Suggest a template based on the consultation <span class="settings-info" title="AI will suggest which of your templates matches the consultation." aria-label="AI will suggest which of your templates matches the consultation.">i</span></h3></div>
+      <label class="settings-switch"><input type="checkbox" name="template_suggestions_enabled" value="true" data-template-suggestion-preference {% if template_suggestions_enabled %}checked{% endif %}><span class="sr-only">Suggest a template based on the consultation</span><span aria-hidden="true"></span></label>
+    </form>
+    {% endif %}
     {% if not stt_selection and not llm_selection %}<p class="settings-empty">No services configured. Contact team leader.</p>{% else %}
     <div class="setting-row"><div><h3>Speech service</h3><p>{% if stt_selection %}{{ stt_selection.config.label }}{% if stt_selection.model_name_override or stt_selection.config.model_name %} · {{ stt_selection.model_name_override or stt_selection.config.model_name }}{% endif %}{% else %}Not configured{% endif %}</p></div></div>
     {% if llm_selection %}

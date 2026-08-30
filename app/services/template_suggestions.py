@@ -15,11 +15,12 @@ from sqlalchemy.orm import Session
 from app.errors import AppError
 from app.models import (
     AttemptKind, AttemptOutcome, AttemptStatus, LlmAdapterKind, PromptTemplate,
-    QuotaResource, TaskDispatchKind, TeamLlmConfig, TemplateSuggestionJob,
+    QuotaResource, TaskDispatchKind, TaskDispatchOutbox, TeamLlmConfig, TemplateSuggestionJob,
     TemplateSuggestionStatus, Transcript, User, utcnow,
 )
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
 from app.services.llm import resolve_user_llm
+from app.services.preferences import template_suggestions_enabled
 from app.services.quotas import (
     cancel_provider_attempt, estimate_token_reservation, mark_provider_attempt_submitted,
     reserve_provider_attempt, settle_provider_attempt_tokens, settle_provider_attempt_unknown_tokens,
@@ -101,6 +102,10 @@ def queue_template_suggestion(db: Session, actor: User, *, transcript_id: UUID) 
     transcript = db.scalar(select(Transcript).where(Transcript.id == transcript.id).with_for_update())
     if transcript is None:
         _log("template_suggestion_queue_skipped", transcript_id=transcript_id, reason_code="transcript_lock_lost")
+        return None
+    if not template_suggestions_enabled(db, actor):
+        db.commit()
+        _log("template_suggestion_queue_skipped", transcript_id=transcript.id, reason_code="preference_disabled")
         return None
     existing = db.scalar(select(TemplateSuggestionJob).where(TemplateSuggestionJob.transcript_id == transcript.id))
     if existing is not None:
@@ -189,6 +194,9 @@ def queue_template_suggestion(db: Session, actor: User, *, transcript_id: UUID) 
 
 def get_template_suggestion(db: Session, actor: User, *, transcript_id: UUID) -> tuple[TemplateSuggestionJob | None, dict | None]:
     get_active_owner_transcript(db, actor, transcript_id=transcript_id)
+    if not template_suggestions_enabled(db, actor):
+        _log("template_suggestion_status_read", transcript_id=transcript_id, status="not_eligible", has_suggestion=False, reason_code="preference_disabled")
+        return None, None
     job = db.scalar(select(TemplateSuggestionJob).where(
         TemplateSuggestionJob.transcript_id == transcript_id,
         TemplateSuggestionJob.owner_user_id == actor.id,
@@ -261,6 +269,44 @@ def _fail(db: Session, job: TemplateSuggestionJob, code: str) -> TemplateSuggest
     return job
 
 
+def cancel_queued_template_suggestions_for_owner(db: Session, actor: User) -> int:
+    """Cancel queued owner jobs before redaction or provider dispatch.
+
+    Published tasks may still reach a worker, but their terminal job state makes
+    them no-ops. This function never touches submitted provider attempts.
+    """
+    from app.services.task_outbox import cancel_pending_task_dispatch
+
+    jobs = db.scalars(
+        select(TemplateSuggestionJob)
+        .where(
+            TemplateSuggestionJob.owner_user_id == actor.id,
+            TemplateSuggestionJob.team_id == actor.team_id,
+            TemplateSuggestionJob.status == TemplateSuggestionStatus.queued,
+        )
+        .with_for_update()
+    ).all()
+    for job in jobs:
+        attempt = _attempt(db, job.id)
+        if attempt is not None and attempt.status is AttemptStatus.reserved:
+            cancel_provider_attempt(db, attempt_id=attempt.id)
+        dispatch = db.scalar(
+            select(TaskDispatchOutbox).where(
+                TaskDispatchOutbox.dispatch_kind == TaskDispatchKind.template_suggestion,
+                TaskDispatchOutbox.source_id == job.id,
+            )
+        )
+        if dispatch is not None:
+            cancel_pending_task_dispatch(db, task_id=dispatch.task_id)
+        job.status = TemplateSuggestionStatus.failed
+        job.error_code = "template_suggestion_preference_disabled"
+        job.completed_at = utcnow()
+        db.add(job)
+        _log("template_suggestion_cancelled", job=job, reason_code="preference_disabled")
+    db.flush()
+    return len(jobs)
+
+
 def _extract_json(text: str) -> dict:
     encoded = _extract_first_balanced_json_object(text)
     if encoded is None:
@@ -287,6 +333,10 @@ def process_template_suggestion(db: Session, *, job_id: UUID) -> TemplateSuggest
     if transcript is None or transcript_is_expired(transcript) or transcript.owner_user_id != job.owner_user_id:
         _log("template_suggestion_source_rejected", job=job, reason_code="source_unavailable")
         return _fail(db, job, "template_suggestion_source_unavailable")
+    owner = db.get(User, job.owner_user_id)
+    if owner is None or not template_suggestions_enabled(db, owner):
+        _log("template_suggestion_worker_skipped", job=job, reason_code="preference_disabled")
+        return _fail(db, job, "template_suggestion_preference_disabled")
     config = db.get(TeamLlmConfig, job.llm_config_id)
     if config is None or config.team_id != job.team_id:
         _log("template_suggestion_provider_rejected", job=job, reason_code="provider_unavailable")

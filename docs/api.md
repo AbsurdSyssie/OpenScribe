@@ -231,6 +231,8 @@ Full-user preferences:
 - `POST /api/v1/app-preferences`
 - `DELETE /api/v1/app-preferences`
 
+`template_suggestions_enabled` is an owner-scoped, persisted setting. It defaults to `true`; only an explicit `false` disables it. It controls whether the browser or API may create a template-suggestion job. See [template-suggestion-preference.md](template-suggestion-preference.md).
+
 Current adapters include `openai_chat`, `ollama_chat`, `bedrock_chat`, and `gemini_enterprise`. Model discovery has no generic built-in LLM fallback list: a non-auth discovery failure can require a manually entered model, while definitive credential failures create neither draft nor secret. Provider-specific discovery/finalization behavior is in [llm-providers.md](llm-providers.md).
 
 Required-token revisions copy inherited credentials to draft-owned versioned Vault paths. They do not share the active root reference. Credential removal/replacement and retired references use the durable cleanup path rather than relying on a delete-before-database-commit sequence.
@@ -439,7 +441,7 @@ Regeneration applies a saved follow-up or Quick Action task to the current consu
 
 ## Template-suggestion lifecycle
 
-Once an owner transcript reaches 1,200 characters, `POST .../template-suggestion` atomically creates or returns its sole suggestion job. The job stores the first eligible excerpt in an owner-encrypted field. It snapshots accessible template metadata and provider execution metadata, then commits its quota reservation, provider attempt, and deterministic outbox row together. The endpoint returns without waiting for the provider. `GET .../template-suggestion` returns `not_eligible`, `queued`, `processing`, `completed`, or `failed`; completed responses contain either one currently accessible template or no suggestion.
+When the owner has not explicitly disabled suggestions and their transcript reaches 1,200 characters, `POST .../template-suggestion` atomically creates or returns its sole suggestion job. Disabled preferences return `not_eligible` without creating a job, redaction run, quota reservation, outbox row, or provider call. Turning the setting off cancels queued jobs, their pending dispatches, and reserved quota in the same transaction; a request already submitted to a provider cannot be recalled. The job stores the first eligible excerpt in an owner-encrypted field. It snapshots accessible template metadata and provider execution metadata, then commits its quota reservation, provider attempt, and deterministic outbox row together. The endpoint returns without waiting for the provider. `GET .../template-suggestion` returns `not_eligible`, `queued`, `processing`, `completed`, or `failed`; completed responses contain either one currently accessible template or no suggestion.
 
 The worker applies the normal de-identification path and saved manual PII rules before provider dispatch. It validates the model response, rejects inaccessible or invented template IDs, and returns the current database template name. Low confidence and malformed or failed provider responses produce no suggestion. Accepting a suggestion only changes the existing browser template selection; it never starts note generation.
 

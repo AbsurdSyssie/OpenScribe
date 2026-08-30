@@ -2,177 +2,13 @@ import { csrfFetch } from '../csrf.js';
 
 export const TEMPLATE_SUGGESTION_MIN_CHARS = 1200;
 const IN_PROGRESS_STATUSES = new Set(['pending', 'running', 'queued', 'processing']);
-const POPOVER_STYLE_ID = 'template-suggestion-popover-styles';
 
 function trace(event, metadata = {}) {
   // Keep browser diagnostics content-free: IDs, counts, and workflow status only.
   if (typeof console?.info === 'function') console.info(event, metadata);
 }
 
-function installPopoverStyles() {
-  if (typeof document === 'undefined' || document.getElementById(POPOVER_STYLE_ID)) return;
-  const style = document.createElement('style');
-  style.id = POPOVER_STYLE_ID;
-  style.textContent = `
-    @keyframes template-suggestion-selector-pulse {
-      0%, 100% {
-        border-color: rgba(112, 184, 214, 0.82);
-        box-shadow: 0 0 0 2px rgba(112, 184, 214, 0.14), 0 0 0 0 rgba(112, 184, 214, 0.18);
-      }
-      50% {
-        border-color: rgba(112, 184, 214, 1);
-        box-shadow: 0 0 0 3px rgba(112, 184, 214, 0.18), 0 0 0 8px rgba(112, 184, 214, 0.08);
-      }
-    }
-
-    @keyframes template-suggestion-popover-enter {
-      from { opacity: 0; transform: translateY(0.35rem) scale(0.985); }
-      to { opacity: 1; transform: translateY(0) scale(1); }
-    }
-
-    .template-picker-button--compact.template-picker-button--suggested {
-      border-color: rgba(112, 184, 214, 0.92);
-      background: rgba(239, 249, 252, 0.78);
-      animation: template-suggestion-selector-pulse 1.45s ease-in-out 3;
-    }
-
-    .template-suggestion.template-suggestion--popover {
-      position: fixed;
-      z-index: 520;
-      display: grid;
-      grid-template-columns: auto minmax(0, 1fr) auto;
-      align-items: center;
-      gap: 0.65rem;
-      width: max-content;
-      max-width: min(27rem, calc(100vw - 1.5rem));
-      margin: 0;
-      padding: 0.72rem 2.15rem 0.72rem 0.78rem;
-      border: 1px solid rgba(112, 184, 214, 0.42);
-      border-radius: 0.75rem;
-      background: rgba(255, 255, 255, 0.98);
-      color: var(--fg);
-      box-shadow: 0 16px 38px rgba(26, 32, 44, 0.18), 0 3px 10px rgba(26, 32, 44, 0.08);
-      font-size: 0.86rem;
-      line-height: 1.35;
-      isolation: isolate;
-    }
-
-    .template-suggestion.template-suggestion--popover:not([hidden]) {
-      animation: template-suggestion-popover-enter 160ms ease-out both;
-    }
-
-    .template-suggestion.template-suggestion--popover[hidden] { display: none; }
-
-    .template-suggestion.template-suggestion--popover::before,
-    .template-suggestion.template-suggestion--popover::after {
-      content: '';
-      position: absolute;
-      left: var(--template-suggestion-arrow-left, 2.4rem);
-      transform: translateX(-50%);
-      width: 0;
-      height: 0;
-      pointer-events: none;
-    }
-
-    .template-suggestion.template-suggestion--popover::before {
-      top: 100%;
-      border-left: 0.5rem solid transparent;
-      border-right: 0.5rem solid transparent;
-      border-top: 0.55rem solid rgba(112, 184, 214, 0.42);
-    }
-
-    .template-suggestion.template-suggestion--popover::after {
-      top: calc(100% - 1px);
-      border-left: 0.45rem solid transparent;
-      border-right: 0.45rem solid transparent;
-      border-top: 0.5rem solid rgba(255, 255, 255, 0.98);
-    }
-
-    .template-suggestion__spark {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 1.9rem;
-      height: 1.9rem;
-      border: 1px solid rgba(112, 184, 214, 0.34);
-      border-radius: 0.55rem;
-      background: rgba(224, 242, 245, 0.58);
-      color: var(--accent);
-      font-size: 1rem;
-      line-height: 1;
-      flex: 0 0 auto;
-    }
-
-    .template-suggestion.template-suggestion--popover p {
-      margin: 0;
-      min-width: 0;
-      color: var(--fg);
-      font-weight: 600;
-    }
-
-    .template-suggestion.template-suggestion--popover .template-suggestion__actions {
-      display: flex;
-      align-items: center;
-      gap: 0.35rem;
-      flex: 0 0 auto;
-    }
-
-    .template-suggestion.template-suggestion--popover [data-template-suggestion-use] {
-      white-space: nowrap;
-      padding: 0.4rem 0.65rem;
-      box-shadow: none;
-    }
-
-    .template-suggestion.template-suggestion--popover [data-template-suggestion-dismiss] {
-      position: absolute;
-      top: 0.28rem;
-      right: 0.28rem;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 1.7rem;
-      height: 1.7rem;
-      padding: 0;
-      border: 0;
-      border-radius: 999px;
-      background: transparent;
-      color: var(--muted);
-      font-size: 1.1rem;
-      font-weight: 500;
-      line-height: 1;
-    }
-
-    .template-suggestion.template-suggestion--popover [data-template-suggestion-dismiss]:hover,
-    .template-suggestion.template-suggestion--popover [data-template-suggestion-dismiss]:focus-visible {
-      background: rgba(29, 79, 94, 0.07);
-      color: var(--fg);
-      outline: none;
-    }
-
-    @media (max-width: 640px) {
-      .template-suggestion.template-suggestion--popover {
-        grid-template-columns: auto minmax(0, 1fr);
-        row-gap: 0.5rem;
-        width: min(22rem, calc(100vw - 1.5rem));
-      }
-
-      .template-suggestion.template-suggestion--popover .template-suggestion__actions {
-        grid-column: 2;
-        justify-content: flex-start;
-      }
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-      .template-picker-button--compact.template-picker-button--suggested,
-      .template-suggestion.template-suggestion--popover:not([hidden]) {
-        animation: none;
-      }
-    }
-  `;
-  document.head.appendChild(style);
-}
-
-export function createTemplateSuggestionController({ transcriptText, templateSelect, suggestionRegion, suggestionMessage, useButton, dismissButton, getTranscriptId, chooseTemplate, fetcher = csrfFetch, pollMs = 1500, maxPolls = 40, schedule = (callback, delay) => window.setTimeout(callback, delay) }) {
+export function createTemplateSuggestionController({ transcriptText, templateSelect, suggestionRegion, suggestionMessage, useButton, dismissButton, getTranscriptId, isEnabled = () => true, chooseTemplate, fetcher = csrfFetch, pollMs = 1500, maxPolls = 40, schedule = (callback, delay) => window.setTimeout(callback, delay) }) {
   const requestedTranscriptIds = new Set();
   const resumableTranscriptIds = new Set();
   const dismissedTranscriptIds = new Set();
@@ -184,21 +20,25 @@ export function createTemplateSuggestionController({ transcriptText, templateSel
   let originalSuggestionNextSibling = null;
 
   const positionSuggestion = () => {
-    if (!suggestionRegion || suggestionRegion.hidden || !templatePickerButton || typeof window === 'undefined') return;
-    const pickerRect = templatePickerButton.getBoundingClientRect();
+    if (!suggestionRegion || suggestionRegion.hidden || typeof window === 'undefined') return;
+    const pickerRect = templatePickerButton?.getBoundingClientRect() || { left: 0, top: 0, width: 0, height: 0 };
     const popoverRect = suggestionRegion.getBoundingClientRect();
     const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
     const edge = 12;
     const gap = 11;
+    const hasVisiblePicker = pickerRect.width > 0 && pickerRect.height > 0;
     const maxLeft = Math.max(edge, viewportWidth - popoverRect.width - edge);
-    const left = Math.min(Math.max(pickerRect.left, edge), maxLeft);
-    const top = Math.max(edge, pickerRect.top - popoverRect.height - gap);
+    const left = hasVisiblePicker
+      ? Math.min(Math.max(pickerRect.left, edge), maxLeft)
+      : Math.max(edge, Math.round((viewportWidth - popoverRect.width) / 2));
+    const top = hasVisiblePicker ? Math.max(edge, pickerRect.top - popoverRect.height - gap) : edge;
     const preferredArrowX = pickerRect.left + Math.min(46, Math.max(28, pickerRect.width * 0.25));
     const arrowLeft = Math.min(Math.max(preferredArrowX - left, 22), Math.max(22, popoverRect.width - 22));
 
     suggestionRegion.style.left = `${Math.round(left)}px`;
     suggestionRegion.style.top = `${Math.round(top)}px`;
     suggestionRegion.style.setProperty('--template-suggestion-arrow-left', `${Math.round(arrowLeft)}px`);
+    suggestionRegion.dataset.templateSuggestionPlacement = hasVisiblePicker ? 'picker' : 'viewport';
   };
 
   const hide = () => {
@@ -237,6 +77,7 @@ export function createTemplateSuggestionController({ transcriptText, templateSel
     try { return await response.json(); } catch (_) { return null; }
   };
   const poll = async (transcriptId, remaining) => {
+    if (!isEnabled()) return;
     if (remaining <= 0) {
       trace('template_suggestion_browser_poll_stopped', { transcriptId, reasonCode: 'poll_limit_reached' });
       return;
@@ -267,6 +108,10 @@ export function createTemplateSuggestionController({ transcriptText, templateSel
     }
   };
   const requestIfEligible = async () => {
+    if (!isEnabled()) {
+      hide();
+      return;
+    }
     const transcriptId = getTranscriptId();
     const transcriptCharCount = String(transcriptText?.textContent || '').length;
     if (!transcriptId || transcriptCharCount < TEMPLATE_SUGGESTION_MIN_CHARS) return;
@@ -317,9 +162,11 @@ export function createTemplateSuggestionController({ transcriptText, templateSel
     if (suggestionRegion.contains(target) || templatePickerButton?.contains(target)) return;
     dismiss();
   };
+  const onDocumentKeyDown = (event) => {
+    if (event.key === 'Escape' && activeSuggestion && !suggestionRegion?.hidden) dismiss();
+  };
   const preparePopover = () => {
     if (!suggestionRegion || typeof document === 'undefined') return;
-    installPopoverStyles();
     originalSuggestionParent = suggestionRegion.parentNode;
     originalSuggestionNextSibling = suggestionRegion.nextSibling;
     templatePickerButton = suggestionRegion.closest('.note-header-row')?.querySelector('[data-template-picker-button]')
@@ -335,9 +182,8 @@ export function createTemplateSuggestionController({ transcriptText, templateSel
     }
 
     suggestionRegion.classList.add('template-suggestion--popover');
-    suggestionRegion.setAttribute('role', 'dialog');
-    suggestionRegion.setAttribute('aria-label', 'Template suggestion');
-    suggestionRegion.removeAttribute('aria-live');
+    suggestionRegion.setAttribute('role', 'status');
+    suggestionRegion.setAttribute('aria-live', 'polite');
     if (dismissButton) {
       dismissButton.textContent = '×';
       dismissButton.setAttribute('aria-label', 'Dismiss template suggestion');
@@ -351,6 +197,7 @@ export function createTemplateSuggestionController({ transcriptText, templateSel
     suggestionRegion.style.removeProperty('left');
     suggestionRegion.style.removeProperty('top');
     suggestionRegion.style.removeProperty('--template-suggestion-arrow-left');
+    delete suggestionRegion.dataset.templateSuggestionPlacement;
     if (originalSuggestionNextSibling && originalSuggestionNextSibling.parentNode === originalSuggestionParent) {
       originalSuggestionParent.insertBefore(suggestionRegion, originalSuggestionNextSibling);
     } else {
@@ -364,6 +211,7 @@ export function createTemplateSuggestionController({ transcriptText, templateSel
       useButton?.addEventListener('click', useSuggestion);
       dismissButton?.addEventListener('click', dismiss);
       if (typeof document !== 'undefined') document.addEventListener('pointerdown', onDocumentPointerDown, true);
+      if (typeof document !== 'undefined') document.addEventListener('keydown', onDocumentKeyDown);
       if (typeof window !== 'undefined') {
         window.addEventListener('resize', positionSuggestion);
         window.addEventListener('scroll', positionSuggestion, true);
@@ -381,6 +229,7 @@ export function createTemplateSuggestionController({ transcriptText, templateSel
       useButton?.removeEventListener('click', useSuggestion);
       dismissButton?.removeEventListener('click', dismiss);
       if (typeof document !== 'undefined') document.removeEventListener('pointerdown', onDocumentPointerDown, true);
+      if (typeof document !== 'undefined') document.removeEventListener('keydown', onDocumentKeyDown);
       if (typeof window !== 'undefined') {
         window.removeEventListener('resize', positionSuggestion);
         window.removeEventListener('scroll', positionSuggestion, true);
@@ -388,6 +237,12 @@ export function createTemplateSuggestionController({ transcriptText, templateSel
       restorePopover();
     },
     dismiss,
+    onTranscriptChanged() {
+      if (activeSuggestion && activeSuggestion.transcriptId !== getTranscriptId()) hide();
+    },
+    onPreferenceChanged() {
+      if (!isEnabled() && !activeSuggestion) hide();
+    },
     requestIfEligible,
   };
 }

@@ -379,6 +379,7 @@ def user_app_preferences_response(preference) -> UserAppPreferencesDetail:
         favorite_template_ids=list(payload.get("favorite_template_ids") or []),
         default_quick_action_id=payload.get("default_quick_action_id"),
         default_template_id=payload.get("default_template_id"),
+        template_suggestions_enabled=payload.get("template_suggestions_enabled") is not False,
         llm_detail_level=payload.get("llm_detail_level"),
         note_generation_length=payload.get("note_generation_length"),
         preferred_recording_mode=payload.get("preferred_recording_mode"),

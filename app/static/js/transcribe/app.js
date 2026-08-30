@@ -10,7 +10,7 @@ import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
 import { csrfFetch } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
-import { createTemplateSuggestionController } from './templateSuggestions.js?v=20260830-template-suggestion-observability';
+import { createTemplateSuggestionController } from './templateSuggestions.js?v=20260830-template-suggestion-preference';
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,
@@ -609,6 +609,7 @@ let statusDetailsHideTimer = null;
           favorite_template_ids: Array.isArray(userAppPreferences.favorite_template_ids) ? userAppPreferences.favorite_template_ids : [],
           default_quick_action_id: userAppPreferences.default_quick_action_id || null,
           default_template_id: userAppPreferences.default_template_id || null,
+          template_suggestions_enabled: userAppPreferences.template_suggestions_enabled !== false,
           llm_detail_level: userAppPreferences.llm_detail_level || null,
           note_generation_length: userAppPreferences.note_generation_length || null,
           preferred_recording_mode: userAppPreferences.preferred_recording_mode || null,
@@ -2129,7 +2130,7 @@ let statusDetailsHideTimer = null;
         closeTemplatePicker();
       };
 
-      createTemplateSuggestionController({
+      const templateSuggestionController = createTemplateSuggestionController({
         transcriptText: activeDraft,
         templateSelect: generateOutputTemplateSelect,
         suggestionRegion: templateSuggestionRegion,
@@ -2137,8 +2138,10 @@ let statusDetailsHideTimer = null;
         useButton: templateSuggestionUse,
         dismissButton: templateSuggestionDismiss,
         getTranscriptId: () => transcriptId,
+        isEnabled: () => userAppPreferences.template_suggestions_enabled !== false,
         chooseTemplate: chooseTemplateFromPicker,
-      }).attach();
+      });
+      templateSuggestionController.attach();
 
       const syncDictationTemplateSelect = () => {
         if (!dictationTemplateSelect || !generateOutputTemplateSelect) return;
@@ -3584,6 +3587,7 @@ let statusDetailsHideTimer = null;
           }
         }
         transcriptId = transcript?.id || null;
+        if (activeTranscriptChanged) templateSuggestionController.onTranscriptChanged();
         workspaceTranscriptPiiEntities = uniquePiiEntities(workspace.active_transcript_pii_entities || []);
         workspaceRedactionStatus = workspace.active_transcript_redaction_status || { status: 'not_run', entity_count: 0, error_code: null };
         workspaceClinicalNlpStatus = workspace.active_transcript_clinical_nlp_status || { status: 'not_run', entity_count: 0, error_code: null };

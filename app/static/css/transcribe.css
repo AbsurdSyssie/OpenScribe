@@ -142,7 +142,7 @@ color: var(--fg);
 .status-pill-details {
   position: absolute;
   top: calc(100% + 0.25rem);
-  left: 0;
+  right: 0;
   z-index: 70;
   width: max-content;
   max-width: min(22rem, calc(100vw - 2rem));
@@ -1970,25 +1970,6 @@ transition: background-color 0.15s ease, color 0.15s ease;
 .btn-ghost-sm:hover {
 background: rgba(29, 79, 94, 0.08);
 color: var(--fg);
-}
-
-.btn-icon {
-display: inline-flex;
-align-items: center;
-justify-content: center;
-width: 2rem;
-height: 2rem;
-background: transparent;
-color: var(--muted);
-border: none;
-border-radius: 0.4rem;
-cursor: pointer;
-transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.btn-icon:hover {
-background: rgba(29, 79, 94, 0.1);
-color: var(--accent);
 }
 
 .followup-controls {

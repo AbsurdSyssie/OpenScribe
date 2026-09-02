@@ -1126,6 +1126,78 @@ def test_settings_account_section_renders_owner_profile_and_security_forms(clien
     assert 'action="/settings/account/password"' in page.text
     assert 'autocomplete="current-password"' in page.text
     assert 'autocomplete="new-password"' in page.text
+    assert 'id="account-profile-title">Profile<' in page.text
+    assert 'id="account-security-title">Security<' in page.text
+    assert 'id="account-connected-title">Connected accounts<' in page.text
+    assert '<dialog class="account-dialog" id="account-email-dialog"' in page.text
+    assert '<dialog class="account-dialog" id="account-password-dialog"' in page.text
+    assert 'data-account-password-status aria-live="polite">Enter your current password.</p>' in page.text
+    assert 'data-account-modal-open="email" aria-haspopup="dialog"' in page.text
+    assert 'data-account-name-save disabled' in page.text
+    assert 'Email verified' not in page.text
+    assert 'Last changed' not in page.text
+
+
+def test_settings_account_error_reopens_only_the_safe_requested_dialog_and_keeps_provider_context(
+    client, make_team, make_user, monkeypatch
+):
+    from app.routes import web_home_transcribe
+    from app.services.oidc import OidcConfig
+
+    team = make_team(name="Clinic Account Dialog Error")
+    member = make_user(email="account-dialog-error@example.com", password="Password123", team=team)
+    client.post("/login", data={"email": member.email, "password": "Password123"}, follow_redirects=False)
+    config = OidcConfig(
+        provider_key="synthetic",
+        provider_name="Synthetic SSO",
+        issuer="https://issuer.invalid",
+        discovery_url="https://issuer.invalid/.well-known/openid-configuration",
+        client_id="synthetic-client",
+        client_secret="synthetic-secret",
+        subject_hash_secret=b"synthetic-subject-hash-secret-32-bytes",
+        client_auth_method="client_secret_basic",
+        redirect_uri="https://app.invalid/auth/oidc/synthetic/callback",
+        scopes=("openid",),
+        response_mode="query",
+        allowed_signing_algorithms=("RS256",),
+        requested_acr_values=(),
+        required_acr_values=frozenset(),
+    )
+    monkeypatch.setattr(web_home_transcribe, "oidc_configs", lambda: (config,))
+
+    response = client.post(
+        "/settings/account/email",
+        data={"email": "attempted@example.com", "current_password": "wrong", "account_modal": "email"},
+    )
+
+    assert response.status_code == 401
+    assert 'data-account-modal-auto-open' in response.text
+    assert '<p class="account-dialog__error" role="alert">Current password is incorrect</p>' in response.text
+    assert 'value="attempted@example.com"' in response.text
+    assert 'value="wrong"' not in response.text
+    assert 'data-provider-key="synthetic"' in response.text
+    assert 'action="/settings/account/oidc/synthetic/link"' in response.text
+
+
+def test_settings_account_authenticator_state_controls_mfa_requirement(client, make_team, make_user, make_totp_method):
+    team = make_team(name="Clinic Account Authenticator State")
+    member = make_user(email="account-authenticator@example.com", password="Password123", team=team)
+    client.post("/login", data={"email": member.email, "password": "Password123"}, follow_redirects=False)
+
+    inactive = client.get("/workspace/account")
+
+    assert "No active authenticator method is available for sensitive account changes." in inactive.text
+    assert "account-status-pill--active" not in inactive.text
+    assert 'id="account-email-mfa" name="mfa_code" required' not in inactive.text
+    assert 'id="account-password-mfa" name="mfa_code" required' not in inactive.text
+
+    make_totp_method(user=member)
+    active = client.get("/workspace/account")
+
+    assert "Authenticator MFA is active and protects sensitive account changes." in active.text
+    assert "account-status-pill--active" in active.text
+    assert 'id="account-email-mfa" name="mfa_code" required' in active.text
+    assert 'id="account-password-mfa" name="mfa_code" required' in active.text
 
 
 def test_workspace_settings_new_consultation_uses_preferred_recording_mode(
@@ -1311,7 +1383,7 @@ def test_settings_llm_preference_clear_returns_to_settings(client, db_session, m
     assert "<summary>Advanced</summary>" in page.text
     advanced = page.text.split('<details class="settings-advanced">', 1)[1].split("</details>", 1)[0]
     visible_preferences = page.text.split('<details class="settings-advanced">', 1)[0]
-    assert '<select name="preferred_model_name"' in advanced
+    assert 'id="preferred-model-name" name="preferred_model_name"' in advanced
     assert 'action="/home/llm-preference/clear"' in advanced
     assert 'name="note_generation_length"' in visible_preferences
     assert 'name="llm_detail_level"' in visible_preferences

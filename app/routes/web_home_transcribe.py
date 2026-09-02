@@ -18,7 +18,7 @@ from ..main import (
     ACCOUNT_SECURITY_RATE_LIMIT,
 )
 from ..services.account import update_own_email, update_own_name, update_own_password
-from ..services.auth import create_session, revoke_sessions_for_user, revoke_trusted_devices_for_user
+from ..services.auth import active_primary_totp_method, create_session, revoke_sessions_for_user, revoke_trusted_devices_for_user
 from ..services.oidc import linked_oidc_identity, oidc_configs
 from ..services.security_audit import record_security_event
 from ..services.templates import fork_team_quick_action_to_personal as fork_team_quick_action_to_personal_service
@@ -248,6 +248,7 @@ def _workspace_section_page(
     scope: str | None = None,
     template_id: str | None = None,
     quick_action_id: str | None = None,
+    account_modal: str | None = None,
     message: str | None = None,
     message_kind: str = "success",
 ):
@@ -264,24 +265,18 @@ def _workspace_section_page(
         return HTMLResponse("Workspace section unavailable", status_code=status.HTTP_403_FORBIDDEN)
     if section == WORKSPACE_ACCOUNT:
         safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
-        configured_oidc = oidc_configs()
         return render_workspace(
             request,
             db,
             current_user=context.user,
             active_section=section,
-            section_context={
-                "message": message,
-                "message_kind": safe_message_kind,
-                "oidc_providers": tuple(
-                    {
-                        "key": config.provider_key,
-                        "name": config.provider_name,
-                        "linked": linked_oidc_identity(db, context.user, config) is not None,
-                    }
-                    for config in configured_oidc
-                ),
-            },
+            section_context=_account_section_context(
+                db,
+                context.user,
+                message=message,
+                message_kind=safe_message_kind,
+                account_modal=account_modal,
+            ),
         )
     valid_scope = scope if scope in {"personal", "team"} else None
     valid_template_id = _valid_workspace_editor_id(template_id)
@@ -318,6 +313,7 @@ def workspace_account_page(
     request: Request,
     message: str | None = None,
     message_kind: str = "success",
+    account_modal: str | None = None,
     db: Session = Depends(get_db),
 ):
     return _workspace_section_page(
@@ -326,6 +322,7 @@ def workspace_account_page(
         section=WORKSPACE_ACCOUNT,
         message=message,
         message_kind=message_kind,
+        account_modal=account_modal,
     )
 
 
@@ -411,7 +408,48 @@ def workspace_account_requests_page(
     )
 
 
-def _render_account_error(request: Request, db: Session, context, exc: AppError):
+def _account_section_context(
+    db: Session,
+    user,
+    *,
+    message: str | None = None,
+    message_kind: str = "success",
+    account_modal: str | None = None,
+    account_email_value: str | None = None,
+) -> dict[str, object]:
+    """Build the complete, safe account panel context for normal and error renders."""
+    providers = tuple(
+        {
+            "key": config.provider_key,
+            "name": config.provider_name,
+            "linked": linked_oidc_identity(db, user, config) is not None,
+        }
+        for config in oidc_configs()
+    )
+    for provider in providers:
+        provider["modal_key"] = f"oidc-{provider['key']}-{'unlink' if provider['linked'] else 'link'}"
+    allowed_modal_keys = {"email", "password", *(provider["modal_key"] for provider in providers)}
+    return {
+        "message": message,
+        "message_kind": message_kind if message_kind in {"success", "error"} else "success",
+        "oidc_providers": providers,
+        "mfa_active": active_primary_totp_method(user) is not None,
+        "account_modal": account_modal if account_modal in allowed_modal_keys else None,
+        # Re-render only the attempted email after a failed email change. Passwords
+        # and MFA codes are intentionally never kept in presentation context.
+        "account_email_value": account_email_value if account_modal == "email" else None,
+    }
+
+
+def _render_account_error(
+    request: Request,
+    db: Session,
+    context,
+    exc: AppError,
+    *,
+    account_modal: str | None = None,
+    account_email_value: str | None = None,
+):
     record_security_event(
         db,
         action="account_change_failure",
@@ -425,7 +463,14 @@ def _render_account_error(request: Request, db: Session, context, exc: AppError)
         db,
         current_user=context.user,
         active_section=WORKSPACE_ACCOUNT,
-        section_context={"message": exc.message, "message_kind": "error"},
+        section_context=_account_section_context(
+            db,
+            context.user,
+            message=exc.message,
+            message_kind="error",
+            account_modal=account_modal,
+            account_email_value=account_email_value,
+        ),
         status_code=exc.status_code,
     )
 
@@ -479,6 +524,7 @@ def settings_account_email(
     email: str = Form(...),
     current_password: str = Form(...),
     mfa_code: str = Form(""),
+    account_modal: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -496,7 +542,14 @@ def settings_account_email(
             mfa_code=mfa_code,
         )
     except AppError as exc:
-        return _render_account_error(request, db, context, exc)
+        return _render_account_error(
+            request,
+            db,
+            context,
+            exc,
+            account_modal=account_modal,
+            account_email_value=email,
+        )
     response = _rotate_account_session(request, db, context, reason="email_changed")
     record_security_event(
         db,
@@ -517,6 +570,7 @@ def settings_account_password(
     new_password: str = Form(...),
     confirm_password: str = Form(...),
     mfa_code: str = Form(""),
+    account_modal: str = Form(""),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -535,7 +589,7 @@ def settings_account_password(
             mfa_code=mfa_code,
         )
     except AppError as exc:
-        return _render_account_error(request, db, context, exc)
+        return _render_account_error(request, db, context, exc, account_modal=account_modal)
     response = _rotate_account_session(request, db, context, reason="password_changed")
     record_security_event(
         db,

@@ -26,6 +26,35 @@ def test_template_suggestion_workspace_and_description_hooks():
     assert 'placeholder="e.g. Mental health follow-up consultations and medication reviews"' in editor
 
 
+def test_template_suggestion_preference_precedes_advanced_settings_and_stays_in_its_row():
+    preferences = (ROOT / "app/templates/settings/_preferences.html").read_text()
+    settings_page = (ROOT / "app/templates/settings.html").read_text()
+    workspace_page = (ROOT / "app/templates/workspace.html").read_text()
+    styles = (ROOT / "app/static/css/settings.css").read_text()
+
+    suggestion_position = preferences.index('data-template-suggestion-preference-form')
+    assert preferences.index('name="llm_detail_level"') < suggestion_position
+    assert suggestion_position < preferences.index('<details class="settings-advanced">')
+    assert 'aria-label="Suggest a template based on the consultation"' in preferences
+    assert '<p>AI will suggest which of your templates matches the consultation.</p>' in preferences
+    assert 'class="settings-info"' not in preferences
+    assert '<span class="sr-only">Suggest a template based on the consultation</span>' not in preferences
+    assert '.setting-row--toggle { flex-wrap: nowrap; }' in styles
+    assert 'class="switch-compact"' in preferences
+    assert 'class="switch-compact__track" aria-hidden="true"' in preferences
+    assert 'class="field setting-control"><label class="field-label" for="note-generation-length">Length</label><div class="select-wrap select-soft">' in preferences
+    assert 'class="field setting-control"><label class="field-label" for="llm-detail-level">Detail</label><div class="select-wrap select-soft">' in preferences
+    assert 'data-writing-style-form' in preferences
+    assert 'data-save-writing-style disabled' in preferences
+    assert 'data-writing-style-save-state aria-live="polite"' in preferences
+    assert 'class="field setting-control setting-control--model"><label class="field-label" for="preferred-model-name">Model</label><div class="select-wrap select-soft"><select id="preferred-model-name" name="preferred_model_name"' in preferences
+    assert '.setting-control--model .select-wrap { width: 400px; max-width: 100%; }' in styles
+    assert 'settings.css?v=20260902-account-dialogs-4' in settings_page
+    assert 'settings.css?v=20260902-account-dialogs-4' in workspace_page
+    assert 'settings/controls.js?v=20260902-account-dialogs-4' in settings_page
+    assert 'settings/controls.js?v=20260902-account-dialogs-4' in workspace_page
+
+
 def test_template_suggestion_popover_uses_static_csp_safe_styles():
     controller = (ROOT / "app/static/js/transcribe/templateSuggestions.js").read_text()
     styles = (ROOT / "app/static/css/transcribe.css").read_text()

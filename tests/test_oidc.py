@@ -760,7 +760,8 @@ def test_google_microsoft_and_cis2_can_be_configured_and_routed_together(
     assert "Use Care Identity to sign in." in account_page.text
     # Only the email and password change forms ask for TOTP while both providers are unlinked.
     assert account_page.text.count('name="mfa_code"') == 2
-    assert "Opening ${provider}…" in account_page.text
+    assert 'data-account-oidc-form' in account_page.text
+    assert 'data-account-oidc-status' in account_page.text
 
     google_config = oidc.oidc_config("google")
     assert google_config is not None
@@ -1469,6 +1470,7 @@ def test_browser_oidc_link_start_reauthenticates_and_binds_current_session(
     )
     assert rejected.status_code == 303
     assert "Current+password+is+incorrect" in rejected.headers["location"]
+    assert "account_modal=oidc-synthetic-link" in rejected.headers["location"]
     assert seen == {}
 
     response = client.post(

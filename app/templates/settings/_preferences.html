@@ -3,14 +3,6 @@
     <span class="settings-kicker">Personal</span><h2>Preferences</h2><p>Choose writing assistant preferences for your consultations.</p>
   </div>
   <article class="settings-card">
-    {% if not current_user.is_system_admin and current_user.team_id %}
-    {% set template_suggestions_enabled = user_app_preferences_json.get('template_suggestions_enabled', true) %}
-    <form class="setting-row setting-row--toggle" method="post" action="/home/template-suggestion-preference" data-template-suggestion-preference-form>
-      <input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="preferences">
-      <div><h3>Suggest a template based on the consultation <span class="settings-info" title="AI will suggest which of your templates matches the consultation." aria-label="AI will suggest which of your templates matches the consultation.">i</span></h3></div>
-      <label class="settings-switch"><input type="checkbox" name="template_suggestions_enabled" value="true" data-template-suggestion-preference {% if template_suggestions_enabled %}checked{% endif %}><span class="sr-only">Suggest a template based on the consultation</span><span aria-hidden="true"></span></label>
-    </form>
-    {% endif %}
     {% if not stt_selection and not llm_selection %}<p class="settings-empty">No services configured. Contact team leader.</p>{% else %}
     <div class="setting-row"><div><h3>Speech service</h3><p>{% if stt_selection %}{{ stt_selection.config.label }}{% if stt_selection.model_name_override or stt_selection.config.model_name %} · {{ stt_selection.model_name_override or stt_selection.config.model_name }}{% endif %}{% else %}Not configured{% endif %}</p></div></div>
     {% if llm_selection %}
@@ -20,20 +12,27 @@
     {% set personal_model = user_llm_preference.preferred_model_name if user_llm_preference and user_llm_preference.preferred_model_name in allowed_llm_models else '' %}
     <div class="setting-row setting-row--form">
       <div><h3>Writing style</h3><p>Set usual note length and level of detail.</p></div>
-      <form method="post" action="/home/llm-preference">
+      <form method="post" action="/home/llm-preference" data-writing-style-form>
         <input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="preferences"><input type="hidden" name="preferred_model_name" value="{{ personal_model or '' }}">
-        <label>Length<select name="note_generation_length"><option value="short" {% if home_note_length == 'short' %}selected{% endif %}>Short (up to ~1 page)</option><option value="normal" {% if home_note_length == 'normal' %}selected{% endif %}>Normal (up to ~2 pages)</option><option value="long" {% if home_note_length == 'long' %}selected{% endif %}>Long (up to ~4 pages)</option></select></label>
-        <label>Detail<select name="llm_detail_level"><option value="concise" {% if home_detail_level == 'concise' %}selected{% endif %}>Concise</option><option value="balanced" {% if home_detail_level == 'balanced' %}selected{% endif %}>Balanced</option><option value="detailed" {% if home_detail_level == 'detailed' %}selected{% endif %}>Detailed</option></select></label>
-        <button class="btn-primary-sm" type="submit">Save preferences</button>
+        <div class="field setting-control"><label class="field-label" for="note-generation-length">Length</label><div class="select-wrap select-soft"><select id="note-generation-length" name="note_generation_length"><option value="short" {% if home_note_length == 'short' %}selected{% endif %}>Short (up to ~1 page)</option><option value="normal" {% if home_note_length == 'normal' %}selected{% endif %}>Normal (up to ~2 pages)</option><option value="long" {% if home_note_length == 'long' %}selected{% endif %}>Long (up to ~4 pages)</option></select></div></div>
+        <div class="field setting-control"><label class="field-label" for="llm-detail-level">Detail</label><div class="select-wrap select-soft"><select id="llm-detail-level" name="llm_detail_level"><option value="concise" {% if home_detail_level == 'concise' %}selected{% endif %}>Concise</option><option value="balanced" {% if home_detail_level == 'balanced' %}selected{% endif %}>Balanced</option><option value="detailed" {% if home_detail_level == 'detailed' %}selected{% endif %}>Detailed</option></select></div></div>
+        <div class="setting-save-action"><span class="setting-save-state" data-writing-style-save-state aria-live="polite"></span><button class="btn-primary-sm btn-control" type="submit" data-save-writing-style disabled>Save preferences</button></div>
       </form>
     </div>
+    {% if not current_user.is_system_admin and current_user.team_id %}
+    {% set template_suggestions_enabled = user_app_preferences_json.get('template_suggestions_enabled', true) %}
+    <form class="setting-row setting-row--toggle" method="post" action="/home/template-suggestion-preference" data-template-suggestion-preference-form>
+      <input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="preferences">
+      <div><h3>Suggest a template based on the consultation</h3><p>AI will suggest which of your templates matches the consultation.</p></div><label class="switch-compact"><input type="checkbox" name="template_suggestions_enabled" value="true" aria-label="Suggest a template based on the consultation" data-template-suggestion-preference {% if template_suggestions_enabled %}checked{% endif %}><span class="switch-compact__track" aria-hidden="true"></span></label>
+    </form>
+    {% endif %}
     <details class="settings-advanced">
       <summary>Advanced</summary>
       <div class="settings-advanced__intro"><h3>Writing assistant model</h3><p>Choose a team-approved model or return to team default.</p></div>
-      <form method="post" action="/home/llm-preference">
+      <form method="post" action="/home/llm-preference" data-model-preference-form>
         <input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="preferences">
-        <label>Model<select name="preferred_model_name" {% if allowed_llm_models|length <= 1 %}disabled{% endif %}><option value="">Use team default ({{ llm_selection.model_name_override or llm_selection.config.model_name or 'none' }})</option>{% for model in allowed_llm_models %}<option value="{{ model }}" {% if personal_model == model %}selected{% endif %}>{{ model }}</option>{% endfor %}</select>{% if allowed_llm_models|length <= 1 %}<input type="hidden" name="preferred_model_name" value="">{% endif %}</label>
-        <button class="btn-primary-sm" type="submit">Save model</button>
+        <div class="field setting-control setting-control--model"><label class="field-label" for="preferred-model-name">Model</label><div class="select-wrap select-soft"><select id="preferred-model-name" name="preferred_model_name" {% if allowed_llm_models|length <= 1 %}disabled{% endif %}><option value="">Use team default ({{ llm_selection.model_name_override or llm_selection.config.model_name or 'none' }})</option>{% for model in allowed_llm_models %}<option value="{{ model }}" {% if personal_model == model %}selected{% endif %}>{{ model }}</option>{% endfor %}</select></div>{% if allowed_llm_models|length <= 1 %}<input type="hidden" name="preferred_model_name" value="">{% endif %}</div>
+        <div class="setting-save-action setting-save-action--model"><span class="setting-save-state" data-model-save-state aria-live="polite"></span><button class="btn-primary-sm btn-control" type="submit" data-save-model disabled>Save model</button></div>
       </form>
       {% if user_llm_preference %}<form method="post" action="/home/llm-preference/clear"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="preferences"><button class="btn-ghost-sm" type="submit">Use team default</button></form>{% endif %}
     </details>

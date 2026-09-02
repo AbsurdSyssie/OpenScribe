@@ -47,17 +47,17 @@ data-transcript-title-input>
 {% set active_status_display = 'idle' %}
 {% endif %}
 {% if active_status_display == 'ready' %}
-<div class="flex items-center gap-2 min-w-[7.5rem] px-3 py-1.5 bg-teal-pale rounded-full" data-active-status-pill>
+<div class="flex items-center gap-2 px-3 py-1.5 bg-teal-pale rounded-full" data-active-status-pill>
 <span class="w-2 h-2 bg-teal-deep rounded-full"></span>
 <span class="text-sm font-medium text-teal-deep" data-active-status>{{ active_status_display }}</span>
 </div>
 {% elif active_status_display == 'failed' %}
-<div class="flex items-center gap-2 min-w-[7.5rem] px-3 py-1.5 bg-coral/15 rounded-full" data-active-status-pill>
+<div class="flex items-center gap-2 px-3 py-1.5 bg-coral/15 rounded-full" data-active-status-pill>
 <span class="w-2 h-2 bg-coral rounded-full"></span>
 <span class="text-sm font-medium text-coral" data-active-status>{{ active_status_display }}</span>
 </div>
 {% else %}
-<div class="flex items-center gap-2 min-w-[7.5rem] px-3 py-1.5 bg-white border border-stone rounded-full" data-active-status-pill>
+<div class="flex items-center gap-2 px-3 py-1.5 bg-white border border-stone rounded-full" data-active-status-pill>
 <span class="w-2 h-2 bg-slate rounded-full"></span>
 <span class="text-sm font-medium text-slate" data-active-status>{{ active_status_display }}</span>
 </div>

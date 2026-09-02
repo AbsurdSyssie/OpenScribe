@@ -71,6 +71,13 @@ def test_collapse_control_lives_in_account_row_with_both_state_icons():
     assert ".workspace-sidebar--collapsed .workspace-sidebar__collapse { display: inline-flex;" in css
 
 
+def test_session_panel_close_uses_the_sidebar_close_icon():
+    session_panel = read("app/templates/transcribe/_session_panel.html")
+
+    assert 'class="session-panel-close"' in session_panel
+    assert 'data-lucide="panel-left-close"' in session_panel
+
+
 def test_non_scribe_section_uses_available_main_width():
     """Settings/library content should not inherit centered 76rem marketing-page gutter."""
     css = compact(read("app/static/css/workspace.css"))

@@ -34,6 +34,21 @@ def test_scribe_main_has_an_explicit_shell_hook_for_scroll_ownership():
     assert '<main data-workspace-scribe-main ' in workspace
 
 
+def test_scribe_status_details_open_inward_from_right_aligned_header_pill():
+    """Status detail panel must remain inside the header's right edge."""
+    css = compact_css(read("app/static/css/transcribe.css"))
+
+    assert ".status-pill-details { position: absolute; top: calc(100% + 0.25rem); right: 0;" in css
+    assert "max-width: min(22rem, calc(100vw - 2rem));" in css
+
+
+def test_scribe_status_pill_fits_its_label_on_desktop():
+    workspace = read("app/templates/transcribe/_workspace.html")
+
+    assert 'data-active-status-pill' in workspace
+    assert 'min-w-[7.5rem]' not in workspace
+
+
 def test_scribe_mobile_capture_is_recording_first_and_names_mode_switcher():
     """Phone capture must give recording visual priority over secondary actions."""
     workspace = read("app/templates/transcribe/_workspace.html")

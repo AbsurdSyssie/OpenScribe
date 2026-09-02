@@ -1,77 +1,96 @@
-<section class="settings-section" data-settings-panel="account" {% if settings_tab != 'account' %}hidden{% endif %}>
-  <div class="settings-section__intro"><span class="settings-kicker">Personal</span><h2>Account</h2><p>Update your name, sign-in email, password, or linked sign-in method.</p></div>
-  <div class="account-settings-grid">
-    <article class="settings-card account-settings-card">
-      <div><h3>Name</h3><p>Used to identify you inside OpenScribe.</p></div>
-      <form method="post" action="/settings/account/name" class="account-settings-form">
-        <label>Full name<input name="full_name" value="{{ current_user.full_name or '' }}" maxlength="255" autocomplete="name"></label>
-        <button class="btn-primary-sm" type="submit">Save name</button>
-      </form>
-    </article>
-    <article class="settings-card account-settings-card">
-      <div><h3>Email</h3><p>Changing sign-in email requires your current password and, when authenticator MFA is active, its current code. Other sessions will be signed out.</p></div>
-      <form method="post" action="/settings/account/email" class="account-settings-form">
-        <label>Email address<input type="email" name="email" value="{{ current_user.email }}" required autocomplete="email"></label>
-        <label>Current password<input type="password" name="current_password" required autocomplete="current-password"></label>
-        <label>Authenticator code <span class="field-hint">Required when active</span><input name="mfa_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*"></label>
-        <button class="btn-primary-sm" type="submit">Change email</button>
-      </form>
-    </article>
-    <article class="settings-card account-settings-card">
-      <div><h3>Password</h3><p>Use at least 12 characters with uppercase, lowercase, and a number. Other sessions will be signed out.</p></div>
-      <form method="post" action="/settings/account/password" class="account-settings-form">
-        <label>Current password<input type="password" name="current_password" required autocomplete="current-password"></label>
-        <label>New password<input type="password" name="new_password" required minlength="12" autocomplete="new-password"></label>
-        <label>Confirm new password<input type="password" name="confirm_password" required minlength="12" autocomplete="new-password"></label>
-        <label>Authenticator code <span class="field-hint">Required when active</span><input name="mfa_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*"></label>
-        <button class="btn-primary-sm" type="submit">Change password</button>
-      </form>
-    </article>
-  </div>
-  <div class="settings-section__intro connected-accounts-heading"><h2>Connected accounts</h2><p>Add or remove another way to sign in.</p></div>
-  <div class="settings-card connected-account-list">
-    {% for provider in oidc_providers %}
-    <details class="connected-account" data-provider-key="{{ provider.key }}">
-      <summary>
-        <span class="connected-account__mark" aria-hidden="true">{{ provider.name[0] }}</span>
-        <span class="connected-account__identity">
-          <strong>{{ provider.name }}</strong>
-          <small>{% if provider.key == 'google' %}Use your Google account to sign in.{% elif provider.key == 'microsoft' %}Use an eligible NHS Microsoft account.{% elif provider.key == 'cis2' %}Use Care Identity to sign in.{% else %}Use this provider to sign in.{% endif %}</small>
-        </span>
-        <span class="connected-account__status connected-account__status--{% if provider.linked %}linked{% else %}available{% endif %}">{% if provider.linked %}Connected{% else %}Not connected{% endif %}</span>
-        <span class="connected-account__action">{% if provider.linked %}Disconnect{% else %}Connect{% endif %}</span>
-      </summary>
-      <div class="connected-account__confirmation">
-        {% if provider.linked %}
-        <p>Confirm this change. It removes {{ provider.name }} as a sign-in option and signs out your other sessions.</p>
-        {% else %}
-        <p>Enter your OpenScribe password, then sign in with {{ provider.name }} to confirm the account you want to link.</p>
-        {% endif %}
-        <form method="post" action="/settings/account/oidc/{{ provider.key }}/{% if provider.linked %}unlink{% else %}link{% endif %}" data-oidc-account-form data-provider-name="{{ provider.name }}" data-oidc-action="{% if provider.linked %}remove{% else %}link{% endif %}">
-          <label>Current password<input type="password" name="current_password" required autocomplete="current-password"></label>
-          {% if provider.linked %}
-          <label>Authenticator code <span class="field-hint">Required when active</span><input name="mfa_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*"></label>
-          {% endif %}
-          <button class="{% if provider.linked %}btn-danger-sm{% else %}btn-primary-sm{% endif %}" type="submit" data-oidc-submit>{% if provider.linked %}Disconnect {{ provider.name }}{% else %}Continue to {{ provider.name }}{% endif %}</button>
-          <p role="status" aria-live="polite" data-oidc-status hidden></p>
-        </form>
+<section class="settings-section account-settings" data-settings-panel="account" {% if settings_tab != 'account' %}hidden{% endif %}>
+  <div class="settings-section__intro"><span class="settings-kicker">Personal</span><h2>Account</h2><p>Manage your profile, sign-in security, and connected login methods.</p></div>
+
+  <div class="account-panel-stack">
+    <section class="settings-card account-panel" aria-labelledby="account-profile-title">
+      <header class="account-panel__header"><div><h3 id="account-profile-title">Profile</h3><p>Your basic account details.</p></div></header>
+      <div class="account-panel__body">
+        <div class="account-setting-row">
+          <div class="account-setting-row__copy"><h4>Name</h4><p>Shown inside OpenScribe.</p></div>
+          <form method="post" action="/settings/account/name" class="account-inline-form" data-account-name-form data-dirty-guard>
+            <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+            <div class="field"><label class="field-label" for="account-full-name">Full name</label><input class="field-input" id="account-full-name" name="full_name" value="{{ current_user.full_name or '' }}" maxlength="255" autocomplete="name"></div>
+            <div class="account-save-action"><button class="btn-primary-sm btn-control" type="submit" data-account-name-save disabled>Save name</button><p class="setting-save-state" data-account-name-state aria-live="polite"></p></div>
+          </form>
+        </div>
+        <div class="account-setting-row">
+          <div class="account-setting-row__copy"><h4>Email</h4><p>Used to sign in and receive account notices. Changing it signs out your other sessions.</p></div>
+          <div class="account-inline-form">
+            <div class="field"><label class="field-label" for="account-email-display">Email address</label><input class="field-input" id="account-email-display" value="{{ current_user.email }}" readonly autocomplete="email"></div>
+            <button class="btn-secondary btn-control" type="button" data-account-modal-open="email" aria-haspopup="dialog" aria-controls="account-email-dialog">Change</button>
+          </div>
+        </div>
       </div>
-    </details>
-    {% else %}
-    <p class="settings-empty">Your administrator has not enabled an external sign-in provider.</p>
-    {% endfor %}
+    </section>
+
+    <section class="settings-card account-panel" aria-labelledby="account-security-title">
+      <header class="account-panel__header"><div><h3 id="account-security-title">Security</h3><p>Manage how you authenticate and protect your account.</p></div></header>
+      <div class="account-security-grid">
+        <article class="account-security-card"><h4>Password</h4><p>Use at least 12 characters with uppercase, lowercase, and a number. Changing it signs out your other sessions.</p><button class="btn-secondary btn-control" type="button" data-account-modal-open="password" aria-haspopup="dialog" aria-controls="account-password-dialog">Change password</button></article>
+        <article class="account-security-card"><h4>Authenticator</h4><p>{% if mfa_active %}Authenticator MFA is active and protects sensitive account changes.{% else %}No active authenticator method is available for sensitive account changes.{% endif %}</p><span class="account-status-pill{% if mfa_active %} account-status-pill--active{% endif %}"><span aria-hidden="true"></span>{% if mfa_active %}Active{% else %}Not active{% endif %}</span></article>
+      </div>
+    </section>
+
+    <section class="settings-card account-panel" aria-labelledby="account-connected-title">
+      <header class="account-panel__header"><div><h3 id="account-connected-title">Connected accounts</h3><p>Add or remove another way to sign in.</p></div></header>
+      <div class="connected-account-list">
+        {% for provider in oidc_providers %}
+        <div class="connected-account" data-provider-key="{{ provider.key }}">
+          <span class="connected-account__mark" aria-hidden="true">{{ provider.name[0] }}</span>
+          <span class="connected-account__identity"><strong>{{ provider.name }}</strong><small>{% if provider.key == 'google' %}Use your Google account to sign in.{% elif provider.key == 'microsoft' %}Use an eligible NHS Microsoft account.{% elif provider.key == 'cis2' %}Use Care Identity to sign in.{% else %}Use this provider to sign in.{% endif %}</small></span>
+          <span class="connected-account__status connected-account__status--{% if provider.linked %}linked{% else %}available{% endif %}">{% if provider.linked %}Connected{% else %}Not connected{% endif %}</span>
+          <button class="{% if provider.linked %}btn-danger-sm{% else %}btn-secondary{% endif %} btn-control" type="button" data-account-modal-open="{{ provider.modal_key }}" aria-haspopup="dialog" aria-controls="account-{{ provider.modal_key }}-dialog">{% if provider.linked %}Disconnect{% else %}Connect{% endif %}</button>
+        </div>
+        {% else %}
+        <p class="settings-empty">Your administrator has not enabled an external sign-in provider.</p>
+        {% endfor %}
+      </div>
+    </section>
   </div>
 </section>
-<script nonce="{{ csp_nonce }}">
-  document.querySelectorAll("[data-oidc-account-form]").forEach((form) => {
-    form.addEventListener("submit", () => {
-      const button = form.querySelector("[data-oidc-submit]");
-      const status = form.querySelector("[data-oidc-status]");
-      const provider = form.dataset.providerName;
-      const action = form.dataset.oidcAction;
-      button.disabled = true;
-      status.hidden = false;
-      status.textContent = action === "link" ? `Opening ${provider}…` : `Disconnecting ${provider}…`;
-    });
-  });
-</script>
+
+<dialog class="account-dialog" id="account-email-dialog" aria-labelledby="account-email-dialog-title" data-account-dialog="email"{% if account_modal == 'email' %} data-account-modal-auto-open{% endif %}>
+  <form method="post" action="/settings/account/email" class="account-dialog__form" data-account-sensitive-form data-account-email-form>
+    <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}"><input type="hidden" name="account_modal" value="email">
+    <header class="account-dialog__header"><div><h3 id="account-email-dialog-title">Change sign-in email</h3><p>Confirm this sensitive change with your password{% if mfa_active %} and authenticator code{% endif %}. Your other sessions will be signed out.</p></div><button class="account-dialog__close" type="button" data-account-dialog-close aria-label="Close change email dialog">×</button></header>
+    <div class="account-dialog__body">
+      {% if account_modal == 'email' and message_kind == 'error' %}<p class="account-dialog__error" role="alert">{{ message }}</p>{% endif %}
+      <div class="field"><label class="field-label" for="account-email">New email address</label><input class="field-input" id="account-email" type="email" name="email" value="{{ account_email_value if account_email_value is not none else current_user.email }}" required autocomplete="email" data-account-email-input data-account-saved-email="{{ current_user.email }}"></div>
+      <div class="field"><label class="field-label" for="account-email-password">Current password</label><input class="field-input" id="account-email-password" type="password" name="current_password" required autocomplete="current-password"></div>
+      <div class="field"><label class="field-label" for="account-email-mfa">Authenticator code{% if not mfa_active %} <span class="field-hint">Required when active</span>{% endif %}</label><input class="field-input" id="account-email-mfa" name="mfa_code"{% if mfa_active %} required{% endif %} inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*"></div>
+    </div>
+    <footer class="account-dialog__footer"><button class="btn-secondary btn-control" type="button" data-account-dialog-close>Cancel</button><button class="btn-primary-sm btn-control" type="submit" data-account-sensitive-submit disabled>Change email</button></footer>
+  </form>
+</dialog>
+
+<dialog class="account-dialog" id="account-password-dialog" aria-labelledby="account-password-dialog-title" data-account-dialog="password"{% if account_modal == 'password' %} data-account-modal-auto-open{% endif %}>
+  <form method="post" action="/settings/account/password" class="account-dialog__form" data-account-sensitive-form data-account-password-form>
+    <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}"><input type="hidden" name="account_modal" value="password">
+    <header class="account-dialog__header"><div><h3 id="account-password-dialog-title">Change password</h3><p>Use at least 12 characters with uppercase, lowercase, and a number.</p></div><button class="account-dialog__close" type="button" data-account-dialog-close aria-label="Close change password dialog">×</button></header>
+    <div class="account-dialog__body">
+      {% if account_modal == 'password' and message_kind == 'error' %}<p class="account-dialog__error" role="alert">{{ message }}</p>{% endif %}
+      <div class="field"><label class="field-label" for="account-password-current">Current password</label><input class="field-input" id="account-password-current" type="password" name="current_password" required autocomplete="current-password"></div>
+      <div class="field"><label class="field-label" for="account-password-new">New password</label><input class="field-input" id="account-password-new" type="password" name="new_password" required minlength="12" autocomplete="new-password"></div>
+      <div class="field"><label class="field-label" for="account-password-confirm">Confirm new password</label><input class="field-input" id="account-password-confirm" type="password" name="confirm_password" required minlength="12" autocomplete="new-password"></div>
+      <div class="field"><label class="field-label" for="account-password-mfa">Authenticator code{% if not mfa_active %} <span class="field-hint">Required when active</span>{% endif %}</label><input class="field-input" id="account-password-mfa" name="mfa_code"{% if mfa_active %} required{% endif %} inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*"></div>
+      <p class="account-dialog__status" data-account-password-status aria-live="polite">Enter your current password.</p>
+    </div>
+    <footer class="account-dialog__footer"><button class="btn-secondary btn-control" type="button" data-account-dialog-close>Cancel</button><button class="btn-primary-sm btn-control" type="submit" data-account-sensitive-submit disabled>Change password</button></footer>
+  </form>
+</dialog>
+
+{% for provider in oidc_providers %}
+<dialog class="account-dialog" id="account-{{ provider.modal_key }}-dialog" aria-labelledby="account-{{ provider.modal_key }}-dialog-title" data-account-dialog="{{ provider.modal_key }}"{% if account_modal == provider.modal_key %} data-account-modal-auto-open{% endif %}>
+  <form method="post" action="/settings/account/oidc/{{ provider.key }}/{% if provider.linked %}unlink{% else %}link{% endif %}" class="account-dialog__form" data-account-sensitive-form data-account-oidc-form data-provider-name="{{ provider.name }}" data-oidc-action="{% if provider.linked %}remove{% else %}link{% endif %}">
+    <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+    <header class="account-dialog__header"><div><h3 id="account-{{ provider.modal_key }}-dialog-title">{% if provider.linked %}Disconnect {{ provider.name }}?{% else %}Connect {{ provider.name }}{% endif %}</h3><p>{% if provider.linked %}This removes {{ provider.name }} as a sign-in option and signs out your other sessions.{% else %}Enter your OpenScribe password, then sign in with {{ provider.name }} to confirm the account you want to link.{% endif %}</p></div><button class="account-dialog__close" type="button" data-account-dialog-close aria-label="Close {{ provider.name }} dialog">×</button></header>
+    <div class="account-dialog__body">
+      {% if account_modal == provider.modal_key and message_kind == 'error' %}<p class="account-dialog__error" role="alert">{{ message }}</p>{% endif %}
+      <div class="field"><label class="field-label" for="account-{{ provider.modal_key }}-password">Current password</label><input class="field-input" id="account-{{ provider.modal_key }}-password" type="password" name="current_password" required autocomplete="current-password"></div>
+      {% if provider.linked %}<div class="field"><label class="field-label" for="account-{{ provider.modal_key }}-mfa">Authenticator code{% if not mfa_active %} <span class="field-hint">Required when active</span>{% endif %}</label><input class="field-input" id="account-{{ provider.modal_key }}-mfa" name="mfa_code"{% if mfa_active %} required{% endif %} inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*"></div>{% endif %}
+      <p class="account-dialog__status" role="status" aria-live="polite" data-account-oidc-status hidden></p>
+    </div>
+    <footer class="account-dialog__footer"><button class="btn-secondary btn-control" type="button" data-account-dialog-close>Cancel</button><button class="{% if provider.linked %}btn-danger-sm{% else %}btn-primary-sm{% endif %} btn-control" type="submit" data-account-sensitive-submit disabled>{% if provider.linked %}Disconnect {{ provider.name }}{% else %}Continue to {{ provider.name }}{% endif %}</button></footer>
+  </form>
+</dialog>
+{% endfor %}

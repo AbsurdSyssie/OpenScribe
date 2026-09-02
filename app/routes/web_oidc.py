@@ -76,8 +76,11 @@ def _oidc_callback_path(provider_key: str) -> str:
     return f"/auth/oidc/{provider_key}/callback"
 
 
-def _oidc_error_redirect(message: str) -> RedirectResponse:
-    query = urlencode({"message": message, "message_kind": "error"})
+def _oidc_error_redirect(message: str, *, account_modal: str | None = None) -> RedirectResponse:
+    params = {"message": message, "message_kind": "error"}
+    if account_modal:
+        params["account_modal"] = account_modal
+    query = urlencode(params)
     return RedirectResponse(
         url=f"/workspace/account?{query}",
         status_code=status.HTTP_303_SEE_OTHER,
@@ -245,7 +248,7 @@ async def oidc_link_start(
             user_session=context.session,
         )
     except AppError as exc:
-        return _oidc_error_redirect(exc.message)
+        return _oidc_error_redirect(exc.message, account_modal=f"oidc-{config.provider_key}-link")
     except OidcProtocolError as caught:
         record_security_event(
             db,
@@ -271,7 +274,7 @@ async def oidc_link_start(
             status_code=status.HTTP_502_BAD_GATEWAY,
             level=logging.WARNING,
         )
-        return _oidc_error_redirect("Single sign-on is temporarily unavailable")
+        return _oidc_error_redirect("Single sign-on is temporarily unavailable", account_modal=f"oidc-{config.provider_key}-link")
     record_security_event(
         db,
         action="oidc_link_started",
@@ -331,7 +334,7 @@ def oidc_unlink(
         )
         unlink_oidc_identity(db, context.user, config)
     except AppError as exc:
-        return _oidc_error_redirect(exc.message)
+        return _oidc_error_redirect(exc.message, account_modal=f"oidc-{config.provider_key}-unlink")
     response = RedirectResponse(
         url="/workspace/account?message=Single+sign-on+removed&message_kind=success",
         status_code=status.HTTP_303_SEE_OTHER,

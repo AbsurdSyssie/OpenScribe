@@ -409,11 +409,15 @@ def process_template_suggestion(db: Session, *, job_id: UUID) -> TemplateSuggest
             raise ValueError("unsupported adapter")
         parsed = _ProviderSuggestion.model_validate(_extract_json(output))
         candidate_ids = {str(item.get("id")) for item in locked.candidates_snapshot_json if isinstance(item, dict)}
-        if parsed.template_id is not None and str(parsed.template_id) not in candidate_ids:
+        selected_id = str((locked.selected_template_snapshot_json or {}).get("id") or "")
+        if parsed.template_id is not None and str(parsed.template_id) == selected_id:
+            result = None
+        elif parsed.template_id is not None and str(parsed.template_id) not in candidate_ids:
             raise ValueError("invalid candidate")
-        result = None if parsed.confidence == "low" or parsed.template_id is None else {
-            "template_id": str(parsed.template_id), "confidence": parsed.confidence,
-        }
+        else:
+            result = None if parsed.confidence == "low" or parsed.template_id is None else {
+                "template_id": str(parsed.template_id), "confidence": parsed.confidence,
+            }
     except Exception:
         _log("template_suggestion_provider_failed", job=locked, reason_code="provider_or_output_validation_failed")
         return _fail(db, locked, "template_suggestion_failed")

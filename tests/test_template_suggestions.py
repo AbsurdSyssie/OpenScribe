@@ -218,9 +218,7 @@ def test_valid_result_uses_redacted_text_dispatches_once_and_reads_current_name(
     transcript = _transcript(db_session, user, raw)
     candidates = _templates(make_template, user)
     monkeypatch.setattr("app.services.template_suggestions.try_publish_task_dispatch_safely", lambda *_: None)
-    job = queue_template_suggestion(
-        db_session, user, transcript_id=transcript.id, selected_template_id=candidates[0].id,
-    )
+    job = queue_template_suggestion(db_session, user, transcript_id=transcript.id)
     monkeypatch.setattr("app.services.template_suggestions.redact_transient_text", lambda *_args, **_kwargs: {"redacted_text": "Alice Secret safe", "phi_index": []})
     seen = []
     def manual(*_args, **kwargs):
@@ -300,6 +298,32 @@ def test_selected_template_is_snapshotted_and_sent_as_current_context(
     monkeypatch.setattr("app.services.template_suggestions._generate_freeform_output_openai", provider)
     assert process_template_suggestion(db_session, job_id=job.id).status is TemplateSuggestionStatus.completed
     assert '"current_template":{"id":"%s"' % candidates[0].id in seen[0]
+
+
+def test_provider_returning_current_template_is_suppressed(
+    db_session, make_user, make_template, make_llm_config, make_llm_selection, monkeypatch,
+):
+    user = _configured_user(make_user, make_llm_config, make_llm_selection)
+    transcript = _transcript(db_session, user, "x" * 1300)
+    candidates = _templates(make_template, user)
+    monkeypatch.setattr("app.services.template_suggestions.try_publish_task_dispatch_safely", lambda *_: None)
+    job = queue_template_suggestion(
+        db_session, user, transcript_id=transcript.id, selected_template_id=candidates[0].id,
+    )
+    monkeypatch.setattr("app.services.template_suggestions.redact_transient_text", lambda *_args, **_kwargs: {"redacted_text": "safe", "phi_index": []})
+    monkeypatch.setattr("app.services.template_suggestions._apply_manual_pii_redaction", lambda *_args, **_kwargs: ("safe", "", []))
+    monkeypatch.setattr("app.services.template_suggestions._resolve_generation_credential", lambda *_: "token")
+    monkeypatch.setattr(
+        "app.services.template_suggestions._generate_freeform_output_openai",
+        lambda **_: (
+            '{"template_id":"%s","confidence":"high","reason":"Best fit"}' % candidates[0].id,
+            {"total_tokens": 2},
+        ),
+    )
+
+    assert process_template_suggestion(db_session, job_id=job.id).status is TemplateSuggestionStatus.completed
+    _, result = get_template_suggestion(db_session, user, transcript_id=transcript.id)
+    assert result is None
 
 
 def test_provider_failure_is_generic_and_suppressed(

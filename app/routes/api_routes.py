@@ -34,7 +34,7 @@ from ..services.llm import (
     set_team_hallucination_check_selection as set_team_hallucination_check_selection_service,
 )
 from ..schemas.transcripts import WorkingNoteClear, WorkingNoteDetail, WorkingNoteUpdate
-from ..schemas.templates import TemplateSuggestionResponse
+from ..schemas.templates import TemplateSuggestionRequest, TemplateSuggestionResponse
 from ..services.template_suggestions import (
     get_template_suggestion as get_template_suggestion_service,
     queue_template_suggestion as queue_template_suggestion_service,
@@ -1684,6 +1684,7 @@ def _template_suggestion_response(db: Session, actor: User, *, transcript_id: UU
 )
 def queue_template_suggestion(
     transcript_id: UUID,
+    payload: TemplateSuggestionRequest | None = Body(default=None),
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
@@ -1696,7 +1697,10 @@ def queue_template_suggestion(
             "team_id": str(context.user.team_id),
         },
     )
-    queue_template_suggestion_service(db, context.user, transcript_id=transcript_id)
+    queue_template_suggestion_service(
+        db, context.user, transcript_id=transcript_id,
+        selected_template_id=payload.selected_template_id if payload else None,
+    )
     payload = _template_suggestion_response(db, context.user, transcript_id=transcript_id)
     template_suggestion_logger.info(
         "template_suggestion_request_responded",

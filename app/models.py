@@ -1649,6 +1649,7 @@ class TemplateSuggestionJob(Base):
     status: Mapped[TemplateSuggestionStatus] = mapped_column(Enum(TemplateSuggestionStatus), nullable=False)
     excerpt_snapshot_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     candidates_snapshot_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    selected_template_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     suggestion_result_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     llm_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("team_llm_configs.id"), nullable=True)
     model_used: Mapped[str | None] = mapped_column(String(255), nullable=True)

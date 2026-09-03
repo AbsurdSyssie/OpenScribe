@@ -41,6 +41,10 @@ class TemplateSuggestionResponse(BaseModel):
     suggestion: TemplateSuggestionCandidate | None = None
 
 
+class TemplateSuggestionRequest(BaseModel):
+    selected_template_id: UUID | None = None
+
+
 class StructuredTemplateSectionConfig(BaseModel):
     section_key: str
     instruction: str

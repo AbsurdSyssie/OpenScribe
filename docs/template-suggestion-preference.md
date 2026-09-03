@@ -10,7 +10,7 @@ The setting is on by default. A missing preference value means on; the database 
 
 ## Effect on work
 
-When the setting is on, the normal Scribe workflow may claim its one template-suggestion job for an eligible transcript. When the setting is off, the browser and API do not create a job, and the worker checks the setting again before redaction or provider dispatch.
+When the setting is on, the normal Scribe workflow may claim its one template-suggestion job for an eligible transcript. The browser includes the currently selected template ID in the queue request. The server validates it against the owner's available templates and snapshots its ID, name, and description with the job. The worker sends that snapshot to the LLM as `current_template`; the LLM returns no suggestion when that template is already a good fit. When the setting is off, the browser and API do not create a job, and the worker checks the setting again before redaction or provider dispatch.
 
 Turning the setting off cancels the user's queued suggestion jobs in the same database transaction as the preference change. It cancels the pending outbox dispatch and releases any reserved provider quota. A broker message already published may still reach a worker, but the terminal job makes it a no-op. The service cannot recall a request that a provider has already received.
 

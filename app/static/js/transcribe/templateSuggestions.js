@@ -125,7 +125,12 @@ export function createTemplateSuggestionController({ transcriptText, templateSel
     requestedTranscriptIds.add(transcriptId);
     trace('template_suggestion_browser_request_started', { transcriptId, transcriptCharCount });
     let payload = null;
-    try { payload = await readResponse(await fetcher(`/api/v1/transcripts/${transcriptId}/template-suggestion`, { method: 'POST', credentials: 'include' })); } catch (_) {
+    try {
+      payload = await readResponse(await fetcher(`/api/v1/transcripts/${transcriptId}/template-suggestion`, {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selected_template_id: templateSelect?.value || null }),
+      }));
+    } catch (_) {
       requestedTranscriptIds.delete(transcriptId);
       trace('template_suggestion_browser_request_failed', { transcriptId, reasonCode: 'request_failed' });
       return;

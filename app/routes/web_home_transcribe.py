@@ -1010,6 +1010,7 @@ def home_set_llm_preference(
                     default_quick_action_id=existing.get("default_quick_action_id"),
                     default_template_id=existing.get("default_template_id"),
                     template_suggestions_enabled=existing.get("template_suggestions_enabled") is not False,
+                    split_consultations_into_separate_notes=existing.get("split_consultations_into_separate_notes") is True,
                     llm_detail_level=llm_detail_level or existing.get("llm_detail_level"),
                     note_generation_length=note_generation_length or existing.get("note_generation_length"),
                     preferred_recording_mode=existing.get("preferred_recording_mode"),
@@ -1061,6 +1062,50 @@ def home_set_template_suggestion_preference(
                 default_quick_action_id=existing.get("default_quick_action_id"),
                 default_template_id=existing.get("default_template_id"),
                 template_suggestions_enabled=template_suggestions_enabled == "true",
+                split_consultations_into_separate_notes=existing.get("split_consultations_into_separate_notes") is True,
+                llm_detail_level=existing.get("llm_detail_level"),
+                note_generation_length=existing.get("note_generation_length"),
+                preferred_recording_mode=existing.get("preferred_recording_mode"),
+                preferred_transcribe_tab=existing.get("preferred_transcribe_tab"),
+            ),
+        )
+    except AppError as exc:
+        return _render_home_feedback(
+            request, db, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code,
+            active_home_tab=return_tab or "preferences", template_name="settings.html" if _is_settings_return(return_view) else "home.html",
+            home_page_route=_home_page_route_from_return_view(return_view), home_return_view=_home_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_home_redirect_url(return_view=return_view, return_tab=return_tab or "preferences"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/home/consultation-splitting-preference", response_class=HTMLResponse)
+def home_set_consultation_splitting_preference(
+    request: Request,
+    split_consultations_into_separate_notes: str = Form("false"),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    preference = get_user_app_preferences_service(db, context.user)
+    existing = preference.preferences_json if preference is not None and isinstance(preference.preferences_json, dict) else {}
+    try:
+        set_user_app_preferences_service(
+            db,
+            context.user,
+            UserAppPreferencesUpsert(
+                favorite_quick_action_ids=existing.get("favorite_quick_action_ids") or [],
+                favorite_template_ids=existing.get("favorite_template_ids") or [],
+                default_quick_action_id=existing.get("default_quick_action_id"),
+                default_template_id=existing.get("default_template_id"),
+                template_suggestions_enabled=existing.get("template_suggestions_enabled") is not False,
+                split_consultations_into_separate_notes=split_consultations_into_separate_notes == "true",
                 llm_detail_level=existing.get("llm_detail_level"),
                 note_generation_length=existing.get("note_generation_length"),
                 preferred_recording_mode=existing.get("preferred_recording_mode"),

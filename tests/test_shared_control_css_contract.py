@@ -61,7 +61,7 @@ def test_shared_select_blurs_after_a_new_value_is_chosen():
     assert "control.blur();" in script
 
     for relative in ("app/templates/settings.html", "app/templates/workspace.html"):
-        assert 'settings/controls.js?v=20260902-account-dialogs-4' in read(relative)
+        assert 'settings/controls.js?v=20260911-split-preferences' in read(relative)
 
 
 def test_writing_style_save_control_becomes_active_only_for_unsaved_changes():

@@ -21,6 +21,16 @@ from app.models import (
     AttemptStatus,
     GeneratedDocument,
     GeneratedDocumentStatus,
+    ConsultationSplitAnalysis,
+    ConsultationSplitAnalysisStatus,
+    ConsultationSplitBatch,
+    ConsultationSplitBatchTopic,
+    ConsultationSplitBatchStatus,
+    ConsultationSplitExecution,
+    ConsultationSplitExecutionKind,
+    ConsultationSplitExecutionStatus,
+    ConsultationSplitTopicOutcome,
+    ConsultationSplitTopicOutcomeStatus,
     ProviderAttempt,
     ProviderSettlementBasis,
     QuotaResource,
@@ -139,6 +149,7 @@ def cancel_pending_dispatches_for_sources(
     generated_document_ids: tuple[UUID, ...] | list[UUID] = (),
     ingestion_job_ids: tuple[UUID, ...] | list[UUID] = (),
     template_suggestion_job_ids: tuple[UUID, ...] | list[UUID] = (),
+    consultation_split_execution_ids: tuple[UUID, ...] | list[UUID] = (),
     now: datetime | None = None,
 ) -> int:
     """Cancel pending source dispatches only. Published dispatches are immutable."""
@@ -146,7 +157,8 @@ def cancel_pending_dispatches_for_sources(
     document_ids = tuple(set(generated_document_ids))
     job_ids = tuple(set(ingestion_job_ids))
     suggestion_ids = tuple(set(template_suggestion_job_ids))
-    if not document_ids and not job_ids and not suggestion_ids:
+    execution_ids = tuple(set(consultation_split_execution_ids))
+    if not document_ids and not job_ids and not suggestion_ids and not execution_ids:
         return 0
     clauses = []
     if document_ids:
@@ -155,6 +167,8 @@ def cancel_pending_dispatches_for_sources(
         clauses.append((TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.transcript_ingestion_job) & (TaskDispatchOutbox.source_id.in_(job_ids)))
     if suggestion_ids:
         clauses.append((TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.template_suggestion_job) & (TaskDispatchOutbox.source_id.in_(suggestion_ids)))
+    if execution_ids:
+        clauses.append((TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_execution) & (TaskDispatchOutbox.source_id.in_(execution_ids)))
     from sqlalchemy import or_
     dispatches = db.scalars(
         select(TaskDispatchOutbox).where(TaskDispatchOutbox.state == TaskDispatchState.pending, or_(*clauses))
@@ -173,12 +187,14 @@ def delete_dispatches_for_sources(
     generated_document_ids: tuple[UUID, ...] | list[UUID] = (),
     ingestion_job_ids: tuple[UUID, ...] | list[UUID] = (),
     template_suggestion_job_ids: tuple[UUID, ...] | list[UUID] = (),
+    consultation_split_execution_ids: tuple[UUID, ...] | list[UUID] = (),
 ) -> int:
     """Delete polymorphic dispatch metadata before its source is hard-deleted."""
     document_ids = tuple(set(generated_document_ids))
     job_ids = tuple(set(ingestion_job_ids))
     suggestion_ids = tuple(set(template_suggestion_job_ids))
-    if not document_ids and not job_ids and not suggestion_ids:
+    execution_ids = tuple(set(consultation_split_execution_ids))
+    if not document_ids and not job_ids and not suggestion_ids and not execution_ids:
         return 0
     clauses = []
     if document_ids:
@@ -195,6 +211,11 @@ def delete_dispatches_for_sources(
         clauses.append(
             (TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.template_suggestion_job)
             & TaskDispatchOutbox.source_id.in_(suggestion_ids)
+        )
+    if execution_ids:
+        clauses.append(
+            (TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_execution)
+            & TaskDispatchOutbox.source_id.in_(execution_ids)
         )
     from sqlalchemy import or_
 
@@ -250,6 +271,101 @@ def _fail_ingestion_job(db: Session, job_id: UUID, error_code: str, now: datetim
     return True
 
 
+def _fail_split_execution(db: Session, execution_id: UUID, error_code: str, now: datetime) -> bool:
+    """Fail one split execution without reading encrypted execution content.
+
+    Verification is deliberately fail-open: it records its own failure but
+    leaves an otherwise valid batch state untouched.
+    """
+    identity = db.scalar(
+        select(ConsultationSplitExecution).where(ConsultationSplitExecution.id == execution_id)
+    )
+    if identity is None:
+        return False
+    owner = db.scalar(select(User).where(User.id == identity.owner_user_id).with_for_update())
+    transcript = db.scalar(select(Transcript).where(Transcript.id == identity.transcript_id).with_for_update())
+    execution = db.scalar(
+        select(ConsultationSplitExecution)
+        .where(ConsultationSplitExecution.id == execution_id)
+        .with_for_update()
+    )
+    if owner is None or transcript is None or execution is None:
+        return False
+    if execution.status not in {
+        ConsultationSplitExecutionStatus.queued,
+        ConsultationSplitExecutionStatus.processing,
+    }:
+        return False
+    if execution.kind is ConsultationSplitExecutionKind.verification and execution.batch_id is not None:
+        # The attempt was already cancelled/settled by quota lifecycle.  This
+        # path does not call a provider; it makes immutable accepted outputs
+        # available as clinician-review drafts and records bounded state.
+        from app.services.consultation_split_verification_runtime import fail_open_verification_execution
+        return fail_open_verification_execution(db, execution_id=execution_id, reason=error_code)
+    execution.status = ConsultationSplitExecutionStatus.failed
+    execution.error_code = error_code
+    execution.completed_at = now
+    if execution.kind is ConsultationSplitExecutionKind.analysis and execution.analysis_id is not None:
+        analysis = db.scalar(
+            select(ConsultationSplitAnalysis)
+            .where(ConsultationSplitAnalysis.id == execution.analysis_id)
+            .with_for_update()
+        )
+        if analysis is not None and analysis.status in {
+            ConsultationSplitAnalysisStatus.queued,
+            ConsultationSplitAnalysisStatus.processing,
+        }:
+            analysis.status = ConsultationSplitAnalysisStatus.failed
+            analysis.error_code = error_code
+            analysis.completed_at = now
+    elif execution.kind is ConsultationSplitExecutionKind.generation and execution.batch_id is not None:
+        batch = db.scalar(
+            select(ConsultationSplitBatch)
+            .where(ConsultationSplitBatch.id == execution.batch_id)
+            .with_for_update()
+        )
+        if batch is not None and batch.status in {
+            ConsultationSplitBatchStatus.generation_queued,
+            ConsultationSplitBatchStatus.generating,
+        }:
+            topics = db.scalars(
+                select(ConsultationSplitBatchTopic)
+                .where(ConsultationSplitBatchTopic.batch_id == batch.id)
+                .order_by(ConsultationSplitBatchTopic.topic_order)
+                .with_for_update()
+            ).all()
+            outcomes = db.scalars(
+                select(ConsultationSplitTopicOutcome)
+                .where(ConsultationSplitTopicOutcome.batch_topic_id.in_([topic.id for topic in topics]))
+                .with_for_update()
+            ).all()
+            # A recovery operates only on already-failed topics.  If a prior
+            # durable response left validated siblings, a cleanup failure must
+            # not discard them or close the clinician's Keep/retry choices.
+            recovery_with_survivors = (
+                execution.attempt_no > 1
+                and any(outcome.status is ConsultationSplitTopicOutcomeStatus.validated for outcome in outcomes)
+            )
+            batch.status = (
+                ConsultationSplitBatchStatus.partially_ready
+                if recovery_with_survivors
+                else ConsultationSplitBatchStatus.failed
+            )
+            batch.error_code = error_code
+            batch.completed_at = now
+            if not recovery_with_survivors:
+                for outcome in outcomes:
+                    if outcome.status is ConsultationSplitTopicOutcomeStatus.pending:
+                        outcome.status = ConsultationSplitTopicOutcomeStatus.failed
+                        outcome.error_code = error_code
+    cancel_pending_dispatches_for_sources(
+        db,
+        consultation_split_execution_ids=(execution.id,),
+        now=now,
+    )
+    return True
+
+
 def _reconcile_sources(db: Session, attempts: list[ProviderAttempt], now: datetime) -> int:
     changed = 0
     for attempt in attempts:
@@ -258,6 +374,10 @@ def _reconcile_sources(db: Session, attempts: list[ProviderAttempt], now: dateti
             changed += _fail_document(db, attempt.generated_document_id, error, now)
         if attempt.transcript_ingestion_job_id is not None:
             changed += _fail_ingestion_job(db, attempt.transcript_ingestion_job_id, error, now)
+        if attempt.consultation_split_execution_id is not None:
+            changed += _fail_split_execution(
+                db, attempt.consultation_split_execution_id, error, now
+            )
         if attempt.attempt_kind is AttemptKind.llm_template_suggestion:
             job = db.scalar(select(TemplateSuggestionJob).where(TemplateSuggestionJob.id == attempt.correlation_id).with_for_update())
             if job is not None and job.status in {TemplateSuggestionStatus.queued, TemplateSuggestionStatus.processing}:
@@ -285,6 +405,7 @@ def process_quota_lifecycle(db: Session, batch_size: int = 100, now: datetime | 
             ProviderAttempt.transcript_id,
             ProviderAttempt.generated_document_id,
             ProviderAttempt.transcript_ingestion_job_id,
+            ProviderAttempt.consultation_split_execution_id,
         ).where(
             (ProviderAttempt.status == AttemptStatus.reserved) & (ProviderAttempt.reservation_valid_until <= now)
             | (ProviderAttempt.status == AttemptStatus.submitted) & (ProviderAttempt.deadline_at <= now)
@@ -294,6 +415,7 @@ def process_quota_lifecycle(db: Session, batch_size: int = 100, now: datetime | 
     transcript_ids = tuple(sorted({row.transcript_id for row in candidate_rows if row.transcript_id is not None}, key=str))
     document_ids = tuple(sorted({row.generated_document_id for row in candidate_rows if row.generated_document_id is not None}, key=str))
     job_ids = tuple(sorted({row.transcript_ingestion_job_id for row in candidate_rows if row.transcript_ingestion_job_id is not None}, key=str))
+    execution_ids = tuple(sorted({row.consultation_split_execution_id for row in candidate_rows if row.consultation_split_execution_id is not None}, key=str))
     if owner_ids:
         db.scalars(select(User).where(User.id.in_(owner_ids)).order_by(User.id).with_for_update()).all()
     if transcript_ids:
@@ -302,6 +424,13 @@ def process_quota_lifecycle(db: Session, batch_size: int = 100, now: datetime | 
         db.scalars(select(GeneratedDocument).where(GeneratedDocument.id.in_(document_ids)).order_by(GeneratedDocument.id).with_for_update()).all()
     if job_ids:
         db.scalars(select(TranscriptIngestionJob).where(TranscriptIngestionJob.id.in_(job_ids)).order_by(TranscriptIngestionJob.id).with_for_update()).all()
+    if execution_ids:
+        db.scalars(
+            select(ConsultationSplitExecution)
+            .where(ConsultationSplitExecution.id.in_(execution_ids))
+            .order_by(ConsultationSplitExecution.id)
+            .with_for_update()
+        ).all()
     candidate_ids = tuple(row.id for row in candidate_rows)
     expired = [] if not candidate_ids else db.scalars(
         select(ProviderAttempt).where(
@@ -344,7 +473,22 @@ def process_quota_lifecycle(db: Session, batch_size: int = 100, now: datetime | 
             .order_by(TaskDispatchOutbox.failed_at, TaskDispatchOutbox.task_id)
             .limit(remaining)
         ).all()
-        failed = [*failed_documents, *failed_ingestion]
+        remaining -= len(failed_ingestion)
+        failed_split_executions = [] if not remaining else db.scalars(
+            select(TaskDispatchOutbox)
+            .join(
+                ConsultationSplitExecution,
+                (TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_execution)
+                & (TaskDispatchOutbox.source_id == ConsultationSplitExecution.id),
+            )
+            .where(
+                TaskDispatchOutbox.state == TaskDispatchState.failed,
+                ConsultationSplitExecution.status == ConsultationSplitExecutionStatus.queued,
+            )
+            .order_by(TaskDispatchOutbox.failed_at, TaskDispatchOutbox.task_id)
+            .limit(remaining)
+        ).all()
+        failed = [*failed_documents, *failed_ingestion, *failed_split_executions]
         for dispatch in failed:
             if dispatch.source_kind is TaskDispatchSourceKind.generated_document:
                 source = db.scalar(select(GeneratedDocument).where(GeneratedDocument.id == dispatch.source_id))
@@ -355,7 +499,7 @@ def process_quota_lifecycle(db: Session, batch_size: int = 100, now: datetime | 
                     attempts = _lock_attempts(db, (ProviderAttempt.generated_document_id == source.id) & (ProviderAttempt.status == AttemptStatus.reserved))
                     changed += _terminalize_locked_attempts(attempts, now).cancelled
                     changed += _fail_document(db, source.id, TASK_DISPATCH_FAILED, now)
-            else:
+            elif dispatch.source_kind is TaskDispatchSourceKind.transcript_ingestion_job:
                 source = db.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.id == dispatch.source_id))
                 if source is not None and source.status is TranscriptIngestionJobStatus.queued:
                     db.scalar(select(User).where(User.id == source.owner_user_id).with_for_update())
@@ -364,6 +508,28 @@ def process_quota_lifecycle(db: Session, batch_size: int = 100, now: datetime | 
                     attempts = _lock_attempts(db, (ProviderAttempt.transcript_ingestion_job_id == source.id) & (ProviderAttempt.status == AttemptStatus.reserved))
                     changed += _terminalize_locked_attempts(attempts, now).cancelled
                     changed += _fail_ingestion_job(db, source.id, TASK_DISPATCH_FAILED, now)
+            elif dispatch.source_kind is TaskDispatchSourceKind.consultation_split_execution:
+                source = db.scalar(
+                    select(ConsultationSplitExecution).where(
+                        ConsultationSplitExecution.id == dispatch.source_id
+                    )
+                )
+                if source is not None and source.status is ConsultationSplitExecutionStatus.queued:
+                    db.scalar(select(User).where(User.id == source.owner_user_id).with_for_update())
+                    db.scalar(select(Transcript).where(Transcript.id == source.transcript_id).with_for_update())
+                    source = db.scalar(
+                        select(ConsultationSplitExecution)
+                        .where(ConsultationSplitExecution.id == source.id)
+                        .with_for_update()
+                    )
+                    if source is not None:
+                        attempts = _lock_attempts(
+                            db,
+                            (ProviderAttempt.consultation_split_execution_id == source.id)
+                            & (ProviderAttempt.status == AttemptStatus.reserved),
+                        )
+                        changed += _terminalize_locked_attempts(attempts, now).cancelled
+                        changed += _fail_split_execution(db, source.id, TASK_DISPATCH_FAILED, now)
     db.flush()
     db.commit()
     return changed

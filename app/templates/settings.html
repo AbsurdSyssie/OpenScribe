@@ -68,11 +68,10 @@
       form.addEventListener('submit', () => { submitting = true; });
       window.addEventListener('beforeunload', (event) => { if (submitting || snapshot() === initial) return; event.preventDefault(); event.returnValue = ''; });
     });
-    document.querySelector('[data-template-suggestion-preference]')?.addEventListener('change', (event) => event.target.form?.requestSubmit());
   })();
   </script>
   <script src="/static/js/generated-password.js?v=20260712-infield-controls"></script>
-  <script type="module" src="/static/js/settings/controls.js?v=20260902-account-dialogs-4"></script>
+  <script type="module" src="/static/js/settings/controls.js?v=20260911-split-preferences"></script>
   <script type="module" nonce="{{ request.state.csp_nonce }}">import { initMemberMenus } from '/static/js/settings/member-menu.js?v=20260821-member-actions-2'; initMemberMenus();</script>
   <script type="module" src="/static/js/settings/smart-phrases.js?v=20260718-library-editor"></script>
   {% include "_template_editor_script.html" %}

@@ -517,11 +517,14 @@ def ensure_redaction_run_for_transcript_version(db: Session, *, transcript_versi
         .limit(1)
     )
     if existing is not None:
-        from app.services.clinical_nlp import ensure_clinical_entity_run_for_transcript_version
+        from app.services.clinical_nlp import ensure_optional_clinical_entity_run_for_transcript_version
 
-        clinical_run = ensure_clinical_entity_run_for_transcript_version(db, transcript_version=transcript_version, redaction_run=existing)
+        clinical_run = ensure_optional_clinical_entity_run_for_transcript_version(
+            db,
+            transcript_version=transcript_version,
+            redaction_run=existing,
+        )
         if clinical_run is not None:
-            db.commit()
             db.refresh(existing)
         return existing
 
@@ -602,13 +605,9 @@ def ensure_redaction_run_for_transcript_version(db: Session, *, transcript_versi
                     occurrence_count=1,
                 )
             )
-        from app.services.clinical_nlp import ensure_clinical_entity_run_for_transcript_version
-
-        ensure_clinical_entity_run_for_transcript_version(db, transcript_version=transcript_version, redaction_run=run)
         db.add(run)
         db.commit()
         db.refresh(run)
-        return run
     except AppError as exc:
         run.status = RedactionRunStatus.failed
         run.error_code = exc.code
@@ -623,6 +622,17 @@ def ensure_redaction_run_for_transcript_version(db: Session, *, transcript_versi
         db.add(run)
         db.commit()
         raise AppError(502, "redaction_failed", "PHI redaction failed") from exc
+
+    from app.services.clinical_nlp import ensure_optional_clinical_entity_run_for_transcript_version
+
+    # Required redaction is durable before optional enrichment begins.
+    ensure_optional_clinical_entity_run_for_transcript_version(
+        db,
+        transcript_version=transcript_version,
+        redaction_run=run,
+    )
+    db.refresh(run)
+    return run
 
 
 def next_placeholder_index(run: RedactionRun) -> int:

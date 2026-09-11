@@ -24,6 +24,16 @@ from .auth import (
     TrustedDeviceStatusResponse,
 )
 from .common import ApiError, ErrorResponse
+from .consultation_split import (
+    ConsultationSplitAnalysisDetail,
+    ConsultationSplitDraftDetail,
+    ConsultationSplitDraftConfirmRequest,
+    ConsultationSplitDraftConfirmResponse,
+    ConsultationSplitDraftReplace,
+    ConsultationSplitDraftTopicDetail,
+    ConsultationSplitDraftTopicReplace,
+    ConsultationSplitTopicDetail,
+)
 from .dictation import PostConsultationDictationDetail, PostConsultationDictationPreview, PostConsultationDictationUpdate, PromptContextPreview
 from .deidentification import (
     ClinicalNlpSelectionDetail,
@@ -100,6 +110,7 @@ from .templates import (
     GenerateQuickActionRequest,
     GenerateTemplateOutputRequest,
     RegenerateGeneratedDocumentRequest,
+    RegenerationSteeringPreset,
     GeneratedDocumentDetail,
     GeneratedDocumentPiiEntityDetail,
     GeneratedDocumentRedactionDebugDetail,
@@ -171,6 +182,14 @@ __all__ = [
     "TrustedDeviceStatusResponse",
     "ApiError",
     "ErrorResponse",
+    "ConsultationSplitAnalysisDetail",
+    "ConsultationSplitDraftConfirmRequest",
+    "ConsultationSplitDraftConfirmResponse",
+    "ConsultationSplitDraftDetail",
+    "ConsultationSplitDraftReplace",
+    "ConsultationSplitDraftTopicDetail",
+    "ConsultationSplitDraftTopicReplace",
+    "ConsultationSplitTopicDetail",
     "GeminiEnterpriseProviderConfig",
     "HallucinationCheckSelectionDetail",
     "HallucinationCheckSelectionUpsert",
@@ -217,6 +236,7 @@ __all__ = [
     "GenerateFollowupRequest",
     "GenerateQuickActionRequest",
     "RegenerateGeneratedDocumentRequest",
+    "RegenerationSteeringPreset",
     "EMIS_SECTION_KEYS",
     "EMIS_SECTION_LABELS",
     "GeneratedDocumentDetail",

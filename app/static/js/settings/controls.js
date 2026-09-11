@@ -37,6 +37,12 @@ document.querySelectorAll('[data-model-preference-form]').forEach((form) => {
   initialiseDirtySaveState(form, '[data-save-model]', '[data-model-save-state]');
 });
 
+document.querySelectorAll(
+  '[data-template-suggestion-preference], [data-consultation-splitting-preference]',
+).forEach((input) => {
+  input.addEventListener('change', (event) => event.target.form?.requestSubmit());
+});
+
 function initialiseAccountDialogs(root = document) {
   const dialogs = Array.from(root.querySelectorAll('[data-account-dialog]'));
   if (!dialogs.length) return;

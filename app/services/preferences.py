@@ -1,3 +1,4 @@
+import os
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -12,6 +13,22 @@ from app.services.security_audit import record_security_event
 def _require_user_app_preference_scope(actor: User) -> None:
     if actor.is_system_admin or actor.team_id is None or actor.team_role not in {TeamRole.user, TeamRole.leader}:
         raise AppError(403, "forbidden", "User app preferences are restricted to normal team users")
+
+
+def _lock_user_app_preference_owner(db: Session, actor: User) -> User:
+    """Serialize every preference mutation through the owner root row.
+
+    Consultation-split runtime holds this row from its final preference check
+    through durable provider submission.  Locking the owner rather than just
+    the optional preference row also covers the first upsert and a clear.
+    The caller has already authenticated as ``actor``; a missing row therefore
+    fails closed rather than disclosing another account's state.
+    """
+    owner = db.scalar(select(User).where(User.id == actor.id).with_for_update())
+    if owner is None:
+        raise AppError(403, "forbidden", "User app preferences are restricted to normal team users")
+    _require_user_app_preference_scope(owner)
+    return owner
 
 
 def _visible_template_ids(db: Session, actor: User) -> set[UUID]:
@@ -52,6 +69,8 @@ def _serialize_preferences_payload(payload: UserAppPreferencesUpsert) -> dict[st
         preferences["default_template_id"] = str(payload.default_template_id)
     if not payload.template_suggestions_enabled:
         preferences["template_suggestions_enabled"] = False
+    if payload.split_consultations_into_separate_notes:
+        preferences["split_consultations_into_separate_notes"] = True
     if payload.llm_detail_level is not None:
         preferences["llm_detail_level"] = payload.llm_detail_level.value
     if payload.note_generation_length is not None:
@@ -138,6 +157,9 @@ def _validate_preferences_json(db: Session, actor: User, preferences_json: dict[
     if preferences_json.get("template_suggestions_enabled") is False:
         normalized["template_suggestions_enabled"] = False
 
+    if preferences_json.get("split_consultations_into_separate_notes") is True:
+        normalized["split_consultations_into_separate_notes"] = True
+
     raw_llm_detail_level = preferences_json.get("llm_detail_level")
     if isinstance(raw_llm_detail_level, str) and raw_llm_detail_level in {"concise", "balanced", "detailed"}:
         normalized["llm_detail_level"] = raw_llm_detail_level
@@ -159,10 +181,11 @@ def _validate_preferences_json(db: Session, actor: User, preferences_json: dict[
 
 def get_user_app_preferences(db: Session, actor: User) -> UserAppPreference | None:
     _require_user_app_preference_scope(actor)
-    preference = db.scalar(select(UserAppPreference).where(UserAppPreference.user_id == actor.id))
+    owner = _lock_user_app_preference_owner(db, actor)
+    preference = db.scalar(select(UserAppPreference).where(UserAppPreference.user_id == owner.id))
     if preference is None:
         return None
-    normalized = _validate_preferences_json(db, actor, preference.preferences_json or {}, strict=False)
+    normalized = _validate_preferences_json(db, owner, preference.preferences_json or {}, strict=False)
     if normalized != (preference.preferences_json or {}):
         preference.preferences_json = normalized
         db.add(preference)
@@ -178,19 +201,46 @@ def template_suggestions_enabled(db: Session, actor: User) -> bool:
     return preference is None or preference.preferences_json.get("template_suggestions_enabled") is not False
 
 
+def consultation_splitting_feature_enabled() -> bool:
+    """Return whether this deployment has enabled consultation-splitting rollout."""
+    return os.getenv("CONSULTATION_SPLITTING_ENABLED", "false").lower() in {"1", "true", "yes"}
+
+
+def consultation_splitting_enabled(db: Session, actor: User) -> bool:
+    """Return the effective owner capability without exposing preference content."""
+    _require_user_app_preference_scope(actor)
+    if not consultation_splitting_feature_enabled():
+        return False
+    preference = db.scalar(select(UserAppPreference).where(UserAppPreference.user_id == actor.id))
+    return preference is not None and preference.preferences_json.get("split_consultations_into_separate_notes") is True
+
+
+def effective_consultation_splitting_enabled(db: Session, actor: User | None) -> bool:
+    """Return the browser-facing split capability for a transcript owner."""
+    if (
+        actor is None
+        or actor.is_system_admin
+        or actor.team_id is None
+        or actor.team_role not in {TeamRole.user, TeamRole.leader}
+    ):
+        return False
+    return consultation_splitting_enabled(db, actor)
+
+
 def set_user_app_preferences(db: Session, actor: User, payload: UserAppPreferencesUpsert) -> UserAppPreference:
     _require_user_app_preference_scope(actor)
+    owner = _lock_user_app_preference_owner(db, actor)
     serialized = _serialize_preferences_payload(payload)
-    normalized = _validate_preferences_json(db, actor, serialized, strict=True)
-    preference = db.scalar(select(UserAppPreference).where(UserAppPreference.user_id == actor.id))
+    normalized = _validate_preferences_json(db, owner, serialized, strict=True)
+    preference = db.scalar(select(UserAppPreference).where(UserAppPreference.user_id == owner.id))
     was_template_suggestions_enabled = preference is None or preference.preferences_json.get("template_suggestions_enabled") is not False
     will_template_suggestions_enabled = normalized.get("template_suggestions_enabled") is not False
     if was_template_suggestions_enabled and not will_template_suggestions_enabled:
         from app.services.template_suggestions import cancel_queued_template_suggestions_for_owner
 
-        cancel_queued_template_suggestions_for_owner(db, actor)
+        cancel_queued_template_suggestions_for_owner(db, owner)
     if preference is None:
-        preference = UserAppPreference(id=uuid4(), user_id=actor.id, preferences_json=normalized)
+        preference = UserAppPreference(id=uuid4(), user_id=owner.id, preferences_json=normalized)
     else:
         preference.preferences_json = normalized
     db.add(preference)
@@ -199,9 +249,9 @@ def set_user_app_preferences(db: Session, actor: User, payload: UserAppPreferenc
     record_security_event(
         db,
         action="user_app_preferences_set",
-        actor=actor,
-        target=actor,
-        team_id=actor.team_id,
+        actor=owner,
+        target=owner,
+        team_id=owner.team_id,
         details={"category": "template", "outcome": "success", "object_type": "user_app_preferences", "object_id": str(preference.id), "keys": sorted(normalized.keys())},
     )
     return preference
@@ -209,10 +259,11 @@ def set_user_app_preferences(db: Session, actor: User, payload: UserAppPreferenc
 
 def clear_user_app_preferences(db: Session, actor: User) -> None:
     _require_user_app_preference_scope(actor)
-    preference = db.scalar(select(UserAppPreference).where(UserAppPreference.user_id == actor.id))
+    owner = _lock_user_app_preference_owner(db, actor)
+    preference = db.scalar(select(UserAppPreference).where(UserAppPreference.user_id == owner.id))
     if preference is None:
-        raise AppError(404, "not_found", "User app preferences not found", {"resource": "user_app_preferences", "user_id": str(actor.id)})
+        raise AppError(404, "not_found", "User app preferences not found", {"resource": "user_app_preferences", "user_id": str(owner.id)})
     preference_id = preference.id
     db.delete(preference)
     db.commit()
-    record_security_event(db, action="user_app_preferences_cleared", actor=actor, target=actor, team_id=actor.team_id, details={"category": "template", "outcome": "success", "object_type": "user_app_preferences", "object_id": str(preference_id)})
+    record_security_event(db, action="user_app_preferences_cleared", actor=owner, target=owner, team_id=owner.team_id, details={"category": "template", "outcome": "success", "object_type": "user_app_preferences", "object_id": str(preference_id)})

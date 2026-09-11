@@ -34,11 +34,42 @@ from ..services.llm import (
     set_team_hallucination_check_selection as set_team_hallucination_check_selection_service,
 )
 from ..schemas.transcripts import WorkingNoteClear, WorkingNoteDetail, WorkingNoteUpdate
+from ..schemas.consultation_split import (
+    ConsultationSplitAnalysisDetail,
+    ConsultationSplitDraftDetail,
+    ConsultationSplitDraftConfirmRequest,
+    ConsultationSplitDraftConfirmResponse,
+    ConsultationSplitDraftReplace,
+    ConsultationSplitIntentStartRequest,
+    ConsultationSplitIntentStartResponse,
+    ConsultationSplitIntentContinueAsOneNoteResponse,
+    ConsultationSplitBatchRegenerateRequest,
+    ConsultationSplitBatchRegenerateResponse,
+    ConsultationSplitKeepAvailableResponse,
+    ConsultationSplitRetryMissingResponse,
+)
 from ..schemas.templates import TemplateSuggestionRequest, TemplateSuggestionResponse
 from ..services.template_suggestions import (
     get_template_suggestion as get_template_suggestion_service,
     queue_template_suggestion as queue_template_suggestion_service,
 )
+from ..services.consultation_split_api import (
+    project_consultation_split_intent_start,
+    queue_split_analysis_api,
+)
+from ..services.consultation_split_intents import (
+    continue_consultation_split_intent_as_one_note,
+    create_or_replay_consultation_split_intent,
+)
+from ..services.consultation_split_drafts import (
+    initialize_or_reuse_split_draft,
+    read_split_draft,
+    replace_split_draft,
+)
+from ..services.consultation_split_confirmation import confirm_split_draft
+from ..services.consultation_split_partial import keep_available_split_notes
+from ..services.consultation_split_recovery import retry_missing_split_notes
+from ..services.consultation_split_regeneration import regenerate_confirmed_split_batch
 
 template_suggestion_logger = logging.getLogger("openscribe.template_suggestion")
 from ..services.smart_phrases import (
@@ -1669,6 +1700,232 @@ def list_generated_documents_for_transcript(transcript_id: UUID, context: Authen
     return [generated_document_response(db, document, actor=context.user) for document in list_generated_documents_for_transcript_service(db, context.user, transcript_id=transcript_id)]
 
 
+@api.post(
+    "/transcripts/{transcript_id}/consultation-split-analysis",
+    response_model=ConsultationSplitAnalysisDetail,
+    responses=error_responses,
+)
+@LLM_GENERATION_DAILY_RATE_LIMIT
+@LLM_GENERATION_BURST_RATE_LIMIT
+def queue_consultation_split_analysis(
+    request: Request,
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    payload = queue_split_analysis_api(db, context.user, transcript_id=transcript_id)
+    return JSONResponse(
+        status_code=(
+            status.HTTP_202_ACCEPTED
+            if payload.status in {"queued", "processing"}
+            else status.HTTP_200_OK
+        ),
+        content=payload.model_dump(mode="json"),
+    )
+
+
+@api.post(
+    "/transcripts/{transcript_id}/consultation-split-intents",
+    response_model=ConsultationSplitIntentStartResponse,
+    responses=error_responses,
+)
+@LLM_GENERATION_DAILY_RATE_LIMIT
+@LLM_GENERATION_BURST_RATE_LIMIT
+def create_consultation_split_intent(
+    request: Request,
+    transcript_id: UUID,
+    payload: ConsultationSplitIntentStartRequest,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    result = create_or_replay_consultation_split_intent(
+        db,
+        context.user,
+        transcript_id=transcript_id,
+        client_idempotency_key=payload.client_idempotency_key,
+        selected_template_id=payload.selected_template_id,
+    )
+    response = project_consultation_split_intent_start(db, context.user, result=result)
+    return JSONResponse(
+        status_code=(
+            status.HTTP_202_ACCEPTED
+            if response.analysis.status in {"queued", "processing"}
+            else status.HTTP_200_OK
+        ),
+        content=response.model_dump(mode="json"),
+    )
+
+
+@api.post(
+    "/transcripts/{transcript_id}/consultation-split-intents/{intent_id}/continue-as-one-note",
+    response_model=ConsultationSplitIntentContinueAsOneNoteResponse,
+    responses=error_responses,
+)
+@LLM_GENERATION_DAILY_RATE_LIMIT
+@LLM_GENERATION_BURST_RATE_LIMIT
+def continue_consultation_split_intent_as_one_note_route(
+    request: Request,
+    transcript_id: UUID,
+    intent_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    result = continue_consultation_split_intent_as_one_note(
+        db,
+        context.user,
+        transcript_id=transcript_id,
+        intent_id=intent_id,
+    )
+    document = (
+        generated_document_response(db, result.document, actor=context.user)
+        if result.document is not None
+        else None
+    )
+    payload = ConsultationSplitIntentContinueAsOneNoteResponse(
+        intent_id=result.intent.id,
+        idempotency_replayed=not result.created_new_document,
+        document=document,
+        consumed_document_deleted=(result.intent.status.value == "bypassed" and result.document is None),
+    )
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED if result.created_new_document else status.HTTP_200_OK,
+        content=payload.model_dump(mode="json"),
+    )
+
+
+@api.post(
+    "/transcripts/{transcript_id}/consultation-split-draft",
+    response_model=ConsultationSplitDraftDetail,
+    responses=error_responses,
+)
+def initialize_consultation_split_draft(
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    return initialize_or_reuse_split_draft(db, context.user, transcript_id=transcript_id)
+
+
+@api.get(
+    "/transcripts/{transcript_id}/consultation-split-draft",
+    response_model=ConsultationSplitDraftDetail,
+    responses=error_responses,
+)
+def get_consultation_split_draft(
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    return read_split_draft(db, context.user, transcript_id=transcript_id)
+
+
+@api.put(
+    "/transcripts/{transcript_id}/consultation-split-draft",
+    response_model=ConsultationSplitDraftDetail,
+    responses=error_responses,
+)
+def replace_consultation_split_draft(
+    transcript_id: UUID,
+    payload: ConsultationSplitDraftReplace,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    return replace_split_draft(db, context.user, transcript_id=transcript_id, payload=payload)
+
+
+@api.post(
+    "/transcripts/{transcript_id}/consultation-split-draft/confirm",
+    response_model=ConsultationSplitDraftConfirmResponse,
+    responses=error_responses,
+)
+def confirm_consultation_split_draft(
+    request: Request,
+    transcript_id: UUID,
+    payload: ConsultationSplitDraftConfirmRequest,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    response = confirm_split_draft(db, context.user, transcript_id=transcript_id, payload=payload)
+    return JSONResponse(
+        status_code=status.HTTP_200_OK if response.idempotency_replayed else status.HTTP_202_ACCEPTED,
+        content=response.model_dump(mode="json"),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@api.post(
+    "/transcripts/{transcript_id}/consultation-split-batches/{batch_id}/regenerate",
+    response_model=ConsultationSplitBatchRegenerateResponse,
+    responses=error_responses,
+)
+@LLM_GENERATION_DAILY_RATE_LIMIT
+@LLM_GENERATION_BURST_RATE_LIMIT
+def regenerate_consultation_split_batch_route(
+    request: Request,
+    transcript_id: UUID,
+    batch_id: UUID,
+    payload: ConsultationSplitBatchRegenerateRequest,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    result = regenerate_confirmed_split_batch(
+        db, context.user, transcript_id=transcript_id, batch_id=batch_id,
+        client_idempotency_key=payload.client_idempotency_key,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_200_OK if result.replayed else status.HTTP_202_ACCEPTED,
+        content=ConsultationSplitBatchRegenerateResponse(
+            batch_id=result.batch_id, execution_id=result.execution_id,
+            idempotency_replayed=result.replayed,
+        ).model_dump(mode="json"),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@api.post(
+    "/transcripts/{transcript_id}/consultation-split-batches/{batch_id}/keep-available-notes",
+    response_model=ConsultationSplitKeepAvailableResponse,
+    responses=error_responses,
+)
+def keep_available_consultation_split_notes_route(
+    request: Request,
+    transcript_id: UUID,
+    batch_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    # Deliberately no LLM limiter: this is a local, clinician-directed database
+    # operation and cannot submit provider work.
+    documents = keep_available_split_notes(db, context.user, transcript_id=transcript_id, batch_id=batch_id)
+    return JSONResponse(content=ConsultationSplitKeepAvailableResponse(
+        batch_id=batch_id, status="completed_partial", document_ids=[document.id for document in documents]
+    ).model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+
+@api.post(
+    "/transcripts/{transcript_id}/consultation-split-batches/{batch_id}/retry-missing-notes",
+    response_model=ConsultationSplitRetryMissingResponse,
+    responses=error_responses,
+)
+@LLM_GENERATION_BURST_RATE_LIMIT
+def retry_missing_consultation_split_notes_route(
+    request: Request,
+    transcript_id: UUID,
+    batch_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    result = retry_missing_split_notes(db, context.user, transcript_id=transcript_id, batch_id=batch_id)
+    return JSONResponse(
+        status_code=status.HTTP_200_OK if result.replayed else status.HTTP_202_ACCEPTED,
+        content=ConsultationSplitRetryMissingResponse(
+            batch_id=batch_id, execution_id=result.execution_id,
+            idempotency_replayed=result.replayed,
+        ).model_dump(mode="json"),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 def _template_suggestion_response(db: Session, actor: User, *, transcript_id: UUID) -> TemplateSuggestionResponse:
     job, suggestion = get_template_suggestion_service(db, actor, transcript_id=transcript_id)
     return TemplateSuggestionResponse(
@@ -1802,6 +2059,7 @@ def regenerate_generated_document(
         context.user,
         generated_document_id=generated_document_id,
         steering_text=payload.steering_text,
+        steering_preset=payload.steering_preset,
         request=request,
     )
     return generated_document_response(db, document, actor=context.user)

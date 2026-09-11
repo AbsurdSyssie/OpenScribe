@@ -7,6 +7,10 @@ def _demo_compose() -> dict:
     return yaml.safe_load(Path("docker-compose.demo.yml").read_text())
 
 
+def _runtime_compose() -> dict:
+    return yaml.safe_load(Path("docker-compose.yml").read_text())
+
+
 def test_runtime_image_does_not_package_removed_transcriber_prototype() -> None:
     dockerfile = Path("Dockerfile").read_text()
     dockerignore = Path(".dockerignore").read_text()
@@ -86,3 +90,12 @@ def test_demo_compose_seeds_only_after_healthy_app() -> None:
     assert "DEMO_BOOTSTRAP_ENABLED" not in services["openscribe"]["environment"]
     assert seed["environment"]["DEMO_BOOTSTRAP_ENABLED"] == "true"
     assert "Password:" not in Path("scripts/seed_demo.py").read_text()
+
+
+def test_consultation_splitting_rollout_gate_defaults_off_in_runtime_and_demo_compose() -> None:
+    runtime = _runtime_compose()
+    demo = _demo_compose()
+
+    assert runtime["services"]["openscribe"]["environment"]["CONSULTATION_SPLITTING_ENABLED"] == "${CONSULTATION_SPLITTING_ENABLED:-false}"
+    assert demo["x-openscribe-environment"]["CONSULTATION_SPLITTING_ENABLED"] == "false"
+    assert demo["services"]["openscribe"]["environment"]["CONSULTATION_SPLITTING_ENABLED"] == "false"

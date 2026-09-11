@@ -3,7 +3,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, Date, JSON, CheckConstraint, DateTime, Enum, Float, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint, text
+from sqlalchemy import BigInteger, Boolean, Date, JSON, CheckConstraint, DateTime, Enum, Float, ForeignKey, ForeignKeyConstraint, Index, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -245,8 +245,84 @@ class HallucinationCheckStatus(str, enum.Enum):
     checked_corrected = "checked_corrected"
 
 
+class ConsultationSplitAnalysisStatus(str, enum.Enum):
+    queued = "queued"
+    processing = "processing"
+    ready = "ready"
+    not_required = "not_required"
+    failed = "failed"
+    stale = "stale"
+
+
+class ConsultationSplitIntentStatus(str, enum.Enum):
+    analysis_pending = "analysis_pending"
+    # This is a logical terminal state for a one-note decision. It does not
+    # report ordinary generation/provider success.
+    bypassed = "bypassed"
+    # Confirmation creates the immutable, provider-free split batch.  It is
+    # distinct from generation completion, which is a later workflow stage.
+    confirmed = "confirmed"
+
+
+class ConsultationSplitDraftStatus(str, enum.Enum):
+    active = "active"
+    stale = "stale"
+    confirmed = "confirmed"
+    bypassed = "bypassed"
+
+
+class ConsultationSplitTopicDisposition(str, enum.Enum):
+    separate_note = "separate_note"
+    include_in_primary = "include_in_primary"
+    exclude_from_notes = "exclude_from_notes"
+
+
+class ConsultationSplitBatchStatus(str, enum.Enum):
+    generation_queued = "generation_queued"
+    generating = "generating"
+    verifying = "verifying"
+    ready = "ready"
+    partially_ready = "partially_ready"
+    completed_partial = "completed_partial"
+    failed = "failed"
+
+
+class ConsultationSplitVerificationStatus(str, enum.Enum):
+    pending = "pending"
+    verifying = "verifying"
+    verified = "verified"
+    unchecked = "unchecked"
+
+
+class ConsultationSplitTopicOutcomeStatus(str, enum.Enum):
+    pending = "pending"
+    ready = "ready"
+    # `ready` was used by the initial all-or-nothing implementation.  New
+    # provider output is only *validated* until the whole batch is
+    # materialized (or the clinician keeps the available subset).
+    validated = "validated"
+    failed = "failed"
+
+
+class ConsultationSplitExecutionKind(str, enum.Enum):
+    analysis = "analysis"
+    generation = "generation"
+    verification = "verification"
+
+
+class ConsultationSplitExecutionStatus(str, enum.Enum):
+    queued = "queued"
+    processing = "processing"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
 class ProviderFeatureType(str, enum.Enum):
     llm_generation = "llm_generation"
+    consultation_split_analysis = "consultation_split_analysis"
+    consultation_split_generation = "consultation_split_generation"
+    consultation_split_verification = "consultation_split_verification"
 
 
 class ProviderUsageEventType(str, enum.Enum):
@@ -285,6 +361,9 @@ class AttemptKind(str, enum.Enum):
     llm_generation = "llm_generation"
     llm_hallucination_check = "llm_hallucination_check"
     llm_template_suggestion = "llm_template_suggestion"
+    consultation_split_analysis = "consultation_split_analysis"
+    consultation_split_generation = "consultation_split_generation"
+    consultation_split_verification = "consultation_split_verification"
     stt_conversation = "stt_conversation"
     stt_post_consultation_dictation = "stt_post_consultation_dictation"
     stt_prompt_context = "stt_prompt_context"
@@ -315,6 +394,9 @@ class TaskDispatchKind(str, enum.Enum):
     generation = "generation"
     ingestion = "ingestion"
     template_suggestion = "template_suggestion"
+    consultation_split_analysis = "consultation_split_analysis"
+    consultation_split_generation = "consultation_split_generation"
+    consultation_split_verification = "consultation_split_verification"
 
 
 class TaskDispatchState(str, enum.Enum):
@@ -328,6 +410,7 @@ class TaskDispatchSourceKind(str, enum.Enum):
     generated_document = "generated_document"
     transcript_ingestion_job = "transcript_ingestion_job"
     template_suggestion_job = "template_suggestion_job"
+    consultation_split_execution = "consultation_split_execution"
 
 
 class AuthEmailTokenPurpose(str, enum.Enum):
@@ -391,6 +474,14 @@ class Team(Base):
     quick_actions: Mapped[list["QuickAction"]] = relationship(back_populates="team")
     provider_usage_events: Mapped[list["ProviderUsageEvent"]] = relationship(back_populates="team")
     provider_attempts: Mapped[list["ProviderAttempt"]] = relationship(back_populates="team", passive_deletes=True)
+    consultation_split_analyses: Mapped[list["ConsultationSplitAnalysis"]] = relationship(back_populates="team")
+    consultation_split_intents: Mapped[list["ConsultationSplitIntent"]] = relationship(back_populates="team")
+    consultation_split_drafts: Mapped[list["ConsultationSplitDraft"]] = relationship(back_populates="team")
+    consultation_split_draft_topics: Mapped[list["ConsultationSplitDraftTopic"]] = relationship(back_populates="team")
+    consultation_split_batches: Mapped[list["ConsultationSplitBatch"]] = relationship(back_populates="team")
+    consultation_split_batch_topics: Mapped[list["ConsultationSplitBatchTopic"]] = relationship(back_populates="team")
+    consultation_split_topic_outcomes: Mapped[list["ConsultationSplitTopicOutcome"]] = relationship(back_populates="team")
+    consultation_split_executions: Mapped[list["ConsultationSplitExecution"]] = relationship(back_populates="team")
 
 
 class User(Base):
@@ -512,6 +603,14 @@ class User(Base):
         cascade="all, delete-orphan",
     )
     provider_attempts: Mapped[list["ProviderAttempt"]] = relationship(back_populates="owner", passive_deletes=True)
+    consultation_split_analyses: Mapped[list["ConsultationSplitAnalysis"]] = relationship(back_populates="owner")
+    consultation_split_intents: Mapped[list["ConsultationSplitIntent"]] = relationship(back_populates="owner")
+    consultation_split_drafts: Mapped[list["ConsultationSplitDraft"]] = relationship(back_populates="owner")
+    consultation_split_draft_topics: Mapped[list["ConsultationSplitDraftTopic"]] = relationship(back_populates="owner")
+    consultation_split_batches: Mapped[list["ConsultationSplitBatch"]] = relationship(back_populates="owner")
+    consultation_split_batch_topics: Mapped[list["ConsultationSplitBatchTopic"]] = relationship(back_populates="owner")
+    consultation_split_topic_outcomes: Mapped[list["ConsultationSplitTopicOutcome"]] = relationship(back_populates="owner")
+    consultation_split_executions: Mapped[list["ConsultationSplitExecution"]] = relationship(back_populates="owner")
 
 
 class SecurityAuditEvent(Base):
@@ -1027,6 +1126,9 @@ class TeamLlmConfig(Base):
     updated_by: Mapped[User] = relationship(foreign_keys=[updated_by_user_id])
     selections: Mapped[list["TeamLlmSelection"]] = relationship(back_populates="config")
     hallucination_check_selections: Mapped[list["TeamHallucinationCheckSelection"]] = relationship(back_populates="config")
+    consultation_split_executions: Mapped[list["ConsultationSplitExecution"]] = relationship(
+        back_populates="llm_config"
+    )
 
 
 class TeamLlmSelection(Base):
@@ -1470,6 +1572,38 @@ class Transcript(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    consultation_split_analyses: Mapped[list["ConsultationSplitAnalysis"]] = relationship(
+        back_populates="transcript",
+        passive_deletes="all",
+    )
+    consultation_split_intents: Mapped[list["ConsultationSplitIntent"]] = relationship(
+        back_populates="transcript",
+        passive_deletes="all",
+    )
+    consultation_split_drafts: Mapped[list["ConsultationSplitDraft"]] = relationship(
+        back_populates="transcript",
+        passive_deletes="all",
+    )
+    consultation_split_draft_topics: Mapped[list["ConsultationSplitDraftTopic"]] = relationship(
+        back_populates="transcript",
+        passive_deletes="all",
+    )
+    consultation_split_batches: Mapped[list["ConsultationSplitBatch"]] = relationship(
+        back_populates="transcript",
+        passive_deletes="all",
+    )
+    consultation_split_batch_topics: Mapped[list["ConsultationSplitBatchTopic"]] = relationship(
+        back_populates="transcript",
+        passive_deletes="all",
+    )
+    consultation_split_topic_outcomes: Mapped[list["ConsultationSplitTopicOutcome"]] = relationship(
+        back_populates="transcript",
+        passive_deletes="all",
+    )
+    consultation_split_executions: Mapped[list["ConsultationSplitExecution"]] = relationship(
+        back_populates="transcript",
+        passive_deletes="all",
+    )
 
 
 class PostConsultationDictation(Base):
@@ -1545,6 +1679,11 @@ class TranscriptVersion(Base):
     clinical_entity_runs: Mapped[list["ClinicalEntityRun"]] = relationship(
         back_populates="transcript_version",
         cascade="all, delete-orphan",
+    )
+    materialization_split_batches: Mapped[list["ConsultationSplitBatch"]] = relationship(
+        back_populates="materialization_transcript_version",
+        foreign_keys="ConsultationSplitBatch.materialization_transcript_version_id",
+        passive_deletes="all",
     )
 
 
@@ -1772,8 +1911,516 @@ class ProviderSecretCleanupJob(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
+class ConsultationSplitAnalysis(Base):
+    """Source-bound split proposal; runtime lifecycle rules are added in Slice 2B."""
+
+    __tablename__ = "consultation_split_analyses"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "transcript_id", "source_fingerprint", name="uq_consultation_split_analyses_owner_source"),
+        CheckConstraint("source_fingerprint ~ '^[0-9a-f]{64}$'", name="ck_consultation_split_analyses_source_fingerprint_canonical"),
+        CheckConstraint("error_code IS NULL OR char_length(error_code) <= 128", name="ck_consultation_split_analyses_error_code_length"),
+        Index("ix_consultation_split_analyses_transcript_status", "transcript_id", "status"),
+        Index("ix_consultation_split_analyses_retention", "retention_expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False)
+    transcript_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("transcript_versions.id"), nullable=True)
+    redaction_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("redaction_runs.id"), nullable=True)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    candidate_template_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proposal_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[ConsultationSplitAnalysisStatus] = mapped_column(
+        Enum(ConsultationSplitAnalysisStatus),
+        default=ConsultationSplitAnalysisStatus.queued,
+        nullable=False,
+    )
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    owner: Mapped[User] = relationship(back_populates="consultation_split_analyses")
+    team: Mapped[Team] = relationship(back_populates="consultation_split_analyses")
+    transcript: Mapped[Transcript] = relationship(back_populates="consultation_split_analyses")
+    transcript_version: Mapped[TranscriptVersion | None] = relationship(foreign_keys=[transcript_version_id])
+    redaction_run: Mapped[RedactionRun | None] = relationship(foreign_keys=[redaction_run_id])
+    # A logical Generate action can be created before its reusable analysis is
+    # available.  If that analysis is removed independently, preserve the
+    # intent's idempotency and encrypted selection snapshot under its
+    # transcript root rather than deleting the intent with it.
+    intents: Mapped[list["ConsultationSplitIntent"]] = relationship(
+        back_populates="analysis",
+        passive_deletes=True,
+    )
+    drafts: Mapped[list["ConsultationSplitDraft"]] = relationship(back_populates="analysis", cascade="all, delete-orphan")
+    # A confirmed batch is immutable provenance.  It is rooted directly at the
+    # transcript, not owned by a disposable analysis row.
+    batches: Mapped[list["ConsultationSplitBatch"]] = relationship(back_populates="analysis")
+    executions: Mapped[list["ConsultationSplitExecution"]] = relationship(back_populates="analysis", cascade="all, delete-orphan")
+
+
+class ConsultationSplitIntent(Base):
+    """One durable owner Generate action and its optional one-note consumption.
+
+    The encrypted snapshot carries the selected template/version and ordinary
+    generation configuration.  It intentionally has no live template or
+    template-version foreign key: later template deletion must not erase the
+    selected-at-submit snapshot.
+    """
+
+    __tablename__ = "consultation_split_intents"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id",
+            "client_idempotency_key",
+            name="uq_consultation_split_intents_owner_idempotency_key",
+        ),
+        Index("ix_consultation_split_intents_transcript_status", "transcript_id", "status"),
+        Index("ix_consultation_split_intents_retention", "retention_expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", name="fk_consultation_split_intents_owner_user"),
+        nullable=False,
+    )
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("teams.id", name="fk_consultation_split_intents_team"),
+        nullable=False,
+    )
+    transcript_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("transcripts.id", ondelete="CASCADE", name="fk_consultation_split_intents_transcript"),
+        nullable=False,
+    )
+    analysis_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "consultation_split_analyses.id",
+            ondelete="SET NULL",
+            name="fk_consultation_split_intents_analysis",
+        ),
+        nullable=True,
+    )
+    generated_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "generated_documents.id",
+            ondelete="SET NULL",
+            name="fk_consultation_split_intents_generated_document",
+        ),
+        nullable=True,
+        unique=True,
+    )
+    client_idempotency_key: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    generation_snapshot_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[ConsultationSplitIntentStatus] = mapped_column(
+        Enum(ConsultationSplitIntentStatus, name="consultationsplitintentstatus"),
+        default=ConsultationSplitIntentStatus.analysis_pending,
+        nullable=False,
+    )
+    retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    owner: Mapped[User] = relationship(back_populates="consultation_split_intents")
+    team: Mapped[Team] = relationship(back_populates="consultation_split_intents")
+    transcript: Mapped[Transcript] = relationship(back_populates="consultation_split_intents")
+    analysis: Mapped[ConsultationSplitAnalysis | None] = relationship(back_populates="intents")
+    generated_document: Mapped["GeneratedDocument | None"] = relationship(
+        back_populates="consultation_split_intent",
+    )
+    batch: Mapped["ConsultationSplitBatch | None"] = relationship(back_populates="intent", uselist=False)
+
+
+class ConsultationSplitDraft(Base):
+    __tablename__ = "consultation_split_drafts"
+    __table_args__ = (
+        # A source-bound analysis owns one durable review draft.  Terminal and
+        # stale drafts remain provenance, so this is deliberately not a
+        # partial ``active``-only constraint.
+        UniqueConstraint("analysis_id", name="uq_consultation_split_drafts_analysis"),
+        CheckConstraint("source_fingerprint ~ '^[0-9a-f]{64}$'", name="ck_consultation_split_drafts_source_fingerprint_canonical"),
+        Index("ix_consultation_split_drafts_transcript_status", "transcript_id", "status"),
+        Index("ix_consultation_split_drafts_retention", "retention_expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    analysis_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("consultation_split_analyses.id", ondelete="CASCADE"), nullable=False)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[ConsultationSplitDraftStatus] = mapped_column(
+        Enum(ConsultationSplitDraftStatus),
+        default=ConsultationSplitDraftStatus.active,
+        nullable=False,
+    )
+    retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    analysis: Mapped[ConsultationSplitAnalysis] = relationship(back_populates="drafts")
+    owner: Mapped[User] = relationship(back_populates="consultation_split_drafts")
+    team: Mapped[Team] = relationship(back_populates="consultation_split_drafts")
+    transcript: Mapped[Transcript] = relationship(back_populates="consultation_split_drafts")
+    topics: Mapped[list["ConsultationSplitDraftTopic"]] = relationship(
+        back_populates="draft",
+        cascade="all, delete-orphan",
+        order_by="ConsultationSplitDraftTopic.topic_order.asc()",
+    )
+
+
+class ConsultationSplitDraftTopic(Base):
+    __tablename__ = "consultation_split_draft_topics"
+    __table_args__ = (
+        UniqueConstraint("draft_id", "topic_uuid", name="uq_consultation_split_draft_topics_topic"),
+        UniqueConstraint("draft_id", "topic_order", name="uq_consultation_split_draft_topics_order"),
+        CheckConstraint("topic_order BETWEEN 0 AND 5", name="ck_consultation_split_draft_topics_order_range"),
+        CheckConstraint(
+            "is_primary IS FALSE OR disposition = 'separate_note'",
+            name="ck_consultation_split_draft_topics_primary_disposition",
+        ),
+        Index(
+            "uq_consultation_split_draft_topics_one_primary",
+            "draft_id",
+            unique=True,
+            postgresql_where=text("is_primary IS TRUE"),
+        ),
+        Index("ix_consultation_split_draft_topics_transcript", "transcript_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    draft_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("consultation_split_drafts.id", ondelete="CASCADE"), nullable=False)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False)
+    topic_uuid: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    title_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    topic_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    disposition: Mapped[ConsultationSplitTopicDisposition] = mapped_column(Enum(ConsultationSplitTopicDisposition), nullable=False)
+    template_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("templates.id", ondelete="SET NULL"), nullable=True)
+    template_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("template_versions.id", ondelete="SET NULL"), nullable=True)
+    retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    draft: Mapped[ConsultationSplitDraft] = relationship(back_populates="topics")
+    owner: Mapped[User] = relationship(back_populates="consultation_split_draft_topics")
+    team: Mapped[Team] = relationship(back_populates="consultation_split_draft_topics")
+    transcript: Mapped[Transcript] = relationship(back_populates="consultation_split_draft_topics")
+    template: Mapped[PromptTemplate | None] = relationship(foreign_keys=[template_id])
+    template_version: Mapped[PromptTemplateVersion | None] = relationship(foreign_keys=[template_version_id])
+
+
+class ConsultationSplitBatch(Base):
+    __tablename__ = "consultation_split_batches"
+    __table_args__ = (
+        UniqueConstraint("intent_id", name="uq_consultation_split_batches_intent"),
+        CheckConstraint("source_fingerprint ~ '^[0-9a-f]{64}$'", name="ck_consultation_split_batches_source_fingerprint_canonical"),
+        CheckConstraint("error_code IS NULL OR char_length(error_code) <= 128", name="ck_consultation_split_batches_error_code_length"),
+        Index("ix_consultation_split_batches_transcript_status", "transcript_id", "status"),
+        Index("ix_consultation_split_batches_retention", "retention_expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    intent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        # This edge completes a transcript-owned provenance cycle through the
+        # optional one-note document link. It remains a real RESTRICT FK; the
+        # DDL hint only lets SQLAlchemy order metadata teardown safely.
+        ForeignKey(
+            "consultation_split_intents.id",
+            name="fk_consultation_split_batches_intent",
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
+        nullable=True,
+    )
+    analysis_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("consultation_split_analyses.id", ondelete="RESTRICT"), nullable=False)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False)
+    # Confirmation binds even source-only batches to an immutable, possibly
+    # empty current-draft version. This supplies the non-null document lineage
+    # without claiming that analysis used transcript text or a redaction run.
+    materialization_transcript_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("transcript_versions.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    confirmed_plan_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    clinical_snapshot_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    source_snapshot_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    template_snapshot_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    pii_snapshot_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    provider_snapshot_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    note_options_snapshot_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[ConsultationSplitBatchStatus] = mapped_column(
+        Enum(ConsultationSplitBatchStatus),
+        default=ConsultationSplitBatchStatus.generation_queued,
+        nullable=False,
+    )
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    verification_status: Mapped[ConsultationSplitVerificationStatus] = mapped_column(
+        Enum(ConsultationSplitVerificationStatus),
+        default=ConsultationSplitVerificationStatus.pending,
+        nullable=False,
+    )
+    # These values are deliberately safe lifecycle metadata, never provider
+    # reasoning, response text, patch details, or source content.
+    verification_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    verification_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verification_correction_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    analysis: Mapped[ConsultationSplitAnalysis] = relationship(back_populates="batches")
+    intent: Mapped[ConsultationSplitIntent | None] = relationship(back_populates="batch")
+    owner: Mapped[User] = relationship(back_populates="consultation_split_batches")
+    team: Mapped[Team] = relationship(back_populates="consultation_split_batches")
+    transcript: Mapped[Transcript] = relationship(back_populates="consultation_split_batches")
+    materialization_transcript_version: Mapped[TranscriptVersion | None] = relationship(
+        back_populates="materialization_split_batches",
+        foreign_keys=[materialization_transcript_version_id],
+    )
+    topics: Mapped[list["ConsultationSplitBatchTopic"]] = relationship(
+        back_populates="batch",
+        cascade="all, delete-orphan",
+        order_by="ConsultationSplitBatchTopic.topic_order.asc()",
+    )
+    executions: Mapped[list["ConsultationSplitExecution"]] = relationship(back_populates="batch", cascade="all, delete-orphan")
+
+
+class ConsultationSplitBatchTopic(Base):
+    __tablename__ = "consultation_split_batch_topics"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "topic_uuid", name="uq_consultation_split_batch_topics_topic"),
+        UniqueConstraint("batch_id", "topic_order", name="uq_consultation_split_batch_topics_order"),
+        UniqueConstraint("id", "topic_uuid", name="uq_consultation_split_batch_topics_membership"),
+        CheckConstraint("topic_order BETWEEN 0 AND 5", name="ck_consultation_split_batch_topics_order_range"),
+        CheckConstraint(
+            "is_primary IS FALSE OR disposition = 'separate_note'",
+            name="ck_consultation_split_batch_topics_primary_disposition",
+        ),
+        Index(
+            "uq_consultation_split_batch_topics_one_primary",
+            "batch_id",
+            unique=True,
+            postgresql_where=text("is_primary IS TRUE"),
+        ),
+        Index("ix_consultation_split_batch_topics_transcript", "transcript_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    batch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("consultation_split_batches.id", ondelete="CASCADE"), nullable=False)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False)
+    topic_uuid: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    title_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    topic_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    disposition: Mapped[ConsultationSplitTopicDisposition] = mapped_column(Enum(ConsultationSplitTopicDisposition), nullable=False)
+    template_snapshot_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    batch: Mapped[ConsultationSplitBatch] = relationship(back_populates="topics")
+    owner: Mapped[User] = relationship(back_populates="consultation_split_batch_topics")
+    team: Mapped[Team] = relationship(back_populates="consultation_split_batch_topics")
+    transcript: Mapped[Transcript] = relationship(back_populates="consultation_split_batch_topics")
+    outcome: Mapped["ConsultationSplitTopicOutcome | None"] = relationship(
+        back_populates="batch_topic",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    generated_documents: Mapped[list["GeneratedDocument"]] = relationship(
+        back_populates="consultation_split_batch_topic"
+    )
+
+
+class ConsultationSplitTopicOutcome(Base):
+    __tablename__ = "consultation_split_topic_outcomes"
+    __table_args__ = (
+        UniqueConstraint("batch_topic_id", name="uq_consultation_split_topic_outcomes_batch_topic"),
+        CheckConstraint("error_code IS NULL OR char_length(error_code) <= 128", name="ck_consultation_split_topic_outcomes_error_code_length"),
+        Index("ix_consultation_split_topic_outcomes_transcript_status", "transcript_id", "status"),
+        Index("ix_consultation_split_topic_outcomes_retention", "retention_expires_at"),
+        Index("ix_consultation_split_topic_outcomes_accepted_execution", "accepted_execution_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    batch_topic_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("consultation_split_batch_topics.id", ondelete="CASCADE"), nullable=False)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[ConsultationSplitTopicOutcomeStatus] = mapped_column(
+        Enum(ConsultationSplitTopicOutcomeStatus),
+        default=ConsultationSplitTopicOutcomeStatus.pending,
+        nullable=False,
+    )
+    output_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The accepted provider output is immutable.  A bundled checker writes a
+    # separate owner-encrypted candidate only after its exact patch validates.
+    verified_output_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    accepted_execution_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("consultation_split_executions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    batch_topic: Mapped[ConsultationSplitBatchTopic] = relationship(back_populates="outcome")
+    owner: Mapped[User] = relationship(back_populates="consultation_split_topic_outcomes")
+    team: Mapped[Team] = relationship(back_populates="consultation_split_topic_outcomes")
+    transcript: Mapped[Transcript] = relationship(back_populates="consultation_split_topic_outcomes")
+    accepted_execution: Mapped["ConsultationSplitExecution | None"] = relationship(
+        foreign_keys=[accepted_execution_id]
+    )
+
+
+class ConsultationSplitExecution(Base):
+    __tablename__ = "consultation_split_executions"
+    __table_args__ = (
+        CheckConstraint(
+            "(kind = 'analysis' AND analysis_id IS NOT NULL AND batch_id IS NULL) OR "
+            "(kind IN ('generation', 'verification') AND analysis_id IS NULL AND batch_id IS NOT NULL)",
+            name="ck_consultation_split_executions_kind_parent",
+        ),
+        CheckConstraint("error_code IS NULL OR char_length(error_code) <= 128", name="ck_consultation_split_executions_error_code_length"),
+        CheckConstraint("provider_error_code IS NULL OR char_length(provider_error_code) <= 128", name="ck_consultation_split_executions_provider_error_code_length"),
+        CheckConstraint("provider_http_status IS NULL OR provider_http_status BETWEEN 100 AND 599", name="ck_consultation_split_executions_provider_http_status_range"),
+        CheckConstraint("attempt_no >= 1", name="ck_consultation_split_executions_attempt_no_positive"),
+        CheckConstraint("input_token_count IS NULL OR input_token_count >= 0", name="ck_consultation_split_executions_input_token_count_nonnegative"),
+        CheckConstraint("output_token_count IS NULL OR output_token_count >= 0", name="ck_consultation_split_executions_output_token_count_nonnegative"),
+        CheckConstraint("total_token_count IS NULL OR total_token_count >= 0", name="ck_consultation_split_executions_total_token_count_nonnegative"),
+        Index(
+            "uq_consultation_split_executions_analysis_kind_attempt",
+            "analysis_id",
+            "kind",
+            "attempt_no",
+            unique=True,
+            postgresql_where=text("analysis_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_consultation_split_executions_batch_kind_attempt",
+            "batch_id",
+            "kind",
+            "attempt_no",
+            unique=True,
+            postgresql_where=text("batch_id IS NOT NULL"),
+        ),
+        Index("ix_consultation_split_executions_transcript_status", "transcript_id", "status"),
+        Index("ix_consultation_split_executions_retention", "retention_expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    analysis_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("consultation_split_analyses.id", ondelete="CASCADE"), nullable=True)
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("consultation_split_batches.id", ondelete="CASCADE"), nullable=True)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False)
+    # Passive rows predate the provider-config retention boundary.  Production
+    # queueing requires this value, while terminal rows may be detached when a
+    # config is deleted so they do not retain a live configuration reference.
+    llm_config_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("team_llm_configs.id", ondelete="SET NULL"), nullable=True
+    )
+    kind: Mapped[ConsultationSplitExecutionKind] = mapped_column(Enum(ConsultationSplitExecutionKind), nullable=False)
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[ConsultationSplitExecutionStatus] = mapped_column(
+        Enum(ConsultationSplitExecutionStatus),
+        default=ConsultationSplitExecutionStatus.queued,
+        nullable=False,
+    )
+    provider_adapter: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_base_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    provider_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_payload_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recoverable_response_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    provider_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    provider_http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    input_token_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    output_token_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    total_token_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    analysis: Mapped[ConsultationSplitAnalysis | None] = relationship(back_populates="executions")
+    batch: Mapped[ConsultationSplitBatch | None] = relationship(back_populates="executions")
+    owner: Mapped[User] = relationship(back_populates="consultation_split_executions")
+    team: Mapped[Team] = relationship(back_populates="consultation_split_executions")
+    transcript: Mapped[Transcript] = relationship(back_populates="consultation_split_executions")
+    llm_config: Mapped[TeamLlmConfig | None] = relationship(back_populates="consultation_split_executions")
+    provider_attempt: Mapped["ProviderAttempt | None"] = relationship(
+        back_populates="consultation_split_execution",
+        uselist=False,
+    )
+    provider_usage_events: Mapped[list["ProviderUsageEvent"]] = relationship(
+        back_populates="consultation_split_execution",
+    )
+
+
 class GeneratedDocument(Base):
     __tablename__ = "generated_documents"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["consultation_split_batch_topic_id", "consultation_split_topic_uuid"],
+            ["consultation_split_batch_topics.id", "consultation_split_batch_topics.topic_uuid"],
+            name="fk_generated_documents_consultation_split_batch_topic",
+            ondelete="SET NULL",
+        ),
+        UniqueConstraint(
+            "regeneration_lineage_id",
+            "regeneration_revision_no",
+            name="uq_generated_documents_regeneration_lineage_revision",
+        ),
+        CheckConstraint(
+            "(consultation_split_batch_topic_id IS NULL) = (consultation_split_topic_uuid IS NULL)",
+            name="ck_generated_documents_consultation_split_membership",
+        ),
+        CheckConstraint(
+            "regeneration_revision_no >= 1",
+            name="ck_generated_documents_regeneration_revision_positive",
+        ),
+        Index("ix_generated_documents_regeneration_parent", "parent_generated_document_id"),
+        Index("ix_generated_documents_regeneration_lineage", "regeneration_lineage_id"),
+        Index(
+            "ix_generated_documents_consultation_split_batch_topic",
+            "consultation_split_batch_topic_id",
+        ),
+        Index(
+            "uq_generated_documents_active_regeneration_lineage",
+            "regeneration_lineage_id",
+            unique=True,
+            postgresql_where=text(
+                "regeneration_lineage_id IS NOT NULL "
+                "AND status IN ('queued', 'processing')"
+            ),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
@@ -1781,6 +2428,21 @@ class GeneratedDocument(Base):
     transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id"), nullable=False)
     transcript_version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcript_versions.id"), nullable=False)
     redaction_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("redaction_runs.id"), nullable=True)
+    consultation_split_batch_topic_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    consultation_split_topic_uuid: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    parent_generated_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "generated_documents.id",
+            name="fk_generated_documents_regeneration_parent",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
+    # New roots use their own ID. Legacy documents gain a lineage only when a
+    # clinician requests a revision, so migration never rewrites content rows.
+    regeneration_lineage_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    regeneration_revision_no: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     generator_type: Mapped[GeneratedDocumentGeneratorType] = mapped_column(
         Enum(GeneratedDocumentGeneratorType),
         default=GeneratedDocumentGeneratorType.template,
@@ -1798,6 +2460,7 @@ class GeneratedDocument(Base):
     working_note_mode_snapshot: Mapped[TranscriptWorkingNoteMode | None] = mapped_column(Enum(TranscriptWorkingNoteMode), nullable=True)
     dictation_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     generation_steering_text_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    regeneration_source_output_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     freeform_working_note_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     structured_working_note_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     structured_section_definitions_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -1853,6 +2516,24 @@ class GeneratedDocument(Base):
     redaction_run: Mapped[RedactionRun | None] = relationship(back_populates="generated_documents")
     template_version: Mapped[PromptTemplateVersion | None] = relationship(foreign_keys=[template_version_id])
     quick_action_version: Mapped[QuickActionVersion | None] = relationship(foreign_keys=[quick_action_version_id])
+    consultation_split_batch_topic: Mapped[ConsultationSplitBatchTopic | None] = relationship(
+        back_populates="generated_documents",
+        foreign_keys=[consultation_split_batch_topic_id, consultation_split_topic_uuid],
+    )
+    parent_generated_document: Mapped["GeneratedDocument | None"] = relationship(
+        remote_side=[id],
+        foreign_keys=[parent_generated_document_id],
+        back_populates="regenerated_documents",
+    )
+    regenerated_documents: Mapped[list["GeneratedDocument"]] = relationship(
+        foreign_keys=[parent_generated_document_id],
+        back_populates="parent_generated_document",
+    )
+    consultation_split_intent: Mapped[ConsultationSplitIntent | None] = relationship(
+        back_populates="generated_document",
+        uselist=False,
+        passive_deletes=True,
+    )
     provider_usage_events: Mapped[list["ProviderUsageEvent"]] = relationship(back_populates="generated_document")
     sections: Mapped[list["GeneratedDocumentSection"]] = relationship(
         back_populates="generated_document",
@@ -1887,6 +2568,17 @@ class GeneratedDocumentSection(Base):
 
 class ProviderUsageEvent(Base):
     __tablename__ = "provider_usage_events"
+    __table_args__ = (
+        Index("ix_provider_usage_events_split_execution", "consultation_split_execution_id"),
+        Index(
+            "uq_provider_usage_events_split_execution_completed",
+            "consultation_split_execution_id",
+            unique=True,
+            postgresql_where=text(
+                "consultation_split_execution_id IS NOT NULL AND event_type = 'completed'"
+            ),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     team_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
@@ -1894,6 +2586,11 @@ class ProviderUsageEvent(Base):
     generated_document_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("generated_documents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    consultation_split_execution_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("consultation_split_executions.id", ondelete="SET NULL"),
         nullable=True,
     )
     transcript_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
@@ -1917,6 +2614,9 @@ class ProviderUsageEvent(Base):
     team: Mapped[Team | None] = relationship(back_populates="provider_usage_events")
     owner: Mapped[User | None] = relationship(back_populates="provider_usage_events")
     generated_document: Mapped[GeneratedDocument | None] = relationship(back_populates="provider_usage_events")
+    consultation_split_execution: Mapped[ConsultationSplitExecution | None] = relationship(
+        back_populates="provider_usage_events",
+    )
 
 
 class UserQuotaPolicyEvent(Base):
@@ -2032,10 +2732,17 @@ class ProviderAttempt(Base):
             "AND reported_output_tokens IS NULL AND reported_total_tokens IS NULL)) IS TRUE",
             name="ck_provider_attempts_resource_payload_shape",
         ),
+        CheckConstraint(
+            "consultation_split_execution_id IS NULL OR "
+            "(generated_document_id IS NULL AND transcript_ingestion_job_id IS NULL)",
+            name="ck_provider_attempts_split_execution_source_shape",
+        ),
         UniqueConstraint("correlation_id", "attempt_number", name="uq_provider_attempts_correlation_attempt"),
+        UniqueConstraint("consultation_split_execution_id", name="uq_provider_attempts_split_execution"),
         Index("ix_provider_attempts_owner_resource_authorized", "owner_user_id", "resource", "authorized_at"),
         Index("ix_provider_attempts_active_reservations", "owner_user_id", "resource", "reservation_valid_until", postgresql_where=text("status = 'reserved'")),
         Index("ix_provider_attempts_submitted_deadline", "deadline_at", postgresql_where=text("status = 'submitted'")),
+        Index("ix_provider_attempts_split_execution_status", "consultation_split_execution_id", "status"),
         Index("ix_provider_attempts_team_resource_settled", "team_id", "resource", "settled_at", postgresql_where=text("status = 'settled'")),
     )
 
@@ -2045,6 +2752,11 @@ class ProviderAttempt(Base):
     transcript_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="SET NULL"), nullable=True)
     transcript_ingestion_job_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("transcript_ingestion_jobs.id", ondelete="SET NULL"), nullable=True)
     generated_document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("generated_documents.id", ondelete="SET NULL"), nullable=True)
+    consultation_split_execution_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("consultation_split_executions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
     attempt_kind: Mapped[AttemptKind] = mapped_column(Enum(AttemptKind), nullable=False)
@@ -2077,6 +2789,9 @@ class ProviderAttempt(Base):
     transcript: Mapped[Transcript | None] = relationship()
     transcript_ingestion_job: Mapped[TranscriptIngestionJob | None] = relationship()
     generated_document: Mapped[GeneratedDocument | None] = relationship()
+    consultation_split_execution: Mapped[ConsultationSplitExecution | None] = relationship(
+        back_populates="provider_attempt",
+    )
 
 
 class TaskDispatchOutbox(Base):

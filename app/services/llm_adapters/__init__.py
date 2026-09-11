@@ -1,5 +1,5 @@
 """Native LLM provider adapters."""
 
-from app.services.llm_adapters.types import LlmGenerationRequest, LlmGenerationResult
+from app.services.llm_adapters.types import LlmGenerationRequest, LlmGenerationResult, LlmProviderSnapshot
 
-__all__ = ["LlmGenerationRequest", "LlmGenerationResult"]
+__all__ = ["LlmGenerationRequest", "LlmGenerationResult", "LlmProviderSnapshot"]

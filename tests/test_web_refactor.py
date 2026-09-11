@@ -191,7 +191,7 @@ def test_followup_detailing_keeps_controls_aligned_and_output_scrollable():
     transcribe_css = Path("app/static/css/transcribe.css").read_text()
     documents_js = Path("app/static/js/transcribe/documents.js").read_text()
 
-    assert 'transcribe.css?v=20260823-modal-close' in head_assets
+    assert 'transcribe.css?v=20260911-partial-actions' in head_assets
 
     # Desktop composer fields share label, helper, control and meta rows.
     assert ".followup-composer-v3 {\ngrid-template-rows: auto auto auto auto;" in transcribe_css
@@ -300,7 +300,7 @@ def test_generation_loading_replaces_plain_text_placeholders():
     assert "generationLoadingHtml" in documents_js
     assert "structured.js?v=20260821-mobile-document-mode" in app_js
     assert "documents.js?v=20260821-mobile-production-2" in app_js
-    assert "/static/js/transcribe/app.js?v=20260830-template-suggestion-observability" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260911-partial-actions" in shell_extras
     assert ".note-generation-loading" in transcribe_css
     assert "@keyframes note-generation-orbit" in transcribe_css
     assert 'data-transcription-loading' in workspace_template
@@ -359,9 +359,9 @@ def test_splash_and_transcribe_styles_are_cacheable_static_assets():
     assert "font-family: var(--font-body);" in splash_css
     assert ".workflow-wrap" in splash_css
     assert ".cta-panel" in splash_css
-    assert '<link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">' in head_assets
-    assert '<link rel="stylesheet" href="/static/css/components.css?v=20260718-brand-lockup">' in head_assets
-    assert '<link rel="stylesheet" href="/static/css/transcribe.css?v=20260823-modal-close">' in head_assets
+    assert '<link rel="stylesheet" href="/static/css/tokens.css?v=20260902-control-height">' in head_assets
+    assert '<link rel="stylesheet" href="/static/css/components.css?v=20260902-shared-fields">' in head_assets
+    assert '<link rel="stylesheet" href="/static/css/transcribe.css?v=20260911-partial-actions">' in head_assets
     assert "<style" not in head_assets
     assert "font-family: var(--font-body);" in transcribe_css
     assert ".structured-statement-list" in transcribe_css
@@ -501,16 +501,18 @@ def test_workspace_refresh_burst_uses_polling_fallback_only():
     assert "const shouldUseWorkspacePollingFallback = () => {\n        return !isWorkspaceRealtimeConnected();\n      };" in app_js
     assert "const scheduleWorkspaceRefreshBurst = ({ attempts = 25, intervalMs = 1500 } = {}) => {\n        clearWorkspaceRefreshBurst();\n        if (!shouldUseWorkspacePollingFallback()) return;" in app_js
     assert "workspaceRefreshBurstTimeoutIds = workspaceRefreshBurstTimeoutIds.filter((value) => value !== timeoutId);\n            if (!shouldUseWorkspacePollingFallback()) return;\n            void fetchWorkspace();" in app_js
-    assert "workspaceEventSource.addEventListener('open', () => {\n          workspaceStreamFallbackPolling = false;\n          clearWorkspaceRefreshBurst();" in app_js
+    assert "eventSource.addEventListener('open', () => {\n          if (workspaceEventSource !== eventSource) return;\n          workspaceStreamFallbackPolling = false;\n          clearWorkspaceRefreshBurst();" in app_js
     assert "if (transcriptId && shouldUseWorkspacePollingFallback())" in app_js
 
 
 def test_initial_workspace_refresh_does_not_start_duplicate_requests():
     app_js = Path("app/static/js/transcribe/app.js").read_text()
+    split_review_js = Path("app/static/js/transcribe/splitReview.js").read_text()
 
     assert "const workspaceFetchesByEndpoint = new Map();" in app_js
-    assert "if (workspaceFetchesByEndpoint.has(endpoint)) {\n          return workspaceFetchesByEndpoint.get(endpoint);\n        }" in app_js
-    assert "workspaceFetchesByEndpoint.delete(endpoint);" in app_js
+    assert "requestsByEndpoint: workspaceFetchesByEndpoint" in app_js
+    assert "if (requestsByEndpoint.has(endpoint)) return requestsByEndpoint.get(endpoint);" in split_review_js
+    assert "requestsByEndpoint.delete(endpoint)" in split_review_js
     assert "if (!hasAppliedInitialWorkspacePayload) {\n          void fetchWorkspace();\n        }" in app_js
     assert "window.setTimeout(fetchWorkspace, 250);" not in app_js
 

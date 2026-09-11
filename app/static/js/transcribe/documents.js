@@ -129,6 +129,8 @@ export function createDocumentNavigator({
     followupSelectorWrap,
     followupSelector,
     followupSelectorCount,
+    noteSelectorScrollPrev,
+    noteSelectorScrollNext,
     followupOutputTitle,
     followupOutputSubtitle,
     noteMeta,
@@ -240,6 +242,25 @@ export function createDocumentNavigator({
         <span class="document-switcher-meta">${meta}</span>
       `;
       if (itemWrap) {
+        const itemActions = [button];
+        if (item.kind !== 'working_note') {
+          const regenerateButton = window.document.createElement('button');
+          regenerateButton.type = 'button';
+          regenerateButton.className = 'document-switcher-item__regenerate';
+          regenerateButton.dataset.noteRegenerate = 'true';
+          regenerateButton.dataset.documentId = item.id;
+          regenerateButton.title = `Regenerate ${label.toLowerCase()}`;
+          regenerateButton.setAttribute('aria-label', regenerateButton.title);
+          regenerateButton.setAttribute('aria-haspopup', 'dialog');
+          regenerateButton.setAttribute('aria-expanded', 'false');
+          if (item.status === 'queued' || item.status === 'processing') {
+            regenerateButton.disabled = true;
+            regenerateButton.title = 'This note is still being generated';
+            regenerateButton.setAttribute('aria-label', regenerateButton.title);
+          }
+          regenerateButton.innerHTML = '<i class="w-3.5 h-3.5" data-lucide="rotate-ccw" aria-hidden="true"></i>';
+          itemActions.push(regenerateButton);
+        }
         const deleteButton = window.document.createElement('button');
         deleteButton.type = 'button';
         deleteButton.className = 'document-switcher-item__delete';
@@ -248,13 +269,36 @@ export function createDocumentNavigator({
         deleteButton.title = `Delete ${label.toLowerCase()} permanently`;
         deleteButton.setAttribute('aria-label', deleteButton.title);
         deleteButton.innerHTML = '<i class="w-3.5 h-3.5" data-lucide="trash-2" aria-hidden="true"></i>';
-        itemWrap.append(button, deleteButton);
+        itemWrap.append(...itemActions, deleteButton);
         container.appendChild(itemWrap);
       } else {
         container.appendChild(button);
       }
     });
     refreshIcons?.(container);
+    const syncScrollButtons = () => {
+      if (!noteSelectorScrollPrev || !noteSelectorScrollNext || kind !== 'note') return;
+      const maxScroll = Math.max(0, container.scrollWidth - container.clientWidth);
+      noteSelectorScrollPrev.disabled = container.scrollLeft <= 2;
+      noteSelectorScrollNext.disabled = container.scrollLeft >= maxScroll - 2;
+      const hasOverflow = maxScroll > 2;
+      noteSelectorScrollPrev.hidden = !hasOverflow;
+      noteSelectorScrollNext.hidden = !hasOverflow;
+    };
+    if (kind === 'note' && typeof container.addEventListener === 'function' && !container.dataset.scrollControlsBound) {
+      container.dataset.scrollControlsBound = 'true';
+      container.tabIndex = 0;
+      container.setAttribute('aria-label', 'Note versions');
+      container.addEventListener('scroll', syncScrollButtons, { passive: true });
+      container.addEventListener('keydown', (event) => {
+        if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+        event.preventDefault();
+        container.scrollBy?.({ left: event.key === 'ArrowRight' ? 280 : -280, behavior: 'smooth' });
+      });
+      noteSelectorScrollPrev?.addEventListener?.('click', () => container.scrollBy?.({ left: -280, behavior: 'smooth' }));
+      noteSelectorScrollNext?.addEventListener?.('click', () => container.scrollBy?.({ left: 280, behavior: 'smooth' }));
+    }
+    if (kind === 'note') window.requestAnimationFrame?.(syncScrollButtons);
   };
 
   const renderLlmRequestPanel = (slot, document) => {

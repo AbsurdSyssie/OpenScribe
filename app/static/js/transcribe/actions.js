@@ -1,4 +1,5 @@
 import { csrfFetch } from '../csrf.js';
+import { createGeneratedNoteRegenerationController } from './regeneration.js?v=20260911-note-regeneration';
 
 export function attachTranscribeActions({
   dom,
@@ -36,6 +37,32 @@ export function attachTranscribeActions({
   let followupSubmitting = false;
   let followupRegenerating = false;
   let quickActionComboboxOpen = false;
+
+  const noteRegenerationController = createGeneratedNoteRegenerationController({
+    root: dom.noteSelector,
+    showFlash,
+    queueRegeneration: async ({ generatedDocumentId, steeringText, steeringPreset }) => {
+      if (!generatedDocumentId) return null;
+      if (persistPendingEditorsBeforeWorkspaceSwitch
+        && !(await persistPendingEditorsBeforeWorkspaceSwitch())) return null;
+      const response = await csrfFetch(`/api/v1/generated-documents/${generatedDocumentId}/regenerate`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          steering_text: steeringText || null,
+          steering_preset: steeringPreset || null,
+        }),
+      });
+      if (!response.ok) throw new Error(await parseErrorMessage(response, 'Could not regenerate the note.'));
+      const queued = await response.json();
+      showFlash('Note regeneration started.', 'success');
+      await fetchWorkspace();
+      if (queued?.id) await selectDocumentFromUi('note', queued.id);
+      scheduleWorkspaceRefreshBurst();
+      return queued;
+    },
+  });
 
   const followupCopyText = () => {
     const node = dom.latestFollowupOutput?.querySelector('[data-followup-copy-body]');
@@ -267,6 +294,9 @@ export function attachTranscribeActions({
   };
 
   dom.noteSelector?.addEventListener('click', (event) => {
+    if (event.target instanceof Element && event.target.closest('[data-note-regenerate]')) {
+      return;
+    }
     const hoverDeleteButton = event.target.closest('[data-note-hover-delete]');
     if (hoverDeleteButton) {
       event.preventDefault();
@@ -549,7 +579,7 @@ export function attachTranscribeActions({
     }
     if (persistPendingEditorsBeforeWorkspaceSwitch
       && !(await persistPendingEditorsBeforeWorkspaceSwitch())) return;
-    const workspace = await fetchWorkspace(nextTranscriptId);
+    const workspace = await fetchWorkspace(nextTranscriptId, { allowTranscriptSwitch: true });
     if (!workspace) {
       window.location.assign(link.href);
       return;
@@ -727,7 +757,7 @@ export function attachTranscribeActions({
       const templateId = dom.generateOutputTemplateSelect?.value || dom.generateOutputForm.querySelector('[data-generate-template-id]')?.value || '';
       if (!templateId) return;
       try {
-        const queued = await enqueueTemplateGeneration({ templateId });
+        const queued = await enqueueTemplateGeneration({ transcriptId, templateId });
         if (!queued) return;
       } catch (error) {
         showFlash(error instanceof Error ? error.message : 'Could not enqueue note generation.', 'error');

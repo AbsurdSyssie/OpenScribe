@@ -65,6 +65,14 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "legal_document_version_holds",
         "clinical_entities",
         "clinical_entity_runs",
+        "consultation_split_analyses",
+        "consultation_split_intents",
+        "consultation_split_batches",
+        "consultation_split_batch_topics",
+        "consultation_split_drafts",
+        "consultation_split_draft_topics",
+        "consultation_split_executions",
+        "consultation_split_topic_outcomes",
         "default_quick_actions",
         "default_quick_action_versions",
         "default_templates",
@@ -147,6 +155,40 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
     assert team_llm_columns["provider_config_json"]["nullable"] is False
     assert team_llm_columns["provider_config_json"]["default"] is None
     assert generated_document_columns["llm_provider_config_json"]["nullable"] is True
+    assert {
+        "parent_generated_document_id",
+        "regeneration_lineage_id",
+        "regeneration_revision_no",
+        "regeneration_source_output_encrypted",
+    } <= set(generated_document_columns)
+    generated_document_fks = {item["name"]: item for item in inspector.get_foreign_keys("generated_documents")}
+    parent_document_fk = generated_document_fks["fk_generated_documents_regeneration_parent"]
+    assert parent_document_fk["constrained_columns"] == ["parent_generated_document_id"]
+    assert parent_document_fk["referred_table"] == "generated_documents"
+    assert parent_document_fk.get("options", {}).get("ondelete") == "SET NULL"
+    generated_document_uniques = {
+        item["name"]: item for item in inspector.get_unique_constraints("generated_documents")
+    }
+    assert generated_document_uniques[
+        "uq_generated_documents_regeneration_lineage_revision"
+    ]["column_names"] == ["regeneration_lineage_id", "regeneration_revision_no"]
+    assert "uq_generated_documents_consultation_split_batch_topic" not in generated_document_uniques
+    generated_document_indexes = {
+        item["name"]: item for item in inspector.get_indexes("generated_documents")
+    }
+    assert generated_document_indexes[
+        "ix_generated_documents_consultation_split_batch_topic"
+    ]["column_names"] == ["consultation_split_batch_topic_id"]
+    active_regeneration_index = generated_document_indexes[
+        "uq_generated_documents_active_regeneration_lineage"
+    ]
+    assert active_regeneration_index["unique"] is True
+    active_regeneration_predicate = active_regeneration_index["dialect_options"][
+        "postgresql_where"
+    ]
+    assert "regeneration_lineage_id IS NOT NULL" in active_regeneration_predicate
+    assert "queued" in active_regeneration_predicate
+    assert "processing" in active_regeneration_predicate
     with engine.connect() as connection:
         stt_auth_modes = connection.execute(
             text(
@@ -1246,6 +1288,7 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "team_id",
         "owner_user_id",
         "generated_document_id",
+        "consultation_split_execution_id",
         "transcript_id",
         "llm_config_id",
         "feature_type",
@@ -2768,20 +2811,22 @@ def test_quota_accounting_foundation_schema_has_metadata_only_constraints_and_fk
         "ck_provider_attempts_state_shape",
         "ck_provider_attempts_settlement_basis_shape",
         "ck_provider_attempts_resource_payload_shape",
+        "ck_provider_attempts_split_execution_source_shape",
     } <= attempt_checks
     assert {
         "ix_provider_attempts_owner_resource_authorized",
         "ix_provider_attempts_active_reservations",
         "ix_provider_attempts_submitted_deadline",
         "ix_provider_attempts_team_resource_settled",
+        "ix_provider_attempts_split_execution_status",
     } <= attempt_indexes
-    assert "uq_provider_attempts_correlation_attempt" in attempt_uniques
+    assert {"uq_provider_attempts_correlation_attempt", "uq_provider_attempts_split_execution"} <= attempt_uniques
     assert any(fk["constrained_columns"] == ["team_id"] and fk["options"].get("ondelete") == "CASCADE" for fk in attempt_fks)
     assert sum(
-        fk["constrained_columns"] in (["owner_user_id"], ["transcript_id"], ["transcript_ingestion_job_id"], ["generated_document_id"])
+        fk["constrained_columns"] in (["owner_user_id"], ["transcript_id"], ["transcript_ingestion_job_id"], ["generated_document_id"], ["consultation_split_execution_id"])
         and fk["options"].get("ondelete") == "SET NULL"
         for fk in attempt_fks
-    ) == 4
+    ) == 5
 
     outbox_checks = {item["name"] for item in inspector.get_check_constraints("task_dispatch_outbox")}
     outbox_indexes = {item["name"] for item in inspector.get_indexes("task_dispatch_outbox")}
@@ -2793,13 +2838,14 @@ def test_quota_accounting_foundation_schema_has_metadata_only_constraints_and_fk
         "quotaperiod": ["daily", "monthly"],
         "userquotapolicyeventtype": ["grant", "reset", "limit_change"],
         "userquotareasoncode": ["policy_change", "temporary_allowance", "failed_job_correction", "administrative_correction", "other"],
-        "attemptkind": ["llm_generation", "llm_hallucination_check", "stt_conversation", "stt_post_consultation_dictation", "stt_prompt_context", "stt_provider_test", "llm_template_suggestion"],
+        "attemptkind": ["llm_generation", "llm_hallucination_check", "stt_conversation", "stt_post_consultation_dictation", "stt_prompt_context", "stt_provider_test", "llm_template_suggestion", "consultation_split_analysis", "consultation_split_generation", "consultation_split_verification"],
         "attemptstatus": ["reserved", "submitted", "settled", "cancelled"],
         "attemptoutcome": ["succeeded", "failed", "unknown", "cancelled"],
         "providersettlementbasis": ["reported", "measured", "conservative_unknown"],
-        "taskdispatchkind": ["generation", "ingestion", "template_suggestion"],
+        "taskdispatchkind": ["generation", "ingestion", "template_suggestion", "consultation_split_analysis", "consultation_split_generation", "consultation_split_verification"],
         "taskdispatchstate": ["pending", "published", "cancelled", "failed"],
-        "taskdispatchsourcekind": ["generated_document", "transcript_ingestion_job", "template_suggestion_job"],
+        "taskdispatchsourcekind": ["generated_document", "transcript_ingestion_job", "template_suggestion_job", "consultation_split_execution"],
+        "providerfeaturetype": ["llm_generation", "consultation_split_analysis", "consultation_split_generation", "consultation_split_verification"],
         "hallucinationcheckstatus": [
             "not_applicable", "skipped_not_configured", "skipped_config_invalid", "failed_provider",
             "failed_invalid_response", "checked_unchanged", "checked_corrected", "skipped_quota",
@@ -2995,3 +3041,653 @@ def test_quota_accounting_foundation_downgrade_fails_closed_then_removes_empty_s
             )
         ).scalars().all()
     assert remaining_enums == []
+
+
+@pytest.mark.migration
+def test_consultation_split_passive_schema_has_encrypted_content_and_reversible_membership_links():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "head")
+
+    inspector = inspect(engine)
+    split_tables = {
+        "consultation_split_analyses",
+        "consultation_split_intents",
+        "consultation_split_drafts",
+        "consultation_split_draft_topics",
+        "consultation_split_batches",
+        "consultation_split_batch_topics",
+        "consultation_split_topic_outcomes",
+        "consultation_split_executions",
+    }
+    assert split_tables <= set(inspector.get_table_names())
+
+    expected_columns = {
+        "consultation_split_analyses": {
+            "owner_user_id", "team_id", "transcript_id", "transcript_version_id", "redaction_run_id",
+            "source_fingerprint", "source_snapshot_encrypted", "candidate_template_snapshot_encrypted",
+            "provider_snapshot_encrypted", "proposal_encrypted", "status", "retention_expires_at",
+        },
+            "consultation_split_intents": {
+            "owner_user_id", "team_id", "transcript_id", "analysis_id", "generated_document_id", "client_idempotency_key",
+            "generation_snapshot_encrypted", "status", "retention_expires_at", "updated_at",
+        },
+        "consultation_split_drafts": {
+            "analysis_id", "owner_user_id", "team_id", "transcript_id", "source_fingerprint", "status",
+            "retention_expires_at", "updated_at",
+        },
+        "consultation_split_draft_topics": {
+            "draft_id", "owner_user_id", "team_id", "transcript_id", "topic_uuid", "title_encrypted",
+            "topic_order", "is_primary", "disposition", "template_id", "template_version_id", "retention_expires_at",
+        },
+            "consultation_split_batches": {
+                "intent_id", "analysis_id", "owner_user_id", "team_id", "transcript_id", "confirmed_plan_encrypted",
+            "clinical_snapshot_encrypted", "source_snapshot_encrypted", "template_snapshot_encrypted",
+            "pii_snapshot_encrypted", "provider_snapshot_encrypted", "note_options_snapshot_encrypted",
+            "status", "retention_expires_at",
+        },
+        "consultation_split_batch_topics": {
+            "batch_id", "owner_user_id", "team_id", "transcript_id", "topic_uuid", "title_encrypted",
+            "template_snapshot_encrypted", "retention_expires_at",
+        },
+        "consultation_split_topic_outcomes": {
+            "batch_topic_id", "owner_user_id", "team_id", "transcript_id", "output_encrypted", "status",
+            "retention_expires_at",
+        },
+        "consultation_split_executions": {
+            "analysis_id", "batch_id", "owner_user_id", "team_id", "transcript_id", "llm_config_id", "kind", "status",
+            "attempt_no",
+            "provider_snapshot_encrypted", "request_payload_encrypted", "recoverable_response_encrypted",
+            "retention_expires_at",
+        },
+    }
+    for table_name, columns in expected_columns.items():
+        actual_columns = {column["name"]: column for column in inspector.get_columns(table_name)}
+        assert columns <= set(actual_columns)
+        assert all(column["type"].__class__.__name__ != "JSON" for column in actual_columns.values())
+        for encrypted_column in (name for name in columns if name.endswith("_encrypted")):
+            assert actual_columns[encrypted_column]["type"].__class__.__name__ == "TEXT"
+    intent_columns = {column["name"]: column for column in inspector.get_columns("consultation_split_intents")}
+    assert intent_columns["client_idempotency_key"]["type"].__class__.__name__ == "UUID"
+    with engine.connect() as connection:
+        intent_status_labels = connection.execute(
+            text(
+                "SELECT enumlabel FROM pg_enum JOIN pg_type ON pg_enum.enumtypid = pg_type.oid "
+                "WHERE pg_type.typname = 'consultationsplitintentstatus' ORDER BY enumsortorder"
+            )
+        ).scalars().all()
+    assert intent_status_labels == ["analysis_pending", "bypassed", "confirmed"]
+
+    analysis_indexes = {item["name"]: item for item in inspector.get_indexes("consultation_split_analyses")}
+    assert analysis_indexes["ix_consultation_split_analyses_transcript_status"]["column_names"] == ["transcript_id", "status"]
+    assert "ix_consultation_split_analyses_retention" in analysis_indexes
+    analysis_uniques = {item["name"]: item for item in inspector.get_unique_constraints("consultation_split_analyses")}
+    assert analysis_uniques["uq_consultation_split_analyses_owner_source"]["column_names"] == [
+        "owner_user_id", "transcript_id", "source_fingerprint"
+    ]
+    intent_indexes = {item["name"]: item for item in inspector.get_indexes("consultation_split_intents")}
+    assert intent_indexes["ix_consultation_split_intents_transcript_status"]["column_names"] == [
+        "transcript_id", "status"
+    ]
+    assert intent_indexes["ix_consultation_split_intents_retention"]["column_names"] == [
+        "retention_expires_at"
+    ]
+    intent_uniques = {item["name"]: item for item in inspector.get_unique_constraints("consultation_split_intents")}
+    assert intent_uniques["uq_consultation_split_intents_owner_idempotency_key"]["column_names"] == [
+        "owner_user_id", "client_idempotency_key"
+    ]
+    intent_fks = {item["name"]: item for item in inspector.get_foreign_keys("consultation_split_intents")}
+    assert intent_fks["fk_consultation_split_intents_analysis"]["constrained_columns"] == ["analysis_id"]
+    assert intent_fks["fk_consultation_split_intents_analysis"]["referred_table"] == "consultation_split_analyses"
+    assert intent_fks["fk_consultation_split_intents_analysis"].get("options", {}).get("ondelete") == "SET NULL"
+    generated_document_fk = intent_fks["fk_consultation_split_intents_generated_document"]
+    assert generated_document_fk["constrained_columns"] == ["generated_document_id"]
+    assert generated_document_fk["referred_table"] == "generated_documents"
+    assert generated_document_fk.get("options", {}).get("ondelete") == "SET NULL"
+    assert intent_columns["generated_document_id"]["nullable"] is True
+    assert intent_columns["generated_document_id"]["type"].__class__.__name__ == "UUID"
+    assert intent_uniques["uq_consultation_split_intents_generated_document"]["column_names"] == [
+        "generated_document_id"
+    ]
+    assert not {
+        fk["referred_table"] for fk in intent_fks.values()
+    } & {"templates", "template_versions"}
+    draft_uniques = {item["name"]: item for item in inspector.get_unique_constraints("consultation_split_drafts")}
+    assert draft_uniques["uq_consultation_split_drafts_analysis"]["column_names"] == ["analysis_id"]
+
+    draft_topic_uniques = {
+        item["name"]: item for item in inspector.get_unique_constraints("consultation_split_draft_topics")
+    }
+    assert draft_topic_uniques["uq_consultation_split_draft_topics_order"]["column_names"] == ["draft_id", "topic_order"]
+    batch_topic_uniques = {
+        item["name"]: item for item in inspector.get_unique_constraints("consultation_split_batch_topics")
+    }
+    assert batch_topic_uniques["uq_consultation_split_batch_topics_order"]["column_names"] == ["batch_id", "topic_order"]
+    draft_topic_fks = inspector.get_foreign_keys("consultation_split_draft_topics")
+    for column, table_name in (("template_id", "templates"), ("template_version_id", "template_versions")):
+        assert any(
+            fk["constrained_columns"] == [column]
+            and fk["referred_table"] == table_name
+            and fk.get("options", {}).get("ondelete") == "SET NULL"
+            for fk in draft_topic_fks
+        )
+
+    execution_checks = {item["name"]: item["sqltext"] for item in inspector.get_check_constraints("consultation_split_executions")}
+    assert "kind = 'analysis'" in execution_checks["ck_consultation_split_executions_kind_parent"]
+    assert "batch_id IS NOT NULL" in execution_checks["ck_consultation_split_executions_kind_parent"]
+    assert "attempt_no >= 1" in execution_checks["ck_consultation_split_executions_attempt_no_positive"]
+    for name in (
+        "ck_consultation_split_executions_input_token_count_nonnegative",
+        "ck_consultation_split_executions_output_token_count_nonnegative",
+        "ck_consultation_split_executions_total_token_count_nonnegative",
+    ):
+        assert ">= 0" in execution_checks[name]
+    execution_indexes = {item["name"]: item for item in inspector.get_indexes("consultation_split_executions")}
+    assert execution_indexes["ix_consultation_split_executions_llm_config_status"]["column_names"] == [
+        "llm_config_id", "status"
+    ]
+    execution_fks = inspector.get_foreign_keys("consultation_split_executions")
+    assert any(
+        fk["name"] == "fk_consultation_split_executions_llm_config"
+        and fk["constrained_columns"] == ["llm_config_id"]
+        and fk["referred_table"] == "team_llm_configs"
+        and fk.get("options", {}).get("ondelete") == "SET NULL"
+        for fk in execution_fks
+    )
+    for name, columns, predicate in (
+        ("uq_consultation_split_executions_analysis_kind_attempt", ["analysis_id", "kind", "attempt_no"], "analysis_id IS NOT NULL"),
+        ("uq_consultation_split_executions_batch_kind_attempt", ["batch_id", "kind", "attempt_no"], "batch_id IS NOT NULL"),
+    ):
+        index = execution_indexes[name]
+        assert index["unique"] is True
+        assert index["column_names"] == columns
+        assert predicate in index["dialect_options"]["postgresql_where"]
+    topic_checks = {item["name"]: item["sqltext"] for item in inspector.get_check_constraints("consultation_split_batch_topics")}
+    assert "topic_order >= 0" in topic_checks["ck_consultation_split_batch_topics_order_range"]
+    assert "topic_order <= 5" in topic_checks["ck_consultation_split_batch_topics_order_range"]
+    assert "disposition = 'separate_note'" in topic_checks["ck_consultation_split_batch_topics_primary_disposition"]
+
+    for table_name in split_tables:
+        foreign_keys = inspector.get_foreign_keys(table_name)
+        assert any(
+            fk["referred_table"] == "transcripts"
+            and fk["constrained_columns"] == ["transcript_id"]
+            and fk.get("options", {}).get("ondelete") == "CASCADE"
+            for fk in foreign_keys
+        )
+
+    for table_name in ("consultation_split_analyses", "consultation_split_drafts", "consultation_split_batches"):
+        checks = {item["name"]: item["sqltext"] for item in inspector.get_check_constraints(table_name)}
+        canonical_check = checks[f"ck_{table_name}_source_fingerprint_canonical"]
+        assert "source_fingerprint" in canonical_check
+        assert "^[0-9a-f]{64}$" in canonical_check
+    batch_fks = inspector.get_foreign_keys("consultation_split_batches")
+    assert any(
+        fk["constrained_columns"] == ["analysis_id"]
+        and fk["referred_table"] == "consultation_split_analyses"
+        and fk.get("options", {}).get("ondelete") in {"RESTRICT", "NO ACTION"}
+        for fk in batch_fks
+    )
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+                VALUES ('00000000-0000-0000-0000-000000009001', 'Split migration team', 'split migration team', 'active', 30, NOW(), NOW())
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO users (
+                    id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at
+                ) VALUES (
+                    '00000000-0000-0000-0000-000000009002', 'Split migration owner', 'split-migration@example.com', 'hash',
+                    '00000000-0000-0000-0000-000000009001', 'user', false, 'active', false, 'complete', true, false, NOW(), NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO transcripts (
+                    id, owner_user_id, team_id, title, ingestion_mode, status, next_live_chunk_sequence_no_applied,
+                    retention_days_applied, retention_expires_at, created_at
+                ) VALUES (
+                    '00000000-0000-0000-0000-000000009003', '00000000-0000-0000-0000-000000009002',
+                    '00000000-0000-0000-0000-000000009001', 'Split migration transcript', 'whole_file', 'ready', 1,
+                    30, NOW() + INTERVAL '30 days', NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO templates (id, scope, owner_user_id, team_id, name, is_active, created_by_user_id, created_at, updated_at)
+                VALUES (
+                    '00000000-0000-0000-0000-000000009004', 'user', '00000000-0000-0000-0000-000000009002', NULL,
+                    'Split migration template', true, '00000000-0000-0000-0000-000000009002', NOW(), NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO template_versions (id, template_id, version_no, mode, prompt_text, created_by_user_id, created_at)
+                VALUES (
+                    '00000000-0000-0000-0000-000000009005', '00000000-0000-0000-0000-000000009004', 1,
+                    'freeform', 'Template prompt', '00000000-0000-0000-0000-000000009002', NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO consultation_split_analyses (
+                    id, owner_user_id, team_id, transcript_id, source_fingerprint, status,
+                    retention_expires_at, created_at, updated_at
+                ) VALUES (
+                    '00000000-0000-0000-0000-000000009006', '00000000-0000-0000-0000-000000009002',
+                    '00000000-0000-0000-0000-000000009001', '00000000-0000-0000-0000-000000009003',
+                    repeat('a', 64), 'ready', NOW() + INTERVAL '30 days', NOW(), NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO consultation_split_drafts (
+                    id, analysis_id, owner_user_id, team_id, transcript_id, source_fingerprint, status,
+                    retention_expires_at, created_at, updated_at
+                ) VALUES (
+                    '00000000-0000-0000-0000-000000009007', '00000000-0000-0000-0000-000000009006',
+                    '00000000-0000-0000-0000-000000009002', '00000000-0000-0000-0000-000000009001',
+                    '00000000-0000-0000-0000-000000009003', repeat('a', 64), 'active',
+                    NOW() + INTERVAL '30 days', NOW(), NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO consultation_split_draft_topics (
+                    id, draft_id, owner_user_id, team_id, transcript_id, topic_uuid, title_encrypted, topic_order,
+                    is_primary, disposition, template_id, template_version_id, retention_expires_at, created_at, updated_at
+                ) VALUES (
+                    '00000000-0000-0000-0000-000000009008', '00000000-0000-0000-0000-000000009007',
+                    '00000000-0000-0000-0000-000000009002', '00000000-0000-0000-0000-000000009001',
+                    '00000000-0000-0000-0000-000000009003', '00000000-0000-0000-0000-000000009009', 'ciphertext', 0,
+                    true, 'separate_note', '00000000-0000-0000-0000-000000009004', '00000000-0000-0000-0000-000000009005',
+                    NOW() + INTERVAL '30 days', NOW(), NOW()
+                )
+                """
+            )
+        )
+        connection.execute(text("DELETE FROM template_versions WHERE id = '00000000-0000-0000-0000-000000009005'"))
+        connection.execute(text("DELETE FROM templates WHERE id = '00000000-0000-0000-0000-000000009004'"))
+        draft_template_references = connection.execute(
+            text(
+                """
+                SELECT template_id, template_version_id
+                FROM consultation_split_draft_topics
+                WHERE id = '00000000-0000-0000-0000-000000009008'
+                """
+            )
+        ).one()
+    assert draft_template_references == (None, None)
+
+    generated_columns = {column["name"] for column in inspector.get_columns("generated_documents")}
+    assert {"consultation_split_batch_topic_id", "consultation_split_topic_uuid"} <= generated_columns
+    generated_fks = inspector.get_foreign_keys("generated_documents")
+    assert any(
+        fk["name"] == "fk_generated_documents_consultation_split_batch_topic"
+        and fk["constrained_columns"] == ["consultation_split_batch_topic_id", "consultation_split_topic_uuid"]
+        and fk["referred_columns"] == ["id", "topic_uuid"]
+        and fk.get("options", {}).get("ondelete") == "SET NULL"
+        for fk in generated_fks
+    )
+    generated_uniques = {item["name"] for item in inspector.get_unique_constraints("generated_documents")}
+    assert "uq_generated_documents_consultation_split_batch_topic" in generated_uniques
+    generated_checks = {item["name"]: item["sqltext"] for item in inspector.get_check_constraints("generated_documents")}
+    assert "consultation_split_batch_topic_id IS NULL" in generated_checks["ck_generated_documents_consultation_split_membership"]
+
+    attempt_columns = {column["name"] for column in inspector.get_columns("provider_attempts")}
+    attempt_checks = {item["name"]: item["sqltext"] for item in inspector.get_check_constraints("provider_attempts")}
+    attempt_indexes = {item["name"]: item for item in inspector.get_indexes("provider_attempts")}
+    assert "consultation_split_execution_id" in attempt_columns
+    assert "ck_provider_attempts_split_execution_source_shape" in attempt_checks
+    assert "generated_document_id IS NULL" in attempt_checks["ck_provider_attempts_split_execution_source_shape"]
+    assert attempt_indexes["ix_provider_attempts_split_execution_status"]["column_names"] == [
+        "consultation_split_execution_id", "status"
+    ]
+    assert any(
+        fk["constrained_columns"] == ["consultation_split_execution_id"]
+        and fk["referred_table"] == "consultation_split_executions"
+        and fk.get("options", {}).get("ondelete") == "SET NULL"
+        for fk in inspector.get_foreign_keys("provider_attempts")
+    )
+    usage_columns = {column["name"] for column in inspector.get_columns("provider_usage_events")}
+    usage_indexes = {item["name"]: item for item in inspector.get_indexes("provider_usage_events")}
+    assert "consultation_split_execution_id" in usage_columns
+    assert usage_indexes["ix_provider_usage_events_split_execution"]["column_names"] == [
+        "consultation_split_execution_id"
+    ]
+    completed_usage_index = usage_indexes["uq_provider_usage_events_split_execution_completed"]
+    assert completed_usage_index["unique"] is True
+    assert "event_type = 'completed'" in completed_usage_index["dialect_options"]["postgresql_where"]
+
+    command.downgrade(alembic_config(), "h7i8j9k0l1m2")
+    downgraded = inspect(engine)
+    assert not split_tables & set(downgraded.get_table_names())
+    assert not {"consultation_split_batch_topic_id", "consultation_split_topic_uuid"} & {
+        column["name"] for column in downgraded.get_columns("generated_documents")
+    }
+    assert "consultation_split_execution_id" not in {
+        column["name"] for column in downgraded.get_columns("provider_attempts")
+    }
+    assert "consultation_split_execution_id" not in {
+        column["name"] for column in downgraded.get_columns("provider_usage_events")
+    }
+    with engine.connect() as connection:
+        remaining_enums = connection.execute(
+            text(
+                "SELECT typname FROM pg_type WHERE typname IN "
+                "('consultationsplitanalysisstatus', 'consultationsplitdraftstatus', "
+                "'consultationsplitintentstatus', "
+                "'consultationsplittopicdisposition', 'consultationsplitbatchstatus', "
+                "'consultationsplittopicoutcomestatus', 'consultationsplitexecutionkind', "
+                "'consultationsplitexecutionstatus')"
+            )
+        ).scalars().all()
+        shared_enum_labels = {
+            enum_name: connection.execute(
+                text(
+                    "SELECT enumlabel FROM pg_enum JOIN pg_type ON pg_enum.enumtypid = pg_type.oid "
+                    "WHERE pg_type.typname = :enum_name ORDER BY enumsortorder"
+                ),
+                {"enum_name": enum_name},
+            ).scalars().all()
+            for enum_name in (
+                "attemptkind",
+                "taskdispatchkind",
+                "taskdispatchsourcekind",
+                "providerfeaturetype",
+            )
+        }
+    assert remaining_enums == []
+    # j9k0l1m2n3o4 appends these shared PostgreSQL enum labels in an
+    # autocommit block.  Its downgrade removes the Slice 3 columns and the
+    # Slice 2 tables, but PostgreSQL cannot safely remove enum values.
+    assert shared_enum_labels == {
+        "attemptkind": [
+            "llm_generation", "llm_hallucination_check", "stt_conversation",
+            "stt_post_consultation_dictation", "stt_prompt_context", "stt_provider_test",
+            "llm_template_suggestion", "consultation_split_analysis",
+            "consultation_split_generation", "consultation_split_verification",
+        ],
+        "taskdispatchkind": [
+            "generation", "ingestion", "template_suggestion", "consultation_split_analysis",
+            "consultation_split_generation", "consultation_split_verification",
+        ],
+        "taskdispatchsourcekind": [
+            "generated_document", "transcript_ingestion_job", "template_suggestion_job",
+            "consultation_split_execution",
+        ],
+        "providerfeaturetype": [
+            "llm_generation", "consultation_split_analysis", "consultation_split_generation",
+            "consultation_split_verification",
+        ],
+    }
+
+
+@pytest.mark.migration
+def test_split_intent_bypass_document_link_round_trips_from_prior_intent_revision():
+    """Keep pre-link intents intact while the narrow link migration reverses."""
+    reset_public_schema()
+    command.upgrade(alembic_config(), "m2n3o4p5q6r7")
+
+    with engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+            VALUES ('00000000-0000-0000-0000-000000009101', 'Intent roundtrip team',
+                    'intent roundtrip team', 'active', 30, NOW(), NOW())
+        """))
+        connection.execute(text("""
+            INSERT INTO users (
+                id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+                must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at
+            ) VALUES (
+                '00000000-0000-0000-0000-000000009102', 'Intent roundtrip owner',
+                'intent-roundtrip@example.com', 'hash', '00000000-0000-0000-0000-000000009101',
+                'user', false, 'active', false, 'complete', true, false, NOW(), NOW()
+            )
+        """))
+        connection.execute(text("""
+            INSERT INTO transcripts (
+                id, owner_user_id, team_id, title, ingestion_mode, status, next_live_chunk_sequence_no_applied,
+                retention_days_applied, retention_expires_at, created_at
+            ) VALUES (
+                '00000000-0000-0000-0000-000000009103', '00000000-0000-0000-0000-000000009102',
+                '00000000-0000-0000-0000-000000009101', 'Intent roundtrip transcript', 'whole_file',
+                'ready', 1, 30, NOW() + INTERVAL '30 days', NOW()
+            )
+        """))
+        connection.execute(text("""
+            INSERT INTO consultation_split_intents (
+                id, owner_user_id, team_id, transcript_id, analysis_id, client_idempotency_key,
+                generation_snapshot_encrypted, status, retention_expires_at, created_at, updated_at
+            ) VALUES (
+                '00000000-0000-0000-0000-000000009104', '00000000-0000-0000-0000-000000009102',
+                '00000000-0000-0000-0000-000000009101', '00000000-0000-0000-0000-000000009103', NULL,
+                '00000000-0000-0000-0000-000000009105', 'legacy ciphertext', 'analysis_pending',
+                NOW() + INTERVAL '30 days', NOW(), NOW()
+            )
+        """))
+
+    command.upgrade(alembic_config(), "n3o4p5q6r7s")
+    upgraded = inspect(engine)
+    upgraded_columns = {column["name"]: column for column in upgraded.get_columns("consultation_split_intents")}
+    upgraded_fks = {item["name"]: item for item in upgraded.get_foreign_keys("consultation_split_intents")}
+    upgraded_uniques = {item["name"]: item for item in upgraded.get_unique_constraints("consultation_split_intents")}
+    assert upgraded_columns["generated_document_id"]["nullable"] is True
+    upgraded_fk = upgraded_fks["fk_consultation_split_intents_generated_document"]
+    assert upgraded_fk["constrained_columns"] == ["generated_document_id"]
+    assert upgraded_fk["referred_table"] == "generated_documents"
+    assert upgraded_fk["referred_columns"] == ["id"]
+    assert upgraded_fk.get("options", {}).get("ondelete") == "SET NULL"
+    assert upgraded_uniques["uq_consultation_split_intents_generated_document"]["column_names"] == [
+        "generated_document_id"
+    ]
+    with engine.connect() as connection:
+        legacy_row = connection.execute(text("""
+            SELECT id::text, status, generated_document_id
+            FROM consultation_split_intents
+            WHERE id = '00000000-0000-0000-0000-000000009104'
+        """)).one()
+    assert legacy_row == ("00000000-0000-0000-0000-000000009104", "analysis_pending", None)
+
+    # The confirmation migration is additive over the completed intent-link
+    # revision. Existing batches stay unlinked; new batches may link one intent.
+    command.upgrade(alembic_config(), "o4p5q6r7s8t")
+    confirmed = inspect(engine)
+    batch_columns = {column["name"]: column for column in confirmed.get_columns("consultation_split_batches")}
+    batch_fks = {item["name"]: item for item in confirmed.get_foreign_keys("consultation_split_batches")}
+    batch_uniques = {item["name"]: item for item in confirmed.get_unique_constraints("consultation_split_batches")}
+    assert batch_columns["intent_id"]["nullable"] is True
+    assert batch_fks["fk_consultation_split_batches_intent"]["constrained_columns"] == ["intent_id"]
+    assert batch_fks["fk_consultation_split_batches_intent"]["referred_table"] == "consultation_split_intents"
+    assert batch_fks["fk_consultation_split_batches_intent"].get("options", {}).get("ondelete") == "RESTRICT"
+    assert batch_uniques["uq_consultation_split_batches_intent"]["column_names"] == ["intent_id"]
+    with engine.connect() as connection:
+        intent_status_labels = connection.execute(text("""
+            SELECT enumlabel
+            FROM pg_enum JOIN pg_type ON pg_enum.enumtypid = pg_type.oid
+            WHERE pg_type.typname = 'consultationsplitintentstatus'
+            ORDER BY enumsortorder
+        """)).scalars().all()
+    assert intent_status_labels == ["analysis_pending", "bypassed", "confirmed"]
+
+
+@pytest.mark.migration
+def test_split_validated_outcome_migration_round_trips_link_schema_and_keeps_enum_label():
+    """The accepted-execution link reverses cleanly; PostgreSQL enum labels do not."""
+    reset_public_schema()
+    command.upgrade(alembic_config(), "o4p5q6r7s8t")
+
+    command.upgrade(alembic_config(), "p5q6r7s8t9u")
+    upgraded = inspect(engine)
+    columns = {column["name"]: column for column in upgraded.get_columns("consultation_split_topic_outcomes")}
+    foreign_keys = {item["name"]: item for item in upgraded.get_foreign_keys("consultation_split_topic_outcomes")}
+    indexes = {item["name"]: item for item in upgraded.get_indexes("consultation_split_topic_outcomes")}
+    assert columns["accepted_execution_id"]["nullable"] is True
+    accepted_execution_fk = foreign_keys["fk_consultation_split_topic_outcomes_accepted_execution"]
+    assert accepted_execution_fk["constrained_columns"] == ["accepted_execution_id"]
+    assert accepted_execution_fk["referred_table"] == "consultation_split_executions"
+    assert accepted_execution_fk["referred_columns"] == ["id"]
+    assert accepted_execution_fk.get("options", {}).get("ondelete") == "SET NULL"
+    assert indexes["ix_consultation_split_topic_outcomes_accepted_execution"]["column_names"] == ["accepted_execution_id"]
+
+    with engine.connect() as connection:
+        labels_after_upgrade = connection.execute(text("""
+            SELECT enumlabel
+            FROM pg_enum JOIN pg_type ON pg_enum.enumtypid = pg_type.oid
+            WHERE pg_type.typname = 'consultationsplittopicoutcomestatus'
+            ORDER BY enumsortorder
+        """)).scalars().all()
+    assert labels_after_upgrade == ["pending", "ready", "failed", "validated"]
+
+    command.downgrade(alembic_config(), "o4p5q6r7s8t")
+    downgraded = inspect(engine)
+    assert "accepted_execution_id" not in {
+        column["name"] for column in downgraded.get_columns("consultation_split_topic_outcomes")
+    }
+    assert "fk_consultation_split_topic_outcomes_accepted_execution" not in {
+        item["name"] for item in downgraded.get_foreign_keys("consultation_split_topic_outcomes")
+    }
+    assert "ix_consultation_split_topic_outcomes_accepted_execution" not in {
+        item["name"] for item in downgraded.get_indexes("consultation_split_topic_outcomes")
+    }
+    with engine.connect() as connection:
+        labels_after_downgrade = connection.execute(text("""
+            SELECT enumlabel
+            FROM pg_enum JOIN pg_type ON pg_enum.enumtypid = pg_type.oid
+            WHERE pg_type.typname = 'consultationsplittopicoutcomestatus'
+            ORDER BY enumsortorder
+        """)).scalars().all()
+    assert labels_after_downgrade == labels_after_upgrade
+
+
+@pytest.mark.migration
+def test_split_bundle_verification_migration_round_trips_state_and_ciphertext_slot():
+    """Phase 9 is additive and removes every new column on downgrade."""
+    reset_public_schema()
+    command.upgrade(alembic_config(), "p5q6r7s8t9u")
+    command.upgrade(alembic_config(), "q6r7s8t9u0v1")
+    upgraded = inspect(engine)
+    batches = {column["name"]: column for column in upgraded.get_columns("consultation_split_batches")}
+    outcomes = {column["name"]: column for column in upgraded.get_columns("consultation_split_topic_outcomes")}
+    assert {"verification_status", "verification_reason", "verification_completed_at", "verification_correction_count"} <= set(batches)
+    assert batches["verification_status"]["nullable"] is False
+    assert outcomes["verified_output_encrypted"]["nullable"] is True
+    with engine.connect() as connection:
+        labels = connection.execute(text("""
+            SELECT enumlabel FROM pg_enum JOIN pg_type ON pg_enum.enumtypid = pg_type.oid
+            WHERE pg_type.typname = 'consultationsplitverificationstatus' ORDER BY enumsortorder
+        """)).scalars().all()
+    assert labels == ["pending", "verifying", "verified", "unchecked"]
+
+    command.downgrade(alembic_config(), "p5q6r7s8t9u")
+    downgraded = inspect(engine)
+    assert not {"verification_status", "verification_reason", "verification_completed_at", "verification_correction_count"} & {
+        column["name"] for column in downgraded.get_columns("consultation_split_batches")
+    }
+    assert "verified_output_encrypted" not in {
+        column["name"] for column in downgraded.get_columns("consultation_split_topic_outcomes")
+    }
+
+
+@pytest.mark.migration
+def test_split_bundle_verification_upgrade_recovers_exact_preexisting_autocommit_enum():
+    """An interrupted q6 run leaves its committed enum while Alembic stays at p5."""
+    reset_public_schema()
+    command.upgrade(alembic_config(), "p5q6r7s8t9u")
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TYPE consultationsplitverificationstatus AS ENUM (
+                'pending', 'verifying', 'verified', 'unchecked'
+            )
+        """))
+
+    command.upgrade(alembic_config(), "head")
+
+    upgraded = inspect(engine)
+    batches = {column["name"] for column in upgraded.get_columns("consultation_split_batches")}
+    assert {
+        "verification_status",
+        "verification_reason",
+        "verification_completed_at",
+        "verification_correction_count",
+        "materialization_transcript_version_id",
+    } <= batches
+    with engine.connect() as connection:
+        labels = connection.execute(text("""
+            SELECT enumlabel
+            FROM pg_enum JOIN pg_type ON pg_enum.enumtypid = pg_type.oid
+            WHERE pg_type.typname = 'consultationsplitverificationstatus'
+            ORDER BY enumsortorder
+        """)).scalars().all()
+    assert labels == ["pending", "verifying", "verified", "unchecked"]
+
+
+@pytest.mark.migration
+def test_split_bundle_verification_upgrade_rejects_incompatible_preexisting_enum():
+    """Recovery must not treat a same-named but incompatible type as q6 state."""
+    reset_public_schema()
+    command.upgrade(alembic_config(), "p5q6r7s8t9u")
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TYPE consultationsplitverificationstatus AS ENUM (
+                'pending', 'verified'
+            )
+        """))
+
+    with pytest.raises(Exception, match="consultationsplitverificationstatus has incompatible labels"):
+        command.upgrade(alembic_config(), "q6r7s8t9u0v1")
+    assert "verification_status" not in {
+        column["name"] for column in inspect(engine).get_columns("consultation_split_batches")
+    }
+
+
+@pytest.mark.migration
+def test_split_batch_materialization_version_migration_round_trips_nullable_lineage_link():
+    """New batches can bind a version while historical rows remain nullable."""
+    reset_public_schema()
+    command.upgrade(alembic_config(), "q6r7s8t9u0v1")
+    assert "materialization_transcript_version_id" not in {
+        column["name"] for column in inspect(engine).get_columns("consultation_split_batches")
+    }
+
+    command.upgrade(alembic_config(), "r1s2t3u4v5w6")
+    upgraded = inspect(engine)
+    columns = {column["name"]: column for column in upgraded.get_columns("consultation_split_batches")}
+    foreign_keys = {item["name"]: item for item in upgraded.get_foreign_keys("consultation_split_batches")}
+    assert columns["materialization_transcript_version_id"]["nullable"] is True
+    foreign_key = foreign_keys["fk_split_batches_materialization_version"]
+    assert foreign_key["constrained_columns"] == ["materialization_transcript_version_id"]
+    assert foreign_key["referred_table"] == "transcript_versions"
+    assert foreign_key["referred_columns"] == ["id"]
+    assert foreign_key.get("options", {}).get("ondelete") == "CASCADE"
+
+    command.downgrade(alembic_config(), "q6r7s8t9u0v1")
+    downgraded = inspect(engine)
+    assert "materialization_transcript_version_id" not in {
+        column["name"] for column in downgraded.get_columns("consultation_split_batches")
+    }

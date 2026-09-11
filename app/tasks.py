@@ -3,8 +3,11 @@ from uuid import UUID
 
 from app.celery_app import celery_app
 from app.db import SessionLocal
-from app.models import GeneratedDocument, TemplateSuggestionJob, TranscriptIngestionJob, utcnow
+from app.models import ConsultationSplitExecution, ConsultationSplitExecutionKind, GeneratedDocument, TemplateSuggestionJob, TranscriptIngestionJob, utcnow
 from app.services.template_suggestions import process_template_suggestion
+from app.services.consultation_split_runtime import process_consultation_split_analysis_execution
+from app.services.consultation_split_generation_runtime import process_consultation_split_generation_execution
+from app.services.consultation_split_verification_runtime import process_consultation_split_verification_execution
 from app.services.templates import GeneratedDocumentWaitingForTranscript, process_generated_document
 from app.services.transcripts import delete_expired_transcripts, expire_ingestion_source_audio, process_transcript_audio_cleanup_jobs, process_transcript_ingestion_job
 from app.services.audit_retention import expire_security_audit_events
@@ -54,6 +57,43 @@ def process_template_suggestion_task(*, job_id: str) -> None:
     with SessionLocal() as db:
         _stamp_worker_received(db, model_class=TemplateSuggestionJob, record_id=UUID(job_id))
         process_template_suggestion(db, job_id=UUID(job_id))
+
+
+@celery_app.task(name="openscribe.process_consultation_split_execution")
+def process_consultation_split_execution_task(*, execution_id: str) -> None:
+    """Run one safe, at-most-once consultation-split execution delivery.
+
+    The task payload remains an execution UUID only.  The service consumes
+    terminal results so provider exceptions (which may carry unsafe upstream
+    detail) never reach Celery's exception logging path.
+    """
+    try:
+        parsed_execution_id = UUID(execution_id)
+    except (TypeError, ValueError, AttributeError):
+        return
+    with SessionLocal() as db:
+        try:
+            execution = db.get(ConsultationSplitExecution, parsed_execution_id)
+            if execution is None:
+                return
+            execution_kind = execution.kind
+            # Both split runtimes require a clean session before credential
+            # resolution.  The task's routing lookup must not leak its read
+            # transaction into that boundary.
+            db.rollback()
+            if execution_kind is ConsultationSplitExecutionKind.analysis:
+                process_consultation_split_analysis_execution(db, execution_id=parsed_execution_id)
+            elif execution_kind is ConsultationSplitExecutionKind.generation:
+                process_consultation_split_generation_execution(db, execution_id=parsed_execution_id)
+            elif execution_kind is ConsultationSplitExecutionKind.verification:
+                process_consultation_split_verification_execution(db, execution_id=parsed_execution_id)
+        except Exception:
+            # The service has terminalized known provider failures itself.  A
+            # truly unexpected worker error must not hand Celery raw exception
+            # text which could contain provider content.  Roll back any local
+            # state and leave submitted/no-response work for conservative quota
+            # lifecycle terminalization rather than retrying a provider call.
+            db.rollback()
 
 
 @celery_app.task(name="openscribe.process_task_dispatch_outbox")

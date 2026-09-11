@@ -161,6 +161,7 @@ from app.services.provider_secret_cleanup import process_provider_secret_cleanup
 from app.services.llm_presets import LLM_PROVIDER_PRESETS, apply_provider_defaults, filter_discovered_models, infer_llm_provider_preset
 from app.services.stt import transcribe_metered_team_stt, transcribe_with_team_stt
 from app.services.dictations import update_post_consultation_dictation
+from app.services.preferences import consultation_splitting_enabled
 from app.services.templates import (
     DICTATION_SOURCE_SPLIT_MARKER,
     QUICK_ACTION_CONTEXT_MARKER,
@@ -2512,12 +2513,14 @@ def test_saved_stt_test_requires_local_sample_before_credentials_or_provider_dis
     make_user,
     make_stt_config,
     monkeypatch,
+    tmp_path,
 ):
     team = make_team(name="Missing sample clinic")
     admin = make_user(email="missing-sample-admin@example.com", password="password-1", is_system_admin=True)
     config = make_stt_config(team=team, actor=admin, base_url="http://127.0.0.1:7000")
     credential_reads: list[bool] = []
     provider_calls: list[bool] = []
+    monkeypatch.setattr("app.services.stt.DEFAULT_STT_SAMPLE_PATH", tmp_path / "missing_example_audio.wav")
     monkeypatch.setattr("app.services.stt._read_saved_stt_bearer_token", lambda **kwargs: credential_reads.append(True))
     monkeypatch.setattr("app.services.stt._transcribe_via_http", lambda **kwargs: provider_calls.append(True))
 
@@ -7197,6 +7200,341 @@ def test_redaction_reuse_creates_missing_clinical_run(
     assert clinical_run.team_id == team.id
 
 
+def test_redaction_reuse_survives_unexpected_optional_clinical_failure(
+    db_session,
+    monkeypatch,
+    caplog,
+    make_team,
+    make_user,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+    make_clinical_nlp_selection,
+):
+    team = make_team(name="Clinic Existing Redaction Optional Failure")
+    admin = make_user(email="clinical-existing-failure-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="clinical-existing-failure-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="Native Clinical NLP Failure",
+        adapter_kind=DeidentificationAdapterKind.native_presidio,
+        clinical_detection_enabled=True,
+        is_builtin=False,
+    )
+    make_deidentification_provider_assignment(team=team, provider=provider, actor=admin)
+    make_clinical_nlp_selection(team=team, provider=provider, actor=admin)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Existing optional clinical failure",
+        current_draft_text_encrypted="Jane Smith reports asthma.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="")
+    db_session.add(version)
+    db_session.flush()
+    version.text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcript_versions",
+        field="text_encrypted",
+        record_id=version.id,
+        plaintext="Jane Smith reports asthma.",
+    )
+    redaction_run = RedactionRun(
+        transcript_id=transcript.id,
+        transcript_version_id=version.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        status=RedactionRunStatus.succeeded,
+        api_provider="Existing Deid",
+    )
+    db_session.add(redaction_run)
+    db_session.flush()
+    redaction_run.redacted_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="redaction_runs",
+        field="redacted_text_encrypted",
+        record_id=redaction_run.id,
+        plaintext="[PHI-1] reports asthma.",
+    )
+    db_session.commit()
+
+    def fail_clinical_enrichment(*args, **kwargs):
+        raise RuntimeError("Jane Smith must not be logged")
+
+    monkeypatch.setattr(
+        "app.services.clinical_nlp.ensure_clinical_entity_run_for_transcript_version",
+        fail_clinical_enrichment,
+    )
+    caplog.set_level("WARNING", logger="openscribe.clinical_nlp")
+
+    reused = ensure_redaction_run_for_transcript_version(db_session, transcript_version=version)
+
+    assert reused.id == redaction_run.id
+    assert reused.status is RedactionRunStatus.succeeded
+    failed_run = db_session.scalar(select(ClinicalEntityRun).where(ClinicalEntityRun.transcript_version_id == version.id))
+    assert failed_run is not None
+    assert failed_run.status is RedactionRunStatus.failed
+    assert failed_run.error_code == "clinical_detection_failed"
+    assert failed_run.redaction_run_id == redaction_run.id
+    assert "Jane Smith" not in caplog.text
+    assert "clinical_detection_failed" in caplog.text
+
+
+def test_new_redaction_survives_unexpected_optional_clinical_failure(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+    make_deidentification_selection,
+    make_clinical_nlp_selection,
+):
+    team = make_team(name="Clinic New Redaction Optional Failure")
+    admin = make_user(email="clinical-new-failure-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="clinical-new-failure-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="Clinical NLP Failure",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="https://clinical.example.com",
+        detect_path="/detect",
+        auth_mode=DeidentificationAuthMode.none,
+        clinical_detection_enabled=True,
+    )
+    make_deidentification_provider_assignment(team=team, provider=provider, actor=admin)
+    make_deidentification_selection(team=team, provider=provider, actor=admin)
+    make_clinical_nlp_selection(team=team, provider=provider, actor=admin)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="New optional clinical failure",
+        current_draft_text_encrypted="Jane Smith reports asthma.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="")
+    db_session.add(version)
+    db_session.flush()
+    version.text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcript_versions",
+        field="text_encrypted",
+        record_id=version.id,
+        plaintext="Jane Smith reports asthma.",
+    )
+    db_session.commit()
+
+    from app.services.redaction import DeidentificationDetectionResult, Span
+
+    monkeypatch.setattr(
+        "app.services.redaction._detect_phi",
+        lambda db, *, provider, text, language, score_threshold, entities: DeidentificationDetectionResult(
+            spans=[Span(start=0, end=len("Jane Smith"), entity_type="PERSON", score=0.99)],
+            api_provider=provider.label,
+            api_model_or_version="stub",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.clinical_nlp.ensure_clinical_entity_run_for_transcript_version",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("unexpected optional failure")),
+    )
+
+    run = ensure_redaction_run_for_transcript_version(db_session, transcript_version=version)
+
+    assert run.status is RedactionRunStatus.succeeded
+    assert run.error_code is None
+    assert decrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="redaction_runs",
+        field="redacted_text_encrypted",
+        record_id=run.id,
+        stored_value=run.redacted_text_encrypted,
+    ) == "[PHI-1] reports asthma."
+    failed_run = db_session.scalar(select(ClinicalEntityRun).where(ClinicalEntityRun.transcript_version_id == version.id))
+    assert failed_run is not None
+    assert failed_run.status is RedactionRunStatus.failed
+    assert failed_run.error_code == "clinical_detection_failed"
+    assert failed_run.redaction_run_id == run.id
+
+
+def test_new_redaction_survives_expected_optional_clinical_provider_failure(
+    db_session,
+    monkeypatch,
+    make_team,
+    make_user,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+    make_deidentification_selection,
+    make_clinical_nlp_selection,
+):
+    team = make_team(name="Clinic Expected Optional Failure")
+    admin = make_user(email="clinical-expected-failure-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="clinical-expected-failure-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="Expected Clinical NLP Failure",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="https://clinical.example.com",
+        detect_path="/detect",
+        auth_mode=DeidentificationAuthMode.none,
+        clinical_detection_enabled=True,
+    )
+    make_deidentification_provider_assignment(team=team, provider=provider, actor=admin)
+    make_deidentification_selection(team=team, provider=provider, actor=admin)
+    make_clinical_nlp_selection(team=team, provider=provider, actor=admin)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Expected optional clinical failure",
+        current_draft_text_encrypted="Jane Smith reports asthma.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="")
+    db_session.add(version)
+    db_session.flush()
+    version.text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcript_versions",
+        field="text_encrypted",
+        record_id=version.id,
+        plaintext="Jane Smith reports asthma.",
+    )
+    db_session.commit()
+
+    from app.services.redaction import DeidentificationDetectionResult, Span
+
+    monkeypatch.setattr(
+        "app.services.redaction._detect_phi",
+        lambda db, *, provider, text, language, score_threshold, entities: DeidentificationDetectionResult(
+            spans=[Span(start=0, end=len("Jane Smith"), entity_type="PERSON", score=0.99)],
+            api_provider=provider.label,
+            api_model_or_version="stub",
+        ),
+    )
+
+    class FailedClinicalResponse:
+        status_code = 502
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("app.services.redaction.httpx.stream", lambda *args, **kwargs: FailedClinicalResponse())
+
+    run = ensure_redaction_run_for_transcript_version(db_session, transcript_version=version)
+
+    assert run.status is RedactionRunStatus.succeeded
+    clinical_run = db_session.scalar(select(ClinicalEntityRun).where(ClinicalEntityRun.transcript_version_id == version.id))
+    assert clinical_run is not None
+    assert clinical_run.status is RedactionRunStatus.failed
+    assert clinical_run.error_code == "clinical_detection_failed"
+    assert clinical_run.redaction_run_id == run.id
+
+
+def test_new_redaction_survives_optional_clinical_provider_lookup_failure(
+    db_session,
+    monkeypatch,
+    caplog,
+    make_team,
+    make_user,
+    make_deidentification_provider,
+    make_deidentification_provider_assignment,
+    make_deidentification_selection,
+    make_clinical_nlp_selection,
+):
+    team = make_team(name="Clinic Optional Lookup Failure")
+    admin = make_user(email="clinical-lookup-failure-admin@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="clinical-lookup-failure-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    provider = make_deidentification_provider(
+        actor=admin,
+        label="Clinical NLP Lookup Failure",
+        adapter_kind=DeidentificationAdapterKind.generic_rest,
+        base_url="https://clinical.example.com",
+        detect_path="/detect",
+        auth_mode=DeidentificationAuthMode.none,
+        clinical_detection_enabled=True,
+    )
+    make_deidentification_provider_assignment(team=team, provider=provider, actor=admin)
+    make_deidentification_selection(team=team, provider=provider, actor=admin)
+    make_clinical_nlp_selection(team=team, provider=provider, actor=admin)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Optional clinical lookup failure",
+        current_draft_text_encrypted="Jane Smith reports asthma.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="")
+    db_session.add(version)
+    db_session.flush()
+    version.text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcript_versions",
+        field="text_encrypted",
+        record_id=version.id,
+        plaintext="Jane Smith reports asthma.",
+    )
+    db_session.commit()
+
+    from app.services.redaction import DeidentificationDetectionResult, Span
+
+    monkeypatch.setattr(
+        "app.services.redaction._detect_phi",
+        lambda db, *, provider, text, language, score_threshold, entities: DeidentificationDetectionResult(
+            spans=[Span(start=0, end=len("Jane Smith"), entity_type="PERSON", score=0.99)],
+            api_provider=provider.label,
+            api_model_or_version="stub",
+        ),
+    )
+
+    def fail_provider_lookup(*args, **kwargs):
+        raise RuntimeError("Jane Smith provider lookup must not be logged")
+
+    monkeypatch.setattr("app.services.clinical_nlp.active_team_clinical_nlp_provider", fail_provider_lookup)
+    caplog.set_level("WARNING", logger="openscribe.clinical_nlp")
+
+    run = ensure_redaction_run_for_transcript_version(db_session, transcript_version=version)
+
+    assert run.status is RedactionRunStatus.succeeded
+    assert run.error_code is None
+    failed_run = db_session.scalar(select(ClinicalEntityRun).where(ClinicalEntityRun.transcript_version_id == version.id))
+    assert failed_run is not None
+    assert failed_run.status is RedactionRunStatus.failed
+    assert failed_run.provider_id is None
+    assert failed_run.error_code == "clinical_detection_failed"
+    assert "Jane Smith" not in caplog.text
+    assert "clinical_detection_failed" in caplog.text
+
+
 def test_generic_rest_deidentification_spans_are_normalized_and_filtered(
     db_session,
     monkeypatch,
@@ -7787,6 +8125,7 @@ def test_user_can_set_get_and_clear_app_preferences(
             "preferred_recording_mode": "live_chunked",
             "preferred_transcribe_tab": "followups",
             "template_suggestions_enabled": True,
+            "split_consultations_into_separate_notes": True,
         },
     )
     assert saved.status_code == 200
@@ -7800,6 +8139,7 @@ def test_user_can_set_get_and_clear_app_preferences(
     assert body["preferred_recording_mode"] == "live_chunked"
     assert body["preferred_transcribe_tab"] == "followups"
     assert body["template_suggestions_enabled"] is True
+    assert body["split_consultations_into_separate_notes"] is True
 
     persisted = db_session.scalar(select(UserAppPreference).where(UserAppPreference.user_id == user.id))
     assert persisted is not None
@@ -7812,6 +8152,7 @@ def test_user_can_set_get_and_clear_app_preferences(
         "note_generation_length": "long",
         "preferred_recording_mode": "live_chunked",
         "preferred_transcribe_tab": "followups",
+        "split_consultations_into_separate_notes": True,
     }
 
     rejected_length = client.post("/api/v1/app-preferences", json={"note_generation_length": "giant"})
@@ -7822,6 +8163,7 @@ def test_user_can_set_get_and_clear_app_preferences(
     assert fetched.json()["id"] == str(persisted.id)
     assert fetched.json()["favorite_quick_action_ids"] == [str(team_quick_action.id), str(personal_quick_action.id)]
     assert fetched.json()["template_suggestions_enabled"] is True
+    assert fetched.json()["split_consultations_into_separate_notes"] is True
 
     cleared = client.delete("/api/v1/app-preferences")
     assert cleared.status_code == 204
@@ -7841,12 +8183,63 @@ def test_user_app_preferences_default_template_suggestions_to_enabled_and_persis
     fetched = client.get("/api/v1/app-preferences")
     assert fetched.status_code == 200
     assert fetched.json()["template_suggestions_enabled"] is True
+    assert fetched.json()["split_consultations_into_separate_notes"] is False
 
     disabled = client.post("/api/v1/app-preferences", json={"template_suggestions_enabled": False})
     assert disabled.status_code == 200
     assert disabled.json()["template_suggestions_enabled"] is False
     db_session.refresh(persisted)
     assert persisted.preferences_json["template_suggestions_enabled"] is False
+
+
+def test_user_app_preferences_split_consultations_default_false_round_trip_and_legacy_normalization(client, db_session, make_user):
+    user = make_user(email="split-preference-default@example.com", password="password-1")
+    login(client, email=user.email, password="password-1")
+
+    default = client.post("/api/v1/app-preferences", json={})
+
+    assert default.status_code == 200
+    assert default.json()["split_consultations_into_separate_notes"] is False
+    persisted = db_session.scalar(select(UserAppPreference).where(UserAppPreference.user_id == user.id))
+    assert persisted is not None
+    assert "split_consultations_into_separate_notes" not in persisted.preferences_json
+
+    enabled = client.post("/api/v1/app-preferences", json={"split_consultations_into_separate_notes": True})
+
+    assert enabled.status_code == 200
+    assert enabled.json()["split_consultations_into_separate_notes"] is True
+    db_session.refresh(persisted)
+    assert persisted.preferences_json["split_consultations_into_separate_notes"] is True
+
+    disabled = client.post("/api/v1/app-preferences", json={"split_consultations_into_separate_notes": False})
+
+    assert disabled.status_code == 200
+    assert disabled.json()["split_consultations_into_separate_notes"] is False
+    db_session.refresh(persisted)
+    assert "split_consultations_into_separate_notes" not in persisted.preferences_json
+
+
+    persisted.preferences_json = {"split_consultations_into_separate_notes": False}
+    db_session.add(persisted)
+    db_session.commit()
+
+    legacy = client.get("/api/v1/app-preferences")
+
+    assert legacy.status_code == 200
+    assert legacy.json()["split_consultations_into_separate_notes"] is False
+    db_session.refresh(persisted)
+    assert "split_consultations_into_separate_notes" not in persisted.preferences_json
+
+
+def test_consultation_splitting_capability_requires_deployment_gate(db_session, make_user, make_user_app_preference, monkeypatch):
+    user = make_user(email="split-preference-gate@example.com", password="password-1")
+    make_user_app_preference(user=user, preferences_json={"split_consultations_into_separate_notes": True})
+
+    monkeypatch.delenv("CONSULTATION_SPLITTING_ENABLED", raising=False)
+    assert consultation_splitting_enabled(db_session, user) is False
+
+    monkeypatch.setenv("CONSULTATION_SPLITTING_ENABLED", "true")
+    assert consultation_splitting_enabled(db_session, user) is True
 
 
 def test_user_app_preferences_reject_unavailable_assets_and_system_admin(
@@ -11042,7 +11435,7 @@ def test_quick_action_regeneration_discards_legacy_steering_and_enforces_owner_a
     )
 
 
-def test_regeneration_rejects_template_documents_and_expired_transcripts(
+def test_regeneration_rejects_template_documents_without_frozen_snapshots_and_expired_transcripts(
     client,
     db_session,
     make_team,
@@ -11090,7 +11483,7 @@ def test_regeneration_rejects_template_documents_and_expired_transcripts(
         unsupported,
         status_code=422,
         code="business_rule_violation",
-        message="Only follow-ups can be regenerated",
+        message="The saved generation source is unavailable for regeneration",
     )
 
     document.generator_type = GeneratedDocumentGeneratorType.followup
@@ -13207,7 +13600,7 @@ def test_llm_config_cannot_be_changed_while_generated_documents_are_in_flight(cl
         deleted,
         status_code=409,
         code="conflict",
-        message="Cannot delete this LLM config while generated documents are queued or processing",
+        message="Cannot delete this LLM config while dependent work is queued or processing",
     )
 
     writes = []

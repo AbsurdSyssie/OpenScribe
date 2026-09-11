@@ -52,6 +52,9 @@ class RecordingPublisher:
     [
         (TaskDispatchKind.generation, TaskDispatchSourceKind.generated_document),
         (TaskDispatchKind.ingestion, TaskDispatchSourceKind.transcript_ingestion_job),
+        (TaskDispatchKind.consultation_split_analysis, TaskDispatchSourceKind.consultation_split_execution),
+        (TaskDispatchKind.consultation_split_generation, TaskDispatchSourceKind.consultation_split_execution),
+        (TaskDispatchKind.consultation_split_verification, TaskDispatchSourceKind.consultation_split_execution),
     ],
 )
 def test_add_pending_dispatch_is_idempotent_and_maps_source(db_session, dispatch_kind, source_kind):
@@ -88,6 +91,11 @@ def test_add_pending_dispatch_rejects_payload_mismatch(db_session):
 def test_default_publisher_maps_kwargs_and_uses_stored_deterministic_id(db_session, monkeypatch):
     generation = add_pending_task_dispatch(db_session, dispatch_kind=TaskDispatchKind.generation, source_id=uuid4())
     ingestion = add_pending_task_dispatch(db_session, dispatch_kind=TaskDispatchKind.ingestion, source_id=uuid4())
+    split = add_pending_task_dispatch(
+        db_session,
+        dispatch_kind=TaskDispatchKind.consultation_split_analysis,
+        source_id=uuid4(),
+    )
     db_session.commit()
     calls = []
 
@@ -97,15 +105,21 @@ def test_default_publisher_maps_kwargs_and_uses_stored_deterministic_id(db_sessi
     def record_ingestion(**kwargs):
         calls.append(("ingestion", kwargs))
 
+    def record_split(**kwargs):
+        calls.append(("split", kwargs))
+
     monkeypatch.setattr("app.tasks.process_generated_document_task.apply_async", record_generation)
     monkeypatch.setattr("app.tasks.process_transcript_ingestion_job_task.apply_async", record_ingestion)
+    monkeypatch.setattr("app.tasks.process_consultation_split_execution_task.apply_async", record_split)
     publisher = CeleryTaskDispatchPublisher()
     publisher.publish(generation)
     publisher.publish(ingestion)
+    publisher.publish(split)
 
     assert calls == [
         ("generation", {"kwargs": {"document_id": str(generation.source_id)}, "task_id": str(generation.task_id)}),
         ("ingestion", {"kwargs": {"job_id": str(ingestion.source_id)}, "task_id": str(ingestion.task_id)}),
+        ("split", {"kwargs": {"execution_id": str(split.source_id)}, "task_id": str(split.task_id)}),
     ]
 
 
@@ -267,6 +281,24 @@ def test_celery_outbox_task_is_registered_and_scheduled():
         "schedule": 1.0,
         "options": {"expires": 1.0},
     }
+
+
+def test_consultation_split_execution_uses_generation_queue():
+    import app.tasks  # noqa: F401 - triggers Celery task registration
+
+    split_route = celery_app.amqp.router.route(
+        {}, "openscribe.process_consultation_split_execution", (), {}
+    )
+    document_route = celery_app.amqp.router.route(
+        {}, "openscribe.process_generated_document", (), {}
+    )
+    ingestion_route = celery_app.amqp.router.route(
+        {}, "openscribe.process_transcript_ingestion_job", (), {}
+    )
+
+    assert split_route["queue"].name == "generation"
+    assert document_route["queue"].name == "generation"
+    assert ingestion_route["queue"].name == "ingestion"
 
 
 def test_publish_task_dispatch_claims_and_publishes_single_row(db_session):

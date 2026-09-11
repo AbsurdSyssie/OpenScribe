@@ -283,12 +283,28 @@ aria-expanded="false">
 type="submit"
 class="btn-primary btn-primary--compact"
 {% if not active_transcript or not available_templates or not llm_selection or not active_template_generation_input_available %}disabled{% endif %}>
-<i class="w-4 h-4" data-lucide="zap"></i>
-Create
+<i class="w-4 h-4" data-lucide="{{ 'rotate-ccw' if latest_generated_document else 'zap' }}"></i>
+<span data-generate-output-label>{{ 'Regenerate' if latest_generated_document else 'Create' }}</span>
 </button>
 </form>
+<p class="text-sm text-slate" data-split-generation-status role="status" aria-live="polite" aria-atomic="true" hidden></p>
+<button type="button" class="btn-secondary btn-secondary--compact" data-split-continue-one-note hidden>
+Continue as one note
+</button>
+<div class="split-partial-actions" data-split-partial-actions hidden aria-live="polite">
+<p id="split-partial-status" class="text-sm text-slate" data-split-partial-status role="status" aria-atomic="true"></p>
+<button type="button" class="btn-secondary btn-secondary--compact" data-split-retry-missing hidden>
+Retry missing notes
+</button>
+<button type="button" class="btn-secondary btn-secondary--compact" data-split-keep-available hidden>
+Keep available notes
+</button>
+</div>
 </div>
 <div class="note-header-right">
+<button type="button" class="btn-secondary btn-secondary--compact" data-split-review-trigger hidden aria-haspopup="dialog" aria-controls="split-review-modal" aria-expanded="false">
+Review note split
+</button>
 <div
 class="note-editor-toolbar note-editor-toolbar--header"
 data-note-editor-toolbar
@@ -301,6 +317,7 @@ data-note-editor-header-toolbar
 <button type="button" class="btn-primary-sm" data-copy-structured-lines aria-label="Copy selected note lines"><span class="note-copy-label-full">Copy selected</span><span class="mobile-note-copy-label">Copy</span></button>
 </div>
 </div>
+
 </div>
 <aside class="template-suggestion" data-template-suggestion role="status" aria-live="polite" hidden>
 <p data-template-suggestion-message></p>
@@ -341,6 +358,8 @@ data-settings-url="/workspace/library/templates?scope={% if template.scope.value
 <div class="mobile-sheet-heading"><span>Note versions</span><button type="button" data-mobile-note-versions-close aria-label="Close note versions"><i data-lucide="x" aria-hidden="true"></i></button></div>
 <div class="flex items-start justify-between gap-3" data-note-selector-row>
 <div class="min-w-0 flex-1">
+<div class="document-switcher-rail" data-note-selector-rail>
+<button type="button" class="document-switcher-scroll" data-note-selector-scroll-prev aria-label="Scroll note versions left" title="Scroll note versions left" hidden disabled><i data-lucide="chevron-left" aria-hidden="true"></i></button>
 <div class="document-switcher" data-note-selector>
 {% if active_transcript %}
 <div class="document-switcher-item">
@@ -372,11 +391,16 @@ title="{{ document.title }}">
 <span class="document-switcher-label">{{ note_words[:4]|join(' ') }}{% if note_words|length > 4 %}…{% endif %}</span>
 <span class="document-switcher-meta">{{ document.status.value }} · <time datetime="{{ document.created_at.isoformat() }}" data-note-created-at="{{ document.created_at.isoformat() }}">{{ document.created_at.strftime("%y-%m-%d %H:%M") }}</time></span>
 </button>
+<button type="button" class="document-switcher-item__regenerate" data-note-regenerate data-document-id="{{ document.id }}" title="{{ 'This note is still being generated' if document.status.value in ['queued', 'processing'] else 'Regenerate note' }}" aria-label="{{ 'This note is still being generated' if document.status.value in ['queued', 'processing'] else 'Regenerate note' }}" aria-haspopup="dialog" aria-expanded="false"{% if document.status.value in ['queued', 'processing'] %} disabled{% endif %}>
+<i class="w-3.5 h-3.5" data-lucide="rotate-ccw" aria-hidden="true"></i>
+</button>
 <button type="button" class="document-switcher-item__delete" data-note-hover-delete data-document-id="{{ document.id }}" aria-label="Delete note permanently" title="Delete note permanently">
 <i class="w-3.5 h-3.5" data-lucide="trash-2" aria-hidden="true"></i>
 </button>
 </div>
 {% endfor %}
+</div>
+<button type="button" class="document-switcher-scroll" data-note-selector-scroll-next aria-label="Scroll note versions right" title="Scroll note versions right" hidden disabled><i data-lucide="chevron-right" aria-hidden="true"></i></button>
 </div>
 </div>
 </div>
@@ -945,6 +969,29 @@ Clinical NLP has not run for this transcript yet.
 <span data-dictation-save-generate-label>Save & generate note</span>
 </button>
 </div>
+</footer>
+</section>
+</div>
+<div id="split-review-modal" class="split-review-modal" data-split-review-modal hidden>
+<div class="split-review-modal__backdrop" data-split-review-close></div>
+<section class="split-review-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="split-review-modal-title" aria-describedby="split-review-status">
+<header class="split-review-modal__header">
+<div>
+<div class="section-kicker">Review before creating notes</div>
+<h2 id="split-review-modal-title">Review note split</h2>
+<p>Choose how each proposed topic should appear in your notes.</p>
+</div>
+<button type="button" class="template-picker-modal__close" data-split-review-close aria-label="Review later">
+<i class="w-3.5 h-3.5" data-lucide="x" aria-hidden="true"></i>
+</button>
+</header>
+<p id="split-review-status" class="split-review-modal__status" data-split-review-status role="status" aria-live="polite"></p>
+<div class="split-review-modal__topics" data-split-review-topic-list></div>
+<footer class="split-review-modal__footer">
+<button type="button" class="btn-ghost-sm" data-split-review-close>Review later</button>
+<button type="button" class="btn-secondary-sm" data-split-review-continue hidden disabled>Continue as one note</button>
+<button type="button" class="btn-primary-sm" data-split-review-save>Save split</button>
+<button type="button" class="btn-primary-sm" data-split-review-confirm hidden disabled>Confirm split</button>
 </footer>
 </section>
 </div>

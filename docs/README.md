@@ -47,6 +47,8 @@ These documents are maintained as descriptions of implemented behavior or an exp
 | Scribe workspace summary | [transcribe_brief.md](transcribe_brief.md) |
 | Transcript capture contracts and remaining roadmap | [transcript-capture.md](transcript-capture.md) |
 | Template-suggestion preference | [template-suggestion-preference.md](template-suggestion-preference.md) |
+| Consultation-splitting preference rollout and partial recovery | [consultation-splitting-preference.md](consultation-splitting-preference.md) |
+| Consultation-splitting Phase 10 release evidence (10 September 2026) | [consultation-splitting-release-evidence-2026-09-10.md](consultation-splitting-release-evidence-2026-09-10.md) |
 | Live chunked STT behavior | [live_stt.md](live_stt.md) |
 | Working note implementation contract/history | [working_note_implementation.md](working_note_implementation.md) |
 | Structured EMIS notes | [emis-roadmap.md](emis-roadmap.md) |

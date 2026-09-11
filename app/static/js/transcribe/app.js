@@ -1,6 +1,6 @@
-import { attachTranscribeActions } from './actions.js?v=20260810-followups-accessibility';
+import { attachTranscribeActions } from './actions.js?v=20260911-note-regeneration-2';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
-import { createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationLoadingHtml } from './documents.js?v=20260821-mobile-production-2';
+import { createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationLoadingHtml } from './documents.js?v=20260911-note-regeneration-2';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
 import { createAudioCaptureController } from './media.js?v=20260528-consult-boundary-guard';
 import { createStructuredEditor } from './structured.js?v=20260821-mobile-document-mode';
@@ -11,6 +11,7 @@ import { csrfFetch } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
 import { createTemplateSuggestionController } from './templateSuggestions.js?v=20260830-template-suggestion-preference';
+ import { createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration } from './splitReview.js?v=20260911-direct-batch-regeneration';
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,
@@ -160,6 +161,8 @@ import {
       const noteSelectorWrap = document.querySelector('[data-note-selector-wrap]');
       const noteSelector = document.querySelector('[data-note-selector]');
       const noteSelectorCount = document.querySelector('[data-note-selector-count]');
+      const noteSelectorScrollPrev = document.querySelector('[data-note-selector-scroll-prev]');
+      const noteSelectorScrollNext = document.querySelector('[data-note-selector-scroll-next]');
       const followupSelectorWrap = document.querySelector('[data-followup-selector-wrap]');
       const followupSelector = document.querySelector('[data-followup-selector]');
       const followupSelectorCount = document.querySelector('[data-followup-selector-count]');
@@ -194,7 +197,10 @@ import {
       const bulkDeleteForm = document.querySelector('#bulk-delete-sessions');
       const titleForm = document.querySelector('[data-transcript-title-form]');
       const renameTitleInput = document.querySelector('[data-transcript-title-input]');
-      const generateOutputForm = document.querySelector('[data-generate-output-form]');
+        const generateOutputForm = document.querySelector('[data-generate-output-form]');
+        const splitGenerationStatus = document.querySelector('[data-split-generation-status]');
+        const splitContinueOneNoteButton = document.querySelector('[data-split-continue-one-note]');
+        const splitReviewContinueOneNoteButton = document.querySelector('[data-split-review-continue]');
       const generateOutputTemplateSelect = document.querySelector('[data-template-select]');
       const templatePickerButton = document.querySelector('[data-template-picker-button]');
       const templatePickerLabel = document.querySelector('[data-template-picker-label]');
@@ -319,6 +325,14 @@ let statusDetailsHideTimer = null;
       let hasAppliedInitialWorkspacePayload = false;
       const workspaceFetchesByEndpoint = new Map();
       let workspaceRefreshBurstTimeoutIds = [];
+      let splitReviewController = null;
+       let splitAnalysisRestorationPoller = null;
+       let splitGenerateController = null;
+       let splitPartialActionsController = null;
+      let workspaceFetchCoordinator = null;
+      let consultationSplittingEnabled = Boolean(bootstrap.consultationSplittingEnabled);
+      let latestSplitAnalysis = null;
+      let latestSplitBatch = null;
       const protectedInitialDisabled = new Map(localBusyProtected.map((button) => [button, button.disabled]));
       const liveVadBundleVersion = '0.0.29';
       const liveVadModel = 'v5';
@@ -610,6 +624,7 @@ let statusDetailsHideTimer = null;
           default_quick_action_id: userAppPreferences.default_quick_action_id || null,
           default_template_id: userAppPreferences.default_template_id || null,
           template_suggestions_enabled: userAppPreferences.template_suggestions_enabled !== false,
+          split_consultations_into_separate_notes: userAppPreferences.split_consultations_into_separate_notes === true,
           llm_detail_level: userAppPreferences.llm_detail_level || null,
           note_generation_length: userAppPreferences.note_generation_length || null,
           preferred_recording_mode: userAppPreferences.preferred_recording_mode || null,
@@ -1356,7 +1371,7 @@ let statusDetailsHideTimer = null;
         const url = new URL(window.location.href);
         url.searchParams.set('transcript_id', transcript.id);
         window.history.pushState({}, '', url.toString());
-        await fetchWorkspace(transcript.id);
+        await fetchWorkspace(transcript.id, { allowTranscriptSwitch: true });
         return transcript;
       };
 
@@ -2398,6 +2413,15 @@ let statusDetailsHideTimer = null;
         const generateOutputButton = generateOutputForm?.querySelector('button[type="submit"]');
         if (generateOutputButton) {
           generateOutputButton.disabled = generationBusy || !canGenerateNote;
+          const hasGeneratedNotes = workspaceNoteDocuments.some((document) => document?.kind !== 'working_note');
+          const label = generateOutputButton.querySelector('[data-generate-output-label]');
+          if (label) label.textContent = hasGeneratedNotes ? 'Regenerate' : 'Create';
+          else generateOutputButton.dataset.generationAction = hasGeneratedNotes ? 'regenerate' : 'create';
+          const icon = generateOutputButton.querySelector('[data-lucide]');
+          if (icon) {
+            icon.setAttribute('data-lucide', hasGeneratedNotes ? 'rotate-ccw' : 'zap');
+            refreshIcons(generateOutputButton);
+          }
         }
 
         if (runQuickActionSelect) {
@@ -2552,7 +2576,7 @@ let statusDetailsHideTimer = null;
         if (!newTranscriptId) {
           throw new Error('Could not open the new consultation.');
         }
-        const workspace = await fetchWorkspace(newTranscriptId);
+        const workspace = await fetchWorkspace(newTranscriptId, { allowTranscriptSwitch: true });
         if (!workspace) {
           throw new Error('Could not open the new consultation.');
         }
@@ -3354,6 +3378,8 @@ let statusDetailsHideTimer = null;
           noteSelectorWrap,
           noteSelector,
           noteSelectorCount,
+          noteSelectorScrollPrev,
+          noteSelectorScrollNext,
           followupSelectorWrap,
           followupSelector,
           followupSelectorCount,
@@ -3432,14 +3458,23 @@ let statusDetailsHideTimer = null;
         return saved;
       };
 
-      const enqueueTemplateGeneration = ({ templateId, closeDictationModal = false } = {}) => {
-        const generationTranscriptId = transcriptId;
-        if (!generationTranscriptId || !templateId) return Promise.resolve(false);
-        if (noteGenerationInFlight) {
-          noteGenerationCloseDictationAfterCurrentRequest = noteGenerationCloseDictationAfterCurrentRequest || closeDictationModal;
-          return noteGenerationInFlight;
-        }
-        noteGenerationCloseDictationAfterCurrentRequest = closeDictationModal;
+       const enqueueTemplateGeneration = ({ templateId, transcriptId: requestedTranscriptId = transcriptId, closeDictationModal = false } = {}) => {
+         const generationTranscriptId = requestedTranscriptId;
+         if (!generationTranscriptId || !templateId) return Promise.resolve(false);
+         if (noteGenerationInFlight) {
+           noteGenerationCloseDictationAfterCurrentRequest = noteGenerationCloseDictationAfterCurrentRequest || closeDictationModal;
+           return noteGenerationInFlight;
+         }
+         if (consultationSplittingEnabled && splitGenerateController) {
+           return dispatchTemplateGeneration({
+             capabilityEnabled: consultationSplittingEnabled,
+             splitController: splitGenerateController,
+             transcriptId: generationTranscriptId,
+             templateId,
+             confirmedBatchId: ['ready', 'completed_partial'].includes(latestSplitBatch?.status) ? latestSplitBatch.batch_id : null,
+           });
+         }
+         noteGenerationCloseDictationAfterCurrentRequest = closeDictationModal;
 
         noteGenerationInFlight = (async () => {
           noteGenerationBusy = true;
@@ -3499,10 +3534,14 @@ let statusDetailsHideTimer = null;
       };
 
       const syncWorkspaceRealtimeConnection = () => {
-        if (!window.EventSource) return;
+        if (!window.EventSource) {
+          splitAnalysisRestorationPoller?.setRealtimeConnected(false);
+          return;
+        }
         const endpoint = workspaceStreamEndpointForTranscript(transcriptId);
         if (!endpoint) {
           closeWorkspaceEventSource();
+          splitAnalysisRestorationPoller?.setRealtimeConnected(false);
           return;
         }
         if (workspaceEventSource && workspaceEventSourceEndpoint === endpoint) {
@@ -3510,20 +3549,27 @@ let statusDetailsHideTimer = null;
         }
         closeWorkspaceEventSource();
         workspaceStreamFallbackPolling = false;
+        splitAnalysisRestorationPoller?.setRealtimeConnected(false);
         workspaceEventSourceEndpoint = endpoint;
-        workspaceEventSource = new window.EventSource(endpoint);
-        workspaceEventSource.addEventListener('open', () => {
+        const eventSource = new window.EventSource(endpoint);
+        workspaceEventSource = eventSource;
+        eventSource.addEventListener('open', () => {
+          if (workspaceEventSource !== eventSource) return;
           workspaceStreamFallbackPolling = false;
           clearWorkspaceRefreshBurst();
+          splitAnalysisRestorationPoller?.setRealtimeConnected(true);
         });
-        workspaceEventSource.addEventListener('workspace', (event) => {
+        eventSource.addEventListener('workspace', (event) => {
+          if (workspaceEventSource !== eventSource) return;
           try {
             const workspace = JSON.parse(event.data);
             applyWorkspacePayload(workspace);
           } catch (_) {}
         });
-        workspaceEventSource.onerror = () => {
+        eventSource.onerror = () => {
+          if (workspaceEventSource !== eventSource) return;
           workspaceStreamFallbackPolling = true;
+          splitAnalysisRestorationPoller?.setRealtimeConnected(false);
           window.setTimeout(pollWorkspace, 1200);
         };
       };
@@ -3587,6 +3633,9 @@ let statusDetailsHideTimer = null;
           }
         }
         transcriptId = transcript?.id || null;
+        consultationSplittingEnabled = Boolean(workspace.consultation_splitting_enabled);
+        latestSplitAnalysis = workspace.consultation_split_analysis || null;
+        latestSplitBatch = workspace.consultation_split_batch || null;
         if (activeTranscriptChanged) templateSuggestionController.onTranscriptChanged();
         workspaceTranscriptPiiEntities = uniquePiiEntities(workspace.active_transcript_pii_entities || []);
         workspaceRedactionStatus = workspace.active_transcript_redaction_status || { status: 'not_run', entity_count: 0, error_code: null };
@@ -3741,6 +3790,23 @@ let statusDetailsHideTimer = null;
         workspaceNoteDocuments = noteDocuments;
         workspaceFollowupDocuments = followupDocuments;
         workspaceStructuredContext = structuredContext;
+          // A restored draft is passive. The current browser operation may
+          // re-enable this only after it proves its intent and review state.
+          setContinueOneNoteAvailable(false);
+          splitReviewController?.applyWorkspaceState({
+          draft: workspace.consultation_split_draft || null,
+          availableTemplates: workspace.available_templates || [],
+           nextTranscriptId: transcriptId,
+         });
+          splitGenerateController?.applyWorkspaceState({
+           capabilityEnabled: consultationSplittingEnabled,
+           transcriptId,
+           analysis: latestSplitAnalysis,
+           draft: workspace.consultation_split_draft || null,
+            availableTemplates: workspace.available_templates || [],
+          });
+          splitPartialActionsController?.applyWorkspaceState(workspace.consultation_split_batch || null, transcriptId);
+          splitAnalysisRestorationPoller?.updateWorkspace();
         const validNoteTargets = [...(transcriptId ? [{ id: workingNoteTargetId(transcriptId) }] : []), ...noteDocuments];
         selectedNoteDocumentId = validNoteTargets.some((document) => document.id === selectedNoteDocumentId)
           ? selectedNoteDocumentId
@@ -3794,27 +3860,8 @@ let statusDetailsHideTimer = null;
         hasAppliedInitialWorkspacePayload = true;
       };
 
-      async function fetchWorkspace(targetTranscriptId = transcriptId) {
-        const endpoint = workspaceEndpointForTranscript(targetTranscriptId);
-        if (!endpoint) return null;
-        if (workspaceFetchesByEndpoint.has(endpoint)) {
-          return workspaceFetchesByEndpoint.get(endpoint);
-        }
-        const request = (async () => {
-          try {
-            const response = await fetch(endpoint, { credentials: 'include' });
-            if (!response.ok) return null;
-            const workspace = await response.json();
-            applyWorkspacePayload(workspace);
-            return workspace;
-          } catch (_) {
-            return null;
-          } finally {
-            workspaceFetchesByEndpoint.delete(endpoint);
-          }
-        })();
-        workspaceFetchesByEndpoint.set(endpoint, request);
-        return request;
+      async function fetchWorkspace(targetTranscriptId = transcriptId, options = {}) {
+        return workspaceFetchCoordinator?.fetchWorkspace(targetTranscriptId, options) || null;
       }
 
       const shouldPollWhileLiveCaptureActive = () => {
@@ -3844,6 +3891,79 @@ let statusDetailsHideTimer = null;
           window.setTimeout(pollWorkspace, 1200);
         }
       }
+
+        const setContinueOneNoteAvailable = (available) => {
+          const isAvailable = Boolean(available);
+          if (splitContinueOneNoteButton) {
+            splitContinueOneNoteButton.hidden = !isAvailable;
+            splitContinueOneNoteButton.disabled = !isAvailable;
+          }
+          splitReviewController?.setContinueAvailable?.(isAvailable);
+        };
+       splitReviewController = createSplitReviewController({
+         getTranscriptId: () => transcriptId,
+         refreshWorkspace: () => fetchWorkspace(),
+         showMessage: showFlash,
+          continueAsOneNote: () => splitGenerateController?.continueAsOneNote?.() || false,
+          getConfirmIntentId: () => splitGenerateController?.getOperation?.()?.intentId || null,
+       });
+        splitGenerateController = createSplitGenerateController({
+         getCapabilityEnabled: () => consultationSplittingEnabled,
+         getTranscriptId: () => transcriptId,
+         getTemplateId: () => generateOutputTemplateSelect?.value || '',
+         saveSources: async () => {
+           await saveWorkingNoteBeforeGeneration();
+           await saveDictationBeforeGeneration();
+         },
+         refreshWorkspace: (nextTranscriptId, options) => fetchWorkspace(nextTranscriptId, options),
+         reviewController: splitReviewController,
+         setBusy: (busy) => {
+           noteGenerationBusy = busy;
+           syncGenerationAvailability(readActiveDraftText());
+           syncDictationControls();
+         },
+          setStatus: (message, kind = 'info') => {
+           if (!splitGenerationStatus) return;
+           splitGenerationStatus.textContent = message || '';
+           splitGenerationStatus.dataset.statusKind = kind;
+            splitGenerationStatus.hidden = !message;
+          },
+          setContinueAvailable: setContinueOneNoteAvailable,
+          onGeneratedDocument: async (_document, { replayed = false } = {}) => {
+            selectedNoteDocumentId = null;
+            setTab('output');
+            showFlash(replayed ? 'Opened existing one-note request.' : 'Queued note generation.', 'success');
+            await fetchWorkspace();
+            scheduleWorkspaceRefreshBurst();
+          },
+        });
+       splitPartialActionsController = createSplitPartialActionsController({
+         getTranscriptId: () => transcriptId,
+         refreshWorkspace: (nextTranscriptId, options) => fetchWorkspace(nextTranscriptId, options),
+         selectDocument: (documentId) => {
+           selectedNoteDocumentId = documentId;
+           setTab('output');
+           renderSelectedNote();
+         },
+       });
+       splitContinueOneNoteButton?.addEventListener('click', () => { void splitGenerateController?.continueAsOneNote(); });
+      workspaceFetchCoordinator = createWorkspaceFetchCoordinator({
+        fetcher: (endpoint) => fetch(endpoint, { credentials: 'include' }),
+        endpointForTranscript: workspaceEndpointForTranscript,
+        applyWorkspacePayload,
+        getActiveTranscriptId: () => transcriptId,
+        requestsByEndpoint: workspaceFetchesByEndpoint,
+      });
+      splitAnalysisRestorationPoller = createSplitAnalysisRestorationPoller({
+        getState: () => ({
+          capabilityEnabled: consultationSplittingEnabled,
+          transcriptId,
+          analysis: latestSplitAnalysis,
+        }),
+        refreshWorkspace: (nextTranscriptId) => fetchWorkspace(nextTranscriptId, {
+          guardTranscriptId: nextTranscriptId,
+        }),
+      });
 
       if (activeStatus) {
         reflectBackendStatus(activeStatus.textContent.trim(), initialTranscriptErrorMessage);
@@ -4126,6 +4246,7 @@ let statusDetailsHideTimer = null;
       window.addEventListener('pagehide', () => {
         captureController?.handlePageLifecycleExit?.();
         clearWorkspaceRefreshBurst();
+        splitAnalysisRestorationPoller?.stop();
         closeWorkspaceEventSource();
         if (noteSaveTimer) {
           window.clearTimeout(noteSaveTimer);

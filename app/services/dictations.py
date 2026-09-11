@@ -9,6 +9,7 @@ from app.errors import AppError
 from app.models import AttemptKind, PostConsultationDictation, PostConsultationDictationSegment, SttSelectionPurpose, Transcript, User, utcnow
 from app.schemas import PostConsultationDictationDetail
 from app.services.audio import enforce_whole_file_duration_limit, enforce_whole_file_upload_size, normalize_audio_to_wav_16k_mono, normalized_wav_duration_seconds
+from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.content_crypto import decrypt_text_for_owner, encrypt_text_for_owner
 from app.services.stt import transcribe_metered_team_stt
 from app.services.transcripts import get_active_owner_transcript
@@ -86,8 +87,22 @@ def _get_or_create_post_consultation_dictation(
     *,
     transcript_id: UUID,
 ) -> tuple[Transcript, PostConsultationDictation]:
-    transcript = _get_owner_transcript(db, owner, transcript_id=transcript_id)
-    dictation = db.scalar(select(PostConsultationDictation).where(PostConsultationDictation.transcript_id == transcript.id))
+    # Preserve the established active-owner check before taking the canonical
+    # split-source writer locks.  The transcript root serializes creation when
+    # no dictation row exists yet.
+    _get_owner_transcript(db, owner, transcript_id=transcript_id)
+    scope = lock_consultation_split_source_scope(
+        db,
+        owner_user_id=owner.id,
+        transcript_id=transcript_id,
+    )
+    if scope is None:
+        # Reuse the established owner/expiry error semantics if a concurrent
+        # root deletion won between the initial check and lock acquisition.
+        _get_owner_transcript(db, owner, transcript_id=transcript_id)
+        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript"})
+    transcript = scope.transcript
+    dictation = scope.dictations[0] if scope.dictations else None
     if dictation is None:
         dictation = PostConsultationDictation(
             id=uuid4(),

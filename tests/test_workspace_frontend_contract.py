@@ -73,6 +73,16 @@ def test_settings_module_initializers_are_target_scoped():
     assert "data-settings-menu" not in script
 
 
+def test_workspace_settings_controls_auto_submit_personal_preference_toggles_once():
+    controls = read("app/static/js/settings/controls.js")
+    legacy_settings = read("app/templates/settings.html")
+
+    assert "[data-template-suggestion-preference], [data-consultation-splitting-preference]" in controls
+    assert "event.target.form?.requestSubmit()" in controls
+    assert "data-template-suggestion-preference]')?.addEventListener" not in legacy_settings
+    assert "data-consultation-splitting-preference" not in legacy_settings
+
+
 def test_team_member_actions_use_one_top_layer_menu_and_explicit_dialogs():
     markup = read("app/templates/settings/_team_members.html")
     script = read("app/static/js/settings/member-menu.js")

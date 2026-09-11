@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 from app.errors import AppError
 from app.models import (
     GeneratedDocument,
+    ConsultationSplitAnalysis,
+    ConsultationSplitExecution,
     Transcript,
     TranscriptAudioCleanupJob,
     TranscriptIngestionJob,
@@ -42,6 +44,7 @@ from app.services.audio import (
     inspect_audio_duration_seconds,
     normalize_audio_to_wav_16k_mono,
 )
+from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner, keyed_digest_for_owner
 from app.services.redaction import ensure_redaction_run_for_transcript_version
 from app.services.quotas import (
@@ -667,6 +670,14 @@ def _attempt_preview_redaction(db: Session, *, transcript_version: TranscriptVer
 def _preview_redact_current_draft_if_ready(db: Session, *, transcript: Transcript) -> None:
     if transcript.status is not TranscriptStatus.ready:
         return
+    scope = lock_consultation_split_source_scope(
+        db,
+        owner_user_id=transcript.owner_user_id,
+        transcript_id=transcript.id,
+    )
+    if scope is None:
+        return
+    transcript = scope.transcript
     current_draft = (transcript_draft_text(db, transcript=transcript) or "").strip()
     if not current_draft:
         return
@@ -828,7 +839,7 @@ def _assert_working_note_update_current(transcript: Transcript, expected_updated
 
 
 def save_working_note(db: Session, actor: User, *, transcript_id: UUID, payload: WorkingNoteUpdate) -> Transcript:
-    transcript = _get_owner_transcript_for_ingestion(db, actor, transcript_id=transcript_id)
+    transcript = _lock_split_source_writer_transcript(db, actor, transcript_id=transcript_id)
     _assert_working_note_update_current(transcript, payload.expected_updated_at)
     if transcript.working_note_mode is not None and transcript.working_note_mode is not payload.mode and transcript_has_working_note(db, transcript=transcript):
         raise AppError(
@@ -859,7 +870,7 @@ def save_working_note(db: Session, actor: User, *, transcript_id: UUID, payload:
 
 
 def clear_working_note(db: Session, actor: User, *, transcript_id: UUID, expected_updated_at: datetime | None = None) -> None:
-    transcript = _get_owner_transcript_for_ingestion(db, actor, transcript_id=transcript_id)
+    transcript = _lock_split_source_writer_transcript(db, actor, transcript_id=transcript_id)
     _assert_working_note_update_current(transcript, expected_updated_at)
     transcript.working_note_mode = None
     set_freeform_working_note_text(db, transcript=transcript, plaintext=None)
@@ -1099,6 +1110,100 @@ def get_active_owner_transcript(db: Session, owner: User, *, transcript_id: UUID
     return _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
 
 
+def _lock_split_source_writer_transcript(db: Session, owner: User, *, transcript_id: UUID) -> Transcript:
+    """Re-check access, then use the runtime's owner/root/dictation order.
+
+    The helper is deliberately used only by writes that change a
+    consultation-split fingerprint.  Title and capture-state-only changes
+    retain their existing lighter paths.
+    """
+    _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    scope = lock_consultation_split_source_scope(
+        db,
+        owner_user_id=owner.id,
+        transcript_id=transcript_id,
+    )
+    if scope is None:
+        return _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    return scope.transcript
+
+
+def snapshot_current_transcript_version(
+    db: Session,
+    *,
+    transcript: Transcript,
+    allow_empty: bool = False,
+    mark_transcript_ready: bool = True,
+) -> TranscriptVersion:
+    """Return the immutable version matching the current saved transcript draft."""
+    scope = lock_consultation_split_source_scope(
+        db,
+        owner_user_id=transcript.owner_user_id,
+        transcript_id=transcript.id,
+    )
+    if scope is None:
+        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript.id)})
+    transcript = scope.transcript
+    current_text = (
+        decrypt_text_for_owner(
+            db,
+            owner_user_id=transcript.owner_user_id,
+            table="transcripts",
+            field="current_draft_text_encrypted",
+            record_id=transcript.id,
+            stored_value=transcript.current_draft_text_encrypted,
+        )
+        or ""
+    ).strip()
+    if not current_text and not allow_empty:
+        raise AppError(422, "business_rule_violation", "Transcript draft is empty", {"field": "current_draft_text_encrypted"})
+    existing_versions = db.scalars(
+        select(TranscriptVersion)
+        .where(TranscriptVersion.transcript_id == transcript.id)
+        .order_by(TranscriptVersion.version_no.desc(), TranscriptVersion.created_at.desc(), TranscriptVersion.id.desc())
+    )
+    for existing_version in existing_versions:
+        existing_text = (
+            decrypt_text_for_owner(
+                db,
+                owner_user_id=transcript.owner_user_id,
+                table="transcript_versions",
+                field="text_encrypted",
+                record_id=existing_version.id,
+                stored_value=existing_version.text_encrypted,
+            )
+            or ""
+        ).strip()
+        if existing_text == current_text:
+            if mark_transcript_ready:
+                transcript.status = TranscriptStatus.ready
+                db.add(transcript)
+                db.flush()
+            return existing_version
+    version_id = uuid4()
+    current_max = db.scalar(select(func.max(TranscriptVersion.version_no)).where(TranscriptVersion.transcript_id == transcript.id))
+    version = TranscriptVersion(
+        id=version_id,
+        transcript_id=transcript.id,
+        version_no=(current_max or 0) + 1,
+        text_encrypted=encrypt_text_for_owner(
+            db,
+            owner_user_id=transcript.owner_user_id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=version_id,
+            plaintext=current_text,
+        ),
+    )
+    if mark_transcript_ready:
+        transcript.status = TranscriptStatus.ready
+    db.add(version)
+    if mark_transcript_ready:
+        db.add(transcript)
+    db.flush()
+    return version
+
+
 def _normalize_manual_pii_type(value: str | None) -> str:
     normalized = " ".join((value or "PII").strip().split())
     return normalized[:255] or "PII"
@@ -1146,7 +1251,7 @@ def create_manual_pii_entity(
     value: str,
     occurrence_count: int = 1,
 ) -> TranscriptManualPiiEntity:
-    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    transcript = _lock_split_source_writer_transcript(db, owner, transcript_id=transcript_id)
     normalized_type = _normalize_manual_pii_type(entity_type)
     normalized_value = _normalize_manual_pii_value(value)
     if not normalized_value:
@@ -1201,7 +1306,7 @@ def delete_manual_pii_entity(
     transcript_id: UUID,
     entity_id: UUID,
 ) -> None:
-    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    transcript = _lock_split_source_writer_transcript(db, owner, transcript_id=transcript_id)
     entity = db.get(TranscriptManualPiiEntity, entity_id)
     if entity is None or entity.transcript_id != transcript.id:
         raise AppError(404, "not_found", "Manual PII entity not found", {"resource": "transcript_manual_pii_entity", "entity_id": str(entity_id)})
@@ -1328,6 +1433,7 @@ def update_transcript(
             raise AppError(409, "business_rule_violation", message or "Cannot switch transcript input mode")
         transcript.ingestion_mode = ingestion_mode
     if structured_context_json is not None:
+        transcript = _lock_split_source_writer_transcript(db, owner, transcript_id=transcript_id)
         normalized_structured_context = normalize_structured_working_note(structured_context_json)
         if normalized_structured_context is None:
             raise AppError(
@@ -1355,7 +1461,7 @@ def commit_transcript_text(
     transcript_id: UUID,
     plaintext: str,
 ) -> Transcript:
-    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    transcript = _lock_split_source_writer_transcript(db, owner, transcript_id=transcript_id)
     version = _create_transcript_version_from_text(
         db,
         transcript=transcript,
@@ -1397,9 +1503,19 @@ def delete_transcripts(
         generated_document_ids=list(db.scalars(select(GeneratedDocument.id).where(GeneratedDocument.transcript_id.in_(deleting_transcript_ids)))),
         ingestion_job_ids=list(db.scalars(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id.in_(deleting_transcript_ids)))),
         template_suggestion_job_ids=list(db.scalars(select(TemplateSuggestionJob.id).where(TemplateSuggestionJob.transcript_id.in_(deleting_transcript_ids)))),
+        consultation_split_execution_ids=list(db.scalars(select(ConsultationSplitExecution.id).where(ConsultationSplitExecution.transcript_id.in_(deleting_transcript_ids)))),
     )
     deleted_count = len(transcripts)
     deleted_ids = [str(transcript.id) for transcript in transcripts]
+    # SQLAlchemy deletes transcript versions before it delegates the transcript
+    # root's database cascades. Split analyses retain a version reference for
+    # provenance while the root exists, so detach that now-terminal reference
+    # immediately before deleting the root.
+    db.execute(
+        update(ConsultationSplitAnalysis)
+        .where(ConsultationSplitAnalysis.transcript_id.in_(deleting_transcript_ids))
+        .values(transcript_version_id=None)
+    )
     for transcript in transcripts:
         db.delete(transcript)
     db.commit()
@@ -1442,6 +1558,12 @@ def delete_expired_transcripts(
         generated_document_ids=list(db.scalars(select(GeneratedDocument.id).where(GeneratedDocument.transcript_id.in_(transcript_ids)))),
         ingestion_job_ids=list(db.scalars(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id.in_(transcript_ids)))),
         template_suggestion_job_ids=list(db.scalars(select(TemplateSuggestionJob.id).where(TemplateSuggestionJob.transcript_id.in_(transcript_ids)))),
+        consultation_split_execution_ids=list(db.scalars(select(ConsultationSplitExecution.id).where(ConsultationSplitExecution.transcript_id.in_(transcript_ids)))),
+    )
+    db.execute(
+        update(ConsultationSplitAnalysis)
+        .where(ConsultationSplitAnalysis.transcript_id.in_(transcript_ids))
+        .values(transcript_version_id=None)
     )
     for transcript in transcripts:
         db.delete(transcript)
@@ -1843,15 +1965,15 @@ def _lock_ingestion_job_and_transcript(
         _release_ingestion_transaction(db)
         return None
 
-    transcript = db.scalar(
-        select(Transcript)
-        .where(Transcript.id == job.transcript_id)
-        .execution_options(populate_existing=True)
-        .with_for_update()
+    scope = lock_consultation_split_source_scope(
+        db,
+        owner_user_id=job.owner_user_id,
+        transcript_id=job.transcript_id,
     )
-    if transcript is None:
+    if scope is None:
         _release_ingestion_transaction(db)
         return None
+    transcript = scope.transcript
 
     job = db.scalar(
         select(TranscriptIngestionJob)
@@ -2108,6 +2230,14 @@ def _terminalize_ingestion_job_with_attempt(
 
 
 def _apply_completed_live_chunks(db: Session, transcript: Transcript) -> None:
+    scope = lock_consultation_split_source_scope(
+        db,
+        owner_user_id=transcript.owner_user_id,
+        transcript_id=transcript.id,
+    )
+    if scope is None:
+        return
+    transcript = scope.transcript
     expected_sequence = transcript.next_live_chunk_sequence_no_applied
     advanced_sequence = False
     while True:

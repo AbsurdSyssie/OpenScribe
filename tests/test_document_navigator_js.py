@@ -425,6 +425,53 @@ def test_document_navigator_clears_stale_note_editor_when_note_selection_becomes
     subprocess.run(["node", str(runner)], check=True, cwd=root)
 
 
+def test_note_regeneration_controls_and_scroll_rail_contract():
+    root = Path(__file__).resolve().parents[1]
+    documents = (root / "app/static/js/transcribe/documents.js").read_text(encoding="utf-8")
+    regeneration = (root / "app/static/js/transcribe/regeneration.js").read_text(encoding="utf-8")
+    workspace = (root / "app/templates/transcribe/_workspace.html").read_text(encoding="utf-8")
+    actions = (root / "app/static/js/transcribe/actions.js").read_text(encoding="utf-8")
+    styles = (root / "app/static/css/transcribe.css").read_text(encoding="utf-8")
+
+    assert "noteRegenerate" in documents and "rotate-ccw" in documents
+    assert "item.kind !== 'working_note'" in documents
+    assert "data-note-selector-scroll-prev" in workspace
+    assert "data-note-selector-scroll-next" in workspace
+    assert "container.addEventListener('keydown'" in documents
+    assert "ArrowLeft" in documents and "ArrowRight" in documents
+    assert "createGeneratedNoteRegenerationController" in actions
+    assert "steering_text: steeringText || null" in actions
+    assert "steering_preset: steeringPreset || null" in actions
+    for marker in (
+        "data-regeneration-now",
+        "data-regeneration-preset",
+        "data-regeneration-steering",
+        "data-regeneration-submit",
+        "Regenerate now",
+        "More detail",
+        "Less detail",
+        "setAttribute('role', 'dialog')",
+        "window.document.body || item",
+        "getBoundingClientRect",
+        "positionPopover",
+        "addEventListener?.('scroll', positionPopover, true)",
+        "removeEventListener?.('scroll', positionPopover, true)",
+        "Escape",
+    ):
+        assert marker in regeneration
+    assert ".document-switcher {" in styles
+    assert "overflow-x: auto" in styles
+    popover_styles = styles.split(".note-regeneration-popover {", 1)[1].split("}", 1)[0]
+    assert "z-index: 600" in popover_styles
+    assert "data-generate-output-label" in workspace
+
+    app = (root / "app/static/js/transcribe/app.js").read_text(encoding="utf-8")
+    shell = (root / "app/templates/transcribe/_shell_extras.html").read_text(encoding="utf-8")
+    assert "actions.js?v=20260911-note-regeneration-2" in app
+    assert "documents.js?v=20260911-note-regeneration-2" in app
+    assert "app.js?v=20260911-repeat-regeneration" in shell
+
+
 def test_working_note_to_editor_document_maps_virtual_target(tmp_path):
     root = Path(__file__).resolve().parents[1]
     runner = tmp_path / "working_note_document_runner.mjs"

@@ -42,6 +42,7 @@ class UserAppPreferencesUpsert(BaseModel):
     default_quick_action_id: UUID | None = None
     default_template_id: UUID | None = None
     template_suggestions_enabled: bool = True
+    split_consultations_into_separate_notes: bool = False
     llm_detail_level: LlmDetailLevel | None = None
     note_generation_length: NoteGenerationLength | None = None
     preferred_recording_mode: TranscriptIngestionMode | None = None
@@ -66,6 +67,7 @@ class UserAppPreferencesDetail(BaseModel):
     default_quick_action_id: UUID | None
     default_template_id: UUID | None
     template_suggestions_enabled: bool
+    split_consultations_into_separate_notes: bool
     llm_detail_level: LlmDetailLevel | None
     note_generation_length: NoteGenerationLength | None
     preferred_recording_mode: TranscriptIngestionMode | None

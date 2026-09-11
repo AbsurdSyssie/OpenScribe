@@ -28,6 +28,8 @@ from app.models import (
     QuotaResource,
     Transcript,
     TranscriptIngestionJob,
+    ConsultationSplitExecution,
+    ConsultationSplitExecutionKind,
     User,
     UserQuotaPolicyEvent,
     UserQuotaPolicyEventType,
@@ -257,6 +259,7 @@ def reserve_provider_attempt(
     transcript_id: UUID | None = None,
     transcript_ingestion_job_id: UUID | None = None,
     generated_document_id: UUID | None = None,
+    consultation_split_execution_id: UUID | None = None,
     provider_adapter: str | None = None,
     provider_model: str | None = None,
     measured_audio_seconds: Decimal | float | None = None,
@@ -291,6 +294,7 @@ def reserve_provider_attempt(
             and existing.transcript_id == transcript_id
             and existing.transcript_ingestion_job_id == transcript_ingestion_job_id
             and existing.generated_document_id == generated_document_id
+            and existing.consultation_split_execution_id == consultation_split_execution_id
             and existing.provider_adapter == provider_adapter
             and existing.provider_model == provider_model
             and (None if existing.measured_audio_seconds is None else Decimal(str(existing.measured_audio_seconds))) == measured
@@ -319,6 +323,7 @@ def reserve_provider_attempt(
             (Transcript, transcript_id, "transcript"),
             (TranscriptIngestionJob, transcript_ingestion_job_id, "transcript_ingestion_job"),
             (GeneratedDocument, generated_document_id, "generated_document"),
+            (ConsultationSplitExecution, consultation_split_execution_id, "consultation_split_execution"),
         )
         references: dict[str, object] = {}
         for model, reference_id, name in reference_specs:
@@ -332,10 +337,29 @@ def reserve_provider_attempt(
             references[name] = reference
         ingestion_reference = references.get("transcript_ingestion_job")
         document_reference = references.get("generated_document")
+        split_execution = references.get("consultation_split_execution")
         if ingestion_reference is not None and transcript_id is not None and ingestion_reference.transcript_id != transcript_id:
             raise AppError(409, "provider_attempt_reference_mismatch", "Provider attempt references do not share a transcript")
         if document_reference is not None and transcript_id is not None and document_reference.transcript_id != transcript_id:
             raise AppError(409, "provider_attempt_reference_mismatch", "Provider attempt references do not share a transcript")
+        if split_execution is not None:
+            if transcript_id is None or split_execution.transcript_id != transcript_id:
+                raise AppError(409, "provider_attempt_reference_mismatch", "Provider attempt references do not share a transcript")
+            if generated_document_id is not None or transcript_ingestion_job_id is not None:
+                raise AppError(422, "provider_attempt_reference_mismatch", "Split executions cannot share another provider source")
+            if correlation_id != consultation_split_execution_id or attempt_number != 1:
+                raise AppError(422, "provider_attempt_split_execution_identity_invalid", "Split execution attempt identity is invalid")
+            expected_split_attempt_kind = {
+                ConsultationSplitExecutionKind.analysis: AttemptKind.consultation_split_analysis,
+                ConsultationSplitExecutionKind.generation: AttemptKind.consultation_split_generation,
+                ConsultationSplitExecutionKind.verification: AttemptKind.consultation_split_verification,
+            }.get(split_execution.kind)
+            if attempt_kind is not expected_split_attempt_kind:
+                raise AppError(
+                    422,
+                    "provider_attempt_split_execution_kind_mismatch",
+                    "Provider attempt kind does not match split execution kind",
+                )
         existing = existing_or_conflict()
         if existing is not None:
             return existing
@@ -344,7 +368,12 @@ def reserve_provider_attempt(
             if window.effective_limit is not None and window.consumed + window.pending_reserved + reserved_units > window.effective_limit:
                 raise _quota_error(window, requested=reserved_units)
     else:
-        if transcript_id is not None or transcript_ingestion_job_id is not None or generated_document_id is not None:
+        if (
+            transcript_id is not None
+            or transcript_ingestion_job_id is not None
+            or generated_document_id is not None
+            or consultation_split_execution_id is not None
+        ):
             raise AppError(422, "provider_attempt_owner_required", "Content-linked provider attempts require an owner")
         existing = existing_or_conflict()
         if existing is not None:
@@ -355,6 +384,7 @@ def reserve_provider_attempt(
         status=AttemptStatus.reserved, authorized_at=authorized_at,
         reservation_valid_until=reservation_valid_until, transcript_id=transcript_id,
         transcript_ingestion_job_id=transcript_ingestion_job_id, generated_document_id=generated_document_id,
+        consultation_split_execution_id=consultation_split_execution_id,
         provider_adapter=provider_adapter, provider_model=provider_model,
         measured_audio_seconds=measured,
     )

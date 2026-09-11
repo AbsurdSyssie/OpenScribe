@@ -89,7 +89,11 @@ from ..services.llm import (
     list_llm_configs as list_llm_configs_service,
     resolve_user_llm as resolve_user_llm_service,
 )
-from ..services.preferences import get_user_app_preferences as get_user_app_preferences_service
+from ..services.preferences import (
+    consultation_splitting_feature_enabled,
+    get_user_app_preferences as get_user_app_preferences_service,
+)
+from ..services.consultation_splits import read_split_topic_title
 from ..services.deidentification import (
     get_team_clinical_nlp_selection as get_team_clinical_nlp_selection_service,
     get_team_deidentification_selection as get_team_deidentification_selection_service,
@@ -380,6 +384,7 @@ def user_app_preferences_response(preference) -> UserAppPreferencesDetail:
         default_quick_action_id=payload.get("default_quick_action_id"),
         default_template_id=payload.get("default_template_id"),
         template_suggestions_enabled=payload.get("template_suggestions_enabled") is not False,
+        split_consultations_into_separate_notes=payload.get("split_consultations_into_separate_notes") is True,
         llm_detail_level=payload.get("llm_detail_level"),
         note_generation_length=payload.get("note_generation_length"),
         preferred_recording_mode=payload.get("preferred_recording_mode"),
@@ -495,6 +500,21 @@ def _hallucination_check_bucket(status: HallucinationCheckStatus | str | None) -
 
 def generated_document_response(db: Session, document: GeneratedDocument, *, actor: User | None = None) -> GeneratedDocumentDetail:
     payload = GeneratedDocumentDetail.model_validate(document, from_attributes=True).model_dump()
+    # Split-topic titles are transcript-derived content.  Keep the persisted
+    # document title generic, and reveal this display-only title solely to the
+    # exact owner after the split service has rechecked the full lineage.
+    if actor is not None and actor.id == document.owner_user_id and document.consultation_split_batch_topic is not None:
+        try:
+            payload["title"] = read_split_topic_title(
+                db,
+                actor,
+                topic=document.consultation_split_batch_topic,
+            )
+        except AppError:
+            # An unavailable, malformed, or out-of-scope topic must not turn
+            # a response into an error or expose a title.  The generic stored
+            # title remains the safe fallback.
+            pass
     payload["follow_up_prompt_text"] = generated_document_text_service(db, document=document, field="follow_up_prompt_text") or None
     payload["original_output_text"] = generated_document_text_service(db, document=document, field="original_output_text_encrypted")
     payload["edited_output_text"] = generated_document_text_service(db, document=document, field="edited_output_text_encrypted")
@@ -1386,6 +1406,7 @@ def render_home(
         "selectable_clinical_nlp_providers": selectable_clinical_nlp_providers,
         "user_llm_preference": user_llm_preference,
         "user_app_preferences_json": user_app_preferences_json,
+        "consultation_splitting_feature_enabled": consultation_splitting_feature_enabled(),
         "resolved_user_llm_model": resolved_user_llm_model,
         "team_leader_email": team_leader_email,
         "team_templates": team_templates,

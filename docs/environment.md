@@ -192,6 +192,7 @@ Application readers reject uploads beyond these limits without building an unbou
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ENABLE_GEMINI_ENTERPRISE_PROVIDER` | `true` | When false, hides and rejects new Gemini Enterprise setup. Existing persisted Gemini configs remain available to authorized runtime paths. |
+| `CONSULTATION_SPLITTING_ENABLED` | `false` | Deployment gate for the separate-consultation-notes preference, analysis, confirmation, bundled generation, optional bundled verification, and new manual partial-recovery actions. Keep false until the planned evaluation is reviewed. When false, the workspace hides the preference, reports effective consultation splitting as false, and new split routes return `403 consultation_split_disabled` before transcript or batch lookup; the owner preference may still persist for a later enabled rollout. Already durable worker and lifecycle work may finish. |
 
 Google SDK identity is configured through standard Google variables rather than OpenScribe secrets. Do not place credential JSON in `.env`. For the optional Docker ADC override, set `GOOGLE_ADC_HOST_FILE` in the host shell and include `docker-compose.adc.yml`; it mounts one file read-only and sets `GOOGLE_APPLICATION_CREDENTIALS` inside the container. See [docker.md](docker.md) and [gemini-enterprise-setup.md](gemini-enterprise-setup.md).
 

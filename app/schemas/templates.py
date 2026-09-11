@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from typing import Literal
 from uuid import UUID
 
@@ -170,6 +171,9 @@ class GeneratedDocumentDetail(BaseModel):
     transcript_id: UUID
     transcript_version_id: UUID
     redaction_run_id: UUID | None = None
+    parent_generated_document_id: UUID | None = None
+    regeneration_lineage_id: UUID | None = None
+    regeneration_revision_no: int = 1
     generator_type: GeneratedDocumentGeneratorType
     template_version_id: UUID | None
     quick_action_version_id: UUID | None = None
@@ -287,10 +291,16 @@ class GenerateQuickActionRequest(BaseModel):
         return trimmed or None
 
 
+class RegenerationSteeringPreset(str, Enum):
+    more_detail = "more_detail"
+    less_detail = "less_detail"
+
+
 class RegenerateGeneratedDocumentRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     steering_text: str | None = Field(default=None, max_length=4000)
+    steering_preset: RegenerationSteeringPreset | None = None
 
     @field_validator("steering_text")
     @classmethod

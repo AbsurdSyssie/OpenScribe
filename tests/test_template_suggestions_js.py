@@ -26,6 +26,12 @@ def test_template_suggestion_workspace_and_description_hooks():
     assert 'placeholder="e.g. Mental health follow-up consultations and medication reviews"' in editor
 
 
+def test_user_app_preferences_whole_payload_preserves_consultation_splitting_preference():
+    app_js = (ROOT / "app/static/js/transcribe/app.js").read_text()
+
+    assert "split_consultations_into_separate_notes: userAppPreferences.split_consultations_into_separate_notes === true," in app_js
+
+
 def test_template_suggestion_preference_precedes_advanced_settings_and_stays_in_its_row():
     preferences = (ROOT / "app/templates/settings/_preferences.html").read_text()
     settings_page = (ROOT / "app/templates/settings.html").read_text()
@@ -51,8 +57,8 @@ def test_template_suggestion_preference_precedes_advanced_settings_and_stays_in_
     assert '.setting-control--model .select-wrap { width: 400px; max-width: 100%; }' in styles
     assert 'settings.css?v=20260902-account-dialogs-4' in settings_page
     assert 'settings.css?v=20260902-account-dialogs-4' in workspace_page
-    assert 'settings/controls.js?v=20260902-account-dialogs-4' in settings_page
-    assert 'settings/controls.js?v=20260902-account-dialogs-4' in workspace_page
+    assert 'settings/controls.js?v=20260911-split-preferences' in settings_page
+    assert 'settings/controls.js?v=20260911-split-preferences' in workspace_page
 
 
 def test_template_suggestion_popover_uses_static_csp_safe_styles():

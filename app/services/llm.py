@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
-from app.models import GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, LlmConfigSetupStatus, LlmProviderPreset, ProviderSecretCleanupKind, Team, TeamHallucinationCheckSelection, TeamLlmConfig, TeamLlmSelection, TeamRole, TemplateSuggestionJob, TemplateSuggestionStatus, User, UserLlmPreference, utcnow
+from app.models import ConsultationSplitExecution, ConsultationSplitExecutionStatus, GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, LlmConfigSetupStatus, LlmProviderPreset, ProviderSecretCleanupKind, Team, TeamHallucinationCheckSelection, TeamLlmConfig, TeamLlmSelection, TeamRole, TemplateSuggestionJob, TemplateSuggestionStatus, User, UserLlmPreference, utcnow
 from app.schemas import HallucinationCheckSelectionUpsert, LlmConfigDraftCreate, LlmConfigDraftReplaceCredential, LlmConfigFinalize, LlmConfigInspectResult, LlmConfigUpsert, LlmInspectRequest, LlmModelOption, LlmSelectionUpsert, UserLlmPreferenceUpsert
 from app.services.llm_presets import (
     apply_provider_defaults,
@@ -696,10 +696,20 @@ def _llm_config_has_in_flight_jobs(db: Session, *, config_id: UUID) -> bool:
     )
     if generated_document_id is not None:
         return True
-    return db.scalar(
+    suggestion_job_id = db.scalar(
         select(TemplateSuggestionJob.id).where(
             TemplateSuggestionJob.llm_config_id == config_id,
             TemplateSuggestionJob.status.in_([TemplateSuggestionStatus.queued, TemplateSuggestionStatus.processing]),
+        ).limit(1)
+    )
+    if suggestion_job_id is not None:
+        return True
+    return db.scalar(
+        select(ConsultationSplitExecution.id).where(
+            ConsultationSplitExecution.llm_config_id == config_id,
+            ConsultationSplitExecution.status.in_(
+                [ConsultationSplitExecutionStatus.queued, ConsultationSplitExecutionStatus.processing]
+            ),
         ).limit(1)
     ) is not None
 
@@ -1326,11 +1336,18 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
 
 def delete_llm_config(db: Session, actor: User, *, config_id: UUID, team_id: UUID | None = None) -> None:
     config = get_llm_config(db, actor, config_id=config_id, team_id=team_id)
+    # Queueing takes this same lock before it inserts its execution.  That
+    # prevents a guard-then-SET-NULL race from detaching newly queued work.
+    config = db.scalar(
+        select(TeamLlmConfig).where(TeamLlmConfig.id == config.id).with_for_update()
+    )
+    if config is None:
+        raise AppError(404, "not_found", "LLM config not found", {"resource": "llm_config", "config_id": str(config_id)})
     if _llm_config_has_in_flight_jobs(db, config_id=config.id):
         raise AppError(
             409,
             "conflict",
-            "Cannot delete this LLM config while generated documents are queued or processing",
+            "Cannot delete this LLM config while dependent work is queued or processing",
             {"config_id": str(config.id)},
         )
     selection = db.scalar(select(TeamLlmSelection).where(TeamLlmSelection.llm_config_id == config.id))

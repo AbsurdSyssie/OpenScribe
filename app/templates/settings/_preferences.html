@@ -25,6 +25,13 @@
       <input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="preferences">
       <div><h3>Suggest a template based on the consultation</h3><p>AI will suggest which of your templates matches the consultation.</p></div><label class="switch-compact"><input type="checkbox" name="template_suggestions_enabled" value="true" aria-label="Suggest a template based on the consultation" data-template-suggestion-preference {% if template_suggestions_enabled %}checked{% endif %}><span class="switch-compact__track" aria-hidden="true"></span></label>
     </form>
+    {% if consultation_splitting_feature_enabled %}
+    {% set split_consultations_into_separate_notes = user_app_preferences_json.get('split_consultations_into_separate_notes', false) %}
+    <form class="setting-row setting-row--toggle" method="post" action="/home/consultation-splitting-preference" data-consultation-splitting-preference-form>
+      <input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="preferences">
+      <div><h3>Split a consultation into separate notes</h3><p>When you generate a note, AI can identify distinct topics and let you choose whether to create separate notes.</p></div><label class="switch-compact"><input type="checkbox" name="split_consultations_into_separate_notes" value="true" aria-label="Split a consultation into separate notes" data-consultation-splitting-preference {% if split_consultations_into_separate_notes %}checked{% endif %}><span class="switch-compact__track" aria-hidden="true"></span></label>
+    </form>
+    {% endif %}
     {% endif %}
     <details class="settings-advanced">
       <summary>Advanced</summary>

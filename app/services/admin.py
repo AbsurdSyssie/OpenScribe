@@ -23,6 +23,7 @@ from app.models import (
     DefaultQuickActionVersion,
     DeidentificationProvider,
     GeneratedDocument,
+    ConsultationSplitExecution,
     PromptTemplate,
     PromptTemplateVersion,
     ProviderUsageEvent,
@@ -1388,7 +1389,10 @@ def _log_account_lifecycle_event(*, db: Session, actor: User, target: User, even
 
 
 def _get_manageable_user(db: Session, actor: User, user_id) -> User:
-    user = db.scalar(select(User).options(joinedload(User.team)).where(User.id == user_id))
+    # User deletion cascades the optional app-preference row.  Take the same
+    # owner lock as preference writers and consultation-split runtime before
+    # deciding or deleting, so a preference turn-off cannot commit mid-flight.
+    user = db.scalar(select(User).where(User.id == user_id).with_for_update())
     if user is None:
         raise AppError(404, "not_found", "User not found", {"resource": "user", "user_id": str(user_id)})
     if actor.id == user.id:
@@ -1612,6 +1616,9 @@ def _delete_user_rows(db: Session, actor: User, *, user: User) -> list[UUID]:
             ingestion_job_ids=list(
                 db.scalars(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id.in_(transcript_ids)))
             ),
+            consultation_split_execution_ids=list(
+                db.scalars(select(ConsultationSplitExecution.id).where(ConsultationSplitExecution.transcript_id.in_(transcript_ids)))
+            ),
         )
     for transcript in transcript_rows:
         db.delete(transcript)
@@ -1734,7 +1741,14 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
         db.flush()
 
         for user in team_users:
-            transcript_audio_cleanup_job_ids.extend(_delete_user_rows(db, actor, user=user))
+            # Team deletion takes each owner root in the same stable order as
+            # the initial user list.  This covers the cascaded optional
+            # preference row and prevents a split runtime from crossing the
+            # deletion boundary for that owner.
+            locked_user = db.scalar(select(User).where(User.id == user.id).with_for_update())
+            if locked_user is None:
+                raise AppError(409, "conflict", "User changed during team deletion", {"user_id": str(user.id)})
+            transcript_audio_cleanup_job_ids.extend(_delete_user_rows(db, actor, user=locked_user))
 
         if team_user_ids:
             for event in db.scalars(select(ProviderUsageEvent).where(ProviderUsageEvent.owner_user_id.in_(team_user_ids))):

@@ -176,6 +176,33 @@ def encrypt_text_for_owner(
     return _envelope_json(dek_version=key_record.dek_version, nonce=nonce, ciphertext=ciphertext)
 
 
+def encrypt_text_for_existing_owner(
+    db: Session,
+    *,
+    owner_user_id: UUID,
+    table: str,
+    field: str,
+    record_id: UUID,
+    plaintext: str | None,
+) -> str | None:
+    """Encrypt content without creating replacement key material.
+
+    Recovery and provider-response paths have already read an encrypted owner
+    snapshot.  Creating a fresh DEK when that invariant has been broken would
+    make the failure look recoverable while severing existing content access.
+    """
+    if plaintext is None:
+        return None
+    key_record, dek = _owner_dek(db, owner_user_id=owner_user_id, create_if_missing=False)
+    nonce = os.urandom(NONCE_SIZE_BYTES)
+    ciphertext = AESGCM(dek).encrypt(
+        nonce,
+        plaintext.encode("utf-8"),
+        _aad(table=table, field=field, owner_user_id=owner_user_id, record_id=record_id),
+    )
+    return _envelope_json(dek_version=key_record.dek_version, nonce=nonce, ciphertext=ciphertext)
+
+
 def decrypt_text_for_owner(
     db: Session,
     *,
@@ -197,9 +224,22 @@ def decrypt_text_for_owner(
             ciphertext,
             _aad(table=table, field=field, owner_user_id=owner_user_id, record_id=record_id),
         )
+        return plaintext.decode("utf-8")
     except Exception as exc:
         raise AppError(500, "content_crypto_invalid", "Encrypted content could not be decrypted") from exc
-    return plaintext.decode("utf-8")
+
+
+def _keyed_digest_for_owner(
+    db: Session,
+    *,
+    owner_user_id: UUID,
+    purpose: str,
+    value: str,
+    create_if_missing: bool,
+) -> str:
+    _, dek = _owner_dek(db, owner_user_id=owner_user_id, create_if_missing=create_if_missing)
+    message = f"openscribe:v1:{purpose}:{value}".encode("utf-8")
+    return hmac.new(dek, message, hashlib.sha256).hexdigest()
 
 
 def keyed_digest_for_owner(
@@ -209,9 +249,30 @@ def keyed_digest_for_owner(
     purpose: str,
     value: str,
 ) -> str:
-    _, dek = _owner_dek(db, owner_user_id=owner_user_id, create_if_missing=True)
-    message = f"openscribe:v1:{purpose}:{value}".encode("utf-8")
-    return hmac.new(dek, message, hashlib.sha256).hexdigest()
+    return _keyed_digest_for_owner(
+        db,
+        owner_user_id=owner_user_id,
+        purpose=purpose,
+        value=value,
+        create_if_missing=True,
+    )
+
+
+def keyed_digest_for_existing_owner(
+    db: Session,
+    *,
+    owner_user_id: UUID,
+    purpose: str,
+    value: str,
+) -> str:
+    """Compute an owner-keyed digest without creating or changing key state."""
+    return _keyed_digest_for_owner(
+        db,
+        owner_user_id=owner_user_id,
+        purpose=purpose,
+        value=value,
+        create_if_missing=False,
+    )
 
 
 def encrypt_json_for_owner(
@@ -233,6 +294,28 @@ def encrypt_json_for_owner(
         field=field,
         record_id=record_id,
         plaintext=serialized,
+    )
+
+
+def encrypt_json_for_existing_owner(
+    db: Session,
+    *,
+    owner_user_id: UUID,
+    table: str,
+    field: str,
+    record_id: UUID,
+    plaintext: Any,
+) -> str | None:
+    """JSON counterpart to :func:`encrypt_text_for_existing_owner`."""
+    if plaintext is None:
+        return None
+    return encrypt_text_for_existing_owner(
+        db,
+        owner_user_id=owner_user_id,
+        table=table,
+        field=field,
+        record_id=record_id,
+        plaintext=json.dumps(plaintext, separators=(",", ":"), sort_keys=True),
     )
 
 

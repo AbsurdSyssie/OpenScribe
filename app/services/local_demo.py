@@ -383,6 +383,7 @@ def _create_demo_document(
         created_at=now - timedelta(minutes=1),
         updated_at=now - timedelta(minutes=1),
     )
+    document.regeneration_lineage_id = document.id
     rendered_text = "\n\n".join(
         f"{label}\n{text}" for _key, label, text in DEMO_NOTE_SECTIONS
     )

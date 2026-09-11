@@ -2,6 +2,8 @@
 
 This document covers test execution, non-database test boundaries, and focused verification workflows. Database lifecycle and safety are in [dbtesting.md](dbtesting.md).
 
+Consultation-split verification tests must cover the no-selection and mixed/freeform fail-open paths, the structured exact-patch success and all-or-none rejection paths, durable submitted-before-call and duplicate-delivery behavior, quota settlement, and transcript deletion/retention. Assertions may inspect safe lifecycle metadata and encrypted-envelope presence, but must not print clinical source, provider output, patches, or verifier reasoning.
+
 ## Install test dependencies
 
 ```bash
@@ -129,6 +131,21 @@ pytest -q tests/test_csrf_browser.py
 ```
 
 Missing Playwright/browser binaries cause this optional test to skip rather than fail the normal suite.
+
+## Consultation-split browser regression
+
+`tests/test_consultation_split_browser.py` uses the same disposable local
+Uvicorn and Chromium setup. It drives the rendered **Create**, review, save,
+confirm, generation, partial **Keep available notes**, and transcript-switch
+paths. The harness uses synthetic transcript text and a fake provider response
+derived from the confirmed template mode and section keys; it does not use a
+live provider or log note content.
+
+Run it with the Playwright setup above:
+
+```bash
+pytest -q tests/test_consultation_split_browser.py
+```
 
 ## Manual file-ingestion smoke test
 

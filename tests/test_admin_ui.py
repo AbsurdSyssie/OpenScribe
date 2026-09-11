@@ -880,8 +880,8 @@ def test_settings_role_scopes_user_and_leader_sections(client, make_team, make_u
 
     assert user_page.status_code == 200
     assert user_page.headers["Cache-Control"] == "no-store"
-    assert '<link rel="stylesheet" href="/static/css/components.css?v=20260718-brand-lockup">' in user_page.text
-    assert '<link rel="stylesheet" href="/static/css/settings.css?v=20260821-member-actions-2">' in user_page.text
+    assert '<link rel="stylesheet" href="/static/css/components.css?v=20260902-shared-fields">' in user_page.text
+    assert '<link rel="stylesheet" href="/static/css/settings.css?v=20260902-account-dialogs-4">' in user_page.text
     assert 'aria-current="page"' in user_page.text
     assert "Preferences" in user_page.text
     assert '<div class="workspace-nav__group"><p data-sidebar-full>My Library</p>' in user_page.text
@@ -1374,6 +1374,7 @@ def test_settings_llm_preference_clear_returns_to_settings(client, db_session, m
     user = make_user(email="settings-pref-user@example.com", password="password-1", team=team, team_role=TeamRole.user)
     make_llm_selection(config=config, actor=admin, allowed_models_json=["gpt-4o-mini", "gpt-4.1-mini"], model_name_override="gpt-4o-mini")
     db_session.add(UserLlmPreference(user_id=user.id, preferred_model_name="gpt-4.1-mini"))
+    db_session.add(UserAppPreference(user_id=user.id, preferences_json={"split_consultations_into_separate_notes": True}))
     db_session.commit()
     client.post("/login", data={"email": user.email, "password": "password-1"}, follow_redirects=False)
 
@@ -1407,6 +1408,7 @@ def test_settings_llm_preference_clear_returns_to_settings(client, db_session, m
     assert saved_style is not None
     assert saved_style.preferences_json["note_generation_length"] == "short"
     assert saved_style.preferences_json["llm_detail_level"] == "concise"
+    assert saved_style.preferences_json["split_consultations_into_separate_notes"] is True
 
     cleared = client.post(
         "/home/llm-preference/clear",
@@ -1418,14 +1420,26 @@ def test_settings_llm_preference_clear_returns_to_settings(client, db_session, m
     assert db_session.scalar(select(UserLlmPreference).where(UserLlmPreference.user_id == user.id)) is None
 
 
-def test_settings_template_suggestion_toggle_defaults_on_and_saves_immediately(client, db_session, make_team, make_user):
+def test_settings_template_suggestion_toggle_defaults_on_and_saves_immediately(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+):
     team = make_team(name="Clinic Template Suggestion Preference")
+    admin = make_user(email="template-suggestion-toggle-admin@example.com", password="password-2", is_system_admin=True)
+    config = make_llm_config(team=team, actor=admin, label="Template suggestion LLM", model_name="gpt-4.1-mini")
+    make_llm_selection(config=config, actor=admin)
     user = make_user(
         email="template-suggestion-toggle@example.com",
         password="password-1",
         team=team,
         team_role=TeamRole.user,
     )
+    db_session.add(UserAppPreference(user_id=user.id, preferences_json={"split_consultations_into_separate_notes": True}))
+    db_session.commit()
     client.post("/login", data={"email": user.email, "password": "password-1"}, follow_redirects=False)
 
     page = client.get("/workspace/preferences")
@@ -1444,9 +1458,98 @@ def test_settings_template_suggestion_toggle_defaults_on_and_saves_immediately(c
     preference = db_session.scalar(select(UserAppPreference).where(UserAppPreference.user_id == user.id))
     assert preference is not None
     assert preference.preferences_json["template_suggestions_enabled"] is False
+    assert preference.preferences_json["split_consultations_into_separate_notes"] is True
 
     updated_page = client.get("/workspace/preferences")
     assert 'data-template-suggestion-preference checked' not in updated_page.text
+
+
+def test_settings_consultation_splitting_toggle_is_flag_gated_and_preserves_other_preferences(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    make_quick_action,
+    monkeypatch,
+):
+    team = make_team(name="Clinic Consultation Splitting Preference")
+    admin = make_user(email="consultation-splitting-toggle-admin@example.com", password="password-2", is_system_admin=True)
+    config = make_llm_config(team=team, actor=admin, label="Consultation splitting LLM", model_name="gpt-4.1-mini")
+    make_llm_selection(config=config, actor=admin)
+    user = make_user(
+        email="consultation-splitting-toggle@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.user,
+    )
+    template = make_template(
+        scope=TemplateScope.user,
+        owner=user,
+        actor=user,
+        name="Split preference template",
+        prompt_text="Write a synthetic note.",
+    )
+    quick_action = make_quick_action(
+        scope=TemplateScope.user,
+        owner=user,
+        actor=user,
+        name="Split preference action",
+        prompt_text="Write a synthetic action.",
+    )
+    preserved_preferences = {
+        "favorite_quick_action_ids": [str(quick_action.id)],
+        "favorite_template_ids": [str(template.id)],
+        "default_quick_action_id": str(quick_action.id),
+        "default_template_id": str(template.id),
+        "template_suggestions_enabled": False,
+        "llm_detail_level": "detailed",
+        "note_generation_length": "long",
+        "preferred_recording_mode": "live_chunked",
+        "preferred_transcribe_tab": "followups",
+    }
+    db_session.add(UserAppPreference(user_id=user.id, preferences_json=preserved_preferences))
+    db_session.commit()
+    client.post("/login", data={"email": user.email, "password": "password-1"}, follow_redirects=False)
+
+    monkeypatch.delenv("CONSULTATION_SPLITTING_ENABLED", raising=False)
+    disabled_page = client.get("/workspace/preferences")
+    assert 'action="/home/consultation-splitting-preference"' not in disabled_page.text
+
+    monkeypatch.setenv("CONSULTATION_SPLITTING_ENABLED", "true")
+    enabled_page = client.get("/workspace/preferences")
+    assert 'action="/home/consultation-splitting-preference"' in enabled_page.text
+    assert "Split a consultation into separate notes" in enabled_page.text
+    assert "When you generate a note, AI can identify distinct topics and let you choose whether to create separate notes." in enabled_page.text
+    assert 'data-consultation-splitting-preference checked' not in enabled_page.text
+
+    saved = client.post(
+        "/home/consultation-splitting-preference",
+        data={"split_consultations_into_separate_notes": "true", "return_view": "workspace", "return_tab": "preferences"},
+        follow_redirects=False,
+    )
+
+    assert saved.status_code == 303
+    preference = db_session.scalar(select(UserAppPreference).where(UserAppPreference.user_id == user.id))
+    assert preference is not None
+    assert preference.preferences_json["split_consultations_into_separate_notes"] is True
+    assert preference.preferences_json == {
+        **preserved_preferences,
+        "split_consultations_into_separate_notes": True,
+    }
+
+    unchecked = client.post(
+        "/home/consultation-splitting-preference",
+        data={"return_view": "workspace", "return_tab": "preferences"},
+        follow_redirects=False,
+    )
+
+    assert unchecked.status_code == 303
+    db_session.refresh(preference)
+    assert preference.preferences_json == preserved_preferences
+    assert "split_consultations_into_separate_notes" not in preference.preferences_json
 
 
 def test_settings_visible_style_form_drops_stale_model_override(
@@ -4061,8 +4164,42 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' not in page.text
     assert 'aria-label="Workspace navigation"' in page.text
     assert "My Library" in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260830-template-suggestion-observability"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260911-partial-actions"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
+
+
+def test_user_transcribe_bootstrap_exposes_effective_consultation_splitting_gate(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+):
+    team = make_team(name="Consultation split bootstrap")
+    member = make_user(
+        email="consultation-split-bootstrap@example.com",
+        password="password-3",
+        team=team,
+        team_role=TeamRole.user,
+    )
+    db_session.add(
+        UserAppPreference(
+            user_id=member.id,
+            preferences_json={"split_consultations_into_separate_notes": True},
+        )
+    )
+    db_session.commit()
+    monkeypatch.setenv("CONSULTATION_SPLITTING_ENABLED", "true")
+
+    client.post("/login", data={"email": member.email, "password": "password-3"}, follow_redirects=False)
+    enabled_page = client.get("/transcribe")
+    assert enabled_page.status_code == 200
+    assert '"consultationSplittingEnabled": true' in enabled_page.text
+
+    monkeypatch.delenv("CONSULTATION_SPLITTING_ENABLED", raising=False)
+    disabled_page = client.get("/transcribe")
+    assert disabled_page.status_code == 200
+    assert '"consultationSplittingEnabled": false' in disabled_page.text
 
 
 def test_transcribe_note_header_places_create_after_template_and_keeps_runtime_wired():
@@ -4393,8 +4530,8 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
     page = client.get("/transcribe")
 
     assert page.status_code == 200
-    assert "/static/css/tokens.css?v=20260701-token-harmonise" in page.text
-    assert "/static/css/transcribe.css?v=20260823-modal-close" in page.text
+    assert "/static/css/tokens.css?v=20260902-control-height" in page.text
+    assert "/static/css/transcribe.css?v=20260911-partial-actions" in page.text
     assert "/static/css/transcribe-mobile.css" in page.text
     assert "/static/js/workspace/app.js" in page.text
     assert page.text.count("/static/js/transcribe/mobile.js?v=20260823-mobile-toast") == 1
@@ -4809,7 +4946,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260830-template-suggestion-observability" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260911-partial-actions" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -6315,7 +6452,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "runQuickActionTrigger.disabled = !canUsePrimaryFollowupAction;" in app_js
     assert "if (!dom.quickActionContextInput?.value?.trim()) {" in actions_js
     assert "showFlash('Choose a quick action or add context.', 'warning');" in actions_js
-    assert "./actions.js?v=20260810-followups-accessibility" in app_js
+    assert "./actions.js?v=20260906-workspace-fetch-policy" in app_js
     assert "const isDiscardableEmptyWorkingNoteDraft = () => (" in app_js
     assert "return { kind: 'working_note_empty_draft_discarded' };" in app_js
     assert "Empty working-note draft ignored." in app_js
@@ -6358,11 +6495,11 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "noteOptionsSaveQueue" not in app_js
     assert "waitForPendingNoteOptionSaves" not in app_js
     assert "Could not save note options." not in app_js
-    assert "const queued = await enqueueTemplateGeneration({ templateId });" in actions_js
+    assert "const queued = await enqueueTemplateGeneration({ transcriptId, templateId });" in actions_js
     assert "if (!queued) return;" in actions_js
     assert "body: JSON.stringify({ template_id: templateId })," in app_js
     assert "body: JSON.stringify({ template_id: templateId })," not in actions_js
-    assert "const generationTranscriptId = transcriptId;" in app_js
+    assert "const generationTranscriptId = requestedTranscriptId;" in app_js
     assert "if (!generationTranscriptId || !templateId) return Promise.resolve(false);" in app_js
     assert "noteGenerationCloseDictationAfterCurrentRequest = noteGenerationCloseDictationAfterCurrentRequest || closeDictationModal;" in app_js
     assert "if (noteGenerationCloseDictationAfterCurrentRequest) {" in app_js
@@ -6599,7 +6736,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260830-template-suggestion-observability" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260911-partial-actions" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

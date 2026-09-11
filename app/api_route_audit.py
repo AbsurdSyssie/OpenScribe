@@ -489,6 +489,47 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
     AuditCase("GET", "/api/v1/transcribe/workspace", AccessTier.full),
     AuditCase("POST", "/api/v1/transcribe/stt-health/recheck", AccessTier.full),
     AuditCase("GET", "/api/v1/transcribe/workspace/stream", AccessTier.full),
+    AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-analysis", AccessTier.full),
+    AuditCase(
+        "POST",
+        f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-intents",
+        AccessTier.full,
+        json_body=_json(client_idempotency_key=PLACEHOLDER_UUID, selected_template_id=PLACEHOLDER_UUID_2),
+    ),
+    AuditCase(
+        "POST",
+        f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-intents/{PLACEHOLDER_UUID_2}/continue-as-one-note",
+        AccessTier.full,
+    ),
+    AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-draft", AccessTier.full),
+    AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-draft", AccessTier.full),
+    AuditCase(
+        "PUT",
+        f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-draft",
+        AccessTier.full,
+        json_body=_json(expected_updated_at="2026-01-01T00:00:00Z", topics=[]),
+    ),
+    AuditCase(
+        "POST",
+        f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-draft/confirm",
+        AccessTier.full,
+        json_body=_json(intent_id=PLACEHOLDER_UUID_2, expected_updated_at="2026-01-01T00:00:00Z"),
+    ),
+    AuditCase(
+        "POST",
+        f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-batches/{PLACEHOLDER_UUID_2}/regenerate",
+        AccessTier.full,
+    ),
+    AuditCase(
+        "POST",
+        f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-batches/{PLACEHOLDER_UUID_2}/keep-available-notes",
+        AccessTier.full,
+    ),
+    AuditCase(
+        "POST",
+        f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-batches/{PLACEHOLDER_UUID_2}/retry-missing-notes",
+        AccessTier.full,
+    ),
     AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/working-note", AccessTier.full),
     AuditCase(
         "PATCH",
@@ -512,7 +553,7 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         "POST",
         f"/api/v1/generated-documents/{PLACEHOLDER_UUID}/regenerate",
         AccessTier.full,
-        json_body=_json(steering_text="Keep it brief"),
+        json_body=_json(steering_text="Keep it brief", steering_preset="less_detail"),
     ),
     AuditCase(
         "POST",

@@ -144,7 +144,7 @@ def test_scribe_mobile_dictation_modal_owns_the_top_layer_and_safe_viewport():
     assert "body.modal-open [data-workspace-scribe-main] { z-index: 200; }" in transcribe_css
     assert "padding: var(--mobile-safe-top, env(safe-area-inset-top, 0px)) 0 var(--mobile-safe-bottom, env(safe-area-inset-bottom, 0px));" in transcribe_css
     assert "height: 100%; max-height: 100%; min-height: 0;" in transcribe_css
-    assert 'transcribe.css?v=20260823-modal-close' in read("app/templates/transcribe/_head_assets.html")
+    assert 'transcribe.css?v=20260911-partial-actions' in read("app/templates/transcribe/_head_assets.html")
 
 
 def test_shared_modal_close_control_centres_its_icon():
@@ -152,7 +152,7 @@ def test_shared_modal_close_control_centres_its_icon():
     workspace = read("app/templates/transcribe/_workspace.html")
     transcribe_css = compact_css(read("app/static/css/transcribe.css"))
 
-    assert workspace.count('class="template-picker-modal__close"') == 2
+    assert workspace.count('class="template-picker-modal__close"') == 3
     assert (
         ".template-picker-modal__close { display: inline-flex; align-items: center; "
         "justify-content: center;"
@@ -165,7 +165,7 @@ def test_scribe_mobile_flow_assets_have_current_cache_keys():
     legacy_transcribe = read("app/templates/transcribe.html")
 
     assert 'workspace/app.js?v=20260821-mobile-scribe-flow' in workspace
-    assert 'transcribe/app.js?v=20260830-template-suggestion-observability' in shell_extras
+    assert 'transcribe/app.js?v=20260911-partial-actions' in shell_extras
     assert 'transcribe/mobile.js?v=20260823-mobile-toast' in shell_extras
     assert 'documents.js?v=20260821-mobile-production-2' in read("app/static/js/transcribe/app.js")
     assert 'transcribe-mobile.css?v=20260823-mobile-recent' in legacy_transcribe
@@ -322,11 +322,13 @@ def test_scribe_title_reset_is_scoped_and_settings_assets_stay_section_only():
 
 
 def test_account_form_keeps_settings_specific_structure_and_classes():
-    """Regression guard: layout fix must not replace established settings form styling."""
+    """Regression guard: layout fixes retain the current account form layout."""
     account = read("app/templates/settings/_account.html")
     settings_css = compact_css(read("app/static/css/settings.css"))
 
-    assert 'class="account-settings-form"' in account
-    assert ".account-settings-form { display: grid;" in settings_css
-    assert ".account-settings-form label { display: grid;" in settings_css
-    assert ".account-settings-form button { justify-self: start; align-self: end; }" in settings_css
+    assert 'class="account-setting-row"' in account
+    assert 'class="account-inline-form"' in account
+    assert 'class="account-save-action"' in account
+    assert ".account-setting-row { display: grid;" in settings_css
+    assert ".account-inline-form { display: grid;" in settings_css
+    assert ".account-save-action { display: grid;" in settings_css

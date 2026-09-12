@@ -163,6 +163,8 @@ export function createDocumentNavigator({
 
   const noteDocumentLabel = (document) => document?.title || document?.source_template_name || "Untitled note";
 
+  const isSplitPlaceholder = (document) => document?.kind === 'split_placeholder' || document?.split_placeholder === true;
+
   const followupDocumentLabel = (document) => {
     const title = String(document?.title || '');
     if (document?.generator_type === 'followup' && title.startsWith('Follow-up:')) {
@@ -223,27 +225,48 @@ export function createDocumentNavigator({
       const count = documents.length;
       countNode.textContent = `${count} item${count === 1 ? "" : "s"}`;
     }
-    container.innerHTML = "";
+    const existingChildren = kind === 'note' ? [...container.children] : [];
+    const hasUnkeyedExistingItems = existingChildren.some((child) => !child.dataset.documentRenderKey);
+    const existingItems = kind === 'note' && !hasUnkeyedExistingItems
+      ? new Map(existingChildren.map((child) => [child.dataset.documentRenderKey, child]))
+      : new Map();
+    if (hasUnkeyedExistingItems) container.innerHTML = "";
+    if (kind !== 'note') container.innerHTML = "";
+    const renderedKeys = new Set();
     documents.forEach((item) => {
       const itemWrap = kind === 'note' ? window.document.createElement('div') : null;
       if (itemWrap) {
         itemWrap.className = 'document-switcher-item';
+        itemWrap.dataset.documentRenderKey = item.split_slot_key || item.id;
       }
+      const renderKey = item.split_slot_key || item.id;
+      const stableItemWrap = itemWrap ? (existingItems.get(renderKey) || itemWrap) : null;
+      if (stableItemWrap) renderedKeys.add(renderKey);
       const button = window.document.createElement("button");
       button.type = "button";
       button.className = `document-switcher-button${item.id === selectedId ? " active" : ""}`;
       button.dataset.documentId = item.id;
       button.dataset.documentKind = kind;
+      if (item.split_slot_key) button.dataset.documentSlotKey = item.split_slot_key;
       const label = item.kind === "working_note" ? "Working note" : (kind === "note" ? noteDocumentLabel(item) : followupDocumentLabel(item));
       button.title = label;
-      const meta = item.kind === "working_note" ? "Your own notes used as context" : `${escapeHtml(item.status || "")} · ${escapeHtml(formatWorkspaceCreatedAt(item.created_at))}`;
+      const meta = item.kind === "working_note"
+        ? "Your own notes used as context"
+        : (isSplitPlaceholder(item)
+          ? escapeHtml(item.split_generation_status_label || item.status || 'Processing')
+          : `${escapeHtml(item.status || "")} · ${escapeHtml(formatWorkspaceCreatedAt(item.created_at))}`);
       button.innerHTML = `
         <span class="document-switcher-label">${escapeHtml(truncateSwitcherLabel(label))}</span>
         <span class="document-switcher-meta">${meta}</span>
       `;
-      if (itemWrap) {
+      if (stableItemWrap) {
+        if (typeof stableItemWrap.replaceChildren === 'function') stableItemWrap.replaceChildren();
+        else {
+          stableItemWrap.innerHTML = '';
+          if (Array.isArray(stableItemWrap.children)) stableItemWrap.children.length = 0;
+        }
         const itemActions = [button];
-        if (item.kind !== 'working_note') {
+        if (item.kind !== 'working_note' && !isSplitPlaceholder(item)) {
           const regenerateButton = window.document.createElement('button');
           regenerateButton.type = 'button';
           regenerateButton.className = 'document-switcher-item__regenerate';
@@ -269,12 +292,17 @@ export function createDocumentNavigator({
         deleteButton.title = `Delete ${label.toLowerCase()} permanently`;
         deleteButton.setAttribute('aria-label', deleteButton.title);
         deleteButton.innerHTML = '<i class="w-3.5 h-3.5" data-lucide="trash-2" aria-hidden="true"></i>';
-        itemWrap.append(...itemActions, deleteButton);
-        container.appendChild(itemWrap);
+        stableItemWrap.append(...itemActions, deleteButton);
+        container.appendChild(stableItemWrap);
       } else {
         container.appendChild(button);
       }
     });
+    if (kind === 'note') {
+      existingItems.forEach((node, key) => {
+        if (!renderedKeys.has(key)) node.remove();
+      });
+    }
     refreshIcons?.(container);
     const syncScrollButtons = () => {
       if (!noteSelectorScrollPrev || !noteSelectorScrollNext || kind !== 'note') return;
@@ -338,6 +366,7 @@ export function createDocumentNavigator({
 
   const renderNoteHistory = (documents, selectedId) => {
     if (!noteHistory) return;
+    documents = (Array.isArray(documents) ? documents : []).filter((item) => !isSplitPlaceholder(item));
     noteHistory.innerHTML = "";
     if (!documents.length) {
       noteHistory.innerHTML = '<div class="text-sm text-slate">No note history yet.</div>';
@@ -406,7 +435,10 @@ export function createDocumentNavigator({
     const preserveCurrentEditorRender = Boolean(
       forcePreserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId, selectedNote)
     );
-    setState({ selectedNoteDocumentId: selectedEditorId });
+    setState({
+      selectedNoteDocumentId: selectedEditorId,
+      selectedNoteSlotKey: selectedNote?.split_slot_key || null,
+    });
     if (latestGeneratedOutput) {
       latestGeneratedOutput.dataset.latestGeneratedStatus = selectedNote?.status || "";
       latestGeneratedOutput.dataset.latestGeneratedId = selectedNoteId;
@@ -434,8 +466,8 @@ export function createDocumentNavigator({
       selectedId: selectedNote?.id || (state.hasActiveTranscript ? workingNoteTargetId(state.activeTranscriptId || '') : null),
       kind: "note",
     });
-    renderNoteHistory(state.workspaceNoteDocuments, selectedNote?.id || null);
-    const selectedGeneratedNote = selectedNote?.kind === "working_note" ? null : selectedNote;
+    renderNoteHistory(state.workspaceNoteHistoryDocuments || state.workspaceNoteDocuments, selectedNote?.id || null);
+    const selectedGeneratedNote = selectedNote?.kind === "working_note" || isSplitPlaceholder(selectedNote) ? null : selectedNote;
     renderLlmRequestPanel(outputLlmRequestSlot, selectedGeneratedNote);
     renderRedactionDebugPanel(outputRedactionSlot, selectedGeneratedNote);
     dispatchLegacyWorkspaceSelection('note', selectedNote);
@@ -500,7 +532,9 @@ export function createDocumentNavigator({
         }
       }
       clearNoteEditorDirty?.();
+      const selectedDocument = noteTargets(state).find((document) => document.id === documentId) || null;
       setState({ selectedNoteDocumentId: documentId });
+      setState({ selectedNoteSlotKey: selectedDocument?.split_slot_key || null });
       renderSelectedNote();
       setTab("output");
       window.document.dispatchEvent(new window.CustomEvent('transcribe:document-selected', { detail: { kind: 'note', documentId } }));

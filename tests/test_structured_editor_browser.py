@@ -193,6 +193,24 @@ def _install_freeform_editor(page, base_url, *, line_count=376):
     )
 
 
+def test_split_placeholder_uses_the_existing_generation_screen(static_repo_server):
+    with _browser_page(static_repo_server) as page:
+        _install_editor(page, static_repo_server)
+        page.evaluate(
+            """() => window.testEditor.renderGeneratedOutput({
+              id: 'split-placeholder:transcript-1:topic-1',
+              kind: 'split_placeholder',
+              split_placeholder: true,
+              status: 'processing',
+              split_generation_phase: 'verifying',
+              document_mode: 'freeform',
+            })""",
+        )
+        loading = page.locator('[data-latest] .note-generation-loading')
+        assert loading.is_visible()
+        assert 'Checking your split notes...' in loading.inner_text()
+
+
 def test_editing_a_moved_row_relocks_its_destination_section(static_repo_server):
     with _browser_page(static_repo_server) as page:
         _install_editor(page, static_repo_server)

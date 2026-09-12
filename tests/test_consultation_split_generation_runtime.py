@@ -198,7 +198,7 @@ def _response(db, execution_id, *, malformed=False):
         notes.append({"topic_uuid": topic["topic_uuid"], "mode": topic["template"]["mode"], "content": content})
     if malformed:
         notes[0]["mode"] = "structured"
-    return json.dumps({"notes": notes})
+    return json.dumps({"title": "Overall consultation", "notes": notes})
 
 
 def _provider(monkeypatch, response, calls):
@@ -321,6 +321,36 @@ def test_generation_submits_before_one_provider_call_and_commits_exact_mixed_doc
     assert len(db_session.scalars(select(ProviderUsageEvent).where(ProviderUsageEvent.consultation_split_execution_id == execution_id)).all()) == 1
 
 
+def test_generation_fills_untitled_session_from_overall_consultation_title(db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch):
+    owner = make_user(email=f"generation-session-title-{uuid4()}@example.com")
+    transcript, execution_id = _queue(db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch)
+    transcript.title = "Untitled session"
+    db_session.commit()
+    response = json.loads(_response(db_session, execution_id))
+    response["title"] = "Respiratory review"
+    _provider(monkeypatch, json.dumps(response), [])
+
+    assert _run(db_session, execution_id).outcome == "ready"
+    db_session.refresh(transcript)
+    assert transcript.title == "Respiratory review"
+    documents = db_session.scalars(select(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript.id)).all()
+    assert all(document.title == "Consultation split note" for document in documents)
+
+
+def test_generation_does_not_overwrite_custom_session_title(db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch):
+    owner = make_user(email=f"generation-custom-session-title-{uuid4()}@example.com")
+    transcript, execution_id = _queue(db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch)
+    transcript.title = "Clinician consultation title"
+    db_session.commit()
+    response = json.loads(_response(db_session, execution_id))
+    response["title"] = "Generated overall title"
+    _provider(monkeypatch, json.dumps(response), [])
+
+    assert _run(db_session, execution_id).outcome == "ready"
+    db_session.refresh(transcript)
+    assert transcript.title == "Clinician consultation title"
+
+
 def test_generation_reidentifies_saved_phi_placeholders_before_materializing_documents(
     db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch,
 ):
@@ -337,7 +367,7 @@ def test_generation_reidentifies_saved_phi_placeholders_before_materializing_doc
     db_session.commit()
 
     plan = read_split_batch_json(db_session, owner, batch=batch, field="confirmed_plan_encrypted")
-    response = json.dumps({"notes": [
+    response = json.dumps({"title": "Overall consultation", "notes": [
         {
             "topic_uuid": topic["topic_uuid"],
             "mode": topic["template"]["mode"],
@@ -798,7 +828,7 @@ def test_keep_available_notes_reidentifies_saved_phi_placeholders(
             notes.append({"topic_uuid": topic["topic_uuid"], "mode": "structured", "content": {"problem": "[PHI-1] problem", "tasks": "Review [PHI-1]"}})
     db_session.commit()
     monkeypatch.setattr("app.services.consultation_split_recovery.queue_automatic_split_recovery", lambda *_args, **_kwargs: None)
-    _provider(monkeypatch, json.dumps({"notes": notes}), [])
+    _provider(monkeypatch, json.dumps({"title": "Overall consultation", "notes": notes}), [])
 
     assert _run(db_session, execution_id).outcome == "ready"
     documents = keep_available_split_notes(db_session, owner, transcript_id=transcript.id, batch_id=batch.id)

@@ -253,6 +253,7 @@ def test_split_note_regeneration_uses_confirmed_snapshot_and_creates_revision(
         provider_requests.append(kwargs["request_body"])
         return json.dumps(
             {
+                "title": "Overall consultation",
                 "notes": [
                     {
                         "topic_uuid": str(first_topic_uuid),

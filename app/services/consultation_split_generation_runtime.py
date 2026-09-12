@@ -6,7 +6,6 @@ separate from analysis runtime because generation persists ordinary documents.
 from __future__ import annotations
 
 import json
-import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Literal
@@ -36,47 +35,14 @@ from app.services.llm_credentials import resolve_generation_credential
 from app.services.provider_errors import safe_provider_error_code
 from app.services.quotas import cancel_provider_attempt, mark_provider_attempt_submitted, settle_provider_attempt_tokens, settle_provider_attempt_unknown_tokens
 from app.services.task_outbox import cancel_pending_task_dispatch
+from app.services.templates import _transcript_title_can_be_auto_filled
 from app.services.transcripts import transcript_is_expired
 from app.services.redaction import reidentify_text
-
-logger = logging.getLogger("openscribe.consultation_split_generation")
 
 SPLIT_GENERATION_PROVIDER_DEADLINE_SECONDS = 600
 RECOVERABLE_GENERATION_RESPONSE_MAX_CHARS = 2_097_152
 
 
-def _response_shape_for_log(text: object) -> dict[str, object]:
-    """Return diagnostics without logging provider-generated content."""
-    if not isinstance(text, str):
-        return {"text_type": type(text).__name__}
-    try:
-        value = json.loads(text)
-    except (TypeError, ValueError):
-        return {"text_type": "str", "chars": len(text), "json": "invalid"}
-    if not isinstance(value, dict):
-        return {"text_type": "str", "chars": len(text), "json_type": type(value).__name__}
-    notes = value.get("notes")
-    summary: dict[str, object] = {
-        "text_type": "str", "chars": len(text), "top_level_keys": sorted(value),
-        "notes_type": type(notes).__name__,
-    }
-    if isinstance(notes, list):
-        summary["note_count"] = len(notes)
-        summary["note_shapes"] = [
-            {
-                "keys": sorted(note) if isinstance(note, dict) else None,
-                "mode": note.get("mode") if isinstance(note, dict) else None,
-                "content_type": type(note.get("content")).__name__ if isinstance(note, dict) else None,
-                "content_keys": sorted(note["content"]) if isinstance(note, dict) and isinstance(note.get("content"), dict) else None,
-                "content_chars": len(note["content"]) if isinstance(note, dict) and isinstance(note.get("content"), str) else None,
-                "section_shapes": {
-                    key: {"type": type(value).__name__, "chars": len(value) if isinstance(value, str) else None}
-                    for key, value in note["content"].items()
-                } if isinstance(note, dict) and isinstance(note.get("content"), dict) else None,
-            }
-            for note in notes
-        ]
-    return summary
 GENERIC_SPLIT_DOCUMENT_TITLE = "Consultation split note"
 GenerationOutcome = Literal["ready", "failed", "in_flight", "noop"]
 
@@ -278,12 +244,6 @@ def _prepared(db: Session, execution_id: UUID) -> tuple[_Work, LlmProviderSnapsh
         messages = prepared.request_body["messages"]
         request = generation_request_snapshot(adapter_kind=config.adapter_kind, model=provider.model, user_id=work.owner.id, system_message=messages[0]["content"], user_message=messages[1]["content"], output_token_cap=prepared.output_token_cap, response_json_schema=prepared.response_json_schema)
         if request != read_split_execution_json(db, work.owner, execution=work.execution, field="request_payload_encrypted"): raise AppError(422, "invalid", "invalid")
-        logger.warning(
-            "[DEBUG-split-gen] prepared attempt=%s requested_topics=%s output_token_cap=%s",
-            work.execution.attempt_no,
-            len(_topics_from_plan(plan)),
-            prepared.output_token_cap,
-        )
     except (AppError, UnicodeDecodeError, KeyError, TypeError):
         return _terminal(db, work, "consultation_split_provider_binding_invalid", submitted=False)
     if not _credential_ok(config, credential): return _terminal(db, work, "consultation_split_credential_unavailable", submitted=False)
@@ -325,17 +285,18 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
             text,
             topics=[topic for topic in _topics_from_plan(plan or {}) if topic.topic_uuid in target_uuids],
         )
-        logger.warning(
-            "[DEBUG-split-gen] parsed response_chars=%s requested_topics=%s accepted_topics=%s failed_topics=%s failure_reasons=%s",
-            len(text),
-            len(target_uuids),
-            len(parsed.notes),
-            len(parsed.failed_topic_uuids),
-            parsed.failure_reasons,
-        )
         parsed_response = True
         if target_uuids != {note.topic_uuid for note in parsed.notes} | set(parsed.failed_topic_uuids):
             raise AppError(502, "invalid", "invalid")
+
+        # Split notes keep generic persisted document titles.  The one
+        # provider-generated title belongs to the transcript and follows the
+        # same auto-fill rule as ordinary note generation.  Apply it before
+        # either partial recovery or final materialization is committed.
+        phi_index = read_split_batch_phi_index(db, work.owner, batch=work.batch)
+        if _transcript_title_can_be_auto_filled(work.transcript.title):
+            work.transcript.title = reidentify_text(parsed.title, phi_index=phi_index)[:255]
+            db.add(work.transcript)
 
         # A trustworthy envelope lets us retain independently valid work before
         # retrying missing siblings.  The accepted execution and ciphertext are
@@ -446,7 +407,6 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
         # Only now may documents be materialized. Provider output remains
         # redacted in the immutable outcome; the owner-facing document gets
         # its frozen placeholders restored at this final boundary.
-        phi_index = read_split_batch_phi_index(db, work.owner, batch=work.batch)
         for note in complete_notes:
             topic=by_uuid[note.topic_uuid]; outcome=work.outcomes[topic.id]
             template=next(item["template"] for item in plan["topics"] if UUID(item["topic_uuid"]) == note.topic_uuid)
@@ -491,12 +451,7 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
         now=utcnow(); work.execution.status=ConsultationSplitExecutionStatus.completed; work.execution.completed_at=now; work.execution.recoverable_response_encrypted=None; work.batch.status=ConsultationSplitBatchStatus.ready; work.batch.completed_at=now
         db.add(ProviderUsageEvent(team_id=work.transcript.team_id, owner_user_id=work.owner.id, transcript_id=work.transcript.id, consultation_split_execution_id=work.execution.id, llm_config_id=work.execution.llm_config_id, feature_type=ProviderFeatureType.consultation_split_generation, event_type=ProviderUsageEventType.completed, status="ready", provider_adapter=work.execution.provider_adapter, model_name=work.execution.provider_model, prompt_tokens=usage["input_tokens"], completion_tokens=usage["output_tokens"], total_tokens=usage["total_tokens"]))
         db.commit(); return SplitGenerationRuntimeResult("ready", execution_id)
-    except Exception as exc:
-        logger.warning(
-            "[DEBUG-split-gen] finalization_failed parsed_response=%s exception_type=%s",
-            parsed_response,
-            type(exc).__name__,
-        )
+    except Exception:
         db.rollback(); work=_lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
         if work is None:
             return SplitGenerationRuntimeResult("in_flight", execution_id)
@@ -547,13 +502,6 @@ def process_consultation_split_generation_execution(db: Session, *, execution_id
     # outcome.  Persist it before parsing so finalization can safely consume
     # the single automatic recovery chance.  Exceptions/no response remain
     # uncertain submitted outcomes and never reach that path.
-    logger.warning(
-        "[DEBUG-split-gen] provider_returned response_is_text=%s response_chars=%s usage_has_total=%s",
-        isinstance(text, str),
-        len(text) if isinstance(text, str) else None,
-        _usage(raw_usage)["total_tokens"] is not None,
-    )
-    logger.warning("[DEBUG-split-gen] provider_response_shape=%s", _response_shape_for_log(text))
     if not isinstance(text, str) or len(text) > RECOVERABLE_GENERATION_RESPONSE_MAX_CHARS: return _terminal(db, work, "consultation_split_generation_invalid_output", submitted=True, usage=_usage(raw_usage))
     work.execution.recoverable_response_encrypted=encrypt_json_for_existing_owner(db, owner_user_id=work.owner.id, table="consultation_split_executions", field="recoverable_response_encrypted", record_id=work.execution.id, plaintext={"text": text, "usage": _usage(raw_usage)})
     db.commit(); return _finalize(db, execution_id)

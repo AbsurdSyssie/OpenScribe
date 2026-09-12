@@ -287,7 +287,6 @@ class="btn-primary btn-primary--compact"
 <span data-generate-output-label>{{ 'Regenerate' if latest_generated_document else 'Create' }}</span>
 </button>
 </form>
-<p class="text-sm text-slate" data-split-generation-status role="status" aria-live="polite" aria-atomic="true" hidden></p>
 <button type="button" class="btn-secondary btn-secondary--compact" data-split-continue-one-note hidden>
 Continue as one note
 </button>
@@ -972,26 +971,85 @@ Clinical NLP has not run for this transcript yet.
 </footer>
 </section>
 </div>
-<div id="split-review-modal" class="split-review-modal" data-split-review-modal hidden>
-<div class="split-review-modal__backdrop" data-split-review-close></div>
-<section class="split-review-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="split-review-modal-title" aria-describedby="split-review-status">
+<div
+id="split-review-modal"
+class="split-review-modal"
+data-split-review-modal
+hidden
+>
+<div
+class="split-review-modal__backdrop"
+data-split-review-close
+></div>
+
+<section
+class="split-review-modal__dialog"
+role="dialog"
+aria-modal="true"
+aria-labelledby="split-review-modal-title"
+aria-describedby="split-review-status"
+>
 <header class="split-review-modal__header">
 <div>
-<div class="section-kicker">Review before creating notes</div>
-<h2 id="split-review-modal-title">Review note split</h2>
-<p>Choose how each proposed topic should appear in your notes.</p>
+<h2 id="split-review-modal-title">
+Review note split
+</h2>
+
+<div
+class="split-review-modal__problem-count"
+data-split-review-problem-count
+></div>
 </div>
-<button type="button" class="template-picker-modal__close" data-split-review-close aria-label="Review later">
-<i class="w-3.5 h-3.5" data-lucide="x" aria-hidden="true"></i>
+
+<button
+type="button"
+class="btn-icon"
+aria-label="Close"
+data-split-review-close
+>
+×
 </button>
 </header>
-<p id="split-review-status" class="split-review-modal__status" data-split-review-status role="status" aria-live="polite"></p>
-<div class="split-review-modal__topics" data-split-review-topic-list></div>
+
+<p
+id="split-review-status"
+class="split-review-modal__status"
+data-split-review-status
+role="status"
+aria-live="polite"
+></p>
+
+<div
+class="split-review-modal__topics"
+data-split-review-topic-list
+></div>
+
 <footer class="split-review-modal__footer">
-<button type="button" class="btn-ghost-sm" data-split-review-close>Review later</button>
-<button type="button" class="btn-secondary-sm" data-split-review-continue hidden disabled>Continue as one note</button>
-<button type="button" class="btn-primary-sm" data-split-review-save>Save split</button>
-<button type="button" class="btn-primary-sm" data-split-review-confirm hidden disabled>Confirm split</button>
+<button
+type="button"
+class="btn-ghost-sm"
+data-split-review-close
+>
+Review later
+</button>
+
+<div class="split-review-modal__footer-spacer"></div>
+
+<button
+type="button"
+class="btn-secondary-sm"
+data-split-review-save
+>
+Save split
+</button>
+
+<button
+type="button"
+class="btn-primary-sm"
+data-split-review-create
+>
+Create notes
+</button>
 </footer>
 </section>
 </div>

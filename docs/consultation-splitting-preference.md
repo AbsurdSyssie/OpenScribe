@@ -48,6 +48,8 @@ Titles are encrypted under the owner key. A replacement has zero to six distinct
 
 When workspace REST or SSE state already contains the current owner's review draft, the workspace shows **Review note split**. The modal edits existing topic titles, primary choice, dispositions, and template choices, then saves the complete ordered draft through `PUT` with its exact `expected_updated_at`. A browser-started active review may explicitly choose **Continue as one note** using its durable intent. Passive restored drafts do not invent an intent or expose that action.
 
+After **Confirm split**, the confirmed plan and queued batch remain immutable while generation is active. Once that batch reaches a terminal state, the workspace automatically starts a fresh review intent and reopens the draft as active; normal edits, saving, and confirmation create a separate immutable batch and never alter the earlier batch.
+
 The modal keeps unsaved edits local while the draft remains the same. A competing save, stale source, unavailable draft, malformed proposal, or changed transcript fails closed; refresh can replace that state only when a successful workspace update supplies a current draft. The deployment and user gates remain default-off.
 
 ## Browser restoration polling
@@ -58,11 +60,13 @@ Polling uses the existing workspace request deduplication and applies only a res
 
 ## Browser Generate completion
 
-For a browser-started operation, queued and processing analysis show persistent accessible status beside **Create**. SSE remains primary and the existing bounded poller restores state when SSE is unavailable. When the matching analysis becomes ready, the browser creates or reuses its review draft through the existing draft `POST`, single-flighted by transcript and analysis, refreshes the guarded workspace, and opens the matching review modal once. Drafts restored from workspace remain passive.
+For a browser-started operation, queued and processing analysis use the existing accessible review status until the split draft is ready. SSE remains primary and the existing bounded poller restores state when SSE is unavailable. When the matching analysis becomes ready, the browser creates or reuses its review draft through the existing draft `POST`, single-flighted by transcript and analysis, refreshes the guarded workspace, and opens the matching review modal once. Drafts restored from workspace remain passive.
 
 `not_required` means analysis found fewer than two topics. For that browser-started durable intent, the browser immediately calls the dedicated `continue-as-one-note` route and generates with the template frozen when Generate was pressed; it does not ask for a second click. `failed`, `stale`, and `incomplete` remain non-generating error states and may expose the explicit recovery action only for that browser-owned intent. The browser never calls `/generate-output` or sends template, configuration, source content, or patient content in the consume request. If the submitted template is no longer live, the intent stays unconsumed and the clinician must choose a current template and start a new Generate. A consumed intent whose child was deleted reports that it will not recreate the note.
 
 Provider quota remains the business limiter. The intent-start route retains its existing transport limits. The database-only review-draft `POST` and `PUT` do not call an LLM and therefore have no dedicated LLM rate limiter.
+
+After **Confirm split**, the Output note selector immediately shows one client-only placeholder pill per confirmed separate-note topic. The primary topic is selected first, and the existing note-generation loading screen reports queued, generating, or checking status. The placeholders create no database rows, cannot be edited or deleted, and do not add a second LLM call. SSE workspace snapshots replace each stable slot with the owner-projected generated document as it becomes ready; the existing bounded polling fallback is used only when SSE is unavailable. A terminal partial result keeps successful slots, marks failed slots unavailable, and leaves the existing Retry missing notes and Keep available notes actions in control. A full failure leaves the topic slots unavailable and re-enables **Create**. Regeneration keeps prior revisions in note history while replacing the current topic slots in place. Switching transcripts discards the browser-only slots.
 
 ## Partial recovery
 

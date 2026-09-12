@@ -165,7 +165,7 @@ def test_scribe_mobile_flow_assets_have_current_cache_keys():
     legacy_transcribe = read("app/templates/transcribe.html")
 
     assert 'workspace/app.js?v=20260821-mobile-scribe-flow' in workspace
-    assert 'transcribe/app.js?v=20260911-partial-actions' in shell_extras
+    assert 'transcribe/app.js?v=20260912-split-review-auto-edit' in shell_extras
     assert 'transcribe/mobile.js?v=20260823-mobile-toast' in shell_extras
     assert 'documents.js?v=20260821-mobile-production-2' in read("app/static/js/transcribe/app.js")
     assert 'transcribe-mobile.css?v=20260823-mobile-recent' in legacy_transcribe

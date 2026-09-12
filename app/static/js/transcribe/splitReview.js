@@ -1,12 +1,13 @@
 import { csrfFetch } from '../csrf.js';
 
-const DISPOSITIONS = Object.freeze([
-  { value: 'separate_note', label: 'Separate note' },
-  { value: 'include_in_primary', label: 'Include in main note' },
-  { value: 'exclude_from_notes', label: 'Exclude problem' },
+const VALID_DISPOSITIONS = new Set([
+  'separate_note',
+  'include_in_primary',
+  'exclude_from_notes',
 ]);
 const ACTIVE_STATUS = 'active';
 const TERMINAL_STATUSES = new Set(['confirmed', 'bypassed']);
+const EDITABLE_BATCH_STATUSES = new Set(['ready', 'completed_partial', 'failed']);
 const IN_FLIGHT_ANALYSIS_STATUSES = new Set(['queued', 'processing']);
 const RESTORATION_BACKOFF_MS = Object.freeze([1500, 3000, 6000, 12000, 15000]);
 const NO_NOTE_ANALYSIS_STATUSES = new Set(['not_required', 'failed', 'stale', 'incomplete']);
@@ -283,6 +284,8 @@ export function createSplitGenerateController({
   setBusy = () => {},
   setStatus = () => {},
   setContinueAvailable = () => {},
+  getConfirmedDraft = () => null,
+  onSplitBatchStarted = () => {},
   onGeneratedDocument = async () => {},
   createKey = () => globalThis.crypto?.randomUUID?.(),
 } = {}) {
@@ -663,6 +666,12 @@ export function createSplitGenerateController({
     setBusy(true);
     setContinueAvailable(false);
     setOperationStatus('Regenerating split notes from the previous instructions.');
+    onSplitBatchStarted({
+      draft: getConfirmedDraft(),
+      batchId,
+      phase: 'generation_queued',
+      pendingBatchId: true,
+    });
     try {
       const key = createKey();
       if (!key) throw new Error('Could not regenerate split notes.');
@@ -672,14 +681,24 @@ export function createSplitGenerateController({
       });
       if (!current(candidate) || !same(getTranscriptId(), transcriptId)) return false;
       if (!response.ok) {
+        onSplitBatchStarted({ draft: getConfirmedDraft(), batchId, phase: 'failed' });
         setOperationStatus('Could not regenerate split notes. Please try again.', 'warning');
         return false;
       }
+      const result = await response.json();
+      onSplitBatchStarted({
+        draft: getConfirmedDraft(),
+        batchId: result?.batch_id || batchId,
+        phase: 'generation_queued',
+      });
       await refreshWorkspace(transcriptId, { guardTranscriptId: transcriptId });
       if (!current(candidate) || !same(getTranscriptId(), transcriptId)) return false;
       setOperationStatus('Split notes are being regenerated.', 'success');
       return true;
     } catch (_) {
+      if (current(candidate) && same(getTranscriptId(), transcriptId)) {
+        onSplitBatchStarted({ draft: getConfirmedDraft(), batchId, phase: 'failed' });
+      }
       if (current(candidate) && same(getTranscriptId(), transcriptId)) setOperationStatus('Could not regenerate split notes. Please try again.', 'warning');
       return false;
     } finally {
@@ -694,7 +713,7 @@ export function enforcePrimaryDisposition(topic) {
   return {
     ...topic,
     is_primary: Boolean(topic.is_primary),
-    disposition: topic.is_primary ? 'separate_note' : (DISPOSITIONS.some((item) => item.value === topic.disposition)
+    disposition: topic.is_primary ? 'separate_note' : (VALID_DISPOSITIONS.has(topic.disposition)
       ? topic.disposition
       : 'separate_note'),
   };
@@ -799,7 +818,7 @@ function isUsableFocusTarget(element) {
 }
 
 function setDisabled(root, disabled) {
-  root?.querySelectorAll('input, select, textarea, button[data-split-review-save]').forEach((element) => {
+  root?.querySelectorAll('input, select, textarea, button').forEach((element) => {
     element.disabled = disabled;
   });
 }
@@ -821,7 +840,9 @@ export function createSplitReviewController({
   modal = typeof document !== 'undefined' ? document.querySelector('[data-split-review-modal]') : null,
   topicList = modal?.querySelector('[data-split-review-topic-list]'),
   status = modal?.querySelector('[data-split-review-status]'),
+  problemCount = modal?.querySelector('[data-split-review-problem-count]'),
   saveButton = modal?.querySelector('[data-split-review-save]'),
+  createButton = modal?.querySelector('[data-split-review-create]'),
   continueButton = modal?.querySelector('[data-split-review-continue]'),
   confirmButton = modal?.querySelector('[data-split-review-confirm]'),
   closeButtons = modal ? [...modal.querySelectorAll('[data-split-review-close]')] : [],
@@ -830,7 +851,9 @@ export function createSplitReviewController({
   getTranscriptId = () => null,
   showMessage = () => {},
   continueAsOneNote = async () => false,
+  beginEdit = async () => false,
   getConfirmIntentId = () => null,
+  onSplitBatchStarted = () => {},
   confirmDiscard = () => (typeof window !== 'undefined' && typeof window.confirm === 'function'
     ? window.confirm('Discard unsaved changes and review this split later?')
     : true),
@@ -848,6 +871,10 @@ export function createSplitReviewController({
   let continuing = false;
   let confirming = false;
   let continueAvailable = false;
+  let latestBatch = null;
+  let editPreparationKey = null;
+  let editPreparation = null;
+  const createNotesButton = createButton || confirmButton;
 
   const setOpenState = (isOpen) => {
     if (modal) modal.hidden = !isOpen;
@@ -879,12 +906,25 @@ export function createSplitReviewController({
       continueButton.hidden = !continueAvailable;
       continueButton.disabled = !continueAvailable || continuing;
     }
-    if (confirmButton) {
+    if (createNotesButton) {
       const confirmable = !readOnly && !dirty && validation.valid && Boolean(getConfirmIntentId());
-      confirmButton.hidden = !confirmable && !confirming;
-      confirmButton.disabled = !confirmable || confirming;
+      createNotesButton.hidden = !confirmable && !confirming;
+      createNotesButton.disabled = !confirmable || confirming;
     }
     if (!readOnly && !validation.valid && dirty) setStatus(validation.message, 'warning');
+  };
+
+  const getPrimaryTopic = () => (localDraft?.topics || []).find((topic) => topic.is_primary);
+
+  const updateSplitReviewCounts = () => {
+    const topics = localDraft?.topics || [];
+    const noteCount = topics.filter((topic) => topic.disposition === 'separate_note').length;
+    if (problemCount) {
+      problemCount.textContent = `${topics.length} problem${topics.length === 1 ? '' : 's'} detected`;
+    }
+    if (createNotesButton) {
+      createNotesButton.textContent = `Create ${noteCount} note${noteCount === 1 ? '' : 's'}`;
+    }
   };
 
   const topicTemplateOptions = (selectedId) => {
@@ -911,6 +951,10 @@ export function createSplitReviewController({
     const topics = localDraft?.topics || [];
     if (localDraft?.status === 'stale') {
       setStatus('This split is stale and read-only because the consultation changed.', 'warning');
+    } else if (localDraft?.status === 'confirmed' && EDITABLE_BATCH_STATUSES.has(latestBatch?.status)) {
+      setStatus('Preparing an editable split review.', 'progress');
+    } else if (localDraft?.status === 'confirmed') {
+      setStatus('This split is queued and locked until generation finishes.', 'warning');
     } else if (localDraft && (TERMINAL_STATUSES.has(localDraft.status) || localDraft.status === 'unavailable')) {
       setStatus('This split is no longer available for editing.', 'warning');
     } else if (!dirty) {
@@ -922,66 +966,84 @@ export function createSplitReviewController({
       empty.textContent = readOnly ? 'No reviewable note topics are available.' : 'No topics were proposed.';
       topicList.append(empty);
     }
-    topics.forEach((topic, index) => {
-      const card = document.createElement('fieldset');
-      card.className = 'split-review-topic';
-      card.dataset.topicUuid = asString(topic.topic_uuid);
+    topics.forEach((topic) => {
+      const fieldset = document.createElement('fieldset');
+      fieldset.className = 'split-review-topic';
+      fieldset.dataset.topicUuid = asString(topic.topic_uuid);
 
-      const legend = document.createElement('legend');
-      legend.className = 'split-review-topic__heading';
-      legend.textContent = `Topic ${index + 1}`;
-      card.append(legend);
+      if (topic.disposition === 'include_in_primary' || topic.disposition === 'exclude_from_notes') {
+        const merged = topic.disposition === 'include_in_primary';
+        fieldset.classList.add(merged ? 'is-merged' : 'is-skipped');
 
-      const titleLabel = document.createElement('label');
-      titleLabel.className = 'split-review-topic__title';
-      titleLabel.textContent = 'Topic title';
-      const titleInput = document.createElement('input');
-      titleInput.type = 'text';
-      titleInput.value = topic.title;
-      titleInput.maxLength = 255;
-      titleInput.dataset.splitReviewTitle = 'true';
-      titleInput.dataset.topicUuid = asString(topic.topic_uuid);
-      titleInput.setAttribute('aria-label', `Topic ${index + 1} title`);
-      titleLabel.append(titleInput);
-      card.append(titleLabel);
+        const header = document.createElement('div');
+        header.className = 'split-review-topic__header';
+        const heading = document.createElement('div');
+        const name = document.createElement('div');
+        name.className = 'split-review-topic__name';
+        name.textContent = topic.title;
+        const description = document.createElement('div');
+        description.className = 'split-review-topic__description';
+        description.textContent = 'Detected problem';
+        heading.append(name, description);
+        header.append(heading);
+        fieldset.append(header);
 
-      const primaryLabel = document.createElement('label');
-      primaryLabel.className = 'split-review-topic__primary';
-      const primaryInput = document.createElement('input');
-      primaryInput.type = 'radio';
-      primaryInput.name = 'split-review-primary';
-      primaryInput.checked = Boolean(topic.is_primary);
-      primaryInput.dataset.splitReviewPrimary = 'true';
-      primaryInput.dataset.topicUuid = asString(topic.topic_uuid);
-      primaryInput.setAttribute('aria-label', `Make ${topic.title || `topic ${index + 1}`} primary`);
-      primaryLabel.append(primaryInput, document.createTextNode(' Primary topic'));
-      card.append(primaryLabel);
+        const state = document.createElement('div');
+        state.className = 'split-review-topic__state';
+        const stateText = document.createElement('span');
+        stateText.textContent = merged
+          ? `Merged into ${getPrimaryTopic()?.title || 'primary problem'}`
+          : 'Skipped — no note will be created';
+        const undo = document.createElement('button');
+        undo.type = 'button';
+        undo.className = 'split-review-topic__text-action';
+        undo.dataset.splitReviewUndo = '';
+        undo.textContent = 'Undo';
+        state.append(stateText, undo);
+        fieldset.append(state);
+        topicList.append(fieldset);
+        return;
+      }
 
-      const dispositionGroup = document.createElement('div');
-      dispositionGroup.className = 'split-review-topic__dispositions';
-      dispositionGroup.setAttribute('role', 'group');
-      dispositionGroup.setAttribute('aria-label', `Disposition for ${topic.title || `topic ${index + 1}`}`);
-      DISPOSITIONS.forEach((disposition) => {
-        const label = document.createElement('label');
-        const input = document.createElement('input');
-        input.type = 'radio';
-        input.name = `split-review-disposition-${asString(topic.topic_uuid) || index}`;
-        input.value = disposition.value;
-        input.checked = topic.disposition === disposition.value;
-        input.dataset.splitReviewDisposition = 'true';
-        input.dataset.topicUuid = asString(topic.topic_uuid);
-        label.append(input, document.createTextNode(` ${disposition.label}`));
-        dispositionGroup.append(label);
-      });
-      card.append(dispositionGroup);
+      const header = document.createElement('div');
+      header.className = 'split-review-topic__header';
+
+      const heading = document.createElement('div');
+      const name = document.createElement('div');
+      name.className = 'split-review-topic__name';
+      name.textContent = topic.title;
+      const description = document.createElement('div');
+      description.className = 'split-review-topic__description';
+      description.textContent = topic.is_primary ? 'Main problem' : 'Will create a separate note';
+      heading.append(name, description);
+      header.append(heading);
+
+      if (topic.is_primary) {
+        fieldset.classList.add('is-primary');
+        const primaryLabel = document.createElement('span');
+        primaryLabel.className = 'split-review-topic__primary-label';
+        primaryLabel.textContent = 'Primary';
+        header.append(primaryLabel);
+      } else {
+        const makePrimary = document.createElement('button');
+        makePrimary.type = 'button';
+        makePrimary.className = 'split-review-topic__text-action';
+        makePrimary.dataset.splitReviewMakePrimary = '';
+        makePrimary.textContent = 'Make primary';
+        header.append(makePrimary);
+      }
+      fieldset.append(header);
 
       const templateLabel = document.createElement('label');
-      templateLabel.className = 'split-review-topic__template';
-      templateLabel.textContent = 'Template';
+      templateLabel.className = 'field-label split-review-topic__template';
+      const templateText = document.createElement('span');
+      templateText.textContent = 'Template';
+      const selectWrap = document.createElement('span');
+      selectWrap.className = 'select-wrap';
       const templateSelect = document.createElement('select');
       templateSelect.dataset.splitReviewTemplate = 'true';
       templateSelect.dataset.topicUuid = asString(topic.topic_uuid);
-      templateSelect.setAttribute('aria-label', `Template for ${topic.title || `topic ${index + 1}`}`);
+      templateSelect.setAttribute('aria-label', `Template for ${topic.title || 'problem'}`);
       topicTemplateOptions(asString(topic.template_id)).forEach((optionData) => {
         const option = document.createElement('option');
         option.value = optionData.value;
@@ -989,10 +1051,37 @@ export function createSplitReviewController({
         option.selected = optionData.value === asString(topic.template_id);
         templateSelect.append(option);
       });
-      templateLabel.append(templateSelect);
-      card.append(templateLabel);
-      topicList.append(card);
+      selectWrap.append(templateSelect);
+      templateLabel.append(templateText, selectWrap);
+      fieldset.append(templateLabel);
+
+      if (!topic.is_primary) {
+        const actions = document.createElement('div');
+        actions.className = 'split-review-topic__actions';
+
+        const merge = document.createElement('button');
+        merge.type = 'button';
+        merge.className = 'split-review-topic__text-action';
+        merge.dataset.splitReviewMerge = '';
+        merge.textContent = 'Merge into primary';
+
+        const separator = document.createElement('span');
+        separator.setAttribute('aria-hidden', 'true');
+        separator.textContent = '·';
+
+        const skip = document.createElement('button');
+        skip.type = 'button';
+        skip.className = 'split-review-topic__text-action split-review-topic__text-action--danger';
+        skip.dataset.splitReviewSkip = '';
+        skip.textContent = 'Skip';
+
+        actions.append(merge, separator, skip);
+        fieldset.append(actions);
+      }
+
+      topicList.append(fieldset);
     });
+    updateSplitReviewCounts();
     updateControlState();
   };
 
@@ -1048,10 +1137,15 @@ export function createSplitReviewController({
     return true;
   };
 
-  const applyWorkspaceState = ({ draft, availableTemplates = [], nextTranscriptId = null } = {}) => {
+  const applyWorkspaceState = ({ draft, availableTemplates = [], nextTranscriptId = null, batch } = {}) => {
     const incoming = normalizeSplitDraft(draft);
     templates = Array.isArray(availableTemplates) ? availableTemplates : [];
     transcriptId = nextTranscriptId || null;
+    if (batch !== undefined) latestBatch = batch;
+    if (incoming?.status === ACTIVE_STATUS) {
+      editPreparationKey = null;
+      editPreparation = null;
+    }
     const sameDraft = Boolean(incoming && remoteDraft && incoming.draft_id === remoteDraft.draft_id);
     remoteDraft = incoming;
     if (!dirty) {
@@ -1070,9 +1164,33 @@ export function createSplitReviewController({
       localDraft = localDraft ? { ...localDraft, status: 'unavailable' } : null;
       if (opened) render();
     }
-    if (trigger) trigger.hidden = !incoming;
+    const reviewAvailable = Boolean(
+      incoming
+      && (incoming.status === ACTIVE_STATUS
+        || (incoming.status === 'confirmed' && EDITABLE_BATCH_STATUSES.has(latestBatch?.status))),
+    );
+    if (trigger) trigger.hidden = !reviewAvailable;
     if (!incoming && opened) close({ force: true });
     if (!incoming) setOpenState(false);
+    if (incoming?.status === 'confirmed' && EDITABLE_BATCH_STATUSES.has(latestBatch?.status)) {
+      const key = `${incoming.draft_id || ''}:${latestBatch?.batch_id || ''}:${latestBatch?.status || ''}`;
+      if (editPreparationKey !== key && !editPreparation) {
+        editPreparationKey = key;
+        editPreparation = Promise.resolve(beginEdit({
+          transcriptId,
+          batchId: latestBatch?.batch_id || null,
+        })).then((started) => {
+          if (!started) setStatus('Could not prepare an editable split review.', 'error');
+          return Boolean(started);
+        }).catch(() => {
+          setStatus('Could not prepare an editable split review.', 'error');
+          return false;
+        }).finally(() => {
+          editPreparation = null;
+          updateControlState();
+        });
+      }
+    }
     updateControlState();
     return incoming;
   };
@@ -1212,6 +1330,11 @@ export function createSplitReviewController({
       render();
       setStatus(result?.idempotency_replayed ? 'This note split is already queued for the next stage.' : 'Note split queued for the next stage.', 'success');
       showMessage('Note split queued for the next stage.', 'success');
+      onSplitBatchStarted({
+        draft: localDraft,
+        batchId: result?.batch_id || null,
+        phase: result?.status || 'generation_queued',
+      });
       return true;
     } catch (_) {
       if (transcriptId === confirmationTranscriptId && getTranscriptId() === confirmationTranscriptId) {
@@ -1229,14 +1352,34 @@ export function createSplitReviewController({
   modal?.addEventListener('click', (event) => {
     if (event.target instanceof Element && event.target.hasAttribute('data-split-review-close')) close();
   });
-  topicList?.addEventListener('input', (event) => {
+  topicList?.addEventListener('click', (event) => {
     if (saving) return;
-    const input = event.target instanceof HTMLInputElement ? event.target : null;
-    if (!input?.hasAttribute('data-split-review-title')) return;
-    const topic = findTopic(input.dataset.topicUuid);
+    const target = event.target instanceof Element ? event.target : null;
+    const fieldset = target?.closest('[data-topic-uuid]');
+    if (!fieldset) return;
+    const topic = findTopic(fieldset.dataset.topicUuid);
     if (!topic) return;
-    topic.title = input.value;
-    markDirty();
+
+    if (target.closest('[data-split-review-make-primary]')) {
+      if (topic.disposition !== 'separate_note') return;
+      localDraft.topics.forEach((item) => { item.is_primary = item === topic; });
+      render();
+      markDirty();
+    } else if (target.closest('[data-split-review-merge]')) {
+      if (topic.is_primary || topic.disposition !== 'separate_note') return;
+      topic.disposition = 'include_in_primary';
+      render();
+      markDirty();
+    } else if (target.closest('[data-split-review-skip]')) {
+      if (topic.is_primary || topic.disposition !== 'separate_note') return;
+      topic.disposition = 'exclude_from_notes';
+      render();
+      markDirty();
+    } else if (target.closest('[data-split-review-undo]')) {
+      topic.disposition = 'separate_note';
+      render();
+      markDirty();
+    }
   });
   topicList?.addEventListener('change', (event) => {
     if (saving) return;
@@ -1244,32 +1387,14 @@ export function createSplitReviewController({
     if (!input) return;
     const topic = findTopic(input.dataset.topicUuid);
     if (!topic) return;
-    if (input.hasAttribute('data-split-review-primary') && input.checked) {
-      localDraft.topics.forEach((item) => {
-        item.is_primary = item === topic;
-        if (item === topic) item.disposition = 'separate_note';
-      });
-      render();
-      markDirty();
-    } else if (input.hasAttribute('data-split-review-disposition')) {
-      if (topic.is_primary && input.value !== 'separate_note') {
-        input.checked = false;
-        const separate = [...topicList.querySelectorAll('input[data-split-review-disposition][value="separate_note"]')]
-          .find((candidate) => candidate.dataset.topicUuid === asString(topic.topic_uuid));
-        if (separate) separate.checked = true;
-        setStatus('The primary topic must be a separate note.', 'warning');
-        return;
-      }
-      topic.disposition = input.value;
-      markDirty();
-    } else if (input.hasAttribute('data-split-review-template')) {
+    if (input.hasAttribute('data-split-review-template')) {
       topic.template_id = input.value || null;
       markDirty();
     }
   });
   saveButton?.addEventListener('click', () => { void save(); });
   continueButton?.addEventListener('click', () => { void continueOneNote(); });
-  confirmButton?.addEventListener('click', () => { void confirm(); });
+  createNotesButton?.addEventListener('click', () => { void confirm(); });
   modal?.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       event.preventDefault();

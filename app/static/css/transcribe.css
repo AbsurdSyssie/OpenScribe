@@ -1001,147 +1001,329 @@ transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.1
 }
 
 .split-review-modal[hidden] {
-display: none;
+  display: none;
 }
 
 .split-review-modal {
-position: fixed;
-inset: 0;
-z-index: 220;
-display: flex;
-align-items: center;
-justify-content: center;
-padding: 1rem;
+  position: fixed;
+  inset: 0;
+  z-index: 220;
+
+  display: grid;
+  place-items: center;
+
+  padding: 1.25rem;
 }
 
 .split-review-modal__backdrop {
-position: absolute;
-inset: 0;
-background: rgba(20, 32, 43, 0.48);
-backdrop-filter: blur(3px);
+  position: absolute;
+  inset: 0;
+
+  background: rgba(26, 32, 44, 0.28);
+  backdrop-filter: blur(3px);
 }
 
 .split-review-modal__dialog {
-position: relative;
-z-index: 1;
-width: min(58rem, 100%);
-max-height: min(90vh, 58rem);
-overflow: auto;
-padding: 1rem 1.15rem;
-border: 1px solid rgba(226, 222, 214, 0.95);
-border-radius: 0.9rem;
-background: rgba(255, 255, 255, 0.99);
-box-shadow: 0 26px 80px rgba(15, 23, 42, 0.28);
+  position: relative;
+  z-index: 1;
+
+  display: flex;
+  flex-direction: column;
+
+  width: min(46rem, 100%);
+  max-height: min(90vh, 54rem);
+
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+
+  /* Keep native select menus from being clipped by the dialog. */
+  overflow: visible;
 }
 
-.split-review-modal__header,
-.split-review-modal__footer {
-display: flex;
-align-items: flex-start;
-justify-content: space-between;
-gap: 1rem;
-padding-bottom: 0.85rem;
-border-bottom: 1px solid var(--border);
+.split-review-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+
+  padding: 0.9rem 1.1rem;
+
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
 }
 
 .split-review-modal__header h2 {
-margin: 0.2rem 0;
-font-size: 1.18rem;
-font-weight: 850;
+  margin: 0;
+
+  font-size: 1.05rem;
+  font-weight: 800;
+  line-height: 1.25;
 }
 
-.split-review-modal__header p,
+.split-review-modal__problem-count {
+  margin-top: 0.2rem;
+
+  color: var(--muted);
+
+  font-size: 0.73rem;
+}
+
 .split-review-modal__status {
-margin: 0;
-font-size: 0.84rem;
-color: var(--muted);
+  margin: 0;
+  padding: 0 1.25rem;
+
+  color: var(--muted);
+
+  font-size: 0.76rem;
 }
 
-.split-review-modal__status {
-min-height: 1.3rem;
-padding: 0.7rem 0;
+.split-review-modal__status:empty {
+  display: none;
 }
 
-.split-review-modal__status[data-status-kind="error"] { color: #a33a3a; }
-.split-review-modal__status[data-status-kind="warning"] { color: #8c641e; }
-.split-review-modal__status[data-status-kind="success"] { color: #28704a; }
+.split-review-modal__status:not(:empty) {
+  padding-top: 0.65rem;
+}
+
+.split-review-modal__status[data-status-kind="warning"] { color: var(--warning); }
+.split-review-modal__status[data-status-kind="success"] { color: var(--success); }
+.split-review-modal__status[data-status-kind="error"] { color: var(--danger); }
 
 .split-review-modal__topics {
-display: grid;
-gap: 0.8rem;
+  min-height: 0;
+  overflow-y: auto;
+
+  padding: 0 1.25rem;
 }
 
 .split-review-topic {
-display: grid;
-gap: 0.65rem;
-margin: 0;
-padding: 0.85rem;
-border: 1px solid rgba(226, 222, 214, 0.95);
-border-radius: 0.7rem;
+  position: relative;
+
+  display: block;
+
+  margin: 0;
+  padding: 1rem 0;
+
+  border: 0;
+  border-bottom: 1px solid var(--border);
 }
 
-.split-review-topic__heading {
-padding: 0 0.25rem;
-font-size: 0.8rem;
-font-weight: 800;
-color: var(--muted);
+.split-review-topic:last-child {
+  border-bottom: 0;
 }
 
-.split-review-topic__title,
+.split-review-topic__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.split-review-topic__name {
+  color: var(--ink);
+
+  font-size: 0.95rem;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.split-review-topic__description {
+  margin-top: 0.2rem;
+
+  color: var(--muted);
+
+  font-size: 0.73rem;
+}
+
+.split-review-topic.is-primary {
+  padding-left: 0.75rem;
+}
+
+.split-review-topic.is-primary::before {
+  content: "";
+
+  position: absolute;
+  top: 0.75rem;
+  bottom: 0.75rem;
+  left: 0;
+
+  width: 3px;
+
+  border-radius: 3px;
+
+  background: var(--accent);
+}
+
+.split-review-topic__primary-label {
+  flex: 0 0 auto;
+
+  color: var(--accent);
+
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.split-review-topic__text-action {
+  padding: 0;
+
+  border: 0;
+  background: transparent;
+
+  color: var(--accent);
+
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.split-review-topic__text-action:hover,
+.split-review-topic__text-action:focus-visible {
+  color: var(--accent-soft);
+}
+
+.split-review-topic__text-action--danger {
+  color: var(--danger);
+}
+
 .split-review-topic__template {
-display: grid;
-gap: 0.3rem;
-font-size: 0.78rem;
-font-weight: 700;
-color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+
+  width: fit-content;
+  margin-top: 0.65rem;
 }
 
-.split-review-topic input[type="text"],
-.split-review-topic select {
-width: 100%;
-min-height: 2.25rem;
-padding: 0.45rem 0.6rem;
-border: 1px solid var(--border);
-border-radius: 0.45rem;
-background: white;
-color: var(--fg);
-font: inherit;
-font-weight: 500;
+.split-review-topic__template .select-wrap {
+  width: auto;
 }
 
-.split-review-topic__primary,
-.split-review-topic__dispositions {
-display: flex;
-flex-wrap: wrap;
-gap: 0.55rem 0.8rem;
-align-items: center;
-font-size: 0.78rem;
-font-weight: 600;
-color: var(--fg);
+.split-review-topic__template select {
+  width: auto;
+  min-width: 10rem;
+  max-width: 14rem;
 }
 
-.split-review-topic__dispositions {
-padding-top: 0.2rem;
+.split-review-topic__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+
+  margin-top: 0.5rem;
+
+  color: var(--border-strong);
 }
 
-.split-review-topic__dispositions label,
-.split-review-topic__primary {
-cursor: pointer;
+.split-review-topic__state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+
+  min-height: 38px;
+  margin-top: 0.65rem;
+  padding: 0.5rem 0.65rem;
+
+  border-radius: 8px;
+
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.split-review-topic__state button {
+  padding: 0;
+
+  border: 0;
+  background: transparent;
+
+  color: inherit;
+
+  font-size: 0.72rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.split-review-topic.is-merged .split-review-topic__state {
+  background: var(--accent-pale);
+  color: var(--accent);
+}
+
+.split-review-topic.is-skipped {
+  opacity: 0.75;
+}
+
+.split-review-topic.is-skipped .split-review-topic__state {
+  background: rgba(197, 48, 48, 0.07);
+  color: var(--danger);
 }
 
 .split-review-modal__footer {
-align-items: center;
-margin-top: 1rem;
-padding-top: 0.85rem;
-padding-bottom: 0;
-border-top: 1px solid var(--border);
-border-bottom: 0;
+  position: relative;
+  z-index: 1;
+
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+
+  padding: 0.8rem 1rem;
+
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+}
+
+.split-review-modal__footer-spacer {
+  flex: 1;
 }
 
 .split-review-modal__empty {
-margin: 0;
-padding: 1rem;
-color: var(--muted);
+  margin: 0;
+  padding: 1rem 0;
+  color: var(--muted);
+}
+
+@media (max-width: 640px) {
+  .split-review-modal {
+    padding: 0.5rem;
+  }
+
+  .split-review-modal__dialog {
+    width: 100%;
+    max-height: 94vh;
+  }
+
+  .split-review-modal__topics {
+    padding: 0 1rem;
+  }
+
+  .split-review-topic__template {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .split-review-topic__template,
+  .split-review-topic__template .select-wrap {
+    width: 100%;
+  }
+
+  .split-review-topic__template select {
+    width: 100%;
+    max-width: none;
+  }
+
+  .split-review-modal__footer {
+    flex-wrap: wrap;
+  }
+
+  .split-review-modal__footer .btn-ghost-sm {
+    width: 100%;
+    justify-content: flex-start;
+  }
 }
 
 .template-picker-option:hover,

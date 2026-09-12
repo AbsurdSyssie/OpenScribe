@@ -157,7 +157,7 @@ def apply_split_verification_response(*, payload_text: str, confirmed_plan: Mapp
             next_content = {str(item["section_key"]): str(item["text"]) for item in sections}
             # The split contract requires all captured keys and non-empty text;
             # parse it again rather than trusting the patch operation.
-            validated = parse_split_generation({"notes": [{"topic_uuid": str(topic.topic_uuid), "mode": "structured", "content": next_content}]}, topics=[topic])[0]
+            validated = parse_split_generation({"title": "Split note", "notes": [{"topic_uuid": str(topic.topic_uuid), "mode": "structured", "content": next_content}]}, topics=[topic])[0]
         except (AppError, KeyError, TypeError, ValueError):
             raise _invalid() from None
         corrected[topic.topic_uuid] = {"mode": "structured", "content": validated.content}

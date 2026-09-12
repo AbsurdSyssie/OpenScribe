@@ -1,4 +1,4 @@
-import { generationLoadingHtml } from './documents.js?v=20260812-long-note-editor';
+import { generationLoadingHtml } from './documents.js?v=20260912-split-placeholder-slots';
 
 export function createStructuredEditor({
   dom,
@@ -1526,6 +1526,21 @@ export function createStructuredEditor({
     observeCopyReviewTargets();
     if (!generatedDocument) {
       syncStructuredTemplateUi();
+      syncNoteEditorToolbar();
+      return;
+    }
+    if (generatedDocument.kind === 'split_placeholder' || generatedDocument.split_placeholder === true) {
+      if (generatedDocument.status === 'failed') {
+        dom.latestGeneratedOutput.innerHTML = '<span class="text-slate">The split notes could not be created. Select Create to try again.</span>';
+      } else {
+        const phase = generatedDocument.split_generation_phase || '';
+        const message = phase === 'generation_queued'
+          ? 'Preparing your split notes...'
+          : phase === 'verifying'
+            ? 'Checking your split notes...'
+            : 'Generating your split notes...';
+        dom.latestGeneratedOutput.innerHTML = generationLoadingHtml({ label: 'split notes', message });
+      }
       syncNoteEditorToolbar();
       return;
     }

@@ -469,7 +469,7 @@ def test_note_regeneration_controls_and_scroll_rail_contract():
     shell = (root / "app/templates/transcribe/_shell_extras.html").read_text(encoding="utf-8")
     assert "actions.js?v=20260911-note-regeneration-2" in app
     assert "documents.js?v=20260911-note-regeneration-2" in app
-    assert "app.js?v=20260911-repeat-regeneration" in shell
+    assert "app.js?v=20260912-split-review-auto-edit" in shell
 
 
 def test_working_note_to_editor_document_maps_virtual_target(tmp_path):

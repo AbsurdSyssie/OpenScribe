@@ -1,6 +1,6 @@
 import { attachTranscribeActions } from './actions.js?v=20260911-note-regeneration-2';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
-import { createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationLoadingHtml } from './documents.js?v=20260911-note-regeneration-2';
+import { createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationLoadingHtml } from './documents.js?v=20260912-split-placeholder-slots';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
 import { createAudioCaptureController } from './media.js?v=20260528-consult-boundary-guard';
 import { createStructuredEditor } from './structured.js?v=20260821-mobile-document-mode';
@@ -11,7 +11,7 @@ import { csrfFetch } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
 import { createTemplateSuggestionController } from './templateSuggestions.js?v=20260830-template-suggestion-preference';
- import { createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration } from './splitReview.js?v=20260911-direct-batch-regeneration';
+ import { createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration } from './splitReview.js?v=20260912-split-review-auto-edit';
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,
@@ -50,9 +50,11 @@ import {
       let workspaceEventSourceEndpoint = null;
       let workspaceStreamFallbackPolling = false;
       let workspaceNoteDocuments = [];
+      let workspaceNoteHistoryDocuments = [];
       let workspaceFollowupDocuments = [];
       let workspaceStructuredContext = {};
       let selectedNoteDocumentId = null;
+      let selectedNoteSlotKey = null;
       let selectedFollowupDocumentId = null;
       let noteEditorDirty = false;
       let dirtyNoteTargetId = null;
@@ -198,7 +200,6 @@ import {
       const titleForm = document.querySelector('[data-transcript-title-form]');
       const renameTitleInput = document.querySelector('[data-transcript-title-input]');
         const generateOutputForm = document.querySelector('[data-generate-output-form]');
-        const splitGenerationStatus = document.querySelector('[data-split-generation-status]');
         const splitContinueOneNoteButton = document.querySelector('[data-split-continue-one-note]');
         const splitReviewContinueOneNoteButton = document.querySelector('[data-split-review-continue]');
       const generateOutputTemplateSelect = document.querySelector('[data-template-select]');
@@ -333,6 +334,10 @@ let statusDetailsHideTimer = null;
       let consultationSplittingEnabled = Boolean(bootstrap.consultationSplittingEnabled);
       let latestSplitAnalysis = null;
       let latestSplitBatch = null;
+      let splitPlaceholderState = null;
+      let splitBatchFallbackState = null;
+      const splitBatchInFlightStatuses = new Set(['generation_queued', 'generating', 'verifying']);
+      const splitBatchTerminalStatuses = new Set(['ready', 'partially_ready', 'completed_partial', 'failed']);
       const protectedInitialDisabled = new Map(localBusyProtected.map((button) => [button, button.disabled]));
       const liveVadBundleVersion = '0.0.29';
       const liveVadModel = 'v5';
@@ -737,6 +742,9 @@ let statusDetailsHideTimer = null;
               return savedDocument;
             }
             workspaceNoteDocuments = workspaceNoteDocuments.map((document) => (
+              document.id === savedDocument.id ? savedDocument : document
+            ));
+            workspaceNoteHistoryDocuments = workspaceNoteHistoryDocuments.map((document) => (
               document.id === savedDocument.id ? savedDocument : document
             ));
             if (latestGeneratedOutput && savedDocument.id === (selectedNoteDocumentId || latestGeneratedOutput.dataset.latestGeneratedId || '')) {
@@ -2382,11 +2390,160 @@ let statusDetailsHideTimer = null;
         return true;
       };
 
+      const splitTitleKey = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+
+      const splitTopicsForPlaceholders = (draft) => (Array.isArray(draft?.topics) ? draft.topics : [])
+        .filter((topic) => topic?.disposition === 'separate_note' && String(topic?.title || '').trim())
+        .map((topic, index) => ({
+          topicUuid: String(topic.topic_uuid || `topic-${index}`),
+          title: String(topic.title).trim().replace(/\s+/g, ' '),
+          isPrimary: Boolean(topic.is_primary),
+          order: index,
+        }));
+
+      const splitPlaceholderId = (topic) => `split-placeholder:${transcriptId}:${topic.topicUuid}`;
+      const splitSlotKey = (topic) => `split-slot:${transcriptId}:${topic.topicUuid}`;
+      const splitPlaceholderStatus = (phase) => {
+        if (phase === 'generation_queued') return { status: 'queued', label: 'Queued' };
+        if (phase === 'failed' || splitBatchTerminalStatuses.has(phase)) return { status: 'failed', label: 'Unavailable' };
+        return { status: 'processing', label: phase === 'verifying' ? 'Checking' : 'Processing' };
+      };
+
+      const buildSplitDisplayDocuments = (noteDocuments = []) => {
+        if (!splitPlaceholderState?.topics?.length) return noteDocuments;
+        const topicKeys = new Set(splitPlaceholderState.topics.map((topic) => splitTitleKey(topic.title)));
+        const priorDocumentIds = new Set(splitPlaceholderState.existingDocumentIds || []);
+        const candidates = new Map();
+        noteDocuments.forEach((document) => {
+          const key = splitTitleKey(document?.title);
+          if (!topicKeys.has(key) || priorDocumentIds.has(document?.id)) return;
+          const existing = candidates.get(key);
+          if (!existing) candidates.set(key, document);
+        });
+        const phase = splitPlaceholderState.phase || latestSplitBatch?.status || 'generation_queued';
+        const displayTopics = splitPlaceholderState.topics.map((topic) => {
+          const candidate = candidates.get(splitTitleKey(topic.title));
+          if (candidate?.status === 'ready') {
+            return { ...candidate, split_slot_key: splitSlotKey(topic), split_topic_uuid: topic.topicUuid };
+          }
+          const placeholderState = splitPlaceholderStatus(phase);
+          return {
+            id: splitPlaceholderId(topic),
+            kind: 'split_placeholder',
+            split_placeholder: true,
+            split_slot_key: splitSlotKey(topic),
+            split_topic_uuid: topic.topicUuid,
+            title: topic.title,
+            status: placeholderState.status,
+            split_generation_phase: phase,
+            split_generation_status_label: placeholderState.label,
+            document_mode: 'freeform',
+            generator_type: 'template',
+            order: topic.order,
+          };
+        });
+        const splitDocumentIds = new Set(displayTopics.map((document) => document.id));
+        const otherDocuments = noteDocuments.filter((document) => {
+          const key = splitTitleKey(document?.title);
+          return !topicKeys.has(key) && !splitDocumentIds.has(document.id);
+        });
+        return [...otherDocuments, ...displayTopics];
+      };
+
+      const startSplitPlaceholderBatch = ({ draft, batchId = null, phase = 'generation_queued', pendingBatchId = false, existingDocumentIds = null } = {}) => {
+        const topics = splitTopicsForPlaceholders(draft);
+        if (!transcriptId || !topics.length) return;
+        splitBatchFallbackState = null;
+        const topicSignature = topics.map((topic) => `${topic.topicUuid}:${topic.title}`).join('|');
+        const sameBatchTopics = splitPlaceholderState
+          && splitPlaceholderState.transcriptId === transcriptId
+          && splitPlaceholderState.topicSignature === topicSignature;
+        const primaryTopic = topics.find((topic) => topic.isPrimary) || topics[0];
+        splitPlaceholderState = {
+          transcriptId,
+          batchId: batchId || splitPlaceholderState?.batchId || null,
+          phase,
+          pendingBatchId,
+          topicSignature,
+          topics,
+          existingDocumentIds: sameBatchTopics
+            ? splitPlaceholderState.existingDocumentIds
+            : (Array.isArray(existingDocumentIds) ? existingDocumentIds : workspaceNoteHistoryDocuments.map((document) => document.id)),
+          selectedSlotKey: selectedNoteSlotKey || (primaryTopic ? splitSlotKey(primaryTopic) : null),
+        };
+        workspaceNoteDocuments = buildSplitDisplayDocuments(workspaceNoteHistoryDocuments);
+        const selectedSlot = workspaceNoteDocuments.find((document) => document.split_slot_key === splitPlaceholderState.selectedSlotKey);
+        if (selectedSlot) {
+          selectedNoteSlotKey = selectedSlot.split_slot_key;
+          selectedNoteDocumentId = selectedSlot.id;
+        }
+        setTab('output');
+        renderSelectedNote?.();
+        syncGenerationAvailability(readActiveDraftText());
+      };
+
+      const reconcileSplitPlaceholderState = ({ draft, batch, noteDocuments } = {}) => {
+        if (!transcriptId) {
+          splitPlaceholderState = null;
+          return noteDocuments;
+        }
+        const draftIsConfirmed = draft?.status === 'confirmed';
+        const batchId = batch?.batch_id || null;
+        const batchIsRelevant = Boolean(batchId && (splitBatchInFlightStatuses.has(batch?.status) || splitBatchTerminalStatuses.has(batch?.status)));
+        if (draft?.status === 'active' && splitPlaceholderState) {
+          splitPlaceholderState = null;
+          splitBatchFallbackState = null;
+          return noteDocuments;
+        }
+        if (batchIsRelevant && !draftIsConfirmed) {
+          splitBatchFallbackState = { batchId, phase: batch.status };
+          return noteDocuments;
+        }
+        splitBatchFallbackState = null;
+        if (!splitPlaceholderState && draftIsConfirmed && batchIsRelevant) {
+          startSplitPlaceholderBatch({
+            draft,
+            batchId,
+            phase: batch.status,
+            existingDocumentIds: splitBatchTerminalStatuses.has(batch.status)
+              ? []
+              : noteDocuments.map((document) => document.id),
+          });
+        }
+        if (!splitPlaceholderState || splitPlaceholderState.transcriptId !== transcriptId) return noteDocuments;
+        if (batchId && splitPlaceholderState.batchId && batchId === splitPlaceholderState.batchId) {
+          splitPlaceholderState.phase = batch?.status || splitPlaceholderState.phase;
+          splitPlaceholderState.pendingBatchId = false;
+        }
+        return buildSplitDisplayDocuments(noteDocuments);
+      };
+
+      const splitGenerationBatchActive = () => Boolean(
+        (splitPlaceholderState && splitBatchInFlightStatuses.has(splitPlaceholderState.phase))
+        || (splitBatchFallbackState && splitBatchInFlightStatuses.has(splitBatchFallbackState.phase)),
+      );
+
+      const renderSplitBatchFallback = () => {
+        if (!splitBatchFallbackState || !latestGeneratedOutput) return;
+        const phase = splitBatchFallbackState.phase || 'generation_queued';
+        if (phase === 'failed') {
+          latestGeneratedOutput.innerHTML = '<span class="text-slate">The split notes could not be displayed. Select Create to try again.</span>';
+          return;
+        }
+        const message = phase === 'generation_queued'
+          ? 'Preparing your split notes...'
+          : phase === 'verifying'
+            ? 'Checking your split notes...'
+            : 'Generating your split notes...';
+        latestGeneratedOutput.innerHTML = generationLoadingHtml({ label: 'split notes', message });
+      };
+
       const syncGenerationAvailability = (draftText = '') => {
         const hasDraft = Boolean(draftText && draftText.trim());
         const hasDictation = Boolean(lastSavedDictationText && lastSavedDictationText.trim());
         const hasWorkingNote = workingNoteHasContent();
         const generationBusy = noteGenerationBusy;
+        const splitBatchActive = splitGenerationBatchActive();
         const transcriptWaitingForText = ['queued', 'processing'].includes(latestIngestionJobStatus || '')
           || ['queued', 'transcribing', 'processing', 'uploading'].includes(currentTranscriptStatus || '');
         const selectedTemplateId = generateOutputTemplateSelect?.value || '';
@@ -2401,19 +2558,21 @@ let statusDetailsHideTimer = null;
         const canUsePrimaryFollowupAction = Boolean(canUseFollowupRequest && (selectedQuickActionId || hasSteeringText));
 
         if (generateOutputTemplateSelect) {
-          generateOutputTemplateSelect.disabled = generationBusy || !canChooseTemplate;
+          generateOutputTemplateSelect.disabled = generationBusy || splitBatchActive || !canChooseTemplate;
         }
         if (templatePickerButton) {
-          templatePickerButton.disabled = generationBusy || !canChooseTemplate;
+          templatePickerButton.disabled = generationBusy || splitBatchActive || !canChooseTemplate;
         }
         templatePickerOptions.forEach((button) => {
-          button.disabled = generationBusy || !canChooseTemplate;
+          button.disabled = generationBusy || splitBatchActive || !canChooseTemplate;
         });
         if (generationBusy) closeTemplatePicker();
         const generateOutputButton = generateOutputForm?.querySelector('button[type="submit"]');
         if (generateOutputButton) {
-          generateOutputButton.disabled = generationBusy || !canGenerateNote;
-          const hasGeneratedNotes = workspaceNoteDocuments.some((document) => document?.kind !== 'working_note');
+          generateOutputButton.disabled = generationBusy || splitBatchActive || !canGenerateNote;
+          const hasGeneratedNotes = workspaceNoteDocuments.some((document) => (
+            document?.kind !== 'working_note' && !document?.split_placeholder
+          ));
           const label = generateOutputButton.querySelector('[data-generate-output-label]');
           if (label) label.textContent = hasGeneratedNotes ? 'Regenerate' : 'Create';
           else generateOutputButton.dataset.generationAction = hasGeneratedNotes ? 'regenerate' : 'create';
@@ -3405,6 +3564,7 @@ let statusDetailsHideTimer = null;
         },
         getState: () => ({
           workspaceNoteDocuments,
+          workspaceNoteHistoryDocuments,
           workspaceFollowupDocuments,
           workspaceStructuredContext,
           activeWorkingNote,
@@ -3413,11 +3573,15 @@ let statusDetailsHideTimer = null;
           selectedTemplateMode: selectedWorkingNoteMode(),
           structuredSectionDefinitions,
           selectedNoteDocumentId,
+          selectedNoteSlotKey,
           selectedFollowupDocumentId,
         }),
         setState: (nextState) => {
           if (Object.prototype.hasOwnProperty.call(nextState, 'selectedNoteDocumentId')) {
             selectedNoteDocumentId = nextState.selectedNoteDocumentId;
+          }
+          if (Object.prototype.hasOwnProperty.call(nextState, 'selectedNoteSlotKey')) {
+            selectedNoteSlotKey = nextState.selectedNoteSlotKey;
           }
           if (Object.prototype.hasOwnProperty.call(nextState, 'selectedFollowupDocumentId')) {
             selectedFollowupDocumentId = nextState.selectedFollowupDocumentId;
@@ -3623,6 +3787,9 @@ let statusDetailsHideTimer = null;
           lastRenderedTranscriptId = nextTranscriptId;
           lastDraftRenderSignature = null;
           deferredDraftRenderText = null;
+          splitPlaceholderState = null;
+          splitBatchFallbackState = null;
+          selectedNoteSlotKey = null;
           if (quickActionContextInput) {
             quickActionContextInput.value = '';
             quickActionContextInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -3787,15 +3954,21 @@ let statusDetailsHideTimer = null;
         setDictationMicStatus(dictationMicStatusState.message, dictationMicStatusState.kind);
 
         const structuredContext = workspace.active_structured_context || {};
-        workspaceNoteDocuments = noteDocuments;
-        workspaceFollowupDocuments = followupDocuments;
         workspaceStructuredContext = structuredContext;
+        workspaceNoteHistoryDocuments = noteDocuments;
+        workspaceNoteDocuments = reconcileSplitPlaceholderState({
+          draft: workspace.consultation_split_draft || null,
+          batch: latestSplitBatch,
+          noteDocuments,
+        });
+        workspaceFollowupDocuments = followupDocuments;
           // A restored draft is passive. The current browser operation may
           // re-enable this only after it proves its intent and review state.
           setContinueOneNoteAvailable(false);
           splitReviewController?.applyWorkspaceState({
           draft: workspace.consultation_split_draft || null,
           availableTemplates: workspace.available_templates || [],
+          batch: workspace.consultation_split_batch || null,
            nextTranscriptId: transcriptId,
          });
           splitGenerateController?.applyWorkspaceState({
@@ -3807,10 +3980,14 @@ let statusDetailsHideTimer = null;
           });
           splitPartialActionsController?.applyWorkspaceState(workspace.consultation_split_batch || null, transcriptId);
           splitAnalysisRestorationPoller?.updateWorkspace();
-        const validNoteTargets = [...(transcriptId ? [{ id: workingNoteTargetId(transcriptId) }] : []), ...noteDocuments];
-        selectedNoteDocumentId = validNoteTargets.some((document) => document.id === selectedNoteDocumentId)
-          ? selectedNoteDocumentId
-          : (selectedDocumentFromList(noteDocuments, null)?.id || (transcriptId ? workingNoteTargetId(transcriptId) : null));
+        const validNoteTargets = [...(transcriptId ? [{ id: workingNoteTargetId(transcriptId) }] : []), ...workspaceNoteDocuments];
+        const selectedSplitDocument = selectedNoteSlotKey
+          ? workspaceNoteDocuments.find((document) => document.split_slot_key === selectedNoteSlotKey)
+          : null;
+        selectedNoteDocumentId = selectedSplitDocument?.id
+          || (validNoteTargets.some((document) => document.id === selectedNoteDocumentId)
+            ? selectedNoteDocumentId
+            : (selectedDocumentFromList(workspaceNoteDocuments, null)?.id || (transcriptId ? workingNoteTargetId(transcriptId) : null)));
         selectedFollowupDocumentId = selectedDocumentFromList(followupDocuments, selectedFollowupDocumentId)?.id || null;
         const noteRegionSignature = workspaceRegionSignature({
           transcriptId,
@@ -3831,6 +4008,7 @@ let statusDetailsHideTimer = null;
           const noteRenderState = renderSelectedNote();
           preserveDirtyNoteEditor = Boolean(noteRenderState?.preservedEditor);
         }
+        renderSplitBatchFallback();
         if (followupRegionChanged) {
           const preserveDirtyFollowupEditor = shouldPreserveFollowupEditorRender(selectedFollowupDocumentId || '');
           renderSelectedFollowup({ preserveEditor: preserveDirtyFollowupEditor });
@@ -3852,6 +4030,7 @@ let statusDetailsHideTimer = null;
           || currentTranscriptStatus === 'transcribing'
           || currentTranscriptStatus === 'processing'
           || noteDocuments.some((document) => document.status === 'queued' || document.status === 'processing')
+          || splitGenerationBatchActive()
           || followupDocuments.some((document) => document.status === 'queued' || document.status === 'processing')
         ) {
           scheduleWorkspaceRefreshBurst();
@@ -3904,8 +4083,20 @@ let statusDetailsHideTimer = null;
          getTranscriptId: () => transcriptId,
          refreshWorkspace: () => fetchWorkspace(),
          showMessage: showFlash,
-          continueAsOneNote: () => splitGenerateController?.continueAsOneNote?.() || false,
+         continueAsOneNote: () => splitGenerateController?.continueAsOneNote?.() || false,
+          beginEdit: async () => {
+            const editTranscriptId = transcriptId;
+            const templateId = generateOutputTemplateSelect?.value || '';
+            if (!editTranscriptId || !templateId) {
+              showFlash('Choose a template before starting a new split review.', 'warning');
+              return false;
+            }
+            return splitGenerateController?.start?.({ transcriptId: editTranscriptId, templateId }) || false;
+          },
           getConfirmIntentId: () => splitGenerateController?.getOperation?.()?.intentId || null,
+          onSplitBatchStarted: ({ draft, batchId, phase, pendingBatchId = false } = {}) => {
+            startSplitPlaceholderBatch({ draft, batchId, phase, pendingBatchId });
+          },
        });
         splitGenerateController = createSplitGenerateController({
          getCapabilityEnabled: () => consultationSplittingEnabled,
@@ -3917,19 +4108,20 @@ let statusDetailsHideTimer = null;
          },
          refreshWorkspace: (nextTranscriptId, options) => fetchWorkspace(nextTranscriptId, options),
          reviewController: splitReviewController,
+         getConfirmedDraft: () => splitReviewController?.getDraft?.() || null,
+         onSplitBatchStarted: ({ draft, batchId, phase, pendingBatchId = false } = {}) => {
+           startSplitPlaceholderBatch({ draft, batchId, phase, pendingBatchId });
+         },
          setBusy: (busy) => {
            noteGenerationBusy = busy;
            syncGenerationAvailability(readActiveDraftText());
            syncDictationControls();
          },
-          setStatus: (message, kind = 'info') => {
-           if (!splitGenerationStatus) return;
-           splitGenerationStatus.textContent = message || '';
-           splitGenerationStatus.dataset.statusKind = kind;
-            splitGenerationStatus.hidden = !message;
-          },
+          setStatus: () => {},
           setContinueAvailable: setContinueOneNoteAvailable,
           onGeneratedDocument: async (_document, { replayed = false } = {}) => {
+            splitPlaceholderState = null;
+            selectedNoteSlotKey = null;
             selectedNoteDocumentId = null;
             setTab('output');
             showFlash(replayed ? 'Opened existing one-note request.' : 'Queued note generation.', 'success');
@@ -3942,6 +4134,7 @@ let statusDetailsHideTimer = null;
          refreshWorkspace: (nextTranscriptId, options) => fetchWorkspace(nextTranscriptId, options),
          selectDocument: (documentId) => {
            selectedNoteDocumentId = documentId;
+           selectedNoteSlotKey = null;
            setTab('output');
            renderSelectedNote();
          },

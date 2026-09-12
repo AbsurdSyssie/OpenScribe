@@ -13,17 +13,26 @@ def test_split_review_workspace_accessibility_hooks_and_cachebusters():
     head = (ROOT / "app/templates/transcribe/_head_assets.html").read_text()
 
     assert 'data-split-review-trigger hidden aria-haspopup="dialog"' in workspace
-    assert 'data-split-review-modal hidden' in workspace
+    assert 'data-split-review-modal\nhidden' in workspace
     assert 'role="dialog" aria-modal="true"' in workspace
-    assert 'data-split-review-status role="status" aria-live="polite"' in workspace
+    assert 'data-split-review-status' in workspace
+    assert 'role="status"' in workspace
+    assert 'aria-live="polite"' in workspace
     assert 'Review note split' in workspace
     assert 'Review later' in workspace
-    assert 'splitReview.js?v=20260911-direct-batch-regeneration' in app_js
+    assert 'data-split-review-problem-count' in workspace
+    assert 'data-split-review-create' in workspace
+    assert 'splitReview.js?v=20260912-split-review-auto-edit' in app_js
     assert 'splitReviewController?.applyWorkspaceState' in app_js
-    assert 'app.js?v=20260911-direct-batch-regeneration' in shell
+    assert 'app.js?v=20260912-split-review-auto-edit' in shell
     assert 'transcribe.css?v=20260911-note-regeneration-layer-fix' in head
     assert 'data-split-continue-one-note hidden' in workspace
-    assert 'data-split-review-continue hidden disabled' in workspace
+    assert 'data-split-review-confirm' not in workspace
+    assert 'data-split-review-continue' not in workspace
+    controller = (ROOT / "app/static/js/transcribe/splitReview.js").read_text()
+    assert 'data-split-review-title' not in controller
+    assert 'data-split-review-primary' not in controller
+    assert 'data-split-review-disposition' not in controller
     assert 'data-split-retry-missing hidden' in workspace
     assert 'data-split-keep-available hidden' in workspace
     assert 'id="split-partial-status"' in workspace
@@ -368,6 +377,44 @@ if (intentCalls !== 2) throw new Error('Regenerate after a confirmed split did n
     subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
 
 
+def test_terminal_confirmed_split_automatically_starts_a_new_editable_review(tmp_path):
+    runner = tmp_path / "split-review-terminal-edit-runner.mjs"
+    module_uri = (ROOT / "app/static/js/transcribe/splitReview.js").as_uri()
+    runner.write_text(
+        f"""
+const {{ createSplitReviewController }} = await import('{module_uri}');
+let editCalls = 0;
+let controller;
+const confirmed = {{ draft_id: 'draft-1', analysis_id: 'analysis-1', status: 'confirmed', topics: [] }};
+controller = createSplitReviewController({{
+  getTranscriptId: () => 'tx-1',
+  beginEdit: async () => {{
+    editCalls += 1;
+    controller.applyWorkspaceState({{
+      draft: {{ ...confirmed, status: 'active', updated_at: 'v2' }},
+      batch: {{ batch_id: 'batch-1', status: 'ready' }},
+      nextTranscriptId: 'tx-1',
+    }});
+    return true;
+  }},
+}});
+controller.applyWorkspaceState({{
+  draft: confirmed,
+  batch: {{ batch_id: 'batch-1', status: 'generation_queued' }},
+  nextTranscriptId: 'tx-1',
+}});
+controller.applyWorkspaceState({{
+  draft: confirmed,
+  batch: {{ batch_id: 'batch-1', status: 'ready' }},
+  nextTranscriptId: 'tx-1',
+}});
+await Promise.resolve(); await Promise.resolve();
+if (editCalls !== 1 || controller.getDraft().status !== 'active') throw new Error('terminal confirmed split did not become editable');
+"""
+    )
+    subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
+
+
 def test_partial_note_actions_use_server_flags_single_flight_and_stale_guards(tmp_path):
     runner = tmp_path / "split-partial-actions-runner.mjs"
     module_uri = (ROOT / "app/static/js/transcribe/splitReview.js").as_uri()
@@ -651,7 +698,7 @@ class FakeElement {{
     }}
     return true;
   }}
-  closest(selector) {{ return selector === '[hidden]' && this.hidden ? this : null; }}
+  closest(selector) {{ let node = this; while (node) {{ if (node.matches?.(selector)) return node; node = node.parentNode; }} return null; }}
 }}
 class FakeInput extends FakeElement {{ constructor() {{ super('input'); }} }}
 class FakeSelect extends FakeElement {{ constructor() {{ super('select'); }} }}
@@ -670,11 +717,13 @@ const trigger = new FakeElement('button');
 const modal = new FakeElement('div');
 const topicList = new FakeElement('div');
 const status = new FakeElement('p');
+const problemCount = new FakeElement('div');
 const saveButton = new FakeElement('button');
+const createButton = new FakeElement('button');
 const closeButton = new FakeElement('button');
 const calls = []; let refreshPayload = null;
 const fetcher = async (_url, options) => {{ calls.push(JSON.parse(options.body)); return {{ status: 200, ok: true, json: async () => refreshPayload || {{ draft_id: 'draft-1', status: 'active', updated_at: 'saved', topics: [] }} }}; }};
-const controller = createSplitReviewController({{ trigger, modal, topicList, status, saveButton, closeButtons: [closeButton], fetcher, getTranscriptId: () => 'tx-1', refreshWorkspace: async () => refreshPayload }});
+const controller = createSplitReviewController({{ trigger, modal, topicList, status, problemCount, saveButton, createButton, closeButtons: [closeButton], fetcher, getTranscriptId: () => 'tx-1', refreshWorkspace: async () => refreshPayload }});
 const base = {{ draft_id: 'draft-1', status: 'active', updated_at: 'v1', topics: [
   {{ topic_uuid: 'topic-1', title: 'Main problem', order: 0, is_primary: true, disposition: 'separate_note', template_id: 'tpl-1' }},
   {{ topic_uuid: 'topic-2', title: 'Other problem', order: 1, is_primary: false, disposition: 'exclude_from_notes', template_id: 'tpl-1' }}
@@ -683,20 +732,23 @@ controller.applyWorkspaceState({{ draft: base, availableTemplates: [{{ id: 'tpl-
 if (trigger.hidden || trigger.getAttribute('aria-expanded') !== 'false') throw new Error('trigger state');
 trigger.click();
 if (modal.hidden || trigger.getAttribute('aria-expanded') !== 'true') throw new Error('open state');
-const title = topicList.querySelector('input[data-split-review-title]'); title.value = 'Edited title'; title.fire('input');
-const primary = topicList.querySelector('input[data-split-review-primary]'); primary.checked = false;
-const secondPrimary = topicList.querySelectorAll('input[data-split-review-primary]')[1]; secondPrimary.checked = true; secondPrimary.fire('change');
+const topicRows = topicList.querySelectorAll('fieldset');
+if (topicRows.length !== 2) throw new Error('topic order');
+topicRows[1].querySelector('[data-split-review-undo]').click();
+topicList.querySelectorAll('fieldset')[1].querySelector('[data-split-review-make-primary]').click();
+topicList.querySelectorAll('fieldset')[0].querySelector('[data-split-review-merge]').click();
 const template = topicList.querySelector('select[data-split-review-template]'); template.value = 'tpl-1'; template.fire('change');
 const serialized = controller.serialize();
-if (serialized.topics[0].topic_uuid !== 'topic-1' || serialized.topics[1].is_primary !== true || serialized.topics[1].disposition !== 'separate_note') throw new Error('edit serialization');
+if (serialized.topics[0].topic_uuid !== 'topic-1' || serialized.topics[0].disposition !== 'include_in_primary' || serialized.topics[1].is_primary !== true || serialized.topics[1].disposition !== 'separate_note') throw new Error('edit serialization');
+if (problemCount.textContent !== '2 problems detected' || createButton.textContent !== 'Create 1 note') throw new Error('split review counts');
 closeButton.click();
 if (!modal.hidden || trigger.getAttribute('aria-expanded') !== 'false') throw new Error('close state');
 trigger.click();
-const invalidTitle = topicList.querySelector('input[data-split-review-title]'); invalidTitle.value = '   '; invalidTitle.fire('input');
-await controller.save(); if (calls.length !== 0 || !status.textContent.includes('title')) throw new Error('invalid save fetched');
-invalidTitle.value = 'Main problem'; invalidTitle.fire('input');
+const invalidTemplate = topicList.querySelector('select[data-split-review-template]'); invalidTemplate.value = ''; invalidTemplate.fire('change');
+await controller.save(); if (calls.length !== 0 || !status.textContent.includes('template')) throw new Error('invalid save fetched');
+invalidTemplate.value = 'tpl-1'; invalidTemplate.fire('change');
 controller.applyWorkspaceState({{ draft: {{ ...base, topics: base.topics.map((topic) => ({{ ...topic, title: topic.title + ' server', updated_at: undefined }})) }} }});
-if (topicList.querySelector('input[data-split-review-title]').value !== 'Main problem') throw new Error('dirty SSE clobbered local');
+if (controller.getDraft().topics[0].title !== 'Main problem') throw new Error('dirty SSE clobbered local');
 controller.applyWorkspaceState({{ draft: {{ ...base, draft_id: 'draft-2', status: 'active' }} }});
 if (controller.getDraft().status !== 'unavailable' || calls.length !== 0) throw new Error('different draft did not fail closed');
 refreshPayload = {{ consultation_split_draft: {{ ...base, status: 'stale', updated_at: 'v2' }} }};
@@ -717,7 +769,7 @@ const conflictCalls = [];
 let conflictController;
 conflictController = createSplitReviewController({{ trigger: conflictTrigger, modal: conflictModal, topicList: conflictTopicList, status: conflictStatus, saveButton: conflictSaveButton, closeButtons: [], fetcher: async (_url, options) => {{ conflictCalls.push(JSON.parse(options.body)); return {{ status: 409, ok: false, json: async () => ({{ error: {{ code: 'consultation_split_draft_conflict' }} }}) }}; }}, getTranscriptId: () => 'tx-1', refreshWorkspace: async () => {{ conflictController.applyWorkspaceState({{ draft: conflictRefresh.consultation_split_draft, nextTranscriptId: 'tx-1' }}); return conflictRefresh; }} }});
 conflictController.applyWorkspaceState({{ draft: base, nextTranscriptId: 'tx-1' }}); conflictController.open();
-const conflictTitle = conflictTopicList.querySelector('input[data-split-review-title]'); conflictTitle.value = 'local only'; conflictTitle.fire('input');
+const conflictTemplate = conflictTopicList.querySelector('select[data-split-review-template]'); conflictTemplate.value = 'tpl-2'; conflictTemplate.fire('change');
 await conflictController.save();
 if (conflictCalls.length !== 1 || conflictController.getDraft().topics[0].title !== 'Main problem server' || conflictController.getRemoteDraft().topics[0].title !== 'Main problem server') throw new Error('conflict edits merged or latest draft not loaded');
 if (conflictController.getDraft().status !== 'active' || !conflictStatus.textContent.includes('changed elsewhere')) throw new Error('conflict did not reload safely');
@@ -725,7 +777,7 @@ const unicodeTopicList = new FakeElement('div');
 let unicodeCalls = 0;
 const unicodeController = createSplitReviewController({{ trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: unicodeTopicList, status: new FakeElement('p'), saveButton: new FakeElement('button'), closeButtons: [], fetcher: async () => {{ unicodeCalls += 1; throw new Error('duplicate Unicode titles fetched'); }}, getTranscriptId: () => 'tx-1' }});
 unicodeController.applyWorkspaceState({{ draft: {{ ...base, topics: [{{ ...base.topics[0], title: 'Alpha' }}, {{ ...base.topics[1], title: 'Beta', is_primary: false }}] }} }}); unicodeController.open();
-const unicodeTitles = unicodeTopicList.querySelectorAll('input[data-split-review-title]'); unicodeTitles[0].value = 'Straße'; unicodeTitles[0].fire('input'); unicodeTitles[1].value = 'STRASSE'; unicodeTitles[1].fire('input');
+unicodeController.getDraft().topics[0].title = 'Straße'; unicodeController.getDraft().topics[1].title = 'STRASSE';
 await unicodeController.save(); if (unicodeCalls !== 0 || !unicodeController.getDraft().topics[0].title.includes('Straße')) throw new Error('Unicode duplicate was not rejected locally');
 const pendingTopicList = new FakeElement('div');
 const pendingModal = new FakeElement('div');
@@ -738,18 +790,18 @@ let pendingCalls = 0;
 const pendingResponse = new Promise((resolve) => {{ resolvePending = resolve; }});
 const pendingController = createSplitReviewController({{ trigger: pendingTrigger, modal: pendingModal, topicList: pendingTopicList, status: pendingStatus, saveButton: pendingSaveButton, closeButtons: [pendingCloseButton], fetcher: async () => {{ pendingCalls += 1; return pendingResponse; }}, getTranscriptId: () => 'tx-1' }});
 pendingController.applyWorkspaceState({{ draft: {{ ...base, draft_id: 'pending-draft' }}, nextTranscriptId: 'tx-1' }}); pendingController.open();
-const pendingTitle = pendingTopicList.querySelector('input[data-split-review-title]'); pendingTitle.value = 'Pending local'; pendingTitle.fire('input');
-const pendingSave = pendingController.save(); if (!pendingSaveButton.disabled || !pendingCloseButton.disabled || !pendingTitle.disabled) throw new Error('save did not lock modal controls');
-pendingTitle.value = 'Ignored while saving'; pendingTitle.fire('input'); pendingCloseButton.click(); pendingSaveButton.click();
-if (pendingController.isOpen() !== true || pendingController.getDraft().topics[0].title !== 'Pending local' || pendingCalls !== 1) throw new Error('pending save accepted edit, close, or duplicate');
+const pendingSelect = pendingTopicList.querySelector('select[data-split-review-template]'); pendingSelect.value = 'tpl-2'; pendingSelect.fire('change');
+const pendingSave = pendingController.save(); if (!pendingSaveButton.disabled || !pendingCloseButton.disabled || !pendingSelect.disabled) throw new Error('save did not lock modal controls');
+pendingSelect.value = 'tpl-3'; pendingSelect.fire('change'); pendingCloseButton.click(); pendingSaveButton.click();
+if (pendingController.isOpen() !== true || pendingController.getDraft().topics[0].template_id !== 'tpl-2' || pendingCalls !== 1) throw new Error('pending save accepted edit, close, or duplicate');
 resolvePending({{ status: 200, ok: true, json: async () => ({{ ...base, draft_id: 'pending-draft', status: 'active', updated_at: 'saved' }}) }}); await pendingSave;
-if (!pendingSaveButton.disabled || pendingCloseButton.disabled || pendingTopicList.querySelector('input[data-split-review-title]').disabled) throw new Error('save controls did not restore');
+if (!pendingSaveButton.disabled || pendingCloseButton.disabled || pendingTopicList.querySelector('select[data-split-review-template]').disabled) throw new Error('save controls did not restore');
 const errorTopicList = new FakeElement('div');
 const errorCloseButton = new FakeElement('button');
 const errorSaveButton = new FakeElement('button');
 const errorController = createSplitReviewController({{ trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: errorTopicList, status: new FakeElement('p'), saveButton: errorSaveButton, closeButtons: [errorCloseButton], fetcher: async () => ({{ status: 500, ok: false, json: async () => ({{}}) }}), getTranscriptId: () => 'tx-1' }});
 errorController.applyWorkspaceState({{ draft: {{ ...base, draft_id: 'error-draft' }}, nextTranscriptId: 'tx-1' }}); errorController.open(); errorController.getDraft().topics[0].title = 'error';
-await errorController.save(); if (errorCloseButton.disabled || errorTopicList.querySelector('input[data-split-review-title]').disabled || !errorSaveButton.disabled) throw new Error('save controls did not restore after error');
+await errorController.save(); if (errorCloseButton.disabled || errorTopicList.querySelector('select[data-split-review-template]').disabled || !errorSaveButton.disabled) throw new Error('save controls did not restore after error');
 let failedRefreshCalls = 0;
 const failedRefreshController = createSplitReviewController({{ trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: new FakeElement('div'), status: new FakeElement('p'), saveButton: new FakeElement('button'), closeButtons: [], fetcher: async () => ({{ status: 409, ok: false, json: async () => ({{ error: {{ code: 'consultation_split_draft_unavailable' }} }}) }}), getTranscriptId: () => 'tx-1', refreshWorkspace: async () => {{ failedRefreshCalls += 1; return null; }} }});
 failedRefreshController.applyWorkspaceState({{ draft: base, nextTranscriptId: 'tx-1' }}); failedRefreshController.open(); failedRefreshController.getDraft().topics[0].title = 'failed refresh';

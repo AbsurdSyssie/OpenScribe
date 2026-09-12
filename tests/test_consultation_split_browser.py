@@ -188,7 +188,7 @@ def _generation_response(sessions, execution_id, *, omit_last=False):
                 }
             )
             notes.append({"topic_uuid": topic["topic_uuid"], "mode": mode, "content": content})
-    return json.dumps({"notes": notes[:-1] if omit_last else notes})
+    return json.dumps({"title": "Overall consultation", "notes": notes[:-1] if omit_last else notes})
 
 
 def _login(page, email):
@@ -210,12 +210,13 @@ def _start_review(page, transcript_id):
 
 
 def _confirm_review(page):
-    page.locator("[data-split-review-title]").first.fill("Synthetic primary edited")
+    template_select = page.locator("[data-split-review-template]").first
+    template_select.select_option(template_select.input_value())
     with page.expect_response(lambda response: "/consultation-split-draft" in response.url and response.request.method == "PUT") as response_info:
         page.get_by_role("button", name="Save split").click()
     assert response_info.value.status == 200
     with page.expect_response(lambda response: response.url.endswith("/consultation-split-draft/confirm")) as response_info:
-        page.get_by_role("button", name="Confirm split").click()
+        page.locator("[data-split-review-create]").click()
     assert response_info.value.status == 202
 
 

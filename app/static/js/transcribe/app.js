@@ -3993,6 +3993,9 @@ let statusDetailsHideTimer = null;
           transcriptId,
           workingNoteMode: workingNote?.mode || '',
           workingNoteUpdatedAt: workingNote?.updated_at || '',
+          splitBatchId: latestSplitBatch?.batch_id || '',
+          splitBatchPhase: latestSplitBatch?.status || '',
+          splitPlaceholderPhase: splitPlaceholderState?.phase || '',
           documents: noteDocuments.map(generatedDocumentRegionData),
         });
         const followupRegionSignature = workspaceRegionSignature({

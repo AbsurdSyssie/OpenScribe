@@ -1,7 +1,7 @@
 """At-most-once, fail-open runtime for bundled split verification."""
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
@@ -13,7 +13,8 @@ from app.models import (AttemptOutcome, AttemptStatus, ConsultationSplitBatch,
     ConsultationSplitExecutionKind, ConsultationSplitExecutionStatus,
     ConsultationSplitTopicDisposition, ConsultationSplitTopicOutcome,
     ConsultationSplitTopicOutcomeStatus, ConsultationSplitVerificationStatus,
-    ProviderAttempt, TeamLlmConfig, Transcript, User, utcnow)
+    ProviderAttempt, TaskDispatchOutbox, TaskDispatchSourceKind, TaskDispatchState,
+    TeamLlmConfig, Transcript, User, utcnow)
 from app.services.consultation_split_partial import _materialize_available_split_notes_locked
 from app.services.consultation_split_verification import apply_split_verification_response
 from app.services.consultation_split_verification import prepare_split_verification_request
@@ -28,6 +29,8 @@ from app.services.llm_credentials import resolve_generation_credential
 from app.services.quotas import (cancel_provider_attempt, mark_provider_attempt_submitted,
     settle_provider_attempt_tokens, settle_provider_attempt_unknown_tokens)
 from app.services.transcripts import transcript_is_expired
+from app.services.consultation_split_locks import lock_consultation_split_source_scope
+from app.services.task_outbox import cancel_pending_task_dispatch
 
 _DEADLINE_SECONDS = 600
 
@@ -41,24 +44,40 @@ def _credential_ok(config: TeamLlmConfig | None, credential: object | None) -> b
             or (mode == "google_service_account" and credential is not None))
 
 
-def _lock(db: Session, execution_id: UUID):
-    execution = db.scalar(select(ConsultationSplitExecution).where(ConsultationSplitExecution.id == execution_id).with_for_update())
+def _lock(db: Session, execution_id: UUID, *, require_active_dispatch: bool = True):
+    identity = db.get(ConsultationSplitExecution, execution_id)
+    if identity is None or identity.kind is not ConsultationSplitExecutionKind.verification or identity.batch_id is None:
+        return None
+    scope = lock_consultation_split_source_scope(
+        db, owner_user_id=identity.owner_user_id, transcript_id=identity.transcript_id,
+    )
+    if scope is None:
+        return None
+    owner, transcript = scope.owner, scope.transcript
+    execution = db.scalar(select(ConsultationSplitExecution).where(ConsultationSplitExecution.id == execution_id).execution_options(populate_existing=True).with_for_update())
     if execution is None or execution.kind is not ConsultationSplitExecutionKind.verification or execution.batch_id is None:
         return None
-    batch = db.scalar(select(ConsultationSplitBatch).where(ConsultationSplitBatch.id == execution.batch_id).with_for_update())
-    owner = db.scalar(select(User).where(User.id == execution.owner_user_id).with_for_update())
-    transcript = db.scalar(select(Transcript).where(Transcript.id == execution.transcript_id).with_for_update())
-    attempt = db.scalar(select(ProviderAttempt).where(ProviderAttempt.consultation_split_execution_id == execution.id).with_for_update())
-    topics = db.scalars(select(ConsultationSplitBatchTopic).where(ConsultationSplitBatchTopic.batch_id == execution.batch_id).with_for_update()).all() if batch else []
-    outcomes = db.scalars(select(ConsultationSplitTopicOutcome).where(ConsultationSplitTopicOutcome.batch_topic_id.in_([x.id for x in topics])).with_for_update()).all() if topics else []
+    batch = db.scalar(select(ConsultationSplitBatch).where(ConsultationSplitBatch.id == execution.batch_id).execution_options(populate_existing=True).with_for_update())
+    attempt = db.scalar(select(ProviderAttempt).where(ProviderAttempt.consultation_split_execution_id == execution.id).execution_options(populate_existing=True).with_for_update())
+    dispatch = db.scalar(select(TaskDispatchOutbox).where(
+        TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_execution,
+        TaskDispatchOutbox.source_id == execution.id,
+    ).execution_options(populate_existing=True).with_for_update())
+    topics = db.scalars(select(ConsultationSplitBatchTopic).where(ConsultationSplitBatchTopic.batch_id == execution.batch_id).execution_options(populate_existing=True).with_for_update()).all() if batch else []
+    outcomes = db.scalars(select(ConsultationSplitTopicOutcome).where(ConsultationSplitTopicOutcome.batch_topic_id.in_([x.id for x in topics])).execution_options(populate_existing=True).with_for_update()).all() if topics else []
     if not all((batch, owner, transcript, attempt)) or len(outcomes) != len(topics):
         return None
-    return execution, batch, owner, transcript, attempt, topics, {x.batch_topic_id: x for x in outcomes}
+    if require_active_dispatch:
+        if dispatch is None or dispatch.dispatch_kind.value != "consultation_split_verification":
+            return None
+        if dispatch.state not in {TaskDispatchState.pending, TaskDispatchState.published}:
+            return None
+    return execution, batch, owner, transcript, attempt, dispatch, topics, {x.batch_topic_id: x for x in outcomes}
 
 
 def _valid_verification_stage(work) -> bool:
     """Only a queue-created verification stage may materialize survivors."""
-    execution, batch, _owner, _transcript, _attempt, topics, outcomes = work
+    execution, batch, _owner, _transcript, _attempt, _dispatch, topics, outcomes = work
     if (execution.kind is not ConsultationSplitExecutionKind.verification
             or batch.status is not ConsultationSplitBatchStatus.verifying
             or batch.verification_status is not ConsultationSplitVerificationStatus.verifying):
@@ -72,7 +91,7 @@ def _valid_verification_stage(work) -> bool:
 
 def _finish(db: Session, work, *, reason: str | None, verified: bool, corrected: dict | None = None,
             correction_count: int | None = None, submitted: bool = False, usage: dict | None = None) -> None:
-    execution, batch, owner, transcript, attempt, topics, outcomes = work
+    execution, batch, owner, transcript, attempt, dispatch, topics, outcomes = work
     now = utcnow()
     valid_stage = _valid_verification_stage(work)
     if submitted:
@@ -84,6 +103,8 @@ def _finish(db: Session, work, *, reason: str | None, verified: bool, corrected:
             settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id)
     else:
         cancel_provider_attempt(db, attempt_id=attempt.id, now=now)
+        if dispatch.state is TaskDispatchState.pending:
+            cancel_pending_task_dispatch(db, task_id=dispatch.task_id)
     execution.status = ConsultationSplitExecutionStatus.completed if verified else ConsultationSplitExecutionStatus.failed
     execution.error_code = None if verified else reason
     execution.completed_at = now
@@ -122,21 +143,29 @@ def _finish(db: Session, work, *, reason: str | None, verified: bool, corrected:
     db.commit()
 
 
-def fail_open_verification_execution(db: Session, *, execution_id: UUID, reason: str) -> bool:
+def fail_open_verification_execution(
+    db: Session, *, execution_id: UUID, reason: str, terminalized_at: datetime | None = None,
+) -> bool:
     """Terminalize already-settled/cancelled verification without a provider call.
 
     Quota lifecycle invokes this after it has settled the attempt.  It only
     materializes immutable accepted outcomes, so it cannot consume another
     reservation or revive/retry a submitted provider request.
     """
-    work = _lock(db, execution_id)
+    work = _lock(db, execution_id, require_active_dispatch=False)
     if work is None:
         db.rollback()
         return False
-    execution, batch, owner, transcript, _attempt, topics, outcomes = work
+    execution, batch, owner, transcript, attempt, _dispatch, topics, outcomes = work
     if execution.status not in {ConsultationSplitExecutionStatus.queued, ConsultationSplitExecutionStatus.processing}:
         db.rollback()
         return False
+    # Quota lifecycle normally settles the attempt before entering this
+    # fail-open path.  Re-check and settle a still-submitted attempt when the
+    # lifecycle timestamp is supplied so a stale identity-map view cannot
+    # leave provider quota reserved after the execution is terminalized.
+    if terminalized_at is not None and attempt.status is AttemptStatus.submitted:
+        settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id, now=terminalized_at)
     now = utcnow()
     valid_stage = _valid_verification_stage(work)
     execution.status = ConsultationSplitExecutionStatus.failed
@@ -187,7 +216,7 @@ def _prepare(db: Session, execution_id: UUID):
     if work is None:
         db.rollback()
         return None
-    execution, batch, owner, transcript, attempt, topics, outcomes = work
+    execution, batch, owner, transcript, attempt, _dispatch, topics, outcomes = work
     if not _valid_verification_stage(work):
         return work, None, None, "verification_provider_config_invalid"
     if transcript_is_expired(transcript) or attempt.reservation_valid_until <= utcnow():
@@ -238,7 +267,7 @@ def process_consultation_split_verification_execution(db: Session, *, execution_
         work = _lock(db, execution_id)
         if work is None:
             db.rollback(); return
-        execution, batch, owner, transcript, attempt, topics, outcomes = work
+        execution, batch, owner, transcript, attempt, _dispatch, topics, outcomes = work
         if execution.status is not ConsultationSplitExecutionStatus.processing:
             db.rollback()
             return
@@ -269,7 +298,7 @@ def process_consultation_split_verification_execution(db: Session, *, execution_
     if provider is None or request_and_credential is None:
         _finish(db, work, reason=preparation_error or "verification_credential_unavailable", verified=False)
         return
-    execution, _batch, _owner, _transcript, attempt, _topics, _outcomes = work
+    execution, _batch, _owner, _transcript, attempt, _dispatch, _topics, _outcomes = work
     request, credential = request_and_credential
     mark_provider_attempt_submitted(db, attempt_id=attempt.id, now=utcnow(), deadline_at=utcnow() + timedelta(seconds=_DEADLINE_SECONDS))
     execution.status = ConsultationSplitExecutionStatus.processing; execution.started_at = utcnow(); db.commit()
@@ -281,7 +310,7 @@ def process_consultation_split_verification_execution(db: Session, *, execution_
         return
     work = _lock(db, execution_id)
     if work is None: db.rollback(); return
-    execution, _batch, owner, _transcript, _attempt, _topics, _outcomes = work
+    execution, _batch, owner, _transcript, _attempt, _dispatch, _topics, _outcomes = work
     if (
         execution.status is not ConsultationSplitExecutionStatus.processing
         or _attempt.status is not AttemptStatus.submitted

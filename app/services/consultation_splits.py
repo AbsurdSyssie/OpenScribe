@@ -1015,7 +1015,10 @@ def read_split_batch_phi_index(
             or index < 1
             or index in seen
             or not isinstance(value, str)
+            or not value.strip()
             or not isinstance(entity_type, str)
+            or not entity_type.strip()
+            or item.get("placeholder") != f"[PHI-{index}]"
         ):
             raise AppError(500, "consultation_split_batch_invalid", "Split batch is unavailable")
         seen.add(index)

@@ -377,16 +377,22 @@ if (intentCalls !== 2) throw new Error('Regenerate after a confirmed split did n
     subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
 
 
-def test_terminal_confirmed_split_automatically_starts_a_new_editable_review(tmp_path):
+def test_terminal_confirmed_split_starts_editable_review_only_after_explicit_action(tmp_path):
     runner = tmp_path / "split-review-terminal-edit-runner.mjs"
     module_uri = (ROOT / "app/static/js/transcribe/splitReview.js").as_uri()
     runner.write_text(
         f"""
 const {{ createSplitReviewController }} = await import('{module_uri}');
 let editCalls = 0;
+let triggerHandler = null;
 let controller;
 const confirmed = {{ draft_id: 'draft-1', analysis_id: 'analysis-1', status: 'confirmed', topics: [] }};
 controller = createSplitReviewController({{
+  trigger: {{
+    hidden: false,
+    addEventListener: (_, handler) => {{ triggerHandler = handler; }},
+    setAttribute: () => {{}},
+  }},
   getTranscriptId: () => 'tx-1',
   beginEdit: async () => {{
     editCalls += 1;
@@ -409,7 +415,10 @@ controller.applyWorkspaceState({{
   nextTranscriptId: 'tx-1',
 }});
 await Promise.resolve(); await Promise.resolve();
-if (editCalls !== 1 || controller.getDraft().status !== 'active') throw new Error('terminal confirmed split did not become editable');
+if (editCalls !== 0 || controller.getDraft().status !== 'confirmed') throw new Error('terminal state started review without an explicit action');
+await triggerHandler();
+await Promise.resolve(); await Promise.resolve();
+if (editCalls !== 1 || controller.getDraft().status !== 'active') throw new Error('explicit review action did not become editable');
 """
     )
     subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})

@@ -301,7 +301,9 @@ def _fail_split_execution(db: Session, execution_id: UUID, error_code: str, now:
         # path does not call a provider; it makes immutable accepted outputs
         # available as clinician-review drafts and records bounded state.
         from app.services.consultation_split_verification_runtime import fail_open_verification_execution
-        return fail_open_verification_execution(db, execution_id=execution_id, reason=error_code)
+        return fail_open_verification_execution(
+            db, execution_id=execution_id, reason=error_code, terminalized_at=now,
+        )
     execution.status = ConsultationSplitExecutionStatus.failed
     execution.error_code = error_code
     execution.completed_at = now

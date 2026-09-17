@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -24,6 +24,8 @@ from app.models import (
     DeidentificationProvider,
     GeneratedDocument,
     ConsultationSplitExecution,
+    ConsultationSplitAnalysis,
+    ConsultationSplitBatch,
     PromptTemplate,
     PromptTemplateVersion,
     ProviderUsageEvent,
@@ -1608,6 +1610,19 @@ def _delete_user_rows(db: Session, actor: User, *, user: User) -> list[UUID]:
     terminalize_attempts_for_owner(db, user.id, utcnow())
     cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=transcript_ids)
     if transcript_ids:
+        # SQLAlchemy removes transcript versions/redaction runs before the
+        # transcript-root cascade. Detach split provenance first so account
+        # deletion follows the same boundary as direct transcript deletion.
+        db.execute(
+            update(ConsultationSplitAnalysis)
+            .where(ConsultationSplitAnalysis.transcript_id.in_(transcript_ids))
+            .values(transcript_version_id=None, redaction_run_id=None)
+        )
+        db.execute(
+            update(ConsultationSplitBatch)
+            .where(ConsultationSplitBatch.transcript_id.in_(transcript_ids))
+            .values(materialization_transcript_version_id=None)
+        )
         delete_dispatches_for_sources(
             db,
             generated_document_ids=list(

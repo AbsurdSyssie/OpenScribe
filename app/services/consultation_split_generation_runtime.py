@@ -32,6 +32,7 @@ from app.services.llm_adapters import runtime as llm_runtime
 from app.services.llm_adapters.runtime import generation_request_snapshot, validate_provider_snapshot_for_config
 from app.services.llm_adapters.types import LlmProviderSnapshot
 from app.services.llm_credentials import resolve_generation_credential
+from app.services.consultation_split_pre_submit import _credential_config_identity
 from app.services.provider_errors import safe_provider_error_code
 from app.services.quotas import cancel_provider_attempt, mark_provider_attempt_submitted, settle_provider_attempt_tokens, settle_provider_attempt_unknown_tokens
 from app.services.task_outbox import cancel_pending_task_dispatch
@@ -88,13 +89,18 @@ def _lock_work(db: Session, execution_id: UUID, *, status: ConsultationSplitExec
     if scope is None:
         return None
     owner, transcript = scope.owner, scope.transcript
-    execution = db.scalar(select(ConsultationSplitExecution).where(ConsultationSplitExecution.id == execution_id).with_for_update())
+    execution = db.scalar(
+        select(ConsultationSplitExecution)
+        .where(ConsultationSplitExecution.id == execution_id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
     if execution is None or execution.kind is not ConsultationSplitExecutionKind.generation or execution.status is not status or execution.batch_id is None:
         return None
-    batch = db.scalar(select(ConsultationSplitBatch).where(ConsultationSplitBatch.id == execution.batch_id).with_for_update())
-    analysis = db.scalar(select(ConsultationSplitAnalysis).where(ConsultationSplitAnalysis.id == batch.analysis_id).with_for_update()) if batch else None
-    attempt = db.scalar(select(ProviderAttempt).where(ProviderAttempt.consultation_split_execution_id == execution_id).with_for_update())
-    dispatch = db.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_execution, TaskDispatchOutbox.source_id == execution_id).with_for_update())
+    batch = db.scalar(select(ConsultationSplitBatch).where(ConsultationSplitBatch.id == execution.batch_id).execution_options(populate_existing=True).with_for_update())
+    analysis = db.scalar(select(ConsultationSplitAnalysis).where(ConsultationSplitAnalysis.id == batch.analysis_id).execution_options(populate_existing=True).with_for_update()) if batch else None
+    attempt = db.scalar(select(ProviderAttempt).where(ProviderAttempt.consultation_split_execution_id == execution_id).execution_options(populate_existing=True).with_for_update())
+    dispatch = db.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_execution, TaskDispatchOutbox.source_id == execution_id).execution_options(populate_existing=True).with_for_update())
     if not all((batch, analysis, attempt, dispatch)) or attempt.attempt_kind.value != "consultation_split_generation":
         return None
     topics = db.scalars(
@@ -210,6 +216,7 @@ def _prepared(db: Session, execution_id: UUID) -> tuple[_Work, LlmProviderSnapsh
     with Session(bind=db.get_bind(), future=True) as lookup:
         execution = lookup.get(ConsultationSplitExecution, execution_id)
         config = lookup.get(TeamLlmConfig, execution.llm_config_id) if execution and execution.llm_config_id else None
+        preliminary_identity = _credential_config_identity(config) if config is not None else None
         if config: lookup.expunge(config)
     credential = None
     try: credential = resolve_generation_credential(config) if config else None
@@ -223,6 +230,8 @@ def _prepared(db: Session, execution_id: UUID) -> tuple[_Work, LlmProviderSnapsh
         return _terminal(db, work, "consultation_split_materialization_binding_invalid", submitted=False)
     config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == work.execution.llm_config_id).with_for_update()) if work.execution.llm_config_id else None
     if config is None or config.team_id != work.transcript.team_id:
+        return _terminal(db, work, "consultation_split_provider_config_invalid", submitted=False)
+    if preliminary_identity is None or _credential_config_identity(config) != preliminary_identity:
         return _terminal(db, work, "consultation_split_provider_config_invalid", submitted=False)
     try:
         snapshot_data = read_split_execution_json(db, work.owner, execution=work.execution, field="provider_snapshot_encrypted")
@@ -269,6 +278,14 @@ def _topics_from_plan(plan: dict[str, object]) -> list[SplitGenerationTopic]:
 def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
     work = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
     if work is None: db.rollback(); return SplitGenerationRuntimeResult("noop", execution_id)
+    if (
+        work.attempt.status is not AttemptStatus.submitted
+        or work.attempt.deadline_at is None
+        or work.attempt.deadline_at <= utcnow()
+        or transcript_is_expired(work.transcript)
+    ):
+        db.rollback()
+        return SplitGenerationRuntimeResult("in_flight", execution_id)
     if not _has_valid_materialization_binding(work):
         return _terminal(db, work, "consultation_split_materialization_binding_invalid", submitted=True)
     parsed_response = False
@@ -498,6 +515,14 @@ def process_consultation_split_generation_execution(db: Session, *, execution_id
         return _terminal(db, work, "consultation_split_provider_failed", submitted=True) if work else SplitGenerationRuntimeResult("in_flight", execution_id)
     work=_lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
     if work is None: db.rollback(); return SplitGenerationRuntimeResult("in_flight", execution_id)
+    if (
+        work.attempt.status is not AttemptStatus.submitted
+        or work.attempt.deadline_at is None
+        or work.attempt.deadline_at <= utcnow()
+        or transcript_is_expired(work.transcript)
+    ):
+        db.rollback()
+        return SplitGenerationRuntimeResult("in_flight", execution_id)
     # A returned (including empty) bounded string is a durable provider
     # outcome.  Persist it before parsing so finalization can safely consume
     # the single automatic recovery chance.  Exceptions/no response remain

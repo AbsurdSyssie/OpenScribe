@@ -3355,7 +3355,12 @@ def test_consultation_split_passive_schema_has_encrypted_content_and_reversible_
         for fk in generated_fks
     )
     generated_uniques = {item["name"] for item in inspector.get_unique_constraints("generated_documents")}
-    assert "uq_generated_documents_consultation_split_batch_topic" in generated_uniques
+    # A topic may have multiple immutable revisions; the old uniqueness
+    # constraint was replaced by a non-unique lookup index in the lineage
+    # migration.
+    assert "uq_generated_documents_consultation_split_batch_topic" not in generated_uniques
+    generated_indexes = {item["name"] for item in inspector.get_indexes("generated_documents")}
+    assert "ix_generated_documents_consultation_split_batch_topic" in generated_indexes
     generated_checks = {item["name"]: item["sqltext"] for item in inspector.get_check_constraints("generated_documents")}
     assert "consultation_split_batch_topic_id IS NULL" in generated_checks["ck_generated_documents_consultation_split_membership"]
 
@@ -3685,6 +3690,12 @@ def test_split_batch_materialization_version_migration_round_trips_nullable_line
     assert foreign_key["referred_table"] == "transcript_versions"
     assert foreign_key["referred_columns"] == ["id"]
     assert foreign_key.get("options", {}).get("ondelete") == "CASCADE"
+
+    command.upgrade(alembic_config(), "head")
+    head_foreign_keys = {
+        item["name"]: item for item in inspect(engine).get_foreign_keys("consultation_split_batches")
+    }
+    assert head_foreign_keys["fk_split_batches_materialization_version"].get("options", {}).get("ondelete") == "SET NULL"
 
     command.downgrade(alembic_config(), "q6r7s8t9u0v1")
     downgraded = inspect(engine)

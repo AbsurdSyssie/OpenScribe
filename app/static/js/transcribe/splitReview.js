@@ -1172,25 +1172,6 @@ export function createSplitReviewController({
     if (trigger) trigger.hidden = !reviewAvailable;
     if (!incoming && opened) close({ force: true });
     if (!incoming) setOpenState(false);
-    if (incoming?.status === 'confirmed' && EDITABLE_BATCH_STATUSES.has(latestBatch?.status)) {
-      const key = `${incoming.draft_id || ''}:${latestBatch?.batch_id || ''}:${latestBatch?.status || ''}`;
-      if (editPreparationKey !== key && !editPreparation) {
-        editPreparationKey = key;
-        editPreparation = Promise.resolve(beginEdit({
-          transcriptId,
-          batchId: latestBatch?.batch_id || null,
-        })).then((started) => {
-          if (!started) setStatus('Could not prepare an editable split review.', 'error');
-          return Boolean(started);
-        }).catch(() => {
-          setStatus('Could not prepare an editable split review.', 'error');
-          return false;
-        }).finally(() => {
-          editPreparation = null;
-          updateControlState();
-        });
-      }
-    }
     updateControlState();
     return incoming;
   };
@@ -1347,7 +1328,28 @@ export function createSplitReviewController({
     }
   };
 
-  trigger?.addEventListener('click', open);
+  trigger?.addEventListener('click', async () => {
+    if (remoteDraft?.status === 'confirmed' && EDITABLE_BATCH_STATUSES.has(latestBatch?.status)) {
+      const key = `${remoteDraft.draft_id || ''}:${latestBatch?.batch_id || ''}:${latestBatch?.status || ''}`;
+      if (editPreparationKey === key || editPreparation) return;
+      editPreparationKey = key;
+      editPreparation = Promise.resolve(beginEdit({
+        transcriptId,
+        batchId: latestBatch?.batch_id || null,
+      })).then((started) => {
+        if (!started) setStatus('Could not prepare an editable split review.', 'error');
+        return Boolean(started);
+      }).catch(() => {
+        setStatus('Could not prepare an editable split review.', 'error');
+        return false;
+      }).finally(() => {
+        editPreparation = null;
+        updateControlState();
+      });
+      return;
+    }
+    open();
+  });
   closeButtons.forEach((button) => button.addEventListener('click', () => close()));
   modal?.addEventListener('click', (event) => {
     if (event.target instanceof Element && event.target.hasAttribute('data-split-review-close')) close();

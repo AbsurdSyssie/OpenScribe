@@ -2155,7 +2155,7 @@ class ConsultationSplitBatch(Base):
     # without claiming that analysis used transcript text or a redaction run.
     materialization_transcript_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("transcript_versions.id", ondelete="CASCADE"),
+        ForeignKey("transcript_versions.id", ondelete="SET NULL"),
         nullable=True,
     )
     source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)

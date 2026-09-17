@@ -14,6 +14,7 @@ from app.errors import AppError
 from app.models import (
     GeneratedDocument,
     ConsultationSplitAnalysis,
+    ConsultationSplitBatch,
     ConsultationSplitExecution,
     Transcript,
     TranscriptAudioCleanupJob,
@@ -1514,7 +1515,12 @@ def delete_transcripts(
     db.execute(
         update(ConsultationSplitAnalysis)
         .where(ConsultationSplitAnalysis.transcript_id.in_(deleting_transcript_ids))
-        .values(transcript_version_id=None)
+        .values(transcript_version_id=None, redaction_run_id=None)
+    )
+    db.execute(
+        update(ConsultationSplitBatch)
+        .where(ConsultationSplitBatch.transcript_id.in_(deleting_transcript_ids))
+        .values(materialization_transcript_version_id=None)
     )
     for transcript in transcripts:
         db.delete(transcript)
@@ -1563,7 +1569,12 @@ def delete_expired_transcripts(
     db.execute(
         update(ConsultationSplitAnalysis)
         .where(ConsultationSplitAnalysis.transcript_id.in_(transcript_ids))
-        .values(transcript_version_id=None)
+        .values(transcript_version_id=None, redaction_run_id=None)
+    )
+    db.execute(
+        update(ConsultationSplitBatch)
+        .where(ConsultationSplitBatch.transcript_id.in_(transcript_ids))
+        .values(materialization_transcript_version_id=None)
     )
     for transcript in transcripts:
         db.delete(transcript)
@@ -2007,6 +2018,17 @@ def _delete_expired_ingestion_transcript(db: Session, *, transcript: Transcript)
         generated_document_ids=list(db.scalars(select(GeneratedDocument.id).where(GeneratedDocument.transcript_id == transcript.id))),
         ingestion_job_ids=list(db.scalars(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id == transcript.id))),
         template_suggestion_job_ids=list(db.scalars(select(TemplateSuggestionJob.id).where(TemplateSuggestionJob.transcript_id == transcript.id))),
+        consultation_split_execution_ids=list(db.scalars(select(ConsultationSplitExecution.id).where(ConsultationSplitExecution.transcript_id == transcript.id))),
+    )
+    db.execute(
+        update(ConsultationSplitAnalysis)
+        .where(ConsultationSplitAnalysis.transcript_id == transcript.id)
+        .values(transcript_version_id=None, redaction_run_id=None)
+    )
+    db.execute(
+        update(ConsultationSplitBatch)
+        .where(ConsultationSplitBatch.transcript_id == transcript.id)
+        .values(materialization_transcript_version_id=None)
     )
     db.delete(transcript)
     db.commit()

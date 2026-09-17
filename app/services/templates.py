@@ -4895,32 +4895,18 @@ def _load_split_regeneration_scope(
     return batch, topic
 
 
-def _split_snapshot_phi_index(source_snapshot: object) -> list[dict[str, object]]:
-    if not isinstance(source_snapshot, dict):
-        raise AppError(422, "business_rule_violation", "The saved split generation source is unavailable")
-    raw_index = source_snapshot.get("phi_index")
-    if not isinstance(raw_index, list):
-        raise AppError(422, "business_rule_violation", "The saved split generation source is unavailable")
-    result: list[dict[str, object]] = []
-    seen: set[int] = set()
-    for raw in raw_index:
-        if not isinstance(raw, dict):
-            raise AppError(422, "business_rule_violation", "The saved split generation source is unavailable")
-        index = raw.get("index")
-        value = raw.get("value")
-        entity_type = raw.get("type")
-        if (
-            not isinstance(index, int)
-            or isinstance(index, bool)
-            or index < 1
-            or index in seen
-            or not isinstance(value, str)
-            or not isinstance(entity_type, str)
-        ):
-            raise AppError(422, "business_rule_violation", "The saved split generation source is unavailable")
-        seen.add(index)
-        result.append(dict(raw))
-    return result
+def _apply_frozen_split_phi_index(
+    text: str,
+    *,
+    phi_index: list[dict[str, object]],
+) -> str:
+    """Reapply immutable split placeholders before any new redaction pass."""
+    redacted = text
+    for item in sorted(phi_index, key=lambda value: len(str(value["value"])), reverse=True):
+        value = str(item["value"]).strip()
+        placeholder = str(item["placeholder"])
+        redacted = manual_pii_value_pattern(value).sub(placeholder, redacted)
+    return redacted
 
 
 def _redact_split_regeneration_text(
@@ -4933,6 +4919,7 @@ def _redact_split_regeneration_text(
     """Redact new owner-written regeneration input beside frozen split PHI."""
     if not text.strip():
         return "", []
+    text = _apply_frozen_split_phi_index(text, phi_index=phi_index)
     next_index = max((int(item["index"]) for item in phi_index), default=0) + 1
     redacted_text, dynamic_index = _redact_dynamic_prompt_text(
         db,
@@ -5028,6 +5015,7 @@ def _process_split_regenerated_document(
     from app.services.consultation_split_generation import parse_split_generation_partial
     from app.services.consultation_splits import (
         read_split_batch_json,
+        read_split_batch_phi_index,
         read_split_batch_topic_template_snapshot,
     )
 
@@ -5059,7 +5047,10 @@ def _process_split_regenerated_document(
         for value in (source_snapshot, clinical_snapshot, confirmed_plan, note_options_snapshot)
     ):
         raise AppError(422, "business_rule_violation", "The saved split generation source is unavailable")
-    phi_index = _split_snapshot_phi_index(source_snapshot)
+    # Reapply the confirmation-time PHI mapping, including manual protections
+    # that may have been removed from the live transcript since confirmation.
+    # The batch snapshot is the authority for every regeneration attempt.
+    phi_index = read_split_batch_phi_index(db, owner, batch=batch)
     previous_note_redacted, previous_phi_index = _redact_split_regeneration_text(
         db,
         document=document,

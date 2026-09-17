@@ -44,7 +44,12 @@ def lock_consultation_split_source_scope(
     means a concurrent deletion or ownership change removed the expected
     scope before it could be locked; it intentionally reveals no content.
     """
-    owner = db.scalar(select(User).where(User.id == owner_user_id).with_for_update())
+    owner = db.scalar(
+        select(User)
+        .where(User.id == owner_user_id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
     if owner is None:
         return None
     transcript = db.scalar(
@@ -53,6 +58,7 @@ def lock_consultation_split_source_scope(
             Transcript.id == transcript_id,
             Transcript.owner_user_id == owner.id,
         )
+        .execution_options(populate_existing=True)
         .with_for_update()
     )
     if transcript is None:
@@ -62,6 +68,7 @@ def lock_consultation_split_source_scope(
             select(PostConsultationDictation)
             .where(PostConsultationDictation.transcript_id == transcript.id)
             .order_by(PostConsultationDictation.id)
+            .execution_options(populate_existing=True)
             .with_for_update()
         ).all()
     )

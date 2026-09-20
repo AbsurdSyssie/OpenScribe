@@ -142,7 +142,6 @@ def test_document_navigator_preserves_matching_server_note_once_but_updates_meta
             const navigator = sandbox.createDocumentNavigator({
               dom: {
                 latestGeneratedOutput,
-                noteHistory: makeElement(),
                 noteMeta: makeElement(),
                 noteSelector: makeElement(),
                 noteSelectorCount: makeElement(),
@@ -384,7 +383,6 @@ def test_document_navigator_clears_stale_note_editor_when_note_selection_becomes
             const navigator = sandbox.createDocumentNavigator({
               dom: {
                 latestGeneratedOutput,
-                noteHistory: makeElement(),
                 noteMeta: makeElement(),
                 noteSelector: makeElement(),
                 noteSelectorCount: makeElement(),
@@ -467,9 +465,26 @@ def test_note_regeneration_controls_and_scroll_rail_contract():
 
     app = (root / "app/static/js/transcribe/app.js").read_text(encoding="utf-8")
     shell = (root / "app/templates/transcribe/_shell_extras.html").read_text(encoding="utf-8")
-    assert "actions.js?v=20260911-note-regeneration-2" in app
-    assert "documents.js?v=20260911-note-regeneration-2" in app
-    assert "app.js?v=20260912-split-review-auto-edit" in shell
+    assert "actions.js?v=20260918-retired-note-workspace" in app
+    assert "documents.js?v=20260918-retired-note-workspace" in app
+    assert "structured.js?v=20260918-retired-note-workspace" in app
+    assert "app.js?v=20260918-retired-note-workspace" in shell
+
+
+def test_retired_note_workspace_compatibility_plumbing_is_absent():
+    root = Path(__file__).resolve().parents[1]
+    documents = (root / "app/static/js/transcribe/documents.js").read_text(encoding="utf-8")
+    structured = (root / "app/static/js/transcribe/structured.js").read_text(encoding="utf-8")
+    actions = (root / "app/static/js/transcribe/actions.js").read_text(encoding="utf-8")
+    app = (root / "app/static/js/transcribe/app.js").read_text(encoding="utf-8")
+    workspace = (root / "app/templates/transcribe/_workspace.html").read_text(encoding="utf-8")
+
+    for source in (documents, structured, actions, app, workspace):
+        assert "data-legacy-note-workspace" not in source
+        assert "data-note-history" not in source
+        assert "openscribe:legacy-workspace-document-selected" not in source
+    assert "workspaceNoteHistoryDocuments = [];" in app
+    assert "workspaceNoteHistoryDocuments = noteDocuments;" in app
 
 
 def test_working_note_to_editor_document_maps_virtual_target(tmp_path):

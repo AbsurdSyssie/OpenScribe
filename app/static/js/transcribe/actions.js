@@ -267,6 +267,23 @@ export function attachTranscribeActions({
     quickActionContextRecorder.stop();
   };
 
+  const deleteGeneratedDocument = async ({ documentId, confirmMessage, fallbackMessage, successMessage }) => {
+    if (!documentId || !window.confirm(confirmMessage)) return;
+    try {
+      const response = await csrfFetch(`/api/v1/generated-documents/${documentId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (!response.ok) {
+        throw new Error(await parseErrorMessage(response, fallbackMessage));
+      }
+      showFlash(successMessage, 'success');
+      await fetchWorkspace();
+    } catch (error) {
+      showFlash(error instanceof Error ? error.message : fallbackMessage, 'error');
+    }
+  };
+
   const deleteSelectedNote = async () => {
     const generatedDocumentId = dom.latestGeneratedOutput?.dataset.latestGeneratedId || '';
     const selectedKind = dom.latestGeneratedOutput?.dataset.latestGeneratedKind || '';
@@ -274,23 +291,12 @@ export function attachTranscribeActions({
       await clearWorkingNote?.();
       return;
     }
-    if (!generatedDocumentId) return;
-    if (!window.confirm('Delete this note permanently?')) {
-      return;
-    }
-    try {
-      const response = await csrfFetch(`/api/v1/generated-documents/${generatedDocumentId}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      });
-      if (!response.ok) {
-        throw new Error(await parseErrorMessage(response, 'Could not delete the note.'));
-      }
-      showFlash('Note deleted.', 'success');
-      await fetchWorkspace();
-    } catch (error) {
-      showFlash(error instanceof Error ? error.message : 'Could not delete the note.', 'error');
-    }
+    await deleteGeneratedDocument({
+      documentId: generatedDocumentId,
+      confirmMessage: 'Delete this note permanently?',
+      fallbackMessage: 'Could not delete the note.',
+      successMessage: 'Note deleted.',
+    });
   };
 
   dom.noteSelector?.addEventListener('click', (event) => {
@@ -309,12 +315,6 @@ export function attachTranscribeActions({
       });
       return;
     }
-    const button = event.target.closest('[data-document-id]');
-    if (!button) return;
-    selectDocumentFromUi('note', button.dataset.documentId || '');
-  });
-
-  dom.noteHistory?.addEventListener('click', (event) => {
     const button = event.target.closest('[data-document-id]');
     if (!button) return;
     selectDocumentFromUi('note', button.dataset.documentId || '');
@@ -350,23 +350,12 @@ export function attachTranscribeActions({
       event.preventDefault();
       event.stopPropagation();
       const generatedDocumentId = deleteButton.dataset.generatedDocumentId || '';
-      if (!generatedDocumentId) return;
-      if (!window.confirm('Delete this follow-up permanently? This cannot be undone.')) {
-        return;
-      }
-      try {
-        const response = await csrfFetch(`/api/v1/generated-documents/${generatedDocumentId}`, {
-          method: 'DELETE',
-          credentials: 'include',
-        });
-        if (!response.ok) {
-          throw new Error(await parseErrorMessage(response, 'Could not delete the follow-up.'));
-        }
-        showFlash('Follow-up deleted.', 'success');
-        await fetchWorkspace();
-      } catch (error) {
-        showFlash(error instanceof Error ? error.message : 'Could not delete the follow-up.', 'error');
-      }
+      await deleteGeneratedDocument({
+        documentId: generatedDocumentId,
+        confirmMessage: 'Delete this follow-up permanently? This cannot be undone.',
+        fallbackMessage: 'Could not delete the follow-up.',
+        successMessage: 'Follow-up deleted.',
+      });
       return;
     }
 
@@ -389,21 +378,12 @@ export function attachTranscribeActions({
 
   dom.deleteLatestFollowupButton?.addEventListener('click', async () => {
     const generatedDocumentId = dom.latestFollowupOutput?.dataset.latestFollowupId || '';
-    if (!generatedDocumentId) return;
-    if (!window.confirm('Delete this follow-up permanently? This cannot be undone.')) return;
-    try {
-      const response = await csrfFetch(`/api/v1/generated-documents/${generatedDocumentId}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      });
-      if (!response.ok) {
-        throw new Error(await parseErrorMessage(response, 'Could not delete the follow-up.'));
-      }
-      showFlash('Follow-up deleted.', 'success');
-      await fetchWorkspace();
-    } catch (error) {
-      showFlash(error instanceof Error ? error.message : 'Could not delete the follow-up.', 'error');
-    }
+    await deleteGeneratedDocument({
+      documentId: generatedDocumentId,
+      confirmMessage: 'Delete this follow-up permanently? This cannot be undone.',
+      fallbackMessage: 'Could not delete the follow-up.',
+      successMessage: 'Follow-up deleted.',
+    });
   });
 
   dom.regenerateLatestFollowupButton?.addEventListener('click', async () => {
@@ -565,9 +545,6 @@ export function attachTranscribeActions({
     const target = event.target instanceof Element ? event.target : null;
     const link = target?.closest('[data-session-link]');
     if (!link || !dom.sessionList.contains(link)) return;
-    if (window.document.querySelector('[data-legacy-note-workspace][data-inline-controller="true"]')) {
-      return;
-    }
     event.preventDefault();
     const nextTranscriptId = link.dataset.transcriptId;
     if (!nextTranscriptId || nextTranscriptId === getTranscriptId()) {

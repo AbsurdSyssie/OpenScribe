@@ -87,7 +87,7 @@ rg 'cdn\.jsdelivr\.net|cdn\.tailwindcss\.com|unpkg\.com|fonts\.googleapis\.com|f
 Workspace/browser route coverage:
 
 ```bash
-pytest -q tests/test_workspace_shell.py tests/test_workspace_responsive.py tests/test_settings_workspace.py
+pytest -q tests/test_workspace_navigation.py tests/test_workspace_frontend_contract.py tests/test_workspace_scribe_layout_contract.py tests/test_settings_quick_actions.py
 ```
 
 Transcript ingestion/generation lifecycle:

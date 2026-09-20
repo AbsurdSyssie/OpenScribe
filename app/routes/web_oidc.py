@@ -3,8 +3,18 @@
 import logging
 from urllib.parse import parse_qsl, urlencode
 
-from ..main import *  # noqa: F401,F403
+from fastapi import Depends, Form, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from sqlalchemy.orm import Session
+
+from ..cookie_security import should_set_secure_cookie
+from ..db import get_db
+from ..errors import AppError
 from ..main import (
+    ACCOUNT_SECURITY_RATE_LIMIT,
+    AuthenticatedContext,
+    BrowserCsrf,
+    LOGIN_RATE_LIMIT,
     _clear_trusted_device_cookie,
     _current_context_optional,
     _enforce_localhost_only_dev_account,
@@ -12,13 +22,14 @@ from ..main import (
     _post_login_redirect,
     _post_login_redirect_for_user,
     _set_session_cookie,
-    ACCOUNT_SECURITY_RATE_LIMIT,
-    LOGIN_RATE_LIMIT,
+    app,
 )
-from ..cookie_security import should_set_secure_cookie
+from ..models import SessionAuthLevel
 from ..security_headers import oidc_form_action_origin
 from ..services.account import reauthenticate_for_account_change, reauthenticate_for_oidc_link
 from ..services.auth import (
+    SESSION_COOKIE_NAME,
+    TRUSTED_DEVICE_COOKIE_NAME,
     create_session,
     login_auth_level,
     resolve_trusted_device,
@@ -41,6 +52,7 @@ from ..services.oidc import (
     unlink_oidc_identity,
 )
 from ..services.security_audit import record_security_event
+from ..web.presentation import render_auth_page
 
 
 OIDC_CALLBACK_BODY_MAX_BYTES = 8192

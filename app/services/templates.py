@@ -5,6 +5,7 @@ import re
 import time
 from copy import deepcopy
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import timedelta, timezone
 from typing import Any, TypedDict
 from uuid import UUID, uuid4
@@ -14,7 +15,7 @@ from fastapi import Request
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from pydantic import ValidationError
 
 from app.errors import AppError
@@ -188,6 +189,18 @@ class GenerationUsage(TypedDict):
 class NoteGenerationOptions(TypedDict):
     note_generation_length: str
     llm_detail_level: str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _OrdinaryGenerationPreparation:
+    waiting_for_transcript: bool
+    transcript_version: TranscriptVersion
+    working_note_mode: TranscriptWorkingNoteMode | None
+    freeform_working_note_snapshot: str
+    structured_working_note_snapshot: dict | None
+    dictation_snapshot: str
+    config: TeamLlmConfig
+    resolved_model_name: str
 
 
 def _resolve_generation_credential(config: TeamLlmConfig) -> object | None:
@@ -690,6 +703,7 @@ def list_team_templates(db: Session, actor: User) -> list[PromptTemplate]:
     return list(
         db.scalars(
             select(PromptTemplate)
+            .options(selectinload(PromptTemplate.versions))
             .where(PromptTemplate.scope == TemplateScope.team, PromptTemplate.team_id == actor.team_id)
             .order_by(PromptTemplate.updated_at.desc(), PromptTemplate.id.desc())
         )
@@ -701,6 +715,7 @@ def list_team_templates_for_member(db: Session, actor: User) -> list[PromptTempl
     return list(
         db.scalars(
             select(PromptTemplate)
+            .options(selectinload(PromptTemplate.versions))
             .where(PromptTemplate.scope == TemplateScope.team, PromptTemplate.team_id == actor.team_id)
             .order_by(PromptTemplate.updated_at.desc(), PromptTemplate.id.desc())
         )
@@ -712,6 +727,7 @@ def list_personal_templates(db: Session, actor: User) -> list[PromptTemplate]:
     return list(
         db.scalars(
             select(PromptTemplate)
+            .options(selectinload(PromptTemplate.versions))
             .where(PromptTemplate.scope == TemplateScope.user, PromptTemplate.owner_user_id == actor.id)
             .order_by(PromptTemplate.updated_at.desc(), PromptTemplate.id.desc())
         )
@@ -723,6 +739,7 @@ def list_available_templates_for_user(db: Session, actor: User) -> list[PromptTe
     return list(
         db.scalars(
             select(PromptTemplate)
+            .options(selectinload(PromptTemplate.versions))
             .where(
                 PromptTemplate.is_active.is_(True),
                 (
@@ -1011,6 +1028,7 @@ def list_team_quick_actions(db: Session, actor: User) -> list[QuickAction]:
     return list(
         db.scalars(
             select(QuickAction)
+            .options(selectinload(QuickAction.versions))
             .where(QuickAction.scope == TemplateScope.team, QuickAction.team_id == actor.team_id)
             .order_by(QuickAction.updated_at.desc(), QuickAction.id.desc())
         )
@@ -1022,6 +1040,7 @@ def list_team_quick_actions_for_member(db: Session, actor: User) -> list[QuickAc
     return list(
         db.scalars(
             select(QuickAction)
+            .options(selectinload(QuickAction.versions))
             .where(QuickAction.scope == TemplateScope.team, QuickAction.team_id == actor.team_id)
             .order_by(QuickAction.updated_at.desc(), QuickAction.id.desc())
         )
@@ -1033,6 +1052,7 @@ def list_personal_quick_actions(db: Session, actor: User) -> list[QuickAction]:
     return list(
         db.scalars(
             select(QuickAction)
+            .options(selectinload(QuickAction.versions))
             .where(QuickAction.scope == TemplateScope.user, QuickAction.owner_user_id == actor.id)
             .order_by(QuickAction.updated_at.desc(), QuickAction.id.desc())
         )
@@ -1044,6 +1064,7 @@ def list_available_quick_actions_for_user(db: Session, actor: User) -> list[Quic
     return list(
         db.scalars(
             select(QuickAction)
+            .options(selectinload(QuickAction.versions))
             .where(
                 QuickAction.is_active.is_(True),
                 (
@@ -1056,22 +1077,46 @@ def list_available_quick_actions_for_user(db: Session, actor: User) -> list[Quic
     )
 
 
-def upsert_team_template(db: Session, actor: User, payload: PromptTemplateUpsert) -> PromptTemplate:
-    _require_team_leader(actor)
-    if payload.scope is not TemplateScope.team:
-        raise AppError(422, "business_rule_violation", "Team template payload must use team scope", {"field": "scope"})
+def _upsert_template(
+    db: Session,
+    actor: User,
+    payload: PromptTemplateUpsert,
+    *,
+    scope: TemplateScope,
+) -> PromptTemplate:
+    scope_label = "Team" if scope is TemplateScope.team else "Personal"
+    if payload.scope is not scope:
+        raise AppError(
+            422,
+            "business_rule_violation",
+            f"{scope_label} template payload must use {'team' if scope is TemplateScope.team else 'user'} scope",
+            {"field": "scope"},
+        )
     prompt_text = _serialize_prompt_text(payload.prompt_text)
     template_name = _serialize_asset_name(payload.name)
     config_json = _serialize_template_config(payload)
-    template = _resolve_team_template_for_management(db, actor, template_id=payload.template_id) if payload.template_id else None
-    _ensure_unique_template_name(db, actor, scope=TemplateScope.team, name=template_name, current_template_id=template.id if template is not None else None)
+    if payload.template_id:
+        template = (
+            _resolve_team_template_for_management(db, actor, template_id=payload.template_id)
+            if scope is TemplateScope.team
+            else _resolve_personal_template_for_management(db, actor, template_id=payload.template_id)
+        )
+    else:
+        template = None
+    _ensure_unique_template_name(
+        db,
+        actor,
+        scope=scope,
+        name=template_name,
+        current_template_id=template.id if template is not None else None,
+    )
     created = template is None
     if template is None:
         template = PromptTemplate(
             id=uuid4(),
-            scope=TemplateScope.team,
-            owner_user_id=None,
-            team_id=actor.team_id,
+            scope=scope,
+            owner_user_id=actor.id if scope is TemplateScope.user else None,
+            team_id=actor.team_id if scope is TemplateScope.team else None,
             name=template_name,
             description=(payload.description or "").strip() or None,
             is_active=payload.is_active,
@@ -1109,47 +1154,79 @@ def upsert_team_template(db: Session, actor: User, payload: PromptTemplateUpsert
         action="template_created" if created else "template_updated",
         actor=actor,
         team_id=actor.team_id,
-        details={"category": "template", "outcome": "success", "object_type": "prompt_template", "object_id": str(template.id), "scope": TemplateScope.team.value, "mode": payload.mode.value},
+        details={"category": "template", "outcome": "success", "object_type": "prompt_template", "object_id": str(template.id), "scope": scope.value, "mode": payload.mode.value},
     )
     return template
+
+
+def upsert_team_template(db: Session, actor: User, payload: PromptTemplateUpsert) -> PromptTemplate:
+    _require_team_leader(actor)
+    return _upsert_template(db, actor, payload, scope=TemplateScope.team)
 
 
 def upsert_personal_template(db: Session, actor: User, payload: PromptTemplateUpsert) -> PromptTemplate:
     _require_team_member(actor)
-    if payload.scope is not TemplateScope.user:
-        raise AppError(422, "business_rule_violation", "Personal template payload must use user scope", {"field": "scope"})
+    return _upsert_template(db, actor, payload, scope=TemplateScope.user)
+
+
+def _upsert_quick_action(
+    db: Session,
+    actor: User,
+    payload: QuickActionUpsert,
+    *,
+    scope: TemplateScope,
+) -> QuickAction:
+    scope_label = "Team" if scope is TemplateScope.team else "Personal"
+    if payload.scope is not scope:
+        raise AppError(
+            422,
+            "business_rule_violation",
+            f"{scope_label} quick action payload must use {'team' if scope is TemplateScope.team else 'user'} scope",
+            {"field": "scope"},
+        )
     prompt_text = _serialize_prompt_text(payload.prompt_text)
-    template_name = _serialize_asset_name(payload.name)
-    config_json = _serialize_template_config(payload)
-    template = _resolve_personal_template_for_management(db, actor, template_id=payload.template_id) if payload.template_id else None
-    _ensure_unique_template_name(db, actor, scope=TemplateScope.user, name=template_name, current_template_id=template.id if template is not None else None)
-    created = template is None
-    if template is None:
-        template = PromptTemplate(
+    quick_action_name = _serialize_asset_name(payload.name)
+    if payload.quick_action_id:
+        quick_action = (
+            _resolve_team_quick_action_for_management(db, actor, quick_action_id=payload.quick_action_id)
+            if scope is TemplateScope.team
+            else _resolve_personal_quick_action_for_management(db, actor, quick_action_id=payload.quick_action_id)
+        )
+    else:
+        quick_action = None
+    _ensure_unique_quick_action_name(
+        db,
+        actor,
+        scope=scope,
+        name=quick_action_name,
+        current_quick_action_id=quick_action.id if quick_action is not None else None,
+    )
+    created = quick_action is None
+    if quick_action is None:
+        quick_action = QuickAction(
             id=uuid4(),
-            scope=TemplateScope.user,
-            owner_user_id=actor.id,
-            team_id=None,
-            name=template_name,
+            scope=scope,
+            owner_user_id=actor.id if scope is TemplateScope.user else None,
+            team_id=actor.team_id if scope is TemplateScope.team else None,
+            name=quick_action_name,
             description=(payload.description or "").strip() or None,
             is_active=payload.is_active,
             created_by_user_id=actor.id,
         )
-        db.add(template)
+        db.add(quick_action)
         db.flush()
     else:
-        template.name = template_name
-        template.description = (payload.description or "").strip() or None
-        template.is_active = payload.is_active
-        db.add(template)
+        quick_action.name = quick_action_name
+        quick_action.description = (payload.description or "").strip() or None
+        quick_action.is_active = payload.is_active
+        db.add(quick_action)
 
-    version = PromptTemplateVersion(
+    version = QuickActionVersion(
         id=uuid4(),
-        template_id=template.id,
-        version_no=_next_template_version_no(db, template_id=template.id),
-        mode=payload.mode,
+        quick_action_id=quick_action.id,
+        version_no=_next_quick_action_version_no(db, quick_action_id=quick_action.id),
+        mode=TemplateMode.freeform,
         prompt_text=prompt_text,
-        config_json=config_json,
         created_by_user_id=actor.id,
     )
     db.add(version)
@@ -1157,143 +1234,29 @@ def upsert_personal_template(db: Session, actor: User, payload: PromptTemplateUp
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        _translate_template_integrity_error(exc)
+        _translate_quick_action_integrity_error(exc)
     except Exception:
         db.rollback()
         raise
-    db.refresh(template)
+    db.refresh(quick_action)
     record_security_event(
         db,
-        action="template_created" if created else "template_updated",
+        action="quick_action_created" if created else "quick_action_updated",
         actor=actor,
         team_id=actor.team_id,
-        details={"category": "template", "outcome": "success", "object_type": "prompt_template", "object_id": str(template.id), "scope": TemplateScope.user.value, "mode": payload.mode.value},
+        details={"category": "template", "outcome": "success", "object_type": "quick_action", "object_id": str(quick_action.id), "scope": scope.value},
     )
-    return template
+    return quick_action
 
 
 def upsert_team_quick_action(db: Session, actor: User, payload: QuickActionUpsert) -> QuickAction:
     _require_team_leader(actor)
-    if payload.scope is not TemplateScope.team:
-        raise AppError(422, "business_rule_violation", "Team quick action payload must use team scope", {"field": "scope"})
-    prompt_text = _serialize_prompt_text(payload.prompt_text)
-    quick_action_name = _serialize_asset_name(payload.name)
-    quick_action = _resolve_team_quick_action_for_management(db, actor, quick_action_id=payload.quick_action_id) if payload.quick_action_id else None
-    _ensure_unique_quick_action_name(
-        db,
-        actor,
-        scope=TemplateScope.team,
-        name=quick_action_name,
-        current_quick_action_id=quick_action.id if quick_action is not None else None,
-    )
-    created = quick_action is None
-    if quick_action is None:
-        quick_action = QuickAction(
-            id=uuid4(),
-            scope=TemplateScope.team,
-            owner_user_id=None,
-            team_id=actor.team_id,
-            name=quick_action_name,
-            description=(payload.description or "").strip() or None,
-            is_active=payload.is_active,
-            created_by_user_id=actor.id,
-        )
-        db.add(quick_action)
-        db.flush()
-    else:
-        quick_action.name = quick_action_name
-        quick_action.description = (payload.description or "").strip() or None
-        quick_action.is_active = payload.is_active
-        db.add(quick_action)
-
-    version = QuickActionVersion(
-        id=uuid4(),
-        quick_action_id=quick_action.id,
-        version_no=_next_quick_action_version_no(db, quick_action_id=quick_action.id),
-        mode=TemplateMode.freeform,
-        prompt_text=prompt_text,
-        created_by_user_id=actor.id,
-    )
-    db.add(version)
-    try:
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        _translate_quick_action_integrity_error(exc)
-    except Exception:
-        db.rollback()
-        raise
-    db.refresh(quick_action)
-    record_security_event(
-        db,
-        action="quick_action_created" if created else "quick_action_updated",
-        actor=actor,
-        team_id=actor.team_id,
-        details={"category": "template", "outcome": "success", "object_type": "quick_action", "object_id": str(quick_action.id), "scope": TemplateScope.team.value},
-    )
-    return quick_action
+    return _upsert_quick_action(db, actor, payload, scope=TemplateScope.team)
 
 
 def upsert_personal_quick_action(db: Session, actor: User, payload: QuickActionUpsert) -> QuickAction:
     _require_team_member(actor)
-    if payload.scope is not TemplateScope.user:
-        raise AppError(422, "business_rule_violation", "Personal quick action payload must use user scope", {"field": "scope"})
-    prompt_text = _serialize_prompt_text(payload.prompt_text)
-    quick_action_name = _serialize_asset_name(payload.name)
-    quick_action = _resolve_personal_quick_action_for_management(db, actor, quick_action_id=payload.quick_action_id) if payload.quick_action_id else None
-    _ensure_unique_quick_action_name(
-        db,
-        actor,
-        scope=TemplateScope.user,
-        name=quick_action_name,
-        current_quick_action_id=quick_action.id if quick_action is not None else None,
-    )
-    created = quick_action is None
-    if quick_action is None:
-        quick_action = QuickAction(
-            id=uuid4(),
-            scope=TemplateScope.user,
-            owner_user_id=actor.id,
-            team_id=None,
-            name=quick_action_name,
-            description=(payload.description or "").strip() or None,
-            is_active=payload.is_active,
-            created_by_user_id=actor.id,
-        )
-        db.add(quick_action)
-        db.flush()
-    else:
-        quick_action.name = quick_action_name
-        quick_action.description = (payload.description or "").strip() or None
-        quick_action.is_active = payload.is_active
-        db.add(quick_action)
-
-    version = QuickActionVersion(
-        id=uuid4(),
-        quick_action_id=quick_action.id,
-        version_no=_next_quick_action_version_no(db, quick_action_id=quick_action.id),
-        mode=TemplateMode.freeform,
-        prompt_text=prompt_text,
-        created_by_user_id=actor.id,
-    )
-    db.add(version)
-    try:
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        _translate_quick_action_integrity_error(exc)
-    except Exception:
-        db.rollback()
-        raise
-    db.refresh(quick_action)
-    record_security_event(
-        db,
-        action="quick_action_created" if created else "quick_action_updated",
-        actor=actor,
-        team_id=actor.team_id,
-        details={"category": "template", "outcome": "success", "object_type": "quick_action", "object_id": str(quick_action.id), "scope": TemplateScope.user.value},
-    )
-    return quick_action
+    return _upsert_quick_action(db, actor, payload, scope=TemplateScope.user)
 
 
 def _detach_generated_documents_from_template(
@@ -3548,6 +3511,132 @@ def _queue_generated_document_with_quota(
     return document
 
 
+def _prepare_ordinary_generation(
+    db: Session,
+    actor: User,
+    *,
+    transcript: Transcript,
+    waiting_for_transcript: bool,
+) -> _OrdinaryGenerationPreparation:
+    working_note_mode, freeform_working_note_snapshot, structured_working_note_snapshot = (
+        _working_note_snapshot_for_transcript(db, transcript=transcript)
+    )
+    dictation_snapshot = _effective_dictation_text(db, transcript=transcript)
+    transcript_version = _snapshot_transcript_version(
+        db,
+        transcript=transcript,
+        allow_empty=(
+            waiting_for_transcript
+            or bool(freeform_working_note_snapshot.strip())
+            or bool(structured_working_note_snapshot)
+            or bool(dictation_snapshot)
+        ),
+        mark_transcript_ready=not waiting_for_transcript,
+    )
+    _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
+    if not resolved_model_name:
+        raise AppError(422, "business_rule_violation", "No active LLM model is configured for this user", {"field": "preferred_model_name"})
+    return _OrdinaryGenerationPreparation(
+        waiting_for_transcript=waiting_for_transcript,
+        transcript_version=transcript_version,
+        working_note_mode=working_note_mode,
+        freeform_working_note_snapshot=freeform_working_note_snapshot,
+        structured_working_note_snapshot=structured_working_note_snapshot,
+        dictation_snapshot=dictation_snapshot,
+        config=config,
+        resolved_model_name=resolved_model_name,
+    )
+
+
+def _new_ordinary_generated_document(
+    db: Session,
+    actor: User,
+    *,
+    transcript: Transcript,
+    preparation: _OrdinaryGenerationPreparation,
+    generator_type: GeneratedDocumentGeneratorType,
+    source_template_name: str,
+    title: str,
+    document_mode: TemplateMode,
+    template_version_id: UUID | None = None,
+    quick_action_version_id: UUID | None = None,
+    source_quick_action_name: str | None = None,
+    prompt_snapshot_text: str | None = None,
+    generation_snapshot_json: dict | None = None,
+    structured_context_json: dict | None = None,
+    structured_section_definitions_json: dict | None = None,
+    generation_steering_text: str = "",
+) -> GeneratedDocument:
+    config = preparation.config
+    generated_document = GeneratedDocument(
+        id=uuid4(),
+        owner_user_id=actor.id,
+        team_id=transcript.team_id,
+        transcript_id=transcript.id,
+        transcript_version_id=preparation.transcript_version.id,
+        redaction_run_id=None,
+        generator_type=generator_type,
+        template_version_id=template_version_id,
+        quick_action_version_id=quick_action_version_id,
+        llm_config_id=config.id,
+        source_template_name=source_template_name,
+        source_quick_action_name=source_quick_action_name,
+        prompt_snapshot_text=prompt_snapshot_text,
+        structured_context_json=structured_context_json,
+        generation_snapshot_json=generation_snapshot_json,
+        working_note_mode_snapshot=preparation.working_note_mode,
+        freeform_working_note_snapshot_encrypted=None,
+        structured_working_note_snapshot_json=None,
+        structured_section_definitions_json=structured_section_definitions_json,
+        status=GeneratedDocumentStatus.queued,
+        title=title,
+        document_mode=document_mode,
+        original_output_text_encrypted="",
+        edited_output_text_encrypted="",
+        is_edited=False,
+        retention_expires_at=transcript.retention_expires_at,
+        model_used=preparation.resolved_model_name,
+        llm_adapter_kind=config.adapter_kind.value,
+        llm_base_url=config.base_url,
+        llm_provider_config_json=dict(config.provider_config_json or {}),
+    )
+    generated_document.regeneration_lineage_id = generated_document.id
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="freeform_working_note_snapshot_encrypted",
+        plaintext=(
+            preparation.freeform_working_note_snapshot
+            if preparation.working_note_mode is TranscriptWorkingNoteMode.freeform
+            else None
+        ),
+    )
+    set_generated_document_structured_working_note_snapshot(
+        db,
+        document=generated_document,
+        plaintext=(
+            preparation.structured_working_note_snapshot
+            if preparation.working_note_mode is TranscriptWorkingNoteMode.structured
+            else None
+        ),
+    )
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="dictation_snapshot_encrypted",
+        plaintext=preparation.dictation_snapshot,
+    )
+    set_generated_document_text(
+        db,
+        document=generated_document,
+        field="generation_steering_text_encrypted",
+        plaintext=generation_steering_text,
+    )
+    set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
+    set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
+    return generated_document
+
+
 def _main_generation_attempt(db: Session, *, document_id: UUID, lock: bool = False) -> ProviderAttempt | None:
     statement = select(ProviderAttempt).where(
         ProviderAttempt.correlation_id == document_id,
@@ -3574,37 +3663,22 @@ def queue_document_generation_from_template(
     template = _resolve_available_template_for_user(db, actor, template_id=template_id)
     latest_version = _latest_template_version(db, template_id=template.id)
     template_config = _template_version_config(latest_version)
-    working_note_mode, freeform_working_note_snapshot, structured_working_note_snapshot = _working_note_snapshot_for_transcript(db, transcript=transcript)
-    dictation_snapshot = _effective_dictation_text(db, transcript=transcript)
-    transcript_version = _snapshot_transcript_version(
+    preparation = _prepare_ordinary_generation(
         db,
+        actor,
         transcript=transcript,
-        allow_empty=(
-            waiting_for_transcript
-            or bool(freeform_working_note_snapshot.strip())
-            or bool(structured_working_note_snapshot)
-            or bool(dictation_snapshot)
-        ),
-        mark_transcript_ready=not waiting_for_transcript,
+        waiting_for_transcript=waiting_for_transcript,
     )
-
-    _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
-    if not resolved_model_name:
-        raise AppError(422, "business_rule_violation", "No active LLM model is configured for this user", {"field": "preferred_model_name"})
-
-    generated_document = GeneratedDocument(
-        id=uuid4(),
-        owner_user_id=actor.id,
-        team_id=transcript.team_id,
-        transcript_id=transcript.id,
-        transcript_version_id=transcript_version.id,
-        redaction_run_id=None,
+    config = preparation.config
+    generated_document = _new_ordinary_generated_document(
+        db,
+        actor,
+        transcript=transcript,
+        preparation=preparation,
         generator_type=GeneratedDocumentGeneratorType.template,
         template_version_id=latest_version.id,
-        llm_config_id=config.id,
         source_template_name=template.name,
         prompt_snapshot_text=latest_version.prompt_text,
-        structured_context_json=None,
         generation_snapshot_json={
             NOTE_GENERATION_OPTIONS_SNAPSHOT_KEY: _note_generation_options_for_user(db, user_id=actor.id),
             GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY: waiting_for_transcript,
@@ -3614,48 +3688,10 @@ def queue_document_generation_from_template(
                 else {}
             ),
         },
-        working_note_mode_snapshot=working_note_mode,
-        freeform_working_note_snapshot_encrypted=None,
-        structured_working_note_snapshot_json=None,
         structured_section_definitions_json=_structured_section_definitions_snapshot(template_config),
-        status=GeneratedDocumentStatus.queued,
         title=f"{template.name} output",
         document_mode=latest_version.mode,
-        original_output_text_encrypted="",
-        edited_output_text_encrypted="",
-        is_edited=False,
-        retention_expires_at=transcript.retention_expires_at,
-        model_used=resolved_model_name,
-        llm_adapter_kind=config.adapter_kind.value,
-        llm_base_url=config.base_url,
-        llm_provider_config_json=dict(config.provider_config_json or {}),
     )
-    generated_document.regeneration_lineage_id = generated_document.id
-    set_generated_document_text(
-        db,
-        document=generated_document,
-        field="freeform_working_note_snapshot_encrypted",
-        plaintext=freeform_working_note_snapshot if working_note_mode is TranscriptWorkingNoteMode.freeform else None,
-    )
-    set_generated_document_structured_working_note_snapshot(
-        db,
-        document=generated_document,
-        plaintext=structured_working_note_snapshot if working_note_mode is TranscriptWorkingNoteMode.structured else None,
-    )
-    set_generated_document_text(
-        db,
-        document=generated_document,
-        field="dictation_snapshot_encrypted",
-        plaintext=dictation_snapshot,
-    )
-    set_generated_document_text(
-        db,
-        document=generated_document,
-        field="generation_steering_text_encrypted",
-        plaintext="",
-    )
-    set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
-    set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
     generated_document = _queue_generated_document_with_quota(
         db,
         document=generated_document,
@@ -3701,78 +3737,25 @@ def queue_followup_generation(
     if not clean_prompt_text:
         raise AppError(422, "business_rule_violation", "Follow-up text is required", {"field": "prompt_text"})
 
-    working_note_mode, freeform_working_note_snapshot, structured_working_note_snapshot = _working_note_snapshot_for_transcript(db, transcript=transcript)
-    dictation_snapshot = _effective_dictation_text(db, transcript=transcript)
-    transcript_version = _snapshot_transcript_version(
+    preparation = _prepare_ordinary_generation(
         db,
+        actor,
         transcript=transcript,
-        allow_empty=(
-            waiting_for_transcript
-            or bool(freeform_working_note_snapshot.strip())
-            or bool(structured_working_note_snapshot)
-            or bool(dictation_snapshot)
-        ),
-        mark_transcript_ready=not waiting_for_transcript,
+        waiting_for_transcript=waiting_for_transcript,
     )
-    _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
-    if not resolved_model_name:
-        raise AppError(422, "business_rule_violation", "No active LLM model is configured for this user", {"field": "preferred_model_name"})
-
-    generated_document = GeneratedDocument(
-        id=uuid4(),
-        owner_user_id=actor.id,
-        team_id=transcript.team_id,
-        transcript_id=transcript.id,
-        transcript_version_id=transcript_version.id,
-        redaction_run_id=None,
+    config = preparation.config
+    generated_document = _new_ordinary_generated_document(
+        db,
+        actor,
+        transcript=transcript,
+        preparation=preparation,
         generator_type=GeneratedDocumentGeneratorType.followup,
-        template_version_id=None,
-        llm_config_id=config.id,
         source_template_name="Follow-up",
-        follow_up_prompt_text=None,
-        generation_snapshot_json={GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY: waiting_for_transcript},
-        working_note_mode_snapshot=working_note_mode,
-        freeform_working_note_snapshot_encrypted=None,
-        structured_working_note_snapshot_json=None,
-        status=GeneratedDocumentStatus.queued,
         title="Custom follow-up",
         document_mode=TemplateMode.freeform,
-        original_output_text_encrypted="",
-        edited_output_text_encrypted="",
-        is_edited=False,
-        retention_expires_at=transcript.retention_expires_at,
-        model_used=resolved_model_name,
-        llm_adapter_kind=config.adapter_kind.value,
-        llm_base_url=config.base_url,
-        llm_provider_config_json=dict(config.provider_config_json or {}),
+        generation_snapshot_json={GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY: waiting_for_transcript},
     )
-    generated_document.regeneration_lineage_id = generated_document.id
     set_generated_document_text(db, document=generated_document, field="follow_up_prompt_text", plaintext=clean_prompt_text)
-    set_generated_document_text(
-        db,
-        document=generated_document,
-        field="freeform_working_note_snapshot_encrypted",
-        plaintext=freeform_working_note_snapshot if working_note_mode is TranscriptWorkingNoteMode.freeform else None,
-    )
-    set_generated_document_structured_working_note_snapshot(
-        db,
-        document=generated_document,
-        plaintext=structured_working_note_snapshot if working_note_mode is TranscriptWorkingNoteMode.structured else None,
-    )
-    set_generated_document_text(
-        db,
-        document=generated_document,
-        field="dictation_snapshot_encrypted",
-        plaintext=dictation_snapshot,
-    )
-    set_generated_document_text(
-        db,
-        document=generated_document,
-        field="generation_steering_text_encrypted",
-        plaintext="",
-    )
-    set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
-    set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
     generated_document = _queue_generated_document_with_quota(
         db,
         document=generated_document,
@@ -3816,81 +3799,31 @@ def queue_quick_action_generation(
 
     quick_action = _resolve_available_quick_action_for_user(db, actor, quick_action_id=quick_action_id)
     latest_version = _latest_quick_action_version(db, quick_action_id=quick_action.id)
-    working_note_mode, freeform_working_note_snapshot, structured_working_note_snapshot = _working_note_snapshot_for_transcript(db, transcript=transcript)
-    dictation_snapshot = _effective_dictation_text(db, transcript=transcript)
-    transcript_version = _snapshot_transcript_version(
-        db,
-        transcript=transcript,
-        allow_empty=(
-            waiting_for_transcript
-            or bool(freeform_working_note_snapshot.strip())
-            or bool(structured_working_note_snapshot)
-            or bool(dictation_snapshot)
-        ),
-        mark_transcript_ready=not waiting_for_transcript,
-    )
-    _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
-    if not resolved_model_name:
-        raise AppError(422, "business_rule_violation", "No active LLM model is configured for this user", {"field": "preferred_model_name"})
     clean_context_text = (context_text or "").strip()
     prompt_snapshot_text = latest_version.prompt_text.strip()
 
-    generated_document = GeneratedDocument(
-        id=uuid4(),
-        owner_user_id=actor.id,
-        team_id=transcript.team_id,
-        transcript_id=transcript.id,
-        transcript_version_id=transcript_version.id,
-        redaction_run_id=None,
+    preparation = _prepare_ordinary_generation(
+        db,
+        actor,
+        transcript=transcript,
+        waiting_for_transcript=waiting_for_transcript,
+    )
+    config = preparation.config
+    generated_document = _new_ordinary_generated_document(
+        db,
+        actor,
+        transcript=transcript,
+        preparation=preparation,
         generator_type=GeneratedDocumentGeneratorType.quick_action,
-        template_version_id=None,
         quick_action_version_id=latest_version.id,
-        llm_config_id=config.id,
         source_template_name="Quick action",
         source_quick_action_name=quick_action.name,
         prompt_snapshot_text=prompt_snapshot_text,
         generation_snapshot_json={GENERATION_WAIT_FOR_TRANSCRIPT_SNAPSHOT_KEY: waiting_for_transcript},
-        working_note_mode_snapshot=working_note_mode,
-        freeform_working_note_snapshot_encrypted=None,
-        structured_working_note_snapshot_json=None,
-        status=GeneratedDocumentStatus.queued,
         title=quick_action.name,
         document_mode=TemplateMode.freeform,
-        original_output_text_encrypted="",
-        edited_output_text_encrypted="",
-        is_edited=False,
-        retention_expires_at=transcript.retention_expires_at,
-        model_used=resolved_model_name,
-        llm_adapter_kind=config.adapter_kind.value,
-        llm_base_url=config.base_url,
-        llm_provider_config_json=dict(config.provider_config_json or {}),
+        generation_steering_text=clean_context_text,
     )
-    generated_document.regeneration_lineage_id = generated_document.id
-    set_generated_document_text(
-        db,
-        document=generated_document,
-        field="freeform_working_note_snapshot_encrypted",
-        plaintext=freeform_working_note_snapshot if working_note_mode is TranscriptWorkingNoteMode.freeform else None,
-    )
-    set_generated_document_structured_working_note_snapshot(
-        db,
-        document=generated_document,
-        plaintext=structured_working_note_snapshot if working_note_mode is TranscriptWorkingNoteMode.structured else None,
-    )
-    set_generated_document_text(
-        db,
-        document=generated_document,
-        field="dictation_snapshot_encrypted",
-        plaintext=dictation_snapshot,
-    )
-    set_generated_document_text(
-        db,
-        document=generated_document,
-        field="generation_steering_text_encrypted",
-        plaintext=clean_context_text,
-    )
-    set_generated_document_text(db, document=generated_document, field="original_output_text_encrypted", plaintext="")
-    set_generated_document_text(db, document=generated_document, field="edited_output_text_encrypted", plaintext="")
     generated_document = _queue_generated_document_with_quota(
         db,
         document=generated_document,

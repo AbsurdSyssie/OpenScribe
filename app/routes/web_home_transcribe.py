@@ -1,28 +1,87 @@
 """Home and transcribe browser routes extracted from app.main."""
 
 from urllib.parse import urlencode
+from uuid import UUID
 
+from fastapi import Depends, Form, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import ValidationError
+from sqlalchemy.orm import Session
 
-from ..main import *  # noqa: F401,F403
+from ..db import get_db
+from ..errors import AppError
 from ..main import (
+    ACCOUNT_SECURITY_RATE_LIMIT,
+    BrowserCsrf,
+    _clear_trusted_device_cookie,
     _home_page_route_from_return_view,
     _home_redirect_url,
     _home_return_view_value,
     _home_template_editor_url,
     _home_template_name_from_return_view,
     _page_context_or_redirect,
-    _clear_trusted_device_cookie,
     _set_session_cookie,
     _template_config_from_form,
-    ACCOUNT_SECURITY_RATE_LIMIT,
+    app,
+)
+from ..models import SttSelectionPurpose, TeamRole, TemplateMode, TemplateScope
+from ..schemas import (
+    ClinicalNlpSelectionUpsert,
+    DeidentificationSelectionUpsert,
+    LlmSelectionUpsert,
+    PromptTemplateUpsert,
+    QuickActionUpsert,
+    SttSelectionUpsert,
+    UserAppPreferencesUpsert,
+    UserLlmPreferenceUpsert,
 )
 from ..services.account import update_own_email, update_own_name, update_own_password
-from ..services.auth import active_primary_totp_method, create_session, revoke_sessions_for_user, revoke_trusted_devices_for_user
+from ..services.auth import (
+    active_primary_totp_method,
+    create_session,
+    revoke_sessions_for_user,
+    revoke_trusted_devices_for_user,
+)
+from ..services.deidentification import (
+    clear_team_clinical_nlp_selection as clear_team_clinical_nlp_selection_service,
+    clear_team_deidentification_selection as clear_team_deidentification_selection_service,
+    set_team_clinical_nlp_selection as set_team_clinical_nlp_selection_service,
+    set_team_deidentification_selection as set_team_deidentification_selection_service,
+)
+from ..services.llm import (
+    clear_team_llm_selection as clear_team_llm_selection_service,
+    clear_user_llm_preference as clear_user_llm_preference_service,
+    set_team_llm_selection as set_team_llm_selection_service,
+    set_user_llm_preference as set_user_llm_preference_service,
+)
 from ..services.oidc import linked_oidc_identity, oidc_configs
+from ..services.preferences import (
+    get_user_app_preferences as get_user_app_preferences_service,
+    set_user_app_preferences as set_user_app_preferences_service,
+)
 from ..services.security_audit import record_security_event
-from ..services.templates import fork_team_quick_action_to_personal as fork_team_quick_action_to_personal_service
+from ..services.stt import (
+    clear_team_stt_selection as clear_team_stt_selection_service,
+    set_team_stt_selection as set_team_stt_selection_service,
+)
+from ..services.templates import (
+    delete_personal_quick_action as delete_personal_quick_action_service,
+    delete_personal_template as delete_personal_template_service,
+    delete_team_quick_action as delete_team_quick_action_service,
+    delete_team_template as delete_team_template_service,
+    duplicate_personal_quick_action as duplicate_personal_quick_action_service,
+    duplicate_personal_template as duplicate_personal_template_service,
+    duplicate_team_quick_action as duplicate_team_quick_action_service,
+    duplicate_team_template as duplicate_team_template_service,
+    fork_team_quick_action_to_personal as fork_team_quick_action_to_personal_service,
+    fork_team_template_to_personal as fork_team_template_to_personal_service,
+    upsert_personal_quick_action as upsert_personal_quick_action_service,
+    upsert_personal_template as upsert_personal_template_service,
+    upsert_team_quick_action as upsert_team_quick_action_service,
+    upsert_team_template as upsert_team_template_service,
+)
 from ..stt_normalization import normalize_stt_language
+from ..web.presentation import render_home
 from ..web.workspace import (
     WORKSPACE_ACCOUNT,
     WORKSPACE_ACCOUNT_REQUESTS,
@@ -30,11 +89,11 @@ from ..web.workspace import (
     WORKSPACE_LIBRARY_SECTIONS,
     WORKSPACE_PREFERENCES,
     WORKSPACE_QUICK_ACTIONS,
+    WORKSPACE_SECTION_PATHS,
     WORKSPACE_SMART_PHRASES,
     WORKSPACE_TEAM_MEMBERS,
     WORKSPACE_TEAM_SECTIONS,
     WORKSPACE_TEMPLATES,
-    WORKSPACE_SECTION_PATHS,
     render_workspace,
 )
 

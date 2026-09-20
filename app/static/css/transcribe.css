@@ -242,6 +242,38 @@ background-color: rgba(212, 165, 116, 0.12);
 border-left: 3px solid #D4A574;
 }
 
+/* Server-rendered timestamps are UTC until the browser localises them. */
+[data-session-created-at]:not([data-session-created-at-ready]) {
+  color: transparent;
+  display: inline-block;
+  position: relative;
+  user-select: none;
+}
+
+[data-session-created-at]:not([data-session-created-at-ready])::after {
+  animation: session-created-at-pulse 1.4s ease-in-out infinite;
+  background: #d7dde0;
+  border-radius: 999px;
+  content: '';
+  height: 0.7em;
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+@keyframes session-created-at-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.85; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-session-created-at]:not([data-session-created-at-ready])::after {
+    animation: none;
+  }
+}
+
 /* Consultation history panel sits beside primary navigation, never in it. */
 .session-panel {
   width: 288px;

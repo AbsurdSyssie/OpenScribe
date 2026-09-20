@@ -60,6 +60,7 @@ from ..services.dictations import dictation_detail_response, dictation_effective
 from ..services.stt import active_team_stt_selection as active_team_stt_selection_service
 from ..services.stt import check_selected_stt_health as check_selected_stt_health_service
 from ..services.templates import (
+    generated_document_text as generated_document_text_service,
     list_available_quick_actions_for_user as list_available_quick_actions_for_user_service,
     list_available_templates_for_user as list_available_templates_for_user_service,
     list_generated_documents_for_transcript as list_generated_documents_for_transcript_service,
@@ -69,6 +70,7 @@ from ..services.smart_phrases import list_available_smart_phrases as list_availa
 from ..services.transcripts import (
     can_create_new_session as can_create_new_session_service,
     can_switch_transcript_ingestion_mode as can_switch_transcript_ingestion_mode_service,
+    get_active_owner_transcript as get_active_owner_transcript_service,
     latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
     ingestion_retry_source_expired as ingestion_retry_source_expired_service,
     latest_successful_ingestion_completed_at as latest_successful_ingestion_completed_at_service,
@@ -306,7 +308,11 @@ def _freeform_editor_rows(
         return [{"text": "", "checked": True}]
     if generated_document.document_mode is not TemplateMode.freeform:
         return []
-    raw_text = generated_document_response(db, generated_document).edited_output_text or ""
+    raw_text = generated_document_text_service(
+        db,
+        document=generated_document,
+        field="edited_output_text_encrypted",
+    )
     visible_lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     rows = [{"text": line, "checked": True} for line in visible_lines]
     rows.append({"text": "", "checked": True})
@@ -318,7 +324,11 @@ def _generated_note_has_content(db: Session, document: GeneratedDocument | None)
         return False
     if document.document_mode is TemplateMode.structured:
         return any(lines for lines in _document_section_lines_by_key(db, document).values())
-    raw_text = generated_document_response(db, document).edited_output_text or ""
+    raw_text = generated_document_text_service(
+        db,
+        document=document,
+        field="edited_output_text_encrypted",
+    )
     return bool(raw_text.strip())
 
 
@@ -590,6 +600,7 @@ def resolve_transcribe_workspace(
     local_dev_emails: set[str] | None = None,
     request_is_localhost_only=None,
     live_stt_health_check: bool = True,
+    include_html_fields: bool = True,
 ) -> dict[str, object]:
     active_transcript = None
     requested_transcript_id = queued_transcript_id or transcript_id
@@ -726,31 +737,10 @@ def resolve_transcribe_workspace(
         user_app_preferences_json.get("favorite_quick_action_ids"),
         user_app_preferences_json.get("default_quick_action_id"),
     )
-    preferred_template = _preferred_template_from_preferences(available_templates, user_app_preferences_json.get("default_template_id"))
     generated_documents = (
         list_generated_documents_for_transcript_service(db, current_user, transcript_id=active_transcript.id)
         if active_transcript is not None and not current_user.is_system_admin
         else []
-    )
-    note_documents = [document for document in generated_documents if document.generator_type is GeneratedDocumentGeneratorType.template]
-    followup_documents = [
-        document
-        for document in generated_documents
-        if document.generator_type in {GeneratedDocumentGeneratorType.followup, GeneratedDocumentGeneratorType.quick_action}
-    ]
-    latest_generated_document = note_documents[0] if note_documents else None
-    latest_followup_document = followup_documents[0] if followup_documents else None
-    selected_template = preferred_template or (available_templates[0] if available_templates else None)
-    structured_section_definitions = (
-        _structured_section_definitions_for_document(latest_generated_document)
-        or (_structured_section_definitions_for_template(selected_template) if selected_template is not None else _default_emis_section_definitions())
-    )
-    show_redaction_debug = bool(
-        request is not None
-        and local_dev_emails is not None
-        and request_is_localhost_only is not None
-        and current_user.email.lower() in local_dev_emails
-        and request_is_localhost_only(request)
     )
     active_structured_context = _active_structured_context_map(db, active_transcript)
     active_working_note = (
@@ -785,28 +775,7 @@ def resolve_transcribe_workspace(
             or bool(active_dictation_text.strip())
         )
     )
-    active_note_input_available = bool(
-        active_transcript
-        and (
-            bool((active_draft_text or "").strip())
-            or bool(active_structured_context)
-            or active_working_note_has_text
-            or bool(active_dictation_text.strip())
-            or _generated_note_has_content(db, latest_generated_document)
-        )
-    )
-    active_quick_action_input_available = active_template_generation_input_available
-    structured_editor_sections = _structured_editor_sections(
-        db,
-        generated_document=latest_generated_document,
-        active_structured_context=active_structured_context,
-        section_definitions=structured_section_definitions,
-    )
-    freeform_editor_rows = _freeform_editor_rows(
-        db,
-        generated_document=latest_generated_document,
-    )
-    return {
+    workspace = {
         "recent_transcripts": recent_transcripts,
         "recent_transcripts_next_cursor": recent_transcript_page["next_cursor"],
         "recent_transcripts_has_more": recent_transcript_page["has_more"],
@@ -833,35 +802,81 @@ def resolve_transcribe_workspace(
         "can_switch_to_whole_file": can_switch_to_whole_file,
         "switch_mode_block_message": switch_mode_block_message,
         "available_templates": available_templates,
-        "preferred_template": preferred_template,
-        "preferred_template_id": str(preferred_template.id) if preferred_template is not None else None,
-        "preferred_recording_mode": user_app_preferences_json.get("preferred_recording_mode"),
         "user_app_preferences_json": user_app_preferences_json,
         "consultation_splitting_enabled": consultation_splitting_enabled,
-        "template_section_definitions_by_id": _structured_section_option_payloads(available_templates),
         "available_quick_actions": available_quick_actions,
         "available_smart_phrases": available_smart_phrases,
         "generated_documents": generated_documents,
-        "note_documents": note_documents,
-        "followup_documents": followup_documents,
-        "latest_generated_document": latest_generated_document,
-        "latest_generated_document_section_lines": _document_section_lines(db, latest_generated_document),
-        "structured_editor_sections": structured_editor_sections,
-        "freeform_editor_rows": freeform_editor_rows,
-        "latest_followup_document": latest_followup_document,
         "active_structured_context": active_structured_context,
         "active_working_note": active_working_note,
         "active_transcript_pii_entities": transcript_pii_entities_response(db, active_transcript, include_values=True),
         "active_transcript_redaction_status": transcript_redaction_status_response(db, active_transcript),
         "active_transcript_clinical_nlp_status": transcript_clinical_nlp_status_response(db, active_transcript),
-        "active_note_input_available": active_note_input_available,
-        "active_quick_action_input_available": active_quick_action_input_available,
         "active_template_generation_input_available": active_template_generation_input_available,
-        "show_redaction_debug": show_redaction_debug,
-        "emis_sections": _default_emis_section_definitions(),
-        "structured_section_definitions": structured_section_definitions,
         "team_leader_email": team_leader_email,
     }
+    if include_html_fields:
+        preferred_template = _preferred_template_from_preferences(
+            available_templates,
+            user_app_preferences_json.get("default_template_id"),
+        )
+        note_documents = [
+            document for document in generated_documents if document.generator_type is GeneratedDocumentGeneratorType.template
+        ]
+        followup_documents = [
+            document
+            for document in generated_documents
+            if document.generator_type in {GeneratedDocumentGeneratorType.followup, GeneratedDocumentGeneratorType.quick_action}
+        ]
+        latest_generated_document = note_documents[0] if note_documents else None
+        latest_followup_document = followup_documents[0] if followup_documents else None
+        selected_template = preferred_template or (available_templates[0] if available_templates else None)
+        structured_section_definitions = (
+            _structured_section_definitions_for_document(latest_generated_document)
+            or (
+                _structured_section_definitions_for_template(selected_template)
+                if selected_template is not None
+                else _default_emis_section_definitions()
+            )
+        )
+        workspace.update(
+            {
+                "preferred_template": preferred_template,
+                "preferred_template_id": str(preferred_template.id) if preferred_template is not None else None,
+                "preferred_recording_mode": user_app_preferences_json.get("preferred_recording_mode"),
+                "template_section_definitions_by_id": _structured_section_option_payloads(available_templates),
+                "note_documents": note_documents,
+                "followup_documents": followup_documents,
+                "latest_generated_document": latest_generated_document,
+                "latest_generated_document_section_lines": _document_section_lines(db, latest_generated_document),
+                "structured_editor_sections": _structured_editor_sections(
+                    db,
+                    generated_document=latest_generated_document,
+                    active_structured_context=active_structured_context,
+                    section_definitions=structured_section_definitions,
+                ),
+                "freeform_editor_rows": _freeform_editor_rows(
+                    db,
+                    generated_document=latest_generated_document,
+                ),
+                "latest_followup_document": latest_followup_document,
+                "active_note_input_available": bool(
+                    active_template_generation_input_available
+                    or _generated_note_has_content(db, latest_generated_document)
+                ),
+                "active_quick_action_input_available": active_template_generation_input_available,
+                "show_redaction_debug": bool(
+                    request is not None
+                    and local_dev_emails is not None
+                    and request_is_localhost_only is not None
+                    and current_user.email.lower() in local_dev_emails
+                    and request_is_localhost_only(request)
+                ),
+                "emis_sections": _default_emis_section_definitions(),
+                "structured_section_definitions": structured_section_definitions,
+            }
+        )
+    return workspace
 
 
 def transcript_detail_response(db: Session, transcript: Transcript) -> TranscriptDetail:
@@ -999,6 +1014,7 @@ def resolve_transcribe_workspace_detail(
         request=request,
         local_dev_emails=local_dev_emails,
         request_is_localhost_only=request_is_localhost_only,
+        include_html_fields=False,
     )
     return transcribe_workspace_response(db, workspace, current_user=current_user)
 
@@ -1033,9 +1049,10 @@ def render_transcribe(
     workspace_stream_endpoint = "/api/v1/transcribe/workspace/stream"
     active_transcript = workspace.get("active_transcript")
     if isinstance(active_transcript, Transcript):
-        workspace["active_working_note"] = _working_note_json_payload(
-            working_note_detail_service(db, current_user, transcript_id=active_transcript.id)
-        )
+        # Re-check ownership and retention at the render boundary. The workspace
+        # resolver may have run before an expiry or ownership change.
+        get_active_owner_transcript_service(db, current_user, transcript_id=active_transcript.id)
+        workspace["active_working_note"] = _working_note_json_payload(workspace.get("active_working_note"))
         workspace["active_transcript"] = transcript_detail_response(db, active_transcript)
         workspace_endpoint = f"{workspace_endpoint}?transcript_id={active_transcript.id}"
         workspace_stream_endpoint = f"{workspace_stream_endpoint}?transcript_id={active_transcript.id}"
@@ -1050,20 +1067,8 @@ def render_transcribe(
         workspace["post_consultation_dictation"] = dictation_detail_response(db, dictation=post_consultation_dictation)
     workspace["active_transcript_pii_entities"] = [
         entity.model_dump(mode="json")
-        for entity in transcript_pii_entities_response(
-            db,
-            active_transcript if isinstance(active_transcript, Transcript) else None,
-            include_values=True,
-        )
+        for entity in workspace.get("active_transcript_pii_entities") or []
     ]
-    workspace["active_transcript_redaction_status"] = transcript_redaction_status_response(
-        db,
-        active_transcript if isinstance(active_transcript, Transcript) else None,
-    )
-    workspace["active_transcript_clinical_nlp_status"] = transcript_clinical_nlp_status_response(
-        db,
-        active_transcript if isinstance(active_transcript, Transcript) else None,
-    )
     generated_documents = workspace.get("generated_documents") or []
     available_smart_phrases = workspace.get("available_smart_phrases") or []
     workspace["smart_phrases"] = [

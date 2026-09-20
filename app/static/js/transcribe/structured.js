@@ -579,44 +579,16 @@ export function createStructuredEditor({
 
   const collectStructuredContext = () => {
     const context = {};
-    const generatedSections = [...document.querySelectorAll('[data-generated-structured-section]')];
-    if (generatedSections.length > 0) {
-      generatedSections.forEach((section) => {
-        const sectionKey = section.dataset.sectionKey || '';
-        if (!sectionKey) return;
-        const lines = [...section.querySelectorAll('[data-structured-statement-row]')]
-          .map((row) => {
-            const checkbox = row.querySelector('[data-structured-line-checkbox]');
-            const input = row.querySelector('[data-structured-line-input]');
-            if (!checkbox?.checked || !input) return '';
-            return input.value.trim();
-          })
-          .filter((value) => value.length > 0);
-        if (lines.length > 0) {
-          context[sectionKey] = lines;
-        }
-      });
-      return context;
-    }
-    document.querySelectorAll('[data-legacy-note-workspace] .section-block').forEach((section) => {
+    document.querySelectorAll('[data-generated-structured-section]').forEach((section) => {
       const sectionKey = section.dataset.sectionKey || '';
       if (!sectionKey) return;
-      const lines = [...section.querySelectorAll('.statement')]
+      const lines = [...section.querySelectorAll('[data-structured-statement-row]')]
         .map((row) => {
-          const checkbox = row.querySelector('[data-statement-checkbox]');
-          const input = row.querySelector('[data-statement-input]');
+          const checkbox = row.querySelector('[data-structured-line-checkbox]');
+          const input = row.querySelector('[data-structured-line-input]');
           if (!checkbox?.checked || !input) return '';
           return input.value.trim();
         })
-        .concat(
-          [...section.querySelectorAll('.statement')]
-            .filter((row) => !row.querySelector('[data-statement-input]'))
-            .map((row) => {
-              const checkbox = row.querySelector('[data-statement-checkbox]');
-              if (!checkbox?.checked) return '';
-              return String(row.dataset.statementText || '').trim();
-            }),
-        )
         .filter((value) => value.length > 0);
       if (lines.length > 0) {
         context[sectionKey] = lines;

@@ -2,12 +2,26 @@
 
 import json
 import logging
+import os
+from uuid import UUID
 
-from fastapi import Body
+from fastapi import Body, Depends, File, Form, Request, UploadFile, status
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from sqlalchemy.orm import Session
 
 from .. import main as main_module
-from ..main import *  # noqa: F401,F403
+from ..db import get_db
+from ..errors import AppError
 from ..main import (
+    ACCOUNT_REQUEST_RATE_LIMIT,
+    AuthenticatedContext,
+    LIVE_CHUNK_UPLOAD_RATE_LIMIT,
+    LLM_GENERATION_BURST_RATE_LIMIT,
+    LLM_GENERATION_DAILY_RATE_LIMIT,
+    LOGIN_RATE_LIMIT,
+    MFA_RATE_LIMIT,
+    WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT,
+    WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT,
     _clear_session_cookie,
     _enforce_localhost_only_dev_account,
     _open_realtime_workspace_db_session,
@@ -15,63 +29,266 @@ from ..main import (
     _serialize_sse_event,
     _set_session_cookie,
     _set_trusted_device_cookie,
+    api,
+    error_responses,
+    require_authenticated_context,
+    require_deidentification_selector,
+    require_full_context,
+    require_llm_selector,
+    require_local_dev_debug_context,
+    require_stt_selector,
+    require_system_admin,
+    require_user_manager,
 )
+from ..models import AttemptKind, GeneratedDocument, SessionAuthLevel, TemplateScope, Transcript, User
 from ..schemas import (
+    AccountActivationConfirmRequest,
+    AccountRequestApprove,
+    AccountRequestCreate,
+    AccountRequestDetail,
+    AccountRequestListItem,
+    AccountRequestReject,
+    BreakGlassRecoveryRequest,
+    ClinicalNlpSelectionDetail,
+    ClinicalNlpSelectionUpsert,
+    CurrentUserResponse,
+    DeidentificationInspectResult,
+    DeidentificationProviderAssignmentDetail,
+    DeidentificationProviderAssignmentUpsert,
+    DeidentificationProviderDetail,
+    DeidentificationProviderInspectRequest,
+    DeidentificationProviderUpsert,
+    DeidentificationSelectionDetail,
+    DeidentificationSelectionUpsert,
+    GenerateFollowupRequest,
+    GenerateQuickActionRequest,
+    GenerateTemplateOutputRequest,
+    GeneratedDocumentDetail,
+    GeneratedDocumentRedactionDebugDetail,
+    GeneratedDocumentUpdateRequest,
+    GenericMessageResponse,
     HallucinationCheckSelectionDetail,
     HallucinationCheckSelectionUpsert,
+    LlmConfigDetail,
+    LlmConfigDraftCreate,
+    LlmConfigDraftCreateResult,
+    LlmConfigDraftReplaceCredential,
+    LlmConfigFinalize,
+    LlmConfigFinalizeBody,
+    LlmConfigInspectResult,
+    LlmConfigUpsert,
+    LlmInspectRequest,
+    LlmSelectionDetail,
+    LlmSelectionUpsert,
+    LoginRequest,
+    LoginResponse,
+    ManagerRecoveryEmailRequest,
+    ManagerRecoveryResponse,
+    MfaChallengeRequest,
+    PasswordChangeRequest,
+    PasswordResetConfirmRequest,
+    PasswordResetRequest,
+    PostConsultationDictationDetail,
+    PostConsultationDictationPreview,
+    PostConsultationDictationUpdate,
+    PromptContextPreview,
+    PromptTemplateDetail,
+    PromptTemplateUpsert,
+    QuickActionDetail,
+    QuickActionUpsert,
+    RecoveryCodesResponse,
+    RegenerateGeneratedDocumentRequest,
     SmartPhraseCreate,
     SmartPhraseDetail,
     SmartPhraseUpdate,
+    SttConfigDetail,
+    SttConfigDraftCreate,
+    SttConfigDraftCreateResult,
+    SttConfigDraftReplaceCredential,
     SttConfigDraftReplaceCredentialBody,
+    SttConfigFinalize,
     SttConfigFinalizeBody,
+    SttConfigUpsert,
+    SttInspectRequest,
+    SttInspectResult,
+    SttSelectionDetail,
+    SttSelectionUpsert,
+    TeamCreate,
+    TeamDetail,
+    TeamListItem,
+    TemplateBundleExportRequest,
+    TotpEnrollmentStartResponse,
+    TotpVerifyRequest,
+    TranscribeWorkspaceDetail,
+    TranscriptCommit,
+    TranscriptCreate,
+    TranscriptDetail,
+    TranscriptIngestionAccepted,
+    TranscriptIngestionJobDetail,
     TranscriptListPage,
+    TranscriptManualPiiEntityCreate,
+    TranscriptPiiEntityDetail,
+    TranscriptStart,
+    TranscriptUpdate,
+    TrustedDeviceStatusResponse,
+    UserAppPreferencesDetail,
+    UserAppPreferencesUpsert,
+    UserCreate,
+    UserDetail,
+    UserListItem,
+    UserLlmPreferenceDetail,
+    UserLlmPreferenceUpsert,
 )
-from ..schemas.smart_phrase_io import SmartPhraseBundleExportRequest
-from ..schemas.quick_action_io import QuickActionBundleExportRequest
-from ..services.llm import (
-    clear_team_hallucination_check_selection as clear_team_hallucination_check_selection_service,
-    get_team_hallucination_check_selection as get_team_hallucination_check_selection_service,
-    set_team_hallucination_check_selection as set_team_hallucination_check_selection_service,
-)
-from ..schemas.transcripts import WorkingNoteClear, WorkingNoteDetail, WorkingNoteUpdate
 from ..schemas.consultation_split import (
     ConsultationSplitAnalysisDetail,
-    ConsultationSplitDraftDetail,
-    ConsultationSplitDraftConfirmRequest,
-    ConsultationSplitDraftConfirmResponse,
-    ConsultationSplitDraftReplace,
-    ConsultationSplitIntentStartRequest,
-    ConsultationSplitIntentStartResponse,
-    ConsultationSplitIntentContinueAsOneNoteResponse,
     ConsultationSplitBatchRegenerateRequest,
     ConsultationSplitBatchRegenerateResponse,
+    ConsultationSplitDraftConfirmRequest,
+    ConsultationSplitDraftConfirmResponse,
+    ConsultationSplitDraftDetail,
+    ConsultationSplitDraftReplace,
+    ConsultationSplitIntentContinueAsOneNoteResponse,
+    ConsultationSplitIntentStartRequest,
+    ConsultationSplitIntentStartResponse,
     ConsultationSplitKeepAvailableResponse,
     ConsultationSplitRetryMissingResponse,
 )
+from ..schemas.quick_action_io import QuickActionBundleExportRequest
+from ..schemas.smart_phrase_io import SmartPhraseBundleExportRequest
 from ..schemas.templates import TemplateSuggestionRequest, TemplateSuggestionResponse
-from ..services.template_suggestions import (
-    get_template_suggestion as get_template_suggestion_service,
-    queue_template_suggestion as queue_template_suggestion_service,
+from ..schemas.transcripts import WorkingNoteClear, WorkingNoteDetail, WorkingNoteUpdate
+from ..services.admin import (
+    approve_account_request as approve_account_request_service,
+    create_account_request as create_account_request_service,
+    create_team as create_team_service,
+    create_user as create_user_service,
+    delete_user as delete_user_service,
+    hash_password,
+    list_manageable_account_requests as list_manageable_account_requests_service,
+    list_manageable_users as list_manageable_users_service,
+    list_teams as list_teams_service,
+    reactivate_user as reactivate_user_service,
+    reject_account_request as reject_account_request_service,
+    reset_user_password_to_temporary as reset_user_password_to_temporary_service,
+    suspend_user as suspend_user_service,
+)
+from ..services.audio import enforce_whole_file_upload_size, read_live_chunk_upload, read_whole_file_upload
+from ..services.auth import (
+    SESSION_COOKIE_NAME,
+    TRUSTED_DEVICE_COOKIE_NAME,
+    authenticate_user,
+    create_session,
+    determine_auth_level,
+    generate_recovery_codes,
+    login_auth_level,
+    provisioning_qr_svg_data_uri,
+    provisioning_uri,
+    resolve_trusted_device,
+    revoke_session_by_token,
+    rotate_session,
+    skip_recovery_codes,
+    start_totp_enrollment,
+    totp_secret_for_method,
+    touch_trusted_device_seen,
+    trusted_device_fresh_until,
+    trusted_device_satisfies_mfa,
+    update_password_for_onboarding,
+    verify_active_totp_for_user,
+    verify_login_totp,
+    verify_totp_enrollment,
+)
+from ..services.auth_email import (
+    confirm_account_activation as confirm_account_activation_service,
+    confirm_password_reset as confirm_password_reset_service,
+    email_password_reset_enabled as email_password_reset_enabled_service,
+    get_manageable_user_for_recovery as get_manageable_user_for_recovery_service,
+    request_password_reset as request_password_reset_service,
+    reset_user_mfa_for_reenrollment as reset_user_mfa_for_reenrollment_service,
+    send_account_activation_email as send_account_activation_email_service,
+    send_manager_account_recovery_email as send_manager_account_recovery_email_service,
+    send_manager_password_reset_email as send_manager_password_reset_email_service,
 )
 from ..services.consultation_split_api import (
     project_consultation_split_intent_start,
     queue_split_analysis_api,
 )
-from ..services.consultation_split_intents import (
-    continue_consultation_split_intent_as_one_note,
-    create_or_replay_consultation_split_intent,
-)
+from ..services.consultation_split_confirmation import confirm_split_draft
 from ..services.consultation_split_drafts import (
     initialize_or_reuse_split_draft,
     read_split_draft,
     replace_split_draft,
 )
-from ..services.consultation_split_confirmation import confirm_split_draft
+from ..services.consultation_split_intents import (
+    continue_consultation_split_intent_as_one_note,
+    create_or_replay_consultation_split_intent,
+)
 from ..services.consultation_split_partial import keep_available_split_notes
 from ..services.consultation_split_recovery import retry_missing_split_notes
 from ..services.consultation_split_regeneration import regenerate_confirmed_split_batch
-
-template_suggestion_logger = logging.getLogger("openscribe.template_suggestion")
+from ..services.deidentification import (
+    assign_deidentification_provider_to_team as assign_deidentification_provider_to_team_service,
+    clear_team_clinical_nlp_selection as clear_team_clinical_nlp_selection_service,
+    clear_team_deidentification_selection as clear_team_deidentification_selection_service,
+    delete_deidentification_provider as delete_deidentification_provider_service,
+    get_team_clinical_nlp_selection as get_team_clinical_nlp_selection_service,
+    get_team_deidentification_selection as get_team_deidentification_selection_service,
+    inspect_deidentification_provider as inspect_deidentification_provider_service,
+    list_deidentification_providers as list_deidentification_providers_service,
+    list_selectable_clinical_nlp_providers as list_selectable_clinical_nlp_providers_service,
+    list_selectable_deidentification_providers as list_selectable_deidentification_providers_service,
+    list_team_deidentification_provider_assignments as list_team_deidentification_provider_assignments_service,
+    remove_deidentification_provider_assignment as remove_deidentification_provider_assignment_service,
+    set_team_clinical_nlp_selection as set_team_clinical_nlp_selection_service,
+    set_team_deidentification_selection as set_team_deidentification_selection_service,
+    upsert_deidentification_provider as upsert_deidentification_provider_service,
+)
+from ..services.dictations import (
+    append_post_consultation_dictation_audio,
+    dictation_detail_response,
+    get_post_consultation_dictation,
+    transcribe_post_consultation_dictation_audio,
+    transcribe_prompt_context_audio,
+    update_post_consultation_dictation,
+)
+from ..services.llm import (
+    clear_team_hallucination_check_selection as clear_team_hallucination_check_selection_service,
+    clear_team_llm_selection as clear_team_llm_selection_service,
+    clear_user_llm_preference as clear_user_llm_preference_service,
+    create_llm_config_draft as create_llm_config_draft_service,
+    delete_llm_config as delete_llm_config_service,
+    finalize_llm_config_draft as finalize_llm_config_draft_service,
+    get_team_hallucination_check_selection as get_team_hallucination_check_selection_service,
+    get_team_llm_selection as get_team_llm_selection_service,
+    get_user_llm_preference as get_user_llm_preference_service,
+    inspect_llm_contract as inspect_llm_contract_service,
+    inspect_saved_llm_config as inspect_saved_llm_config_service,
+    list_llm_configs as list_llm_configs_service,
+    list_selectable_llm_configs as list_selectable_llm_configs_service,
+    replace_llm_config_draft_credential as replace_llm_config_draft_credential_service,
+    resolve_user_llm as resolve_user_llm_service,
+    set_team_hallucination_check_selection as set_team_hallucination_check_selection_service,
+    set_team_llm_selection as set_team_llm_selection_service,
+    set_user_llm_preference as set_user_llm_preference_service,
+    upsert_llm_config as upsert_llm_config_service,
+)
+from ..services.preferences import (
+    clear_user_app_preferences as clear_user_app_preferences_service,
+    get_user_app_preferences as get_user_app_preferences_service,
+    set_user_app_preferences as set_user_app_preferences_service,
+)
+from ..services.quick_action_io import (
+    QUICK_ACTION_BUNDLE_MAX_BYTES,
+    export_quick_action_bundle as export_quick_action_bundle_service,
+    import_quick_action_bundle as import_quick_action_bundle_service,
+    plan_quick_action_bundle_import as plan_quick_action_bundle_import_service,
+)
+from ..services.security_audit import audit_subject_hash, record_security_event
+from ..services.smart_phrase_io import (
+    SMART_PHRASE_BUNDLE_MAX_BYTES,
+    export_smart_phrase_bundle as export_smart_phrase_bundle_service,
+    import_smart_phrase_bundle as import_smart_phrase_bundle_service,
+    plan_smart_phrase_bundle_import as plan_smart_phrase_bundle_import_service,
+)
 from ..services.smart_phrases import (
     create_personal_smart_phrase as create_personal_smart_phrase_service,
     delete_personal_smart_phrase as delete_personal_smart_phrase_service,
@@ -80,30 +297,101 @@ from ..services.smart_phrases import (
     mark_personal_smart_phrase_used as mark_personal_smart_phrase_used_service,
     update_personal_smart_phrase as update_personal_smart_phrase_service,
 )
-from ..services.smart_phrase_io import (
-    SMART_PHRASE_BUNDLE_MAX_BYTES,
-    export_smart_phrase_bundle as export_smart_phrase_bundle_service,
-    import_smart_phrase_bundle as import_smart_phrase_bundle_service,
-    plan_smart_phrase_bundle_import as plan_smart_phrase_bundle_import_service,
+from ..services.stt import (
+    check_selected_stt_health as check_selected_stt_health_service,
+    clear_team_stt_selection as clear_team_stt_selection_service,
+    create_stt_config_draft as create_stt_config_draft_service,
+    delete_stt_config as delete_stt_config_service,
+    finalize_stt_config_draft as finalize_stt_config_draft_service,
+    get_stt_config as get_stt_config_service,
+    get_team_stt_selection as get_team_stt_selection_service,
+    inspect_stt_contract as inspect_stt_contract_service,
+    list_selectable_stt_configs as list_selectable_stt_configs_service,
+    list_stt_configs as list_stt_configs_service,
+    reinspect_stt_config as reinspect_stt_config_service,
+    replace_stt_config_draft_credential as replace_stt_config_draft_credential_service,
+    set_team_stt_selection as set_team_stt_selection_service,
+    upsert_stt_config as upsert_stt_config_service,
 )
-from ..services.quick_action_io import (
-    QUICK_ACTION_BUNDLE_MAX_BYTES,
-    export_quick_action_bundle as export_quick_action_bundle_service,
-    import_quick_action_bundle as import_quick_action_bundle_service,
-    plan_quick_action_bundle_import as plan_quick_action_bundle_import_service,
+from ..services.template_suggestions import (
+    get_template_suggestion as get_template_suggestion_service,
+    queue_template_suggestion as queue_template_suggestion_service,
 )
-from ..services.stt import check_selected_stt_health as check_selected_stt_health_service
-from ..services.auth import totp_secret_for_method
-from ..models import AttemptKind
+from ..services.templates import (
+    TEMPLATE_BUNDLE_MAX_BYTES,
+    delete_generated_document as delete_generated_document_service,
+    delete_personal_quick_action as delete_personal_quick_action_service,
+    delete_personal_template as delete_personal_template_service,
+    delete_team_quick_action as delete_team_quick_action_service,
+    delete_team_template as delete_team_template_service,
+    export_template_bundle as export_template_bundle_service,
+    import_template_bundle as import_template_bundle_service,
+    list_available_quick_actions_for_user as list_available_quick_actions_for_user_service,
+    list_available_templates_for_user as list_available_templates_for_user_service,
+    list_generated_documents_for_transcript as list_generated_documents_for_transcript_service,
+    list_personal_quick_actions as list_personal_quick_actions_service,
+    list_personal_templates as list_personal_templates_service,
+    list_team_quick_actions as list_team_quick_actions_service,
+    list_team_templates as list_team_templates_service,
+    plan_template_bundle_import as plan_template_bundle_import_service,
+    queue_document_generation_from_template as queue_document_generation_from_template_service,
+    queue_followup_generation as queue_followup_generation_service,
+    queue_generated_document_regeneration as queue_generated_document_regeneration_service,
+    queue_quick_action_generation as queue_quick_action_generation_service,
+    update_generated_document_content as update_generated_document_content_service,
+    upsert_personal_quick_action as upsert_personal_quick_action_service,
+    upsert_personal_template as upsert_personal_template_service,
+    upsert_team_quick_action as upsert_team_quick_action_service,
+    upsert_team_template as upsert_team_template_service,
+)
 from ..services.transcripts import (
+    clear_ingestion_retry_source,
     clear_working_note as clear_working_note_service,
+    commit_transcript_text as commit_transcript_text_service,
+    create_manual_pii_entity as create_manual_pii_entity_service,
+    create_transcript_from_payload,
+    delete_manual_pii_entity as delete_manual_pii_entity_service,
+    delete_transcripts as delete_transcripts_service,
+    finalize_live_capture as finalize_live_capture_service,
     get_active_owner_transcript,
+    queue_audio_chunk_ingestion,
+    queue_audio_file_ingestion,
+    retry_audio_file_ingestion,
     save_working_note as save_working_note_service,
+    start_transcript as start_transcript_service,
     transcript_is_expired,
+    update_transcript as update_transcript_service,
     working_note_detail as working_note_detail_service,
 )
-from ..web.presentation import hallucination_check_selection_response, smart_phrase_response
-from ..web.transcribe_workspace import list_transcript_history_page
+from ..web.presentation import (
+    clinical_nlp_selection_response,
+    deidentification_provider_assignment_response,
+    deidentification_provider_response,
+    deidentification_selection_response,
+    generated_document_redaction_debug_response,
+    generated_document_response,
+    hallucination_check_selection_response,
+    llm_config_response,
+    llm_selection_response,
+    quick_action_response,
+    smart_phrase_response,
+    stt_config_response,
+    stt_selection_response,
+    template_response,
+    user_app_preferences_response,
+    user_llm_preference_response,
+)
+from ..web.transcribe_workspace import (
+    list_transcript_history_page,
+    resolve_transcribe_workspace_detail,
+    stream_transcribe_workspace_events,
+    transcript_detail_response,
+    transcript_manual_pii_entity_response,
+    transcript_pii_entities_response,
+)
+
+
+template_suggestion_logger = logging.getLogger("openscribe.template_suggestion")
 
 
 def _env_enabled(name: str, default: str) -> bool:

@@ -41,6 +41,7 @@ from app.services.stt_presets import (
 )
 from app.services.security_audit import record_security_event
 from app.services.vault import delete_team_stt_bearer_token, read_team_stt_bearer_token, write_team_stt_bearer_token
+from app.services.provider_credential_persistence import provider_credential_write_transaction
 from app.services.provider_secret_cleanup import queue_orphan_provider_secret_after_rollback, queue_provider_secret_cleanup
 from app.services.quotas import mark_provider_attempt_submitted, reserve_provider_attempt, settle_provider_attempt_audio
 from app.services.provider_errors import safe_provider_error_code
@@ -2211,35 +2212,27 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
         updated_by_user_id=actor.id,
     )
     db.add(config)
-    written_secret_ref = ""
     try:
-        db.flush()
-        if bearer_token:
-            if inherits_bearer_token:
-                written_secret_ref = write_team_stt_bearer_token(
-                    team_id=team.id,
-                    config_id=config.id,
-                    bearer_token=bearer_token,
-                    secret_id=uuid4(),
-                )
-            else:
-                written_secret_ref = write_team_stt_bearer_token(
-                    team_id=team.id,
-                    config_id=config.id,
-                    bearer_token=bearer_token,
-                )
-            config.vault_secret_ref = written_secret_ref
-        db.commit()
+        with provider_credential_write_transaction(db, kind=ProviderSecretCleanupKind.stt) as register_written_secret:
+            db.flush()
+            if bearer_token:
+                if inherits_bearer_token:
+                    written_secret_ref = write_team_stt_bearer_token(
+                        team_id=team.id,
+                        config_id=config.id,
+                        bearer_token=bearer_token,
+                        secret_id=uuid4(),
+                    )
+                else:
+                    written_secret_ref = write_team_stt_bearer_token(
+                        team_id=team.id,
+                        config_id=config.id,
+                        bearer_token=bearer_token,
+                    )
+                register_written_secret(written_secret_ref)
+                config.vault_secret_ref = written_secret_ref
     except IntegrityError as exc:
-        db.rollback()
-        if written_secret_ref:
-            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=written_secret_ref)
         _raise_stt_label_conflict_if_needed(exc)
-        raise
-    except Exception:
-        db.rollback()
-        if written_secret_ref:
-            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=written_secret_ref)
         raise
     db.refresh(config)
     _record_stt_audit(db, action="stt_config_draft_created", actor=actor, team_id=team.id, config_id=config.id, credential_present=bool(config.vault_secret_ref))
@@ -2289,57 +2282,47 @@ def finalize_stt_config_draft(db: Session, actor: User, payload: SttConfigFinali
     old_secret_ref = ""
     revision_secret_ref = ""
     rebound_secret_ref = ""
-    if target is not None:
-        old_secret_ref = target.vault_secret_ref
-        if config.vault_secret_ref and config.vault_secret_ref != old_secret_ref:
-            revision_secret_ref = config.vault_secret_ref
-            try:
-                bearer_token = read_team_stt_bearer_token(
-                    team_id=team.id,
-                    config_id=config.id,
-                    secret_ref=revision_secret_ref,
-                )
-                rebound_secret_ref = write_team_stt_bearer_token(
-                    team_id=team.id,
-                    config_id=target.id,
-                    bearer_token=bearer_token,
-                    secret_id=uuid4(),
-                )
-            except Exception:
-                db.rollback()
-                raise
     try:
-        if rebound_secret_ref:
-            config.vault_secret_ref = rebound_secret_ref
-        if target is not None:
-            editable = ("label", "provider_preset", "adapter_kind", "base_url", "transcribe_path", "auth_mode", "model_name", "model_field_name", "available_models_json", "file_field_name", "language", "language_field_name", "response_text_path", "segments_path", "segment_text_field", "segment_start_field", "segment_end_field", "segment_speaker_field", "extra_form_fields_json", "vault_secret_ref", "credential_status", "credential_fingerprint", "inspection_metadata_json", "setup_status", "is_active")
-            for field in editable:
-                setattr(target, field, getattr(config, field))
-            target.updated_by_user_id = actor.id
-            db.delete(config)
-            result = target
-        db.add(result)
-        if target is not None:
-            queue_provider_secret_cleanup(
-                db,
-                kind=ProviderSecretCleanupKind.stt,
-                secret_refs=[
-                    secret_ref
-                    for secret_ref in (old_secret_ref, revision_secret_ref)
-                    if secret_ref and secret_ref != result.vault_secret_ref
-                ],
-            )
-        db.commit()
+        with provider_credential_write_transaction(db, kind=ProviderSecretCleanupKind.stt) as register_written_secret:
+            if target is not None:
+                old_secret_ref = target.vault_secret_ref
+                if config.vault_secret_ref and config.vault_secret_ref != old_secret_ref:
+                    revision_secret_ref = config.vault_secret_ref
+                    bearer_token = read_team_stt_bearer_token(
+                        team_id=team.id,
+                        config_id=config.id,
+                        secret_ref=revision_secret_ref,
+                    )
+                    rebound_secret_ref = write_team_stt_bearer_token(
+                        team_id=team.id,
+                        config_id=target.id,
+                        bearer_token=bearer_token,
+                        secret_id=uuid4(),
+                    )
+                    register_written_secret(rebound_secret_ref)
+            if rebound_secret_ref:
+                config.vault_secret_ref = rebound_secret_ref
+            if target is not None:
+                editable = ("label", "provider_preset", "adapter_kind", "base_url", "transcribe_path", "auth_mode", "model_name", "model_field_name", "available_models_json", "file_field_name", "language", "language_field_name", "response_text_path", "segments_path", "segment_text_field", "segment_start_field", "segment_end_field", "segment_speaker_field", "extra_form_fields_json", "vault_secret_ref", "credential_status", "credential_fingerprint", "inspection_metadata_json", "setup_status", "is_active")
+                for field in editable:
+                    setattr(target, field, getattr(config, field))
+                target.updated_by_user_id = actor.id
+                db.delete(config)
+                result = target
+            db.add(result)
+            if target is not None:
+                queue_provider_secret_cleanup(
+                    db,
+                    kind=ProviderSecretCleanupKind.stt,
+                    secret_refs=[
+                        secret_ref
+                        for secret_ref in (old_secret_ref, revision_secret_ref)
+                        if secret_ref and secret_ref != result.vault_secret_ref
+                    ],
+                )
+            db.commit()
     except IntegrityError as exc:
-        db.rollback()
-        if rebound_secret_ref:
-            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=rebound_secret_ref)
         _raise_stt_label_conflict_if_needed(exc)
-        raise
-    except Exception:
-        db.rollback()
-        if rebound_secret_ref:
-            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=rebound_secret_ref)
         raise
     db.refresh(result)
     _record_stt_audit(db, action="stt_config_finalized", actor=actor, team_id=team.id, config_id=result.id, setup_status=_enum_value(result.setup_status), active=result.is_active)
@@ -2367,39 +2350,37 @@ def replace_stt_config_draft_credential(db: Session, actor: User, payload: SttCo
         ),
     )
     old_secret_ref = config.vault_secret_ref
-    new_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token, secret_id=uuid4())
     try:
-        config.vault_secret_ref = new_secret_ref
-        config.credential_fingerprint = _credential_fingerprint(payload.bearer_token)
-        config.credential_status = _inspection_status(inspection, had_secret=True)
-        config.available_models_json = list(inspection.available_models)
-        config.provider_preset = provider_preset
-        config.extra_form_fields_json = _normalize_deepgram_extra_query_params(
-            config.extra_form_fields_json,
-            provider_preset=provider_preset,
-            adapter_kind=config.adapter_kind,
-            base_url=config.base_url,
-            reject_explicit_non_true=True,
-        )
-        if config.model_name and inspection.available_models and config.model_name not in inspection.available_models:
-            config.model_name = None
-        config.inspection_metadata_json = _status_metadata_from_preset_inspection(inspection, provider_preset=provider_preset, provider_display_name=preset.display_name, status=config.credential_status)
-        config.setup_status = SttConfigSetupStatus.pending_model_selection
-        config.is_active = False
-        config.updated_by_user_id = actor.id
-        db.add(config)
-        if old_secret_ref and old_secret_ref != new_secret_ref:
-            queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.stt, secret_refs=[old_secret_ref])
-        db.commit()
+        with provider_credential_write_transaction(db, kind=ProviderSecretCleanupKind.stt) as register_written_secret:
+            new_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token, secret_id=uuid4())
+            register_written_secret(new_secret_ref)
+            config.vault_secret_ref = new_secret_ref
+            config.credential_fingerprint = _credential_fingerprint(payload.bearer_token)
+            config.credential_status = _inspection_status(inspection, had_secret=True)
+            config.available_models_json = list(inspection.available_models)
+            config.provider_preset = provider_preset
+            config.extra_form_fields_json = _normalize_deepgram_extra_query_params(
+                config.extra_form_fields_json,
+                provider_preset=provider_preset,
+                adapter_kind=config.adapter_kind,
+                base_url=config.base_url,
+                reject_explicit_non_true=True,
+            )
+            if config.model_name and inspection.available_models and config.model_name not in inspection.available_models:
+                config.model_name = None
+            config.inspection_metadata_json = _status_metadata_from_preset_inspection(inspection, provider_preset=provider_preset, provider_display_name=preset.display_name, status=config.credential_status)
+            config.setup_status = SttConfigSetupStatus.pending_model_selection
+            config.is_active = False
+            config.updated_by_user_id = actor.id
+            db.add(config)
+            if old_secret_ref and old_secret_ref != new_secret_ref:
+                queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.stt, secret_refs=[old_secret_ref])
+            db.commit()
     except Exception:
-        db.rollback()
-        queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=new_secret_ref)
         raise
     db.refresh(config)
     _record_stt_audit(db, action="stt_config_credential_replaced", actor=actor, team_id=team.id, config_id=config.id, credential_status=_enum_value(config.credential_status))
     return config, inspection
-
-
 def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> TeamSttConfig:
     team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
     provider_preset = _resolve_stt_provider_preset_for_admin_write(payload.provider_preset, payload.adapter_kind, payload.base_url)
@@ -2611,25 +2592,18 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
                 config.credential_status = _inspection_status(inspection, had_secret=True)
                 config.inspection_metadata_json = _status_metadata_from_inspection(inspection, status=config.credential_status)
     try:
-        if replacing_secret and payload.bearer_token:
-            pending_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token, secret_id=None if creating else uuid4())
-            config.vault_secret_ref = pending_secret_ref
-            config.credential_fingerprint = fingerprint
-        if delete_after_commit:
-            queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.stt, secret_refs=[delete_secret_ref])
-        elif pending_secret_ref and old_secret_ref and old_secret_ref != pending_secret_ref:
-            queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.stt, secret_refs=[old_secret_ref])
-        db.commit()
+        with provider_credential_write_transaction(db, kind=ProviderSecretCleanupKind.stt) as register_written_secret:
+            if replacing_secret and payload.bearer_token:
+                pending_secret_ref = write_team_stt_bearer_token(team_id=team.id, config_id=config.id, bearer_token=payload.bearer_token, secret_id=None if creating else uuid4())
+                register_written_secret(pending_secret_ref)
+                config.vault_secret_ref = pending_secret_ref
+                config.credential_fingerprint = fingerprint
+            if delete_after_commit:
+                queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.stt, secret_refs=[delete_secret_ref])
+            elif pending_secret_ref and old_secret_ref and old_secret_ref != pending_secret_ref:
+                queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.stt, secret_refs=[old_secret_ref])
     except IntegrityError as exc:
-        db.rollback()
-        if pending_secret_ref:
-            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=pending_secret_ref)
         _raise_stt_label_conflict_if_needed(exc)
-        raise
-    except Exception:
-        db.rollback()
-        if pending_secret_ref:
-            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.stt, secret_ref=pending_secret_ref)
         raise
     db.refresh(config)
     _record_stt_audit(

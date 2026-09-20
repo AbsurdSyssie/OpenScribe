@@ -32,6 +32,7 @@ from app.services.llm_adapters.gemini_enterprise import (
     validate_gemini_model,
 )
 from app.services.llm_credentials import google_service_account_secret, resolve_llm_runtime_credential
+from app.services.provider_credential_persistence import provider_credential_write_transaction
 from app.services.provider_secret_cleanup import queue_orphan_provider_secret_after_rollback, queue_provider_secret_cleanup
 from app.services.provider_inspection import read_limited_httpx_response
 from app.provider_url_security import require_safe_provider_url
@@ -804,43 +805,36 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
         updated_by_user_id=actor.id,
     )
     db.add(config)
-    written_secret_ref = ""
     try:
-        db.flush()
-        if bearer_token:
-            if inherits_bearer_token:
-                written_secret_ref = write_team_llm_bearer_token(
+        with provider_credential_write_transaction(db, kind=ProviderSecretCleanupKind.llm) as register_written_secret:
+            db.flush()
+            if bearer_token:
+                if inherits_bearer_token:
+                    written_secret_ref = write_team_llm_bearer_token(
+                        team_id=team.id,
+                        config_id=config.id,
+                        bearer_token=bearer_token,
+                        secret_id=uuid4(),
+                    )
+                else:
+                    written_secret_ref = write_team_llm_bearer_token(
+                        team_id=team.id,
+                        config_id=config.id,
+                        bearer_token=bearer_token,
+                    )
+                register_written_secret(written_secret_ref)
+                config.vault_secret_ref = written_secret_ref
+            elif google_credential_json:
+                written_secret_ref = write_team_llm_secret(
                     team_id=team.id,
                     config_id=config.id,
-                    bearer_token=bearer_token,
-                    secret_id=uuid4(),
+                    secret_payload=google_service_account_secret(google_credential_json),
+                    secret_id=uuid4() if inherits_google_credential else None,
                 )
-            else:
-                written_secret_ref = write_team_llm_bearer_token(
-                    team_id=team.id,
-                    config_id=config.id,
-                    bearer_token=bearer_token,
-                )
-            config.vault_secret_ref = written_secret_ref
-        elif google_credential_json:
-            written_secret_ref = write_team_llm_secret(
-                team_id=team.id,
-                config_id=config.id,
-                secret_payload=google_service_account_secret(google_credential_json),
-                secret_id=uuid4() if inherits_google_credential else None,
-            )
-            config.vault_secret_ref = written_secret_ref
-        db.commit()
+                register_written_secret(written_secret_ref)
+                config.vault_secret_ref = written_secret_ref
     except IntegrityError as exc:
-        db.rollback()
-        if written_secret_ref:
-            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.llm, secret_ref=written_secret_ref)
         _raise_llm_label_conflict_if_needed(exc)
-        raise
-    except Exception:
-        db.rollback()
-        if written_secret_ref:
-            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.llm, secret_ref=written_secret_ref)
         raise
     db.refresh(config)
     _record_llm_audit(db, action="llm_config_draft_created", actor=actor, team_id=team.id, config_id=config.id, credential_present=bool(config.vault_secret_ref))
@@ -892,57 +886,47 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
     old_secret_ref = ""
     revision_secret_ref = ""
     rebound_secret_ref = ""
-    if target is not None:
-        old_secret_ref = target.vault_secret_ref
-        if config.vault_secret_ref and config.vault_secret_ref != old_secret_ref:
-            revision_secret_ref = config.vault_secret_ref
-            try:
-                secret_payload = read_team_llm_secret(
-                    team_id=team.id,
-                    config_id=config.id,
-                    secret_ref=revision_secret_ref,
-                )
-                rebound_secret_ref = write_team_llm_secret(
-                    team_id=team.id,
-                    config_id=target.id,
-                    secret_payload=secret_payload,
-                    secret_id=uuid4(),
-                )
-            except Exception:
-                db.rollback()
-                raise
     try:
-        if rebound_secret_ref:
-            config.vault_secret_ref = rebound_secret_ref
-        if target is not None:
-            for field in ("label", "provider_preset", "adapter_kind", "base_url", "auth_mode", "model_name", "available_models_json", "inspection_metadata_json", "provider_config_json", "setup_status", "vault_secret_ref", "is_active"):
-                setattr(target, field, getattr(config, field))
-            target.updated_by_user_id = actor.id
-            db.delete(config)
-            result = target
-        db.add(result)
-        _reconcile_llm_config_model_selections(db, config=result)
-        if target is not None:
-            queue_provider_secret_cleanup(
-                db,
-                kind=ProviderSecretCleanupKind.llm,
-                secret_refs=[
-                    secret_ref
-                    for secret_ref in (old_secret_ref, revision_secret_ref)
-                    if secret_ref and secret_ref != result.vault_secret_ref
-                ],
-            )
-        db.commit()
+        with provider_credential_write_transaction(db, kind=ProviderSecretCleanupKind.llm) as register_written_secret:
+            if target is not None:
+                old_secret_ref = target.vault_secret_ref
+                if config.vault_secret_ref and config.vault_secret_ref != old_secret_ref:
+                    revision_secret_ref = config.vault_secret_ref
+                    secret_payload = read_team_llm_secret(
+                        team_id=team.id,
+                        config_id=config.id,
+                        secret_ref=revision_secret_ref,
+                    )
+                    rebound_secret_ref = write_team_llm_secret(
+                        team_id=team.id,
+                        config_id=target.id,
+                        secret_payload=secret_payload,
+                        secret_id=uuid4(),
+                    )
+                    register_written_secret(rebound_secret_ref)
+            if rebound_secret_ref:
+                config.vault_secret_ref = rebound_secret_ref
+            if target is not None:
+                for field in ("label", "provider_preset", "adapter_kind", "base_url", "auth_mode", "model_name", "available_models_json", "inspection_metadata_json", "provider_config_json", "setup_status", "vault_secret_ref", "is_active"):
+                    setattr(target, field, getattr(config, field))
+                target.updated_by_user_id = actor.id
+                db.delete(config)
+                result = target
+            db.add(result)
+            _reconcile_llm_config_model_selections(db, config=result)
+            if target is not None:
+                queue_provider_secret_cleanup(
+                    db,
+                    kind=ProviderSecretCleanupKind.llm,
+                    secret_refs=[
+                        secret_ref
+                        for secret_ref in (old_secret_ref, revision_secret_ref)
+                        if secret_ref and secret_ref != result.vault_secret_ref
+                    ],
+                )
+            db.commit()
     except IntegrityError as exc:
-        db.rollback()
-        if rebound_secret_ref:
-            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.llm, secret_ref=rebound_secret_ref)
         _raise_llm_label_conflict_if_needed(exc)
-        raise
-    except Exception:
-        db.rollback()
-        if rebound_secret_ref:
-            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.llm, secret_ref=rebound_secret_ref)
         raise
     db.refresh(result)
     _record_llm_audit(db, action="llm_config_finalized", actor=actor, team_id=team.id, config_id=result.id, setup_status=_enum_value(result.setup_status), active=result.is_active)
@@ -982,49 +966,49 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
             {"field": "bearer_token", "model_name": existing_model_name, "config_id": str(config.id)},
         )
     old_secret_ref = config.vault_secret_ref
-    new_secret_ref = ""
-    if payload.bearer_token:
-        new_secret_ref = write_team_llm_bearer_token(
-            team_id=team.id,
-            config_id=config.id,
-            bearer_token=payload.bearer_token,
-            secret_id=uuid4(),
-        )
-    elif payload.google_auth_method == "service_account_json":
-        new_secret_ref = write_team_llm_secret(
-            team_id=team.id,
-            config_id=config.id,
-            secret_payload=google_service_account_secret(payload.google_service_account_json or {}),
-            secret_id=uuid4(),
-        )
     try:
-        config.vault_secret_ref = new_secret_ref
-        if is_gemini:
-            config.auth_mode = (
-                LlmAuthMode.google_adc
-                if payload.google_auth_method == "application_default"
-                else LlmAuthMode.google_service_account
-            )
-        config.available_models_json = list(inspection.available_models)
-        if config.model_name and inspection.available_models and config.model_name not in inspection.available_models:
-            config.model_name = None
-        config.inspection_metadata_json = _inspection_metadata(inspection)
-        if has_in_flight_jobs and was_ready and existing_model_name and (not inspection.available_models or existing_model_name in inspection.available_models):
-            config.model_name = existing_model_name
-            config.setup_status = LlmConfigSetupStatus.ready
-            config.is_active = was_active
-        else:
-            config.setup_status = LlmConfigSetupStatus.pending_model_selection
-            config.is_active = False
-        config.updated_by_user_id = actor.id
-        db.add(config)
-        if old_secret_ref and old_secret_ref != new_secret_ref:
-            queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[old_secret_ref])
-        db.commit()
+        with provider_credential_write_transaction(db, kind=ProviderSecretCleanupKind.llm) as register_written_secret:
+            new_secret_ref = ""
+            if payload.bearer_token:
+                new_secret_ref = write_team_llm_bearer_token(
+                    team_id=team.id,
+                    config_id=config.id,
+                    bearer_token=payload.bearer_token,
+                    secret_id=uuid4(),
+                )
+                register_written_secret(new_secret_ref)
+            elif payload.google_auth_method == "service_account_json":
+                new_secret_ref = write_team_llm_secret(
+                    team_id=team.id,
+                    config_id=config.id,
+                    secret_payload=google_service_account_secret(payload.google_service_account_json or {}),
+                    secret_id=uuid4(),
+                )
+                register_written_secret(new_secret_ref)
+            config.vault_secret_ref = new_secret_ref
+            if is_gemini:
+                config.auth_mode = (
+                    LlmAuthMode.google_adc
+                    if payload.google_auth_method == "application_default"
+                    else LlmAuthMode.google_service_account
+                )
+            config.available_models_json = list(inspection.available_models)
+            if config.model_name and inspection.available_models and config.model_name not in inspection.available_models:
+                config.model_name = None
+            config.inspection_metadata_json = _inspection_metadata(inspection)
+            if has_in_flight_jobs and was_ready and existing_model_name and (not inspection.available_models or existing_model_name in inspection.available_models):
+                config.model_name = existing_model_name
+                config.setup_status = LlmConfigSetupStatus.ready
+                config.is_active = was_active
+            else:
+                config.setup_status = LlmConfigSetupStatus.pending_model_selection
+                config.is_active = False
+            config.updated_by_user_id = actor.id
+            db.add(config)
+            if old_secret_ref and old_secret_ref != new_secret_ref:
+                queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[old_secret_ref])
+            db.commit()
     except Exception:
-        db.rollback()
-        if new_secret_ref:
-            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.llm, secret_ref=new_secret_ref)
         raise
     db.refresh(config)
     _record_llm_audit(db, action="llm_config_credential_replaced", actor=actor, team_id=team.id, config_id=config.id, setup_status=_enum_value(config.setup_status), active=config.is_active)
@@ -1278,47 +1262,41 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     pending_secret_ref = ""
     old_secret_ref = config.vault_secret_ref if not creating else ""
     try:
-        if replacing_secret and payload.bearer_token:
-            pending_secret_ref = write_team_llm_bearer_token(
-                team_id=team.id,
-                config_id=config.id,
-                bearer_token=payload.bearer_token,
-                secret_id=uuid4() if not creating else None,
-            )
-            config.vault_secret_ref = pending_secret_ref
-        elif replacing_secret and payload.google_service_account_json:
-            pending_secret_ref = write_team_llm_secret(
-                team_id=team.id,
-                config_id=config.id,
-                secret_payload=google_service_account_secret(payload.google_service_account_json),
-                secret_id=uuid4() if not creating else None,
-            )
-            config.vault_secret_ref = pending_secret_ref
-        elif removing_secret:
-            if config.vault_secret_ref:
-                deleted_secret_ref = config.vault_secret_ref
-            config.vault_secret_ref = ""
-        elif adapter_kind in {LlmAdapterKind.ollama_chat, LlmAdapterKind.gemini_enterprise} and creating:
-            config.vault_secret_ref = ""
-        elif creating:
-            raise AppError(422, "business_rule_violation", "Bearer token is required when creating the LLM config", {"field": "bearer_token"})
+        with provider_credential_write_transaction(db, kind=ProviderSecretCleanupKind.llm) as register_written_secret:
+            if replacing_secret and payload.bearer_token:
+                pending_secret_ref = write_team_llm_bearer_token(
+                    team_id=team.id,
+                    config_id=config.id,
+                    bearer_token=payload.bearer_token,
+                    secret_id=uuid4() if not creating else None,
+                )
+                register_written_secret(pending_secret_ref)
+                config.vault_secret_ref = pending_secret_ref
+            elif replacing_secret and payload.google_service_account_json:
+                pending_secret_ref = write_team_llm_secret(
+                    team_id=team.id,
+                    config_id=config.id,
+                    secret_payload=google_service_account_secret(payload.google_service_account_json),
+                    secret_id=uuid4() if not creating else None,
+                )
+                register_written_secret(pending_secret_ref)
+                config.vault_secret_ref = pending_secret_ref
+            elif removing_secret:
+                if config.vault_secret_ref:
+                    deleted_secret_ref = config.vault_secret_ref
+                config.vault_secret_ref = ""
+            elif adapter_kind in {LlmAdapterKind.ollama_chat, LlmAdapterKind.gemini_enterprise} and creating:
+                config.vault_secret_ref = ""
+            elif creating:
+                raise AppError(422, "business_rule_violation", "Bearer token is required when creating the LLM config", {"field": "bearer_token"})
 
-        _reconcile_llm_config_model_selections(db, config=config)
-        if deleted_secret_ref:
-            queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[deleted_secret_ref])
-        elif old_secret_ref and old_secret_ref != pending_secret_ref:
-            queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[old_secret_ref])
-        db.commit()
+            _reconcile_llm_config_model_selections(db, config=config)
+            if deleted_secret_ref:
+                queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[deleted_secret_ref])
+            elif old_secret_ref and old_secret_ref != pending_secret_ref:
+                queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[old_secret_ref])
     except IntegrityError as exc:
-        db.rollback()
-        if pending_secret_ref:
-            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.llm, secret_ref=pending_secret_ref)
         _raise_llm_label_conflict_if_needed(exc)
-        raise
-    except Exception:
-        db.rollback()
-        if pending_secret_ref:
-            queue_orphan_provider_secret_after_rollback(db, kind=ProviderSecretCleanupKind.llm, secret_ref=pending_secret_ref)
         raise
     db.refresh(config)
     _record_llm_audit(

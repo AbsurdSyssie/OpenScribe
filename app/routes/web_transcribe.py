@@ -1,14 +1,51 @@
 """Transcribe browser routes extracted from the home/transcribe route module."""
 
-from .. import main as main_module
-from ..main import *  # noqa: F401,F403
+from urllib.parse import urlencode
+from uuid import UUID
+
+from fastapi import Depends, File, Form, Request, UploadFile, status
+from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ..db import get_db
+from ..errors import AppError
 from ..main import (
+    BrowserCsrf,
+    LLM_GENERATION_BURST_RATE_LIMIT,
+    LLM_GENERATION_DAILY_RATE_LIMIT,
+    WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT,
+    WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT,
     _local_only_dev_emails,
     _page_context_or_redirect,
     _request_is_localhost_only,
     _transcribe_redirect,
+    app,
 )
-from ..web.transcribe_workspace import _missing_stt_selection_message
+from ..models import TeamRole, Transcript, TranscriptIngestionMode, User, UserStatus
+from ..schemas import TranscriptStart
+from ..services.audio import enforce_whole_file_upload_size, read_whole_file_upload
+from ..services.dictations import (
+    append_post_consultation_dictation_audio,
+    dictation_detail_response,
+    update_post_consultation_dictation,
+)
+from ..services.stt import active_team_stt_selection as active_team_stt_selection_service
+from ..services.templates import (
+    queue_document_generation_from_template as queue_document_generation_from_template_service,
+    queue_followup_generation as queue_followup_generation_service,
+    queue_quick_action_generation as queue_quick_action_generation_service,
+)
+from ..services.transcripts import (
+    clear_ingestion_retry_source,
+    delete_transcripts as delete_transcripts_service,
+    queue_audio_file_ingestion,
+    retry_audio_file_ingestion,
+    start_transcript as start_transcript_service,
+    update_transcript as update_transcript_service,
+    update_transcript_title as update_transcript_title_service,
+)
+from ..web.transcribe_workspace import _missing_stt_selection_message, render_transcribe
 from ..web.workspace import WORKSPACE_SCRIBE, render_workspace
 
 

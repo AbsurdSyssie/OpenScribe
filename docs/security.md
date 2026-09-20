@@ -31,6 +31,7 @@ OpenScribe uses opaque browser tokens with server-side state:
 - Microsoft email-domain restrictions are an eligibility policy applied to signed claims on every exchange. Email and UPN claims remain mutable attributes: they are neither stored nor used for account lookup. The signed tenant UUID must match the signed tenant-specific issuer.
 - `openscribe_csrf` and `openscribe_csrf_anon` are CSRF controls, not authentication tokens.
 - Session levels explicitly distinguish onboarding, pending MFA, and full access.
+- Protected API routes, workspace-stream entry, and private API documentation share the full-session checks in [`app/main.py`](../app/main.py). Pending MFA and incomplete onboarding keep distinct errors and audit reasons; private API documentation also requires a system administrator.
 - Suspension, disable/lock handling, password/account recovery, and sensitive account changes revoke the applicable sessions and trusted-device records.
 - Password hashes use Argon2id.
 - Unknown-user login attempts still run Argon2id password verification against a dummy hash before returning the same invalid-credential response.

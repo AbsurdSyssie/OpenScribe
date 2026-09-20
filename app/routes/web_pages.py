@@ -2,8 +2,17 @@
 
 from datetime import timedelta
 
-from ..main import *  # noqa: F401,F403
+from fastapi import Depends, Form, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from sqlalchemy.orm import Session
+
+from ..db import get_db
+from ..errors import AppError
 from ..main import (
+    ACCOUNT_REQUEST_RATE_LIMIT,
+    BrowserCsrf,
+    LOGIN_RATE_LIMIT,
+    MFA_RATE_LIMIT,
     _bootstrap_allowed,
     _clear_session_cookie,
     _clear_trusted_device_cookie,
@@ -14,12 +23,63 @@ from ..main import (
     _post_login_redirect_for_user,
     _set_session_cookie,
     _set_trusted_device_cookie,
+    app,
 )
-from ..models import UserOnboardingState
-from ..models import LegalDocumentKind, utcnow
-from ..services.auth import totp_secret_for_method
+from ..models import (
+    AuthEmailTokenPurpose,
+    LegalDocumentKind,
+    SessionAuthLevel,
+    User,
+    UserOnboardingState,
+    utcnow,
+)
+from ..schemas import AccountRequestCreate
+from ..services.admin import (
+    create_account_request as create_account_request_service,
+    create_bootstrap_admin,
+    hash_password,
+)
+from ..services.auth import (
+    SESSION_COOKIE_NAME,
+    TRUSTED_DEVICE_COOKIE_NAME,
+    authenticate_user,
+    create_session,
+    current_pending_totp_method,
+    determine_auth_level,
+    generate_recovery_codes,
+    login_auth_level,
+    provisioning_qr_svg_data_uri,
+    provisioning_uri,
+    resolve_trusted_device,
+    revoke_session_by_token,
+    rotate_session,
+    skip_recovery_codes,
+    start_totp_enrollment,
+    totp_secret_for_method,
+    touch_trusted_device_seen,
+    update_password_for_onboarding,
+    verify_login_totp,
+    verify_totp_enrollment,
+)
+from ..services.auth_email import (
+    GENERIC_PASSWORD_RESET_MESSAGE,
+    PASSWORD_RESET_EMAIL_DISABLED_MESSAGE,
+    confirm_account_activation as confirm_account_activation_service,
+    confirm_password_reset as confirm_password_reset_service,
+    email_password_reset_enabled as email_password_reset_enabled_service,
+    get_active_token_user as get_active_token_user_service,
+    request_password_reset as request_password_reset_service,
+)
 from ..services.legal_content import current_published_legal_document, get_operator_legal_profile
 from ..services.passwords import validate_password_strength
+from ..services.security_audit import audit_subject_hash, record_security_event
+from ..web.presentation import (
+    render_auth_page,
+    render_mfa_challenge,
+    render_onboarding,
+    render_request_access_page,
+)
+from ..web.templates import templates
 
 
 @app.get("/robots.txt", include_in_schema=False)

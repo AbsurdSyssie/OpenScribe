@@ -1,313 +1,54 @@
-import asyncio
 import os
 from dataclasses import dataclass
 from ipaddress import ip_address
 from typing import Annotated
-from urllib.parse import parse_qsl, urlencode, urlsplit
+from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal, get_db
 from .cookie_security import app_environment, enforce_production_cookie_security, should_set_secure_cookie
 from .errors import AppError, app_error_handler, http_error_handler, rate_limit_error_handler, validation_error_handler
 from .models import (
-    DeidentificationAdapterKind,
-    DeidentificationAuthMode,
-    GeneratedDocument,
-    GeneratedDocumentGeneratorType,
-    LlmAdapterKind,
-    ProviderCredentialStatus,
-    PromptTemplate,
-    QuickAction,
-    SessionAuthLevel,
     SessionStatus,
-    SttAdapterKind,
     SttSelectionPurpose,
     TeamRole,
-    TeamStatus,
     TemplateMode,
-    TemplateScope,
-    Transcript,
-    TranscriptIngestionJobKind,
-    TranscriptIngestionJobStatus,
-    TranscriptIngestionMode,
-    TranscriptStatus,
-    TranscriptVersion,
     User,
     UserSession,
     UserStatus,
-    AuthEmailTokenPurpose,
-    transcript_expiry,
     utcnow,
 )
 from .security_headers import content_security_policy, new_csp_nonce
-from .schemas import (
-    AccountRequestApprove,
-    AccountActivationConfirmRequest,
-    BreakGlassRecoveryRequest,
-    AccountRequestCreate,
-    AccountRequestDetail,
-    AccountRequestListItem,
-    ClinicalNlpSelectionDetail,
-    ClinicalNlpSelectionUpsert,
-    DeidentificationProviderAssignmentDetail,
-    DeidentificationProviderAssignmentUpsert,
-    DeidentificationProviderDetail,
-    DeidentificationProviderInspectRequest,
-    DeidentificationProviderUpsert,
-    DeidentificationInspectResult,
-    DeidentificationSelectionDetail,
-    DeidentificationSelectionUpsert,
-    AccountRequestReject,
-    CurrentUserResponse,
-    DefaultPromptTemplateUpsert,
-    DefaultQuickActionUpsert,
-    PostConsultationDictationDetail,
-    PostConsultationDictationPreview,
-    PostConsultationDictationUpdate,
-    PromptContextPreview,
-    EMIS_SECTION_KEYS,
-    ErrorResponse,
-    GenerateFollowupRequest,
-    GenerateQuickActionRequest,
-    GenerateTemplateOutputRequest,
-    RegenerateGeneratedDocumentRequest,
-    GenericMessageResponse,
-    LlmConfigDraftCreate,
-    LlmConfigDraftCreateResult,
-    LlmConfigDraftReplaceCredential,
-    LlmConfigDetail,
-    LlmConfigFinalize,
-    LlmConfigFinalizeBody,
-    LlmConfigInspectResult,
-    LlmInspectRequest,
-    LlmConfigUpsert,
-    LlmSelectionDetail,
-    LlmSelectionUpsert,
-    LoginRequest,
-    LoginResponse,
-    ManagerRecoveryEmailRequest,
-    ManagerRecoveryResponse,
-    MfaChallengeRequest,
-    PasswordChangeRequest,
-    PasswordResetConfirmRequest,
-    PasswordResetRequest,
-    PromptTemplateDetail,
-    PromptTemplateUpsert,
-    TemplateBundleExportRequest,
-    QuickActionDetail,
-    QuickActionUpsert,
-    RecoveryCodesResponse,
-    SttConfigDraftCreate,
-    SttConfigDraftCreateResult,
-    SttConfigDraftReplaceCredential,
-    SttConfigDetail,
-    SttConfigFinalize,
-    SttInspectRequest,
-    SttInspectResult,
-    SttConfigUpsert,
-    SttSelectionDetail,
-    SttSelectionUpsert,
-    TeamCreate,
-    TeamDetail,
-    TeamListItem,
-    TotpEnrollmentStartResponse,
-    TotpVerifyRequest,
-    TranscriptCommit,
-    TranscriptCreate,
-    TranscriptDetail,
-    TranscriptIngestionAccepted,
-    TranscriptIngestionJobDetail,
-    TranscriptListItem,
-    TranscriptManualPiiEntityCreate,
-    TranscriptPiiEntityDetail,
-    TranscriptStart,
-    TranscriptUpdate,
-    TrustedDeviceStatusResponse,
-    UserCreate,
-    UserAppPreferencesDetail,
-    UserAppPreferencesUpsert,
-    UserDetail,
-    UserLlmPreferenceDetail,
-    UserLlmPreferenceUpsert,
-    UserListItem,
-    GeneratedDocumentDetail,
-    GeneratedDocumentSectionDetail,
-    GeneratedDocumentUpdateRequest,
-    GeneratedDocumentRedactionDebugDetail,
-    TranscribeWorkspaceDetail,
-)
-from .llm_provider_defaults import DEFAULT_BEDROCK_CHAT_REGION, bedrock_region_from_base_url
-from .services.templates import (
-    TEMPLATE_BUNDLE_MAX_BYTES,
-    attach_generated_document_task_id as attach_generated_document_task_id_service,
-    delete_generated_document as delete_generated_document_service,
-    delete_personal_quick_action as delete_personal_quick_action_service,
-    delete_personal_template as delete_personal_template_service,
-    delete_team_quick_action as delete_team_quick_action_service,
-    delete_team_template as delete_team_template_service,
-    duplicate_personal_quick_action as duplicate_personal_quick_action_service,
-    duplicate_personal_template as duplicate_personal_template_service,
-    duplicate_team_quick_action as duplicate_team_quick_action_service,
-    duplicate_team_template as duplicate_team_template_service,
-    fork_team_template_to_personal as fork_team_template_to_personal_service,
-    export_template_bundle as export_template_bundle_service,
-    import_template_bundle as import_template_bundle_service,
-    plan_template_bundle_import as plan_template_bundle_import_service,
-    list_available_quick_actions_for_user as list_available_quick_actions_for_user_service,
-    list_available_templates_for_user as list_available_templates_for_user_service,
-    list_generated_documents_for_transcript as list_generated_documents_for_transcript_service,
-    update_generated_document_content as update_generated_document_content_service,
-    list_personal_quick_actions as list_personal_quick_actions_service,
-    list_personal_templates as list_personal_templates_service,
-    list_team_quick_actions as list_team_quick_actions_service,
-    list_team_templates as list_team_templates_service,
-    mark_generated_document_enqueue_failed as mark_generated_document_enqueue_failed_service,
-    generated_document_section_text as generated_document_section_text_service,
-    generated_document_text as generated_document_text_service,
-    queue_quick_action_generation as queue_quick_action_generation_service,
-    queue_generated_document_regeneration as queue_generated_document_regeneration_service,
-    queue_document_generation_from_template as queue_document_generation_from_template_service,
-    queue_followup_generation as queue_followup_generation_service,
-    upsert_personal_quick_action as upsert_personal_quick_action_service,
-    upsert_personal_template as upsert_personal_template_service,
-    upsert_team_quick_action as upsert_team_quick_action_service,
-    upsert_team_template as upsert_team_template_service,
-)
-from .services.default_assets import (
-    delete_default_quick_action as delete_default_quick_action_service,
-    delete_default_template as delete_default_template_service,
-    duplicate_default_quick_action as duplicate_default_quick_action_service,
-    duplicate_default_template as duplicate_default_template_service,
-    list_default_quick_actions as list_default_quick_actions_service,
-    list_default_templates as list_default_templates_service,
-    upsert_default_quick_action as upsert_default_quick_action_service,
-    upsert_default_template as upsert_default_template_service,
-)
+from .schemas import EMIS_SECTION_KEYS, ErrorResponse
+# Admin routes and tests still replace these service hooks through app.main.
 from .services.llm import (
-    active_team_llm_selection as active_team_llm_selection_service,
-    clear_team_llm_selection as clear_team_llm_selection_service,
-    clear_user_llm_preference as clear_user_llm_preference_service,
     cancel_llm_config_draft as cancel_llm_config_draft_service,
-    create_llm_config_draft as create_llm_config_draft_service,
-    delete_llm_config as delete_llm_config_service,
-    finalize_llm_config_draft as finalize_llm_config_draft_service,
-    get_team_llm_selection as get_team_llm_selection_service,
-    get_user_llm_preference as get_user_llm_preference_service,
-    inspect_llm_contract as inspect_llm_contract_service,
     inspect_saved_llm_config as inspect_saved_llm_config_service,
-    list_llm_configs as list_llm_configs_service,
-    list_selectable_llm_configs as list_selectable_llm_configs_service,
-    resolve_user_llm as resolve_user_llm_service,
-    replace_llm_config_draft_credential as replace_llm_config_draft_credential_service,
-    set_team_llm_selection as set_team_llm_selection_service,
-    set_user_llm_preference as set_user_llm_preference_service,
-    upsert_llm_config as upsert_llm_config_service,
-)
-from .services.deidentification import (
-    assign_deidentification_provider_to_team as assign_deidentification_provider_to_team_service,
-    clear_team_clinical_nlp_selection as clear_team_clinical_nlp_selection_service,
-    clear_team_deidentification_selection as clear_team_deidentification_selection_service,
-    delete_deidentification_provider as delete_deidentification_provider_service,
-    get_team_clinical_nlp_selection as get_team_clinical_nlp_selection_service,
-    get_team_deidentification_selection as get_team_deidentification_selection_service,
-    inspect_deidentification_provider as inspect_deidentification_provider_service,
-    list_deidentification_providers as list_deidentification_providers_service,
-    list_selectable_clinical_nlp_providers as list_selectable_clinical_nlp_providers_service,
-    list_selectable_deidentification_providers as list_selectable_deidentification_providers_service,
-    list_team_deidentification_provider_assignments as list_team_deidentification_provider_assignments_service,
-    remove_deidentification_provider_assignment as remove_deidentification_provider_assignment_service,
-    set_team_clinical_nlp_selection as set_team_clinical_nlp_selection_service,
-    set_team_deidentification_selection as set_team_deidentification_selection_service,
-    upsert_deidentification_provider as upsert_deidentification_provider_service,
-)
-from .services.preferences import (
-    clear_user_app_preferences as clear_user_app_preferences_service,
-    get_user_app_preferences as get_user_app_preferences_service,
-    set_user_app_preferences as set_user_app_preferences_service,
 )
 from .services.stt import (
-    active_team_stt_selection as active_team_stt_selection_service,
     cancel_stt_config_draft as cancel_stt_config_draft_service,
-    create_stt_config_draft as create_stt_config_draft_service,
-    delete_stt_config as delete_stt_config_service,
-    finalize_stt_config_draft as finalize_stt_config_draft_service,
-    get_stt_config as get_stt_config_service,
-    inspect_stt_contract as inspect_stt_contract_service,
-    get_team_stt_selection as get_team_stt_selection_service,
-    list_selectable_stt_configs as list_selectable_stt_configs_service,
-    list_stt_configs as list_stt_configs_service,
     reinspect_stt_config as reinspect_stt_config_service,
-    replace_stt_config_draft_credential as replace_stt_config_draft_credential_service,
     run_saved_stt_config_test as run_saved_stt_config_test_service,
-    clear_team_stt_selection as clear_team_stt_selection_service,
-    set_team_stt_selection as set_team_stt_selection_service,
-    upsert_stt_config as upsert_stt_config_service,
 )
-from .services.dictations import (
-    append_post_consultation_dictation_audio,
-    dictation_detail_response,
-    get_post_consultation_dictation,
-    transcribe_prompt_context_audio,
-    transcribe_post_consultation_dictation_audio,
-    update_post_consultation_dictation,
-)
-from .services.admin import (
-    admin_usage_overview as admin_usage_overview_service,
-    approve_account_request as approve_account_request_service,
-    bootstrap_admin_is_configured,
-    create_account_request as create_account_request_service,
-    create_bootstrap_admin,
-    create_team as create_team_service,
-    create_user as create_user_service,
-    delete_team as delete_team_service,
-    delete_user as delete_user_service,
-    list_manageable_account_requests as list_manageable_account_requests_service,
-    list_manageable_users as list_manageable_users_service,
-    list_teams as list_teams_service,
-    list_users as list_users_service,
-    reactivate_user as reactivate_user_service,
-    reject_account_request as reject_account_request_service,
-    reset_user_password_to_temporary as reset_user_password_to_temporary_service,
-    suspend_user as suspend_user_service,
-    user_count as user_count_service,
-    hash_password,
-)
+from .services.admin import bootstrap_admin_is_configured, user_count as user_count_service
 from .services.auth import (
     SESSION_COOKIE_NAME,
     TRUSTED_DEVICE_COOKIE_NAME,
-    authenticate_user,
-    create_session,
-    current_pending_totp_method,
     determine_auth_level,
-    generate_recovery_codes,
-    login_auth_level,
-    provisioning_qr_svg_data_uri,
-    provisioning_uri,
     resolve_authenticated_session,
-    resolve_trusted_device,
     revoke_session_by_token,
-    rotate_session,
     session_token_hash,
-    skip_recovery_codes,
-    start_totp_enrollment,
-    touch_trusted_device_seen,
-    trusted_device_fresh_until,
-    trusted_device_satisfies_mfa,
-    update_password_for_onboarding,
-    verify_active_totp_for_user,
-    verify_login_totp,
-    verify_totp_enrollment,
 )
 from .services.csrf import (
     CSRF_ANON_COOKIE_NAME,
@@ -320,101 +61,27 @@ from .services.csrf import (
     verify_csrf_token,
 )
 from .services.oidc import oidc_configured_for_environment
-from .services.auth_email import (
-    GENERIC_PASSWORD_RESET_MESSAGE,
-    PASSWORD_RESET_EMAIL_DISABLED_MESSAGE,
-    confirm_account_activation as confirm_account_activation_service,
-    confirm_password_reset as confirm_password_reset_service,
-    email_password_reset_enabled as email_password_reset_enabled_service,
-    get_active_token_user as get_active_token_user_service,
-    get_manageable_user_for_recovery as get_manageable_user_for_recovery_service,
-    request_password_reset as request_password_reset_service,
-    reset_user_mfa_for_reenrollment as reset_user_mfa_for_reenrollment_service,
-    send_account_activation_email as send_account_activation_email_service,
-    send_manager_account_recovery_email as send_manager_account_recovery_email_service,
-    send_manager_password_reset_email as send_manager_password_reset_email_service,
-    send_password_reset_email as send_password_reset_email_service,
+from .services.security_audit import (
+    audit_subject_hash_secret_configured_for_environment,
+    record_security_event,
 )
-from .services.security_audit import audit_subject_hash, audit_subject_hash_secret_configured_for_environment, record_security_event
-from .services.transcripts import (
-    attach_task_id_to_ingestion_job,
-    can_create_new_session as can_create_new_session_service,
-    can_switch_transcript_ingestion_mode as can_switch_transcript_ingestion_mode_service,
-    clear_ingestion_retry_source,
-    commit_transcript_text as commit_transcript_text_service,
-    create_manual_pii_entity as create_manual_pii_entity_service,
-    create_transcript_from_payload,
-    delete_manual_pii_entity as delete_manual_pii_entity_service,
-    delete_transcripts as delete_transcripts_service,
-    finalize_live_capture as finalize_live_capture_service,
-    latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
-    mark_ingestion_job_enqueue_failed,
-    next_live_chunk_sequence_no_for_transcript as next_live_chunk_sequence_no_for_transcript_service,
-    queue_audio_chunk_ingestion,
-    queue_audio_file_ingestion,
-    reconcile_live_chunk_progress as reconcile_live_chunk_progress_service,
-    retry_audio_file_ingestion,
-    start_transcript as start_transcript_service,
-    transcript_draft_text as transcript_draft_text_service,
-    transcript_structured_context as transcript_structured_context_service,
-    update_transcript as update_transcript_service,
-    update_transcript_title as update_transcript_title_service,
-)
+# Retained for tests that guard against bypassing transactional outbox dispatch.
 from .tasks import enqueue_generated_document_job, enqueue_transcript_ingestion_job
-from .services.audio import enforce_whole_file_upload_size, read_live_chunk_upload, read_whole_file_upload
-from .services.redaction import redaction_run_text as redaction_run_text_service
 from .web.presentation import (
     admin_page_route_from_return_view,
     admin_redirect_url,
     admin_return_view_value,
-    clinical_nlp_selection_response,
-    deidentification_provider_assignment_response,
-    deidentification_provider_response,
-    deidentification_selection_response,
-    generated_document_redaction_debug_response,
-    generated_document_response,
     home_page_route_from_return_view,
     home_template_editor_url,
     home_redirect_url,
     home_return_view_value,
     home_template_name_from_return_view,
-    llm_config_response,
-    llm_form_defaults,
-    llm_selection_response,
-    parse_extra_form_fields_json,
-    parse_json_object,
-    parse_string_map_json,
-    quick_action_response,
-    render_admin,
-    render_auth_page,
-    render_home,
-    render_mfa_challenge,
-    render_onboarding,
-    render_request_access_page,
-    stt_config_response,
-    stt_form_defaults,
-    stt_selection_response,
-    template_response,
     transcribe_redirect,
-    user_app_preferences_response,
-    user_llm_preference_response,
 )
-from .web.templates import templates
-from .web.transcribe_workspace import (
-    open_realtime_workspace_db_session,
-    render_transcribe,
-    resolve_realtime_workspace_user,
-    resolve_transcribe_workspace_detail,
-    serialize_sse_event,
-    stream_transcribe_workspace_events,
-    transcript_detail_response,
-    transcript_manual_pii_entity_response,
-    transcript_pii_entities_response,
-)
+from .web.transcribe_workspace import open_realtime_workspace_db_session, serialize_sse_event
 
 
-# Compatibility aliases for the first main.py extraction slice. Existing route
-# handlers still use the legacy helper names while the file is being broken up.
+# Route modules and compatibility tests still use these helper aliases.
 _open_realtime_workspace_db_session = open_realtime_workspace_db_session
 _serialize_sse_event = serialize_sse_event
 _home_redirect_url = home_redirect_url
@@ -460,6 +127,8 @@ app = FastAPI(title="OpenScribe MVP", docs_url=None, redoc_url=None, openapi_url
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed_hosts_for_environment())
 LOCALHOST_NAMES = {"localhost", "127.0.0.1", "::1", "testserver", "testclient"}
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+
 def _local_only_dev_emails() -> set[str]:
     return {
         os.getenv("DEV_TEST_ADMIN_EMAIL", "dev.admin@example.com").strip().lower(),
@@ -1097,12 +766,8 @@ def _post_login_redirect_for_user(user: User) -> str:
     return "/admin" if user.is_system_admin else "/workspace"
 
 
-def _user_count(db: Session) -> int:
-    return user_count_service(db)
-
-
 def _bootstrap_allowed(db: Session) -> bool:
-    return bootstrap_admin_is_configured() and _user_count(db) == 0
+    return bootstrap_admin_is_configured() and user_count_service(db) == 0
 
 
 def _current_context_optional(request: Request, db: Session) -> AuthenticatedContext | None:
@@ -1167,16 +832,7 @@ def _require_full_context_from_token(request: Request, raw_session_token: str | 
             _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="local_dev_debug_required", status_code=403, actor=user)
             raise AppError(401, "unauthorized", "Authentication required")
         context = AuthenticatedContext(user=user, session=session, token=raw_session_token)
-        if context.session.auth_level.value == "pending_mfa":
-            _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="mfa_required", status_code=403, actor=context.user)
-            raise AppError(403, "mfa_required", "Complete TOTP verification before accessing this route")
-        if context.session.auth_level is not determine_auth_level(context.user):
-            _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="auth_level_mismatch", status_code=401, actor=context.user)
-            raise AppError(401, "unauthorized", "Authentication required")
-        if context.session.auth_level.value != "full":
-            _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="onboarding_incomplete", status_code=403, actor=context.user)
-            raise AppError(403, "onboarding_incomplete", "Complete onboarding before accessing this route")
-        return context
+        return require_full_context(request, context, db)
 
 
 def require_local_dev_debug_context(
@@ -1244,7 +900,9 @@ def _page_context_or_redirect(request: Request, db: Session, *, require_full: bo
     return context, None
 
 
-def _structured_template_config_from_form(*, section_values: dict[str, str]) -> dict | None:
+def _template_config_from_form(*, mode: TemplateMode, section_values: dict[str, str]) -> dict | None:
+    if mode is not TemplateMode.structured:
+        return None
     sections: list[dict[str, object]] = []
     for index, section_key in enumerate(EMIS_SECTION_KEYS, start=1):
         instruction = (section_values.get(section_key) or "").strip()
@@ -1259,12 +917,6 @@ def _structured_template_config_from_form(*, section_values: dict[str, str]) -> 
     if not sections:
         return None
     return {"profile": "emis", "sections": sections}
-
-
-def _template_config_from_form(*, mode: TemplateMode, section_values: dict[str, str]) -> dict | None:
-    if mode is not TemplateMode.structured:
-        return None
-    return _structured_template_config_from_form(section_values=section_values)
 
 
 API_DOCS_PUBLIC_ENV = "PUBLIC_API_DOCS"
@@ -1301,15 +953,7 @@ def _require_api_docs_access(
             status_code=401,
         )
         raise AppError(401, "unauthorized", "Authentication required")
-    if context.session.auth_level.value == "pending_mfa":
-        _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="mfa_required", status_code=403, actor=context.user)
-        raise AppError(403, "mfa_required", "Complete TOTP verification before accessing this route")
-    if context.session.auth_level is not determine_auth_level(context.user):
-        _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="auth_level_mismatch", status_code=401, actor=context.user)
-        raise AppError(401, "unauthorized", "Authentication required")
-    if context.session.auth_level.value != "full":
-        _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="onboarding_incomplete", status_code=403, actor=context.user)
-        raise AppError(403, "onboarding_incomplete", "Complete onboarding before accessing this route")
+    require_full_context(request, context, db)
     if not context.user.is_system_admin:
         _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="api_docs_system_admin_required", status_code=403, actor=context.user)
         raise AppError(403, "forbidden", "System admin access required")
@@ -1337,13 +981,8 @@ def health():
 
 
 error_responses = {
-    401: {"model": ErrorResponse},
-    403: {"model": ErrorResponse},
-    404: {"model": ErrorResponse},
-    409: {"model": ErrorResponse},
-    429: {"model": ErrorResponse},
-    413: {"model": ErrorResponse},
-    422: {"model": ErrorResponse},
+    code: {"model": ErrorResponse}
+    for code in (401, 403, 404, 409, 429, 413, 422)
 }
 
 

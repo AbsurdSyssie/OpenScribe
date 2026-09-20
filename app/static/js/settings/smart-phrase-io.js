@@ -1,4 +1,5 @@
 import { csrfFetch } from '../csrf.js';
+import { initLibraryHelp } from './library-help.js?v=20260918-library-help';
 
 const MAX_BUNDLE_BYTES = 1024 * 1024;
 const MAX_EXPORT_ITEMS = 100;
@@ -254,45 +255,15 @@ OpenScribe smart phrase bundle JSON Schema:
 ${JSON.stringify(schema, null, 2)}`;
 }
 
-function initHelp(library) {
-  const dialog = document.querySelector('[data-smart-phrase-help-dialog]');
-  const open = library.querySelector('[data-smart-phrase-help-open]');
-  const copy = dialog?.querySelector('[data-smart-phrase-help-copy]');
-  const status = dialog?.querySelector('[data-smart-phrase-help-status]');
-  const fallback = dialog?.querySelector('[data-smart-phrase-help-fallback]');
-  const promptOutput = dialog?.querySelector('[data-smart-phrase-help-prompt]');
-  if (!dialog || !open || !copy) return;
-  let prompt = '';
-  const loadPrompt = async () => {
-    if (prompt) return prompt;
-    const response = await fetch('/static/schemas/openscribe-smart-phrase-bundle-v1.schema.json?v=20260724-ai-instructions', { credentials: 'same-origin' });
-    if (!response.ok) throw new Error('The smart phrase instructions could not be loaded.');
-    prompt = smartPhraseMakerPrompt(await response.json());
-    return prompt;
-  };
-  open.addEventListener('click', () => {
-    status.textContent = ''; status.classList.remove('is-error'); fallback.hidden = true; promptOutput.value = ''; dialog.showModal();
-  });
-  copy.addEventListener('click', async () => {
-    copy.disabled = true; status.textContent = 'Preparing instructions…'; status.classList.remove('is-error');
-    try {
-      const text = await loadPrompt();
-      try {
-        await navigator.clipboard.writeText(text);
-        fallback.hidden = true;
-        status.textContent = 'Instructions copied. Now paste them into your AI assistant.';
-      } catch (_) {
-        promptOutput.value = text; fallback.hidden = false; promptOutput.focus(); promptOutput.select();
-        status.textContent = 'Automatic copying was blocked. Copy all the selected text below.';
-      }
-    } catch (error) {
-      status.textContent = error.message; status.classList.add('is-error');
-    } finally {
-      copy.disabled = false;
-    }
-  });
-}
-
 export function initSmartPhraseIO() {
-  document.querySelectorAll('[data-smart-phrase-library]').forEach((library) => { initExport(library); initImport(library); initHelp(library); });
+  document.querySelectorAll('[data-smart-phrase-library]').forEach((library) => {
+    initExport(library);
+    initImport(library);
+    initLibraryHelp(library, {
+      prefix: 'smart-phrase',
+      schemaUrl: '/static/schemas/openscribe-smart-phrase-bundle-v1.schema.json?v=20260724-ai-instructions',
+      errorMessage: 'The smart phrase instructions could not be loaded.',
+      buildPrompt: smartPhraseMakerPrompt,
+    });
+  });
 }

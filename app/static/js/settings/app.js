@@ -1,6 +1,6 @@
-import { initTemplateIO } from './template-io.js?v=20260724-portability-guards';
-import { initQuickActionIO } from './quick-action-io.js?v=20260724-portability-guards';
-import { initSmartPhraseIO } from './smart-phrase-io.js?v=20260724-portability-guards';
+import { initTemplateIO } from './template-io.js?v=20260918-library-help';
+import { initQuickActionIO } from './quick-action-io.js?v=20260918-library-help';
+import { initSmartPhraseIO } from './smart-phrase-io.js?v=20260918-library-help';
 import { initMemberMenus } from './member-menu.js?v=20260821-member-actions-2';
 
 function snapshot(form) {

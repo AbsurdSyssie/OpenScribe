@@ -135,7 +135,6 @@ export function createDocumentNavigator({
     followupOutputSubtitle,
     noteMeta,
     followupMeta,
-    noteHistory,
     followupHistory,
     latestGeneratedOutput,
     latestFollowupOutput,
@@ -189,18 +188,6 @@ export function createDocumentNavigator({
       return words.join(" ");
     }
     return `${words.slice(0, maxWords).join(" ")}…`;
-  };
-
-  const dispatchLegacyWorkspaceSelection = (kind, document) => {
-    if (!window.document.querySelector('[data-legacy-note-workspace]')) {
-      return;
-    }
-    window.document.dispatchEvent(new window.CustomEvent('openscribe:legacy-workspace-document-selected', {
-      detail: {
-        kind,
-        document: document || null,
-      },
-    }));
   };
 
   const workingNoteDocument = (state) => {
@@ -364,33 +351,6 @@ export function createDocumentNavigator({
     slot.appendChild(wrapper);
   };
 
-  const renderNoteHistory = (documents, selectedId) => {
-    if (!noteHistory) return;
-    documents = (Array.isArray(documents) ? documents : []).filter((item) => !isSplitPlaceholder(item));
-    noteHistory.innerHTML = "";
-    if (!documents.length) {
-      noteHistory.innerHTML = '<div class="text-sm text-slate">No note history yet.</div>';
-      return;
-    }
-    documents.forEach((item) => {
-      const card = window.document.createElement("button");
-      card.type = "button";
-      card.className = `assistant-subsection block w-full rounded-lg px-3 py-3 text-left transition ${item.id === selectedId ? "bg-teal-pale/35 border border-teal-muted/35" : "hover:bg-parchment/50"}`;
-      card.dataset.documentId = item.id;
-      card.dataset.documentKind = "note";
-      card.innerHTML = `
-        <div class="flex items-center justify-between gap-4">
-          <div class="min-w-0">
-            <div class="text-sm font-medium text-ink">${escapeHtml(noteDocumentLabel(item))}</div>
-            <div class="text-xs text-slate mt-1">${escapeHtml(item.source_template_name || "Note layout output")} · ${escapeHtml(item.model_used || "model not shown")}</div>
-          </div>
-          <div class="text-xs text-slate text-right">${escapeHtml(item.status || "")}<br>${escapeHtml(formatWorkspaceCreatedAt(item.created_at))}</div>
-        </div>
-      `;
-      noteHistory.appendChild(card);
-    });
-  };
-
   const renderFollowupHistory = (documents, selectedId) => {
     if (!followupHistory) return;
     followupHistory.innerHTML = "";
@@ -466,11 +426,9 @@ export function createDocumentNavigator({
       selectedId: selectedNote?.id || (state.hasActiveTranscript ? workingNoteTargetId(state.activeTranscriptId || '') : null),
       kind: "note",
     });
-    renderNoteHistory(state.workspaceNoteHistoryDocuments || state.workspaceNoteDocuments, selectedNote?.id || null);
     const selectedGeneratedNote = selectedNote?.kind === "working_note" || isSplitPlaceholder(selectedNote) ? null : selectedNote;
     renderLlmRequestPanel(outputLlmRequestSlot, selectedGeneratedNote);
     renderRedactionDebugPanel(outputRedactionSlot, selectedGeneratedNote);
-    dispatchLegacyWorkspaceSelection('note', selectedNote);
     return { preservedEditor: preserveCurrentEditorRender, selectedNote };
   };
 
@@ -515,7 +473,6 @@ export function createDocumentNavigator({
     });
     renderFollowupHistory(state.workspaceFollowupDocuments, selectedFollowup?.id || null);
     renderRedactionDebugPanel(followupRedactionSlot, selectedFollowup);
-    dispatchLegacyWorkspaceSelection('followup', selectedFollowup);
   };
 
   const selectDocumentFromUi = async (kind, documentId) => {

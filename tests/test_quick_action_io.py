@@ -5,7 +5,7 @@ from uuid import UUID
 import pytest
 from jsonschema import validate
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.errors import AppError
@@ -198,11 +198,23 @@ def test_export_preserves_selection_order_uses_latest_version_and_omits_authorit
     )
     db_session.commit()
 
-    exported = export_quick_action_bundle(
-        db_session,
-        member,
-        quick_action_ids=[team_action.id, personal.id],
-    )
+    statements: list[str] = []
+
+    def capture_statement(
+        _connection, _cursor, statement, _parameters, _context, _executemany
+    ):
+        statements.append(statement)
+
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", capture_statement)
+    try:
+        exported = export_quick_action_bundle(
+            db_session,
+            member,
+            quick_action_ids=[team_action.id, personal.id],
+        )
+    finally:
+        event.remove(bind, "before_cursor_execute", capture_statement)
 
     assert [
         entry["name"] for entry in exported["quick_actions"]
@@ -222,6 +234,13 @@ def test_export_preserves_selection_order_uses_latest_version_and_omits_authorit
         "created_at",
     ):
         assert forbidden not in encoded
+    version_selects = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith("SELECT")
+        and "quick_action_versions" in statement
+    ]
+    assert len(version_selects) == 1
 
 
 def test_export_rejects_foreign_or_duplicate_selection_atomically(
@@ -253,18 +272,36 @@ def test_export_rejects_foreign_or_duplicate_selection_atomically(
         name="Cross team",
     )
 
-    for ids, expected_status in (
-        ([own.id, own.id], 422),
-        ([own.id, foreign.id], 404),
-        ([own.id, cross_team.id], 404),
+    statements: list[str] = []
+
+    def capture_statement(
+        _connection, _cursor, statement, _parameters, _context, _executemany
     ):
-        with pytest.raises(AppError) as exc_info:
-            export_quick_action_bundle(
-                db_session,
-                actor,
-                quick_action_ids=ids,
-            )
-        assert exc_info.value.status_code == expected_status
+        statements.append(statement)
+
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", capture_statement)
+    try:
+        for ids, expected_status in (
+            ([own.id, own.id], 422),
+            ([own.id, foreign.id], 404),
+            ([own.id, cross_team.id], 404),
+            ([own.id, UUID(int=0)], 404),
+        ):
+            with pytest.raises(AppError) as exc_info:
+                export_quick_action_bundle(
+                    db_session,
+                    actor,
+                    quick_action_ids=ids,
+                )
+            assert exc_info.value.status_code == expected_status
+    finally:
+        event.remove(bind, "before_cursor_execute", capture_statement)
+
+    assert exc_info.value.code == "not_found"
+    assert exc_info.value.message == "One or more quick actions were not found"
+    assert exc_info.value.details == {"resource": "quick_action"}
+    assert not any("quick_action_versions" in statement for statement in statements)
 
     assert (
         db_session.scalar(
@@ -277,6 +314,38 @@ def test_export_rejects_foreign_or_duplicate_selection_atomically(
         )
         == 0
     )
+
+
+def test_export_preserves_missing_version_error(
+    db_session,
+    make_user,
+):
+    actor = make_user()
+    versionless = QuickAction(
+        scope=TemplateScope.user,
+        owner_user_id=actor.id,
+        name="Versionless action",
+        created_by_user_id=actor.id,
+    )
+    db_session.add(versionless)
+    db_session.commit()
+
+    with pytest.raises(AppError) as exc_info:
+        export_quick_action_bundle(
+            db_session,
+            actor,
+            quick_action_ids=[versionless.id],
+        )
+
+    assert (exc_info.value.status_code, exc_info.value.code, exc_info.value.message) == (
+        404,
+        "not_found",
+        "Quick action version not found",
+    )
+    assert exc_info.value.details == {
+        "resource": "quick_action_version",
+        "quick_action_id": str(versionless.id),
+    }
 
 
 def test_preflight_matches_template_exact_copy_and_suffix_semantics(

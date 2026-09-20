@@ -1,18 +1,47 @@
 """Leader team-management browser routes extracted from the home route module."""
 
-from ..main import *  # noqa: F401,F403
+import os
+from uuid import UUID
+
+from fastapi import Depends, Form, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy.orm import Session
+
+from ..db import get_db
+from ..errors import AppError
 from ..main import (
+    BrowserCsrf,
+    MFA_RATE_LIMIT,
     _home_page_route_from_return_view,
     _home_redirect_url,
     _home_return_view_value,
     _home_template_name_from_return_view,
     _page_context_or_redirect,
+    app,
 )
-from ..web.workspace import (
-    WORKSPACE_ACCOUNT_REQUESTS,
-    WORKSPACE_TEAM_MEMBERS,
-    render_workspace,
+from ..models import TeamRole, UserStatus
+from ..schemas import AccountRequestApprove, AccountRequestReject, UserCreate
+from ..services.admin import (
+    approve_account_request as approve_account_request_service,
+    create_user as create_user_service,
+    delete_user as delete_user_service,
+    reactivate_user as reactivate_user_service,
+    reject_account_request as reject_account_request_service,
+    reset_user_password_to_temporary as reset_user_password_to_temporary_service,
+    suspend_user as suspend_user_service,
 )
+from ..services.auth import verify_active_totp_for_user
+from ..services.auth_email import (
+    email_password_reset_enabled as email_password_reset_enabled_service,
+    get_manageable_user_for_recovery as get_manageable_user_for_recovery_service,
+    reset_user_mfa_for_reenrollment as reset_user_mfa_for_reenrollment_service,
+    send_account_activation_email as send_account_activation_email_service,
+    send_manager_account_recovery_email as send_manager_account_recovery_email_service,
+    send_manager_password_reset_email as send_manager_password_reset_email_service,
+)
+from ..services.security_audit import record_security_event
+from ..web.presentation import render_home
+from ..web.workspace import WORKSPACE_ACCOUNT_REQUESTS, WORKSPACE_TEAM_MEMBERS, render_workspace
 
 
 _legacy_render_home = render_home

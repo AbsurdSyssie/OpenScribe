@@ -30,6 +30,7 @@ from scripts.reset_unreadable_owner_content import reset_owner_content_for_user,
 
 from app.errors import AppError
 from app.services import transcripts as transcript_service
+from app.web import transcribe_workspace
 from app.main import (
     ACCOUNT_REQUEST_RATE_LIMIT,
     CSRF_COOKIE_NAME,
@@ -15645,6 +15646,7 @@ def test_transcribe_workspace_endpoint_returns_owner_workspace_state(
     make_user,
     make_template,
     make_quick_action,
+    monkeypatch,
 ):
     team = make_team(name="Workspace Team")
     owner = make_user(email="owner-workspace@example.com", password="password-1", team=team, team_role=TeamRole.user)
@@ -15689,6 +15691,52 @@ def test_transcribe_workspace_endpoint_returns_owner_workspace_state(
     db_session.add(generated)
     db_session.commit()
 
+    html_workspace = transcribe_workspace.resolve_transcribe_workspace(
+        db_session,
+        current_user=owner,
+        transcript_id=str(transcript.id),
+        live_stt_health_check=False,
+    )
+    html_detail = transcribe_workspace.transcribe_workspace_response(
+        db_session,
+        html_workspace,
+        current_user=owner,
+    ).model_dump(mode="json")
+    detail_workspace = transcribe_workspace.resolve_transcribe_workspace_detail(
+        db_session,
+        current_user=owner,
+        transcript_id=str(transcript.id),
+    ).model_dump(mode="json")
+    assert detail_workspace == html_detail
+
+    html_helpers = [
+        "_preferred_template_from_preferences",
+        "_structured_section_definitions_for_document",
+        "_structured_section_definitions_for_template",
+        "_default_emis_section_definitions",
+        "_structured_section_option_payloads",
+        "_document_section_lines",
+        "_structured_editor_sections",
+        "_freeform_editor_rows",
+        "_generated_note_has_content",
+    ]
+    for helper_name in html_helpers:
+        monkeypatch.setattr(
+            transcribe_workspace,
+            helper_name,
+            lambda *_args, _helper_name=helper_name, **_kwargs: (_ for _ in ()).throw(
+                AssertionError(f"REST/SSE workspace must not call {_helper_name}")
+            ),
+        )
+    generated_document_response = transcribe_workspace.generated_document_response
+    generated_document_response_calls = []
+
+    def track_generated_document_response(*args, **kwargs):
+        generated_document_response_calls.append(args[1].id)
+        return generated_document_response(*args, **kwargs)
+
+    monkeypatch.setattr(transcribe_workspace, "generated_document_response", track_generated_document_response)
+
     login(client, email="owner-workspace@example.com", password="password-1")
     response = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
 
@@ -15711,12 +15759,47 @@ def test_transcribe_workspace_endpoint_returns_owner_workspace_state(
     assert "No STT configured" in payload["stt_status_message"]
     assert payload["can_create_new_session"] is True
     assert payload["new_session_block_message"] is None
+    assert payload["generated_documents"][0]["edited_output_text"] == "Body text"
+    assert generated_document_response_calls == [generated.id]
+
+    stream_response = client.get(f"/api/v1/transcribe/workspace/stream?transcript_id={transcript.id}&once=true")
+    assert stream_response.status_code == 200
+    stream_data = next(line for line in stream_response.text.splitlines() if line.startswith("data: "))
+    stream_payload = json.loads(stream_data[6:])
+    assert stream_payload["generated_documents"][0]["edited_output_text"] == "Body text"
+    assert generated_document_response_calls == [generated.id, generated.id]
 
     client.post("/api/v1/auth/logout")
     login(client, email="other-workspace@example.com", password="password-2")
     forbidden = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
     assert forbidden.status_code == 200
     assert forbidden.json()["active_transcript"] is None
+
+
+def test_transcribe_workspace_detail_matches_html_projection_without_an_active_transcript(
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Empty workspace parity team")
+    owner = make_user(email="empty-workspace-parity@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    html_workspace = transcribe_workspace.resolve_transcribe_workspace(
+        db_session,
+        current_user=owner,
+        live_stt_health_check=False,
+    )
+    html_detail = transcribe_workspace.transcribe_workspace_response(
+        db_session,
+        html_workspace,
+        current_user=owner,
+    ).model_dump(mode="json")
+    detail_workspace = transcribe_workspace.resolve_transcribe_workspace_detail(
+        db_session,
+        current_user=owner,
+    ).model_dump(mode="json")
+
+    assert detail_workspace == html_detail
 
 
 def test_transcript_list_endpoint_pages_owner_consults_by_keyset(

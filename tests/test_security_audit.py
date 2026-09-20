@@ -1,14 +1,16 @@
 import logging
 
+import pytest
 from sqlalchemy import select
 
-from app.models import SecurityAuditEvent, Team, TeamRole, TeamStatus
+from app.models import SecurityAuditEvent, SessionAuthLevel, Team, TeamRole, TeamStatus, UserOnboardingState
 from app.schemas import UserCreate
 from app.schemas.preferences import UserAppPreferencesUpsert
 from app.schemas.smart_phrases import SmartPhraseCreate, SmartPhraseUpdate
 from app.schemas.templates import DefaultPromptTemplateUpsert, PromptTemplateUpsert
 from app.schemas.transcripts import TranscriptStart
 from app.services.admin import create_user, delete_team, reactivate_user, suspend_user
+from app.services.auth import SESSION_COOKIE_NAME, create_session
 from app.services.default_assets import delete_default_template, upsert_default_template
 from app.services.preferences import clear_user_app_preferences, set_user_app_preferences
 from app.services.security_audit import (
@@ -27,6 +29,48 @@ from app.models import TemplateMode, TemplateScope, TranscriptIngestionMode, Use
 
 def _audit_events(db_session, action: str) -> list[SecurityAuditEvent]:
     return list(db_session.scalars(select(SecurityAuditEvent).where(SecurityAuditEvent.action == action).order_by(SecurityAuditEvent.created_at.asc())))
+
+
+@pytest.mark.parametrize("path", [
+    "/api/v1/transcribe/workspace",
+    # The stream closes its own session; audit commits need independent connections.
+    pytest.param(
+        "/api/v1/transcribe/workspace/stream?once=true",
+        marks=pytest.mark.real_db_connections,
+    ),
+    "/openapi.json",
+])
+@pytest.mark.parametrize("auth_level,onboarding_state,reason,message", [
+    (
+        SessionAuthLevel.pending_mfa, UserOnboardingState.complete,
+        "mfa_required", "Complete TOTP verification before accessing this route",
+    ),
+    (
+        SessionAuthLevel.onboarding, UserOnboardingState.pending_password_change,
+        "onboarding_incomplete", "Complete onboarding before accessing this route",
+    ),
+])
+def test_full_session_boundaries_preserve_denial_and_audit(
+    raw_client, db_session, make_user, monkeypatch,
+    path, auth_level, onboarding_state, reason, message,
+):
+    monkeypatch.setenv("PUBLIC_API_DOCS", "false")
+    user = make_user(
+        email="partial-session@example.com", password="password-1",
+        onboarding_state=onboarding_state,
+    )
+    token = create_session(db_session, user, auth_level=auth_level)
+    raw_client.cookies.set(SESSION_COOKIE_NAME, token)
+
+    response = raw_client.get(path)
+
+    assert response.status_code == 403
+    assert response.json()["error"] == {"code": reason, "message": message}
+    events = _audit_events(db_session, "access_denied")
+    assert len(events) == 1
+    assert events[0].details_json["reason_code"] == reason
+    assert events[0].details_json["status_code"] == 403
+    assert token not in str(events[0].details_json)
 
 
 def test_record_security_event_redacts_nested_sensitive_values_and_sanitizes_strings(db_session):

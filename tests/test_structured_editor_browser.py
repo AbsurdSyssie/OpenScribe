@@ -211,6 +211,27 @@ def test_split_placeholder_uses_the_existing_generation_screen(static_repo_serve
         assert 'Checking your split notes...' in loading.inner_text()
 
 
+def test_structured_context_uses_rendered_sections_and_returns_empty_when_unselected(static_repo_server):
+    with _browser_page(static_repo_server) as page:
+        _install_editor(page, static_repo_server)
+        context = page.evaluate(
+            """() => {
+              const rows = [...document.querySelectorAll('[data-structured-statement-row]')];
+              const selected = window.testEditor.collectStructuredContext();
+              rows.forEach((row) => {
+                row.querySelector('[data-structured-line-checkbox]').checked = false;
+              });
+              return { selected, empty: window.testEditor.collectStructuredContext() };
+            }"""
+        )
+
+    assert context["selected"] == {
+        "history": ["History 0 with enough text to edit"],
+        "examination": ["Examination 0 with enough text to edit"],
+    }
+    assert context["empty"] == {}
+
+
 def test_editing_a_moved_row_relocks_its_destination_section(static_repo_server):
     with _browser_page(static_repo_server) as page:
         _install_editor(page, static_repo_server)

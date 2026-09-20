@@ -9,6 +9,15 @@ export function formatSessionRailCreatedAt(value) {
   }).format(new Date(timestamp));
 }
 
+export function syncSessionRailCreatedAt(node, value) {
+  const createdAt = node?.querySelector?.('[data-session-created-at]');
+  if (!createdAt) return;
+  createdAt.dataset.sessionCreatedAt = value || '';
+  createdAt.textContent = formatSessionRailCreatedAt(value);
+  createdAt.dataset.sessionCreatedAtReady = 'true';
+  createdAt.removeAttribute?.('aria-hidden');
+}
+
 export function sessionRailGroup(value) {
   const timestamp = Date.parse(value || '');
   if (!Number.isFinite(timestamp)) {

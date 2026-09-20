@@ -110,6 +110,7 @@ from app.web.presentation import (
     llm_form_defaults,
     stt_form_defaults,
 )
+from app.web import transcribe_workspace
 
 
 class FakeHttpxResponse:
@@ -183,6 +184,31 @@ def make_ingestion_job_for_transcript(transcript: Transcript, **kwargs) -> Trans
         team_id=transcript.team_id,
         **kwargs,
     )
+
+
+def _count_workspace_content_materializers(monkeypatch):
+    calls = {"working_note": 0, "pii_entities": 0, "redaction_status": 0, "clinical_nlp_status": 0}
+    materializers = {
+        "working_note": "working_note_detail_service",
+        "pii_entities": "transcript_pii_entities_response",
+        "redaction_status": "transcript_redaction_status_response",
+        "clinical_nlp_status": "transcript_clinical_nlp_status_response",
+    }
+    for call_name, attribute in materializers.items():
+        original = getattr(transcribe_workspace, attribute)
+
+        def count_and_call(*args, _call_name=call_name, _original=original, **kwargs):
+            calls[_call_name] += 1
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(transcribe_workspace, attribute, count_and_call)
+    return calls
+
+
+def _transcribe_bootstrap_payload(html: str) -> dict:
+    match = re.search(r'<script id="transcribe-bootstrap"[^>]*>\s*(.*?)\s*</script>', html, re.DOTALL)
+    assert match is not None
+    return json.loads(match.group(1))
 
 
 @pytest.fixture(autouse=True)
@@ -3593,7 +3619,7 @@ def test_transcribe_documents_show_hallucination_check_panel():
 
     assert "Hallucination check" in documents_js
     assert "Debug payload not available. Set HALLUCINATION_CHECK_DEBUG_UI=1 before generating the note" in documents_js
-    assert "documents.js?v=20260821-mobile-production-2" in app_js
+    assert "documents.js?v=20260918-retired-note-workspace" in app_js
 
 
 def test_admin_llm_draft_flow_hides_key_after_saved_and_shows_pending_state(
@@ -4164,7 +4190,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' not in page.text
     assert 'aria-label="Workspace navigation"' in page.text
     assert "My Library" in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260912-split-review-auto-edit"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260918-retired-note-workspace"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -4244,7 +4270,7 @@ def test_transcribe_page_does_not_block_on_uncached_stt_health(client, make_team
     assert "Speech service health has not been checked yet." in page.text
 
 
-def test_transcribe_page_bootstraps_saved_working_note(client, make_team, make_user):
+def test_transcribe_page_bootstraps_saved_working_note(client, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic Working Note")
     make_user(email="working-note@example.com", password="password-3", team=team, team_role=TeamRole.user)
 
@@ -4260,12 +4286,80 @@ def test_transcribe_page_bootstraps_saved_working_note(client, make_team, make_u
         json={"mode": "freeform", "freeform_text": "Refresh keeps this working note."},
     )
     assert note_response.status_code == 200
+    pii_response = client.post(
+        f"/api/v1/transcripts/{transcript_id}/manual-pii",
+        json={"entity_type": "NHS_NUMBER", "value": "999 000 1111"},
+    )
+    assert pii_response.status_code == 201
+
+    api_workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript_id}")
+    assert api_workspace.status_code == 200
+    expected_workspace = api_workspace.json()
+    materializer_calls = _count_workspace_content_materializers(monkeypatch)
 
     page = client.get(f"/transcribe?transcript_id={transcript_id}")
 
     assert page.status_code == 200
     assert '"activeWorkingNote"' in page.text
     assert "Refresh keeps this working note." in page.text
+    assert materializer_calls == {
+        "working_note": 1,
+        "pii_entities": 1,
+        "redaction_status": 1,
+        "clinical_nlp_status": 1,
+    }
+    bootstrap = _transcribe_bootstrap_payload(page.text)
+    assert bootstrap["activeWorkingNote"] == expected_workspace["active_working_note"]
+    assert bootstrap["activeWorkingNote"]["mode"] == "freeform"
+    assert bootstrap["activeWorkingNote"]["transcript_id"] == transcript_id
+    assert isinstance(bootstrap["activeWorkingNote"]["updated_at"], str)
+    assert bootstrap["activeTranscriptPiiEntities"] == expected_workspace["active_transcript_pii_entities"]
+    assert bootstrap["activeTranscriptRedactionStatus"] == expected_workspace["active_transcript_redaction_status"]
+    assert bootstrap["activeTranscriptClinicalNlpStatus"] == expected_workspace["active_transcript_clinical_nlp_status"]
+
+
+@pytest.mark.parametrize("change", ["expire", "change_owner"])
+def test_render_transcribe_rechecks_active_transcript_before_serializing_workspace_content(
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+    change,
+):
+    team = make_team(name=f"Clinic render recheck {change}")
+    owner = make_user(email=f"render-recheck-owner-{change}@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other_user = make_user(email=f"render-recheck-other-{change}@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Render boundary recheck",
+        current_draft_text_encrypted="Synthetic content",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    resolved_workspace = transcribe_workspace.resolve_transcribe_workspace(
+        db_session,
+        current_user=owner,
+        transcript_id=str(transcript.id),
+        live_stt_health_check=False,
+    )
+    monkeypatch.setattr(transcribe_workspace, "resolve_transcribe_workspace", lambda *args, **kwargs: resolved_workspace)
+    if change == "expire":
+        transcript.retention_expires_at = utcnow() - timedelta(seconds=1)
+        expected_status = 404
+    else:
+        transcript.owner_user_id = other_user.id
+        expected_status = 403
+    db_session.flush()
+
+    with pytest.raises(AppError) as error:
+        transcribe_workspace.render_transcribe(None, db_session, current_user=owner)
+
+    assert error.value.status_code == expected_status
 
 
 def _generate_create_form_block(html: str) -> str:
@@ -4531,7 +4625,7 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
 
     assert page.status_code == 200
     assert "/static/css/tokens.css?v=20260902-control-height" in page.text
-    assert "/static/css/transcribe.css?v=20260911-partial-actions" in page.text
+    assert "/static/css/transcribe.css?v=20260911-note-regeneration-layer-fix" in page.text
     assert "/static/css/transcribe-mobile.css" in page.text
     assert "/static/js/workspace/app.js" in page.text
     assert page.text.count("/static/js/transcribe/mobile.js?v=20260823-mobile-toast") == 1
@@ -4702,16 +4796,23 @@ def test_shared_csrf_fetch_limits_header_to_same_origin_api():
     assert "url.pathname.startsWith('/api/v1/')" in source
 
 
-def test_user_transcribe_page_uses_workspace_template(client, make_team, make_user):
+def test_user_transcribe_page_uses_workspace_template(client, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic GLM UI")
     make_user(email="member-glm@example.com", password="password-3", team=team, team_role=TeamRole.user)
 
     client.post("/login", data={"email": "member-glm@example.com", "password": "password-3"}, follow_redirects=False)
+    materializer_calls = _count_workspace_content_materializers(monkeypatch)
     page = client.get("/transcribe")
 
     assert page.status_code == 200
     assert "OpenScribe" in page.text
     assert 'action="/transcribe/sessions/delete"' in page.text
+    assert materializer_calls == {
+        "working_note": 0,
+        "pii_entities": 1,
+        "redaction_status": 1,
+        "clinical_nlp_status": 1,
+    }
 
 
 def test_user_transcribe_page_renders_workspace_values(
@@ -4946,7 +5047,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260912-split-review-auto-edit" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260918-retired-note-workspace" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -6269,13 +6370,14 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "new URL('/api/v1/transcripts', window.location.origin)" in app_js
     assert "const setupSidebarInfiniteScroll = () => {" in app_js
     assert "data-session-list-sentinel" in session_panel_html
+    assert 'data-session-created-at="{{ transcript.created_at.isoformat() }}"' in session_panel_html
     assert "const linksById = new Map(currentSessionLinks().map((link) => [link.dataset.transcriptId, link]));" in app_js
     assert "const seenIds = new Set();" in app_js
     assert "sessionList.replaceChildren(fragment);" in app_js
     assert "sessionList.style.minHeight = `${previousListHeight}px`;" in app_js
     assert "sessionList.style.minHeight = '';" in app_js
     assert "const revealSessionRailTranscript = (transcriptIdToReveal, scrollContainer) => {" in app_js
-    assert "} from './sessionRail.js?v=20260730-local-time';" in app_js
+    assert "} from './sessionRail.js?v=20260920-session-sidebar-timezone';" in app_js
     assert "keepSessionRailItemVisible({ scrollContainer, item, behavior });" in app_js
     assert "scrollContainer?.scrollTo({ top: previousScrollTop, behavior: 'auto' });" in app_js
     assert "document.addEventListener('transcribe:session-panel-opened'" in app_js
@@ -6302,7 +6404,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const currentSelectionBoxes = () => sessionList ? [...sessionList.querySelectorAll('[data-session-select]')] : [];" in app_js
     assert "sessionList?.addEventListener('change', (event) => {" in app_js
     assert "dom.sessionList?.addEventListener('click', async (event) => {" in actions_js
-    assert actions_js.count("!(await persistPendingEditorsBeforeWorkspaceSwitch())") == 3
+    assert actions_js.count("!(await persistPendingEditorsBeforeWorkspaceSwitch())") == 4
     assert "const persistPendingEditorsBeforeWorkspaceSwitch = async () => {" in app_js
     assert "await persistNoteEditsUntilDrained({ keepalive: false });" in app_js
     assert "await persistFollowupEditsUntilDrained({ keepalive: false });" in app_js
@@ -6349,7 +6451,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "finalizeLiveCapture: async ({ keepalive = false } = {}) => {" in app_js
     assert "Tab moved to background. Flushing live capture before browser throttling can delay it..." in media_js
     assert "readActiveDraftText" in app_js
-    assert "document.querySelectorAll('[data-legacy-note-workspace] .section-block')" in structured_js
+    assert "data-legacy-note-workspace" not in structured_js
     assert "row.className = 'statement-row';" in structured_js
     assert "textarea.className = 'statement-editor';" in structured_js
     assert "card.className = 'structured-section-block';" in structured_js
@@ -6429,7 +6531,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "status: nextSelectedNote?.status || ''," in app_js
     assert "dirtyNoteDocumentId" not in app_js
     assert "const hasProtectedWorkingNoteEditor = () => (" not in app_js
-    assert "const validNoteTargets = [...(transcriptId ? [{ id: workingNoteTargetId(transcriptId) }] : []), ...noteDocuments];" in app_js
+    assert "const validNoteTargets = [...(transcriptId ? [{ id: workingNoteTargetId(transcriptId) }] : []), ...workspaceNoteDocuments];" in app_js
     assert "const selectedEditorId = selectedNoteId || (state.hasActiveTranscript ? workingNoteTargetId(state.activeTranscriptId || '') : null);" in documents_js
     assert "shouldPreserveNoteEditorRender?.(selectedEditorId, selectedNote)" in documents_js
     assert "const workingNoteDocument = (state) => {" in documents_js
@@ -6452,7 +6554,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "runQuickActionTrigger.disabled = !canUsePrimaryFollowupAction;" in app_js
     assert "if (!dom.quickActionContextInput?.value?.trim()) {" in actions_js
     assert "showFlash('Choose a quick action or add context.', 'warning');" in actions_js
-    assert "./actions.js?v=20260906-workspace-fetch-policy" in app_js
+    assert "./actions.js?v=20260918-retired-note-workspace" in app_js
     assert "const isDiscardableEmptyWorkingNoteDraft = () => (" in app_js
     assert "return { kind: 'working_note_empty_draft_discarded' };" in app_js
     assert "Empty working-note draft ignored." in app_js
@@ -6509,10 +6611,10 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "onNoteGenerationQueued" not in actions_js
     assert "silent: true" not in app_js
     assert "silent = false" not in app_js
-    assert "generateOutputButton.disabled = generationBusy || !canGenerateNote;" in app_js
-    assert "generateOutputTemplateSelect.disabled = generationBusy || !canChooseTemplate;" in app_js
-    assert "templatePickerButton.disabled = generationBusy || !canChooseTemplate;" in app_js
-    assert "button.disabled = generationBusy || !canChooseTemplate;" in app_js
+    assert "generateOutputButton.disabled = generationBusy || splitBatchActive || !canGenerateNote;" in app_js
+    assert "generateOutputTemplateSelect.disabled = generationBusy || splitBatchActive || !canChooseTemplate;" in app_js
+    assert "templatePickerButton.disabled = generationBusy || splitBatchActive || !canChooseTemplate;" in app_js
+    assert "button.disabled = generationBusy || splitBatchActive || !canChooseTemplate;" in app_js
     assert "runQuickActionSelect.disabled = generationBusy || !canChooseQuickAction;" in app_js
     assert "quickActionContextInput.disabled = !canUseFollowupRequest;" in app_js
     assert "quickActionContextRecordButton.disabled = !canUseFollowupRequest || voiceUnavailable;" in app_js
@@ -6571,7 +6673,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert 'Upload audio' in workspace_html
     assert 'Recording unavailable. You can type dictation manually.' in workspace_html
     assert "data-new-session-block-message" not in sidebar_html
-    assert "openscribe:legacy-workspace-document-selected" not in workspace_html
+    assert "data-note-history" not in workspace_html
     assert "activateNoteTab('note')" not in workspace_html
     assert "data-generated-structured-sections" in workspace_html
     assert "data-followup-history" in workspace_html
@@ -6612,7 +6714,9 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "${displayRows.map((entity) => `" in app_js
     assert "renderPiiEntities?.(selectedNote?.pii_entities" not in documents_js
     assert "renderPiiEntities," in app_js
-    assert "dom.noteHistory?.addEventListener('click'" in actions_js
+    assert "data-legacy-note-workspace" not in actions_js
+    assert "data-note-history" not in app_js
+    assert "openscribe:legacy-workspace-document-selected" not in documents_js
     assert "const wrapper = window.document.createElement('details');" in app_js
     assert "structuredEditor.renderStructuredSections(generatedStructuredDraft);" not in app_js
     assert "generatedDocument.status === 'ready' && generatedDocument.document_mode === 'freeform'" in structured_js
@@ -6736,7 +6840,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260912-split-review-auto-edit" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260918-retired-note-workspace" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

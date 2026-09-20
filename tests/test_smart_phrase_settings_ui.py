@@ -138,6 +138,8 @@ def test_smart_phrase_io_frontend_keeps_personal_import_and_safe_rendering():
     assert "search.disabled = false;" in script
     assert "search.value = priorSearchValue;" in script
     assert "search.dispatchEvent(new Event('input'));" in script
+    assert "initLibraryHelp(library, {" in script
+    assert "prefix: 'smart-phrase'" in script
 
 
 def test_smart_phrase_import_shows_success_state_before_library_refresh():
@@ -186,11 +188,9 @@ def test_smart_phrase_help_copies_schema_aware_ai_instructions():
         "data-smart-phrase-help-prompt",
     ):
         assert hook in PARTIAL
-        assert f"[{hook}]" in script
     assert "Ask only the questions needed to resolve information that is missing or unclear." in script
     assert "Store trigger without the leading slash" in script
     assert "only uppercase A-Z, numbers, and underscores" in script
     assert "Smart phrase bundles reject unknown fields." in script
     assert "openscribe-smart-phrase-bundle-v1.schema.json" in script
-    assert "navigator.clipboard.writeText" in script
-    assert ".select()" in script
+    assert "errorMessage: 'The smart phrase instructions could not be loaded.'" in script

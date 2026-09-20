@@ -1,43 +1,135 @@
 """Admin browser routes extracted from app.main."""
 
-import json
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
+import json
+import os
 from urllib.parse import urlencode
+from uuid import UUID
 
+from fastapi import Depends, Form, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import ValidationError
+from sqlalchemy.orm import Session
 
 from .. import main as main_module
-from ..main import *  # noqa: F401,F403
+from ..db import get_db
+from ..errors import AppError
+from ..llm_provider_defaults import DEFAULT_BEDROCK_CHAT_REGION, bedrock_region_from_base_url
 from ..main import (
+    BrowserCsrf,
+    MFA_RATE_LIMIT,
     _admin_page_route_from_return_view,
     _admin_redirect_url,
     _admin_return_view_value,
     _page_context_or_redirect,
+    app,
 )
-from ..stt_normalization import normalize_stt_language
-from ..models import LegalDocumentKind, LlmConfigSetupStatus, SecurityAuditHoldReason, SttConfigSetupStatus, Team, TeamLlmConfig, TeamSttConfig
-from ..services.admin import update_team_default_retention as update_team_default_retention_service
-from ..schemas import HallucinationCheckSelectionUpsert
-from ..services.llm import (
-    clear_team_hallucination_check_selection as clear_team_hallucination_check_selection_service,
-    set_team_hallucination_check_selection as set_team_hallucination_check_selection_service,
-    update_llm_config_details as update_llm_config_details_service,
+from ..models import (
+    DeidentificationAdapterKind,
+    DeidentificationAuthMode,
+    LegalDocumentKind,
+    LlmAdapterKind,
+    LlmConfigSetupStatus,
+    ProviderCredentialStatus,
+    QuotaPeriod,
+    QuotaResource,
+    SecurityAuditHoldReason,
+    SttAdapterKind,
+    SttConfigSetupStatus,
+    SttSelectionPurpose,
+    Team,
+    TeamLlmConfig,
+    TeamRole,
+    TeamStatus,
+    TeamSttConfig,
+    TemplateMode,
+    User,
+    UserQuotaReasonCode,
+    UserStatus,
 )
-from ..services.stt import update_stt_config_details as update_stt_config_details_service
-from ..web.presentation import default_template_return_tab as resolve_default_template_return_tab
-from ..models import QuotaPeriod, QuotaResource, User, UserQuotaReasonCode
-from ..services.admin_quotas import (
-    grant_user_quota_batch,
-    reset_user_quota_batch,
-    revoke_user_quota_grant,
-    update_user_base_quotas_batch,
+from ..schemas import (
+    AccountRequestApprove,
+    AccountRequestReject,
+    ClinicalNlpSelectionUpsert,
+    DefaultPromptTemplateUpsert,
+    DefaultQuickActionUpsert,
+    DeidentificationProviderAssignmentUpsert,
+    DeidentificationProviderInspectRequest,
+    DeidentificationProviderUpsert,
+    DeidentificationSelectionUpsert,
+    HallucinationCheckSelectionUpsert,
+    LlmConfigDraftCreate,
+    LlmConfigDraftReplaceCredential,
+    LlmConfigFinalize,
+    LlmConfigUpsert,
+    LlmInspectRequest,
+    LlmSelectionUpsert,
+    SttConfigDraftCreate,
+    SttConfigDraftReplaceCredential,
+    SttConfigFinalize,
+    SttConfigUpsert,
+    SttInspectRequest,
+    SttSelectionUpsert,
+    TeamCreate,
+    UserCreate,
 )
 from ..schemas.legal_content import (
     LegalDocumentContent,
     LegalDocumentDraftCreate,
     LegalDocumentDraftUpdate,
     OperatorLegalProfileUpdate,
+)
+from ..services.admin import (
+    approve_account_request as approve_account_request_service,
+    create_team as create_team_service,
+    create_user as create_user_service,
+    delete_team as delete_team_service,
+    delete_user as delete_user_service,
+    reactivate_user as reactivate_user_service,
+    reject_account_request as reject_account_request_service,
+    reset_user_password_to_temporary as reset_user_password_to_temporary_service,
+    suspend_user as suspend_user_service,
+    update_team_default_retention as update_team_default_retention_service,
+)
+from ..services.admin_quotas import (
+    grant_user_quota_batch,
+    reset_user_quota_batch,
+    revoke_user_quota_grant,
+    update_user_base_quotas_batch,
+)
+from ..services.audit_retention import (
+    place_security_audit_hold,
+    release_security_audit_hold,
+    renew_security_audit_hold,
+)
+from ..services.auth import verify_active_totp_for_user
+from ..services.auth_email import (
+    email_password_reset_enabled as email_password_reset_enabled_service,
+    get_manageable_user_for_recovery as get_manageable_user_for_recovery_service,
+    reset_user_mfa_for_reenrollment as reset_user_mfa_for_reenrollment_service,
+    send_account_activation_email as send_account_activation_email_service,
+    send_manager_account_recovery_email as send_manager_account_recovery_email_service,
+    send_manager_password_reset_email as send_manager_password_reset_email_service,
+)
+from ..services.default_assets import (
+    delete_default_quick_action as delete_default_quick_action_service,
+    delete_default_template as delete_default_template_service,
+    duplicate_default_quick_action as duplicate_default_quick_action_service,
+    duplicate_default_template as duplicate_default_template_service,
+    upsert_default_quick_action as upsert_default_quick_action_service,
+    upsert_default_template as upsert_default_template_service,
+)
+from ..services.deidentification import (
+    assign_deidentification_provider_to_team as assign_deidentification_provider_to_team_service,
+    clear_team_clinical_nlp_selection as clear_team_clinical_nlp_selection_service,
+    clear_team_deidentification_selection as clear_team_deidentification_selection_service,
+    delete_deidentification_provider as delete_deidentification_provider_service,
+    inspect_deidentification_provider as inspect_deidentification_provider_service,
+    remove_deidentification_provider_assignment as remove_deidentification_provider_assignment_service,
+    set_team_clinical_nlp_selection as set_team_clinical_nlp_selection_service,
+    set_team_deidentification_selection as set_team_deidentification_selection_service,
+    upsert_deidentification_provider as upsert_deidentification_provider_service,
 )
 from ..services.legal_content import (
     create_legal_document_draft,
@@ -60,11 +152,42 @@ from ..services.legal_content_retention import (
     place_legal_document_hold,
     release_legal_document_hold,
 )
-from ..services.audit_retention import (
-    place_security_audit_hold,
-    release_security_audit_hold,
-    renew_security_audit_hold,
+from ..services.llm import (
+    clear_team_hallucination_check_selection as clear_team_hallucination_check_selection_service,
+    clear_team_llm_selection as clear_team_llm_selection_service,
+    create_llm_config_draft as create_llm_config_draft_service,
+    delete_llm_config as delete_llm_config_service,
+    finalize_llm_config_draft as finalize_llm_config_draft_service,
+    inspect_llm_contract as inspect_llm_contract_service,
+    replace_llm_config_draft_credential as replace_llm_config_draft_credential_service,
+    set_team_hallucination_check_selection as set_team_hallucination_check_selection_service,
+    set_team_llm_selection as set_team_llm_selection_service,
+    update_llm_config_details as update_llm_config_details_service,
+    upsert_llm_config as upsert_llm_config_service,
 )
+from ..services.security_audit import record_security_event
+from ..services.stt import (
+    clear_team_stt_selection as clear_team_stt_selection_service,
+    create_stt_config_draft as create_stt_config_draft_service,
+    delete_stt_config as delete_stt_config_service,
+    finalize_stt_config_draft as finalize_stt_config_draft_service,
+    inspect_stt_contract as inspect_stt_contract_service,
+    replace_stt_config_draft_credential as replace_stt_config_draft_credential_service,
+    set_team_stt_selection as set_team_stt_selection_service,
+    update_stt_config_details as update_stt_config_details_service,
+    upsert_stt_config as upsert_stt_config_service,
+)
+from ..stt_normalization import normalize_stt_language
+from ..web.presentation import (
+    default_template_return_tab as resolve_default_template_return_tab,
+    llm_form_defaults,
+    parse_extra_form_fields_json,
+    parse_json_object,
+    parse_string_map_json,
+    render_admin,
+    stt_form_defaults,
+)
+from ..web.templates import templates
 
 
 def _quota_panel_target(db: Session, user_id: UUID) -> User | None:

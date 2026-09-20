@@ -2,7 +2,7 @@ import json
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -75,13 +75,43 @@ def export_quick_action_bundle(
             {"resource": "quick_action"},
         )
 
+    latest_version_nos = (
+        select(
+            QuickActionVersion.quick_action_id,
+            func.max(QuickActionVersion.version_no).label("version_no"),
+        )
+        .where(QuickActionVersion.quick_action_id.in_(quick_action_ids))
+        .group_by(QuickActionVersion.quick_action_id)
+        .subquery()
+    )
+    latest_versions = {
+        version.quick_action_id: version
+        for version in db.scalars(
+            select(QuickActionVersion).join(
+                latest_version_nos,
+                and_(
+                    QuickActionVersion.quick_action_id
+                    == latest_version_nos.c.quick_action_id,
+                    QuickActionVersion.version_no == latest_version_nos.c.version_no,
+                ),
+            )
+        )
+    }
+
     entries: list[dict[str, object]] = []
     for quick_action_id in quick_action_ids:
         quick_action = by_id[quick_action_id]
-        version = _latest_quick_action_version(
-            db,
-            quick_action_id=quick_action.id,
-        )
+        version = latest_versions.get(quick_action.id)
+        if version is None:
+            raise AppError(
+                404,
+                "not_found",
+                "Quick action version not found",
+                {
+                    "resource": "quick_action_version",
+                    "quick_action_id": str(quick_action.id),
+                },
+            )
         if version.mode is not TemplateMode.freeform:
             raise AppError(
                 422,

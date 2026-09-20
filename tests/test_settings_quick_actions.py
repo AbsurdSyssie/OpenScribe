@@ -267,62 +267,31 @@ def test_quick_action_library_renders_portability_controls_and_authorized_destin
     assert 'name="quick-action-import-destination" value="team" data-quick-action-import-destination' in leader_page.text
 
 
-def test_quick_action_io_frontend_uses_safe_preflight_and_original_file_reupload():
+def test_quick_action_io_configures_shared_controller_and_wires_help_adapter():
     script = Path("app/static/js/settings/quick-action-io.js").read_text(encoding="utf-8")
     markup = Path("app/templates/settings/_quick_action_library.html").read_text(encoding="utf-8")
 
+    assert "initLibraryIO" in script
+    assert "prefix: 'quick-action'" in script
+    assert "asset: 'quick action'" in script
     for endpoint in (
         "/api/v1/quick-actions/export",
         "/api/v1/quick-actions/import/preflight",
         "/api/v1/quick-actions/import",
     ):
         assert endpoint in script
-    assert "document.querySelector('[data-quick-action-import-dialog]')" in script
-    assert "data.append('bundle', currentFile, currentFile.name)" in script
-    assert "data.append('selected_indexes', JSON.stringify(indexes))" in script
-    assert "JSON.parse(json)" in script
-    assert "new File([json]" in script
-    assert ".textContent =" in script
-    assert "innerHTML" not in script
-    assert "const isCleanSingleQuickAction = (body)" in script
-    assert "await importCurrent([body.entries[0].index]);" in script
     assert 'class="template-library-utilities" aria-label="Quick action import and export"' in markup
     assert "Quick actions give OpenScribe a reusable instruction for the current consultation" in markup
+    assert "initLibraryHelp(library, {" in script
+    assert "prefix: 'quick-action'" in script
 
 
 def test_quick_action_import_shows_success_state_before_library_refresh():
-    script = Path("app/static/js/settings/quick-action-io.js").read_text(encoding="utf-8")
     markup = Path("app/templates/settings/_quick_action_library.html").read_text(encoding="utf-8")
 
     assert "data-quick-action-import-success hidden" in markup
     assert 'data-lucide="party-popper"' in markup
     assert "data-quick-action-import-continue hidden" in markup
-    assert "quick action${imported === 1 ? '' : 's'} imported and ready to use." in script
-    assert "continueButton.focus()" in script
-    assert "let seconds = 5" in script
-    assert "continueButton.textContent = `Close (${seconds})`" in script
-    assert "continueButton.addEventListener('click', finishImport)" in script
-
-
-def test_quick_action_io_frontend_limits_exports_and_keeps_commits_open():
-    script = Path("app/static/js/settings/quick-action-io.js").read_text(encoding="utf-8")
-
-    assert "const MAX_EXPORT_ITEMS = 100;" in script
-    assert "selected().length < Math.min(checks.length, MAX_EXPORT_ITEMS)" in script
-    assert "checkbox.checked = shouldSelect && index < MAX_EXPORT_ITEMS;" in script
-    assert "if (quickActionIds.length > MAX_EXPORT_ITEMS)" in script
-    assert "let isCommitting = false;" in script
-    assert "dialog.querySelector('form')?.addEventListener('submit', (event) => { if (isCommitting) event.preventDefault(); });" in script
-    assert "dialog.addEventListener('cancel', (event) => { if (isCommitting) event.preventDefault(); });" in script
-
-
-def test_quick_action_io_ignores_superseded_preflight_responses():
-    script = Path("app/static/js/settings/quick-action-io.js").read_text(encoding="utf-8")
-
-    assert "let preflightRequestId = 0;" in script
-    assert "preflightRequestId += 1;" in script
-    assert "const requestId = ++preflightRequestId;" in script
-    assert script.count("if (requestId !== preflightRequestId) return;") >= 2
 
 
 def test_quick_action_help_copies_schema_aware_ai_instructions():
@@ -338,10 +307,8 @@ def test_quick_action_help_copies_schema_aware_ai_instructions():
         "data-quick-action-help-prompt",
     ):
         assert hook in markup
-        assert f"[{hook}]" in script
     assert "Ask only the questions needed to resolve information that is missing or unclear." in script
     assert 'Every latest_version must have mode "freeform".' in script
     assert "use only information supported by the consultation" in script
     assert "openscribe-quick-action-bundle-v1.schema.json" in script
-    assert "navigator.clipboard.writeText" in script
-    assert ".select()" in script
+    assert "errorMessage: 'The quick action instructions could not be loaded.'" in script

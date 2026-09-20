@@ -1,9 +1,9 @@
-import { attachTranscribeActions } from './actions.js?v=20260911-note-regeneration-2';
+import { attachTranscribeActions } from './actions.js?v=20260918-retired-note-workspace';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
-import { createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationLoadingHtml } from './documents.js?v=20260912-split-placeholder-slots';
+import { createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationLoadingHtml } from './documents.js?v=20260918-retired-note-workspace';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
 import { createAudioCaptureController } from './media.js?v=20260528-consult-boundary-guard';
-import { createStructuredEditor } from './structured.js?v=20260821-mobile-document-mode';
+import { createStructuredEditor } from './structured.js?v=20260918-retired-note-workspace';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
 import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
@@ -18,7 +18,8 @@ import {
   reconcileSessionRailItems,
   sessionRailGroup,
   sortSessionRailItems,
-} from './sessionRail.js?v=20260730-local-time';
+  syncSessionRailCreatedAt,
+} from './sessionRail.js?v=20260920-session-sidebar-timestamp-skeleton';
 
       const bootstrap = readTranscribeBootstrap();
       const shell = document.querySelector('[data-workspace-endpoint]');
@@ -170,7 +171,6 @@ import {
       const followupSelectorCount = document.querySelector('[data-followup-selector-count]');
       const noteMeta = document.querySelector('[data-note-meta]');
       const followupMeta = document.querySelector('[data-followup-meta]');
-      const noteHistory = document.querySelector('[data-note-history]');
       const followupHistory = document.querySelector('[data-followup-history]');
       const outputRedactionSlot = document.querySelector('[data-output-redaction-debug-slot]');
       const followupRedactionSlot = document.querySelector('[data-followup-redaction-debug-slot]');
@@ -2957,6 +2957,8 @@ let statusDetailsHideTimer = null;
 
         const createdAt = document.createElement('span');
         createdAt.className = 'text-xs text-slate';
+        createdAt.dataset.sessionCreatedAt = item.created_at || '';
+        createdAt.setAttribute('aria-hidden', 'true');
         createdAt.textContent = formatSessionRailCreatedAt(item.created_at);
 
         const status = document.createElement('span');
@@ -3063,6 +3065,7 @@ let statusDetailsHideTimer = null;
             node = createSidebarSessionItem(item);
             link = node.querySelector('[data-session-link]');
           }
+          syncSessionRailCreatedAt(node, item.created_at);
           fragment.append(node);
         });
         if (seenIds.size === 0) {
@@ -3544,7 +3547,6 @@ let statusDetailsHideTimer = null;
           followupSelectorCount,
           noteMeta,
           followupMeta,
-          noteHistory,
           followupHistory,
           latestGeneratedOutput,
           latestFollowupOutput,
@@ -3564,7 +3566,6 @@ let statusDetailsHideTimer = null;
         },
         getState: () => ({
           workspaceNoteDocuments,
-          workspaceNoteHistoryDocuments,
           workspaceFollowupDocuments,
           workspaceStructuredContext,
           activeWorkingNote,
@@ -3872,6 +3873,10 @@ let statusDetailsHideTimer = null;
         sidebarTranscripts.forEach((item) => {
           const node = document.querySelector(`[data-sidebar-status="${item.id}"]`);
           if (node) setSidebarStatus(node, item.status, item.ingestion_mode, Boolean(item.has_transcript_content));
+          syncSessionRailCreatedAt(
+            document.querySelector(`[data-session-link][data-transcript-id="${item.id}"]`)?.closest('.session-item'),
+            item.created_at,
+          );
           const titleNode = document.querySelector(`[data-session-link][data-transcript-id="${item.id}"] .session-title`);
           const nextTitle = item.title || 'Untitled session';
           if (titleNode && titleNode.textContent !== nextTitle) titleNode.textContent = nextTitle;

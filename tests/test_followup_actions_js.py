@@ -16,20 +16,24 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
 
             const actionsPath = __ACTIONS_PATH__;
             const documentsPath = __DOCUMENTS_PATH__;
+            const regenerationPath = __REGENERATION_PATH__;
             const appPath = __APP_PATH__;
             const actionsSource = fs.readFileSync(actionsPath, 'utf8')
               .replace("import { csrfFetch } from '../csrf.js';", '')
+              .replace("import { createGeneratedNoteRegenerationController } from './regeneration.js?v=20260911-note-regeneration';", '')
               .replace('export function attachTranscribeActions', 'function attachTranscribeActions');
             const documentsSource = fs.readFileSync(documentsPath, 'utf8')
               .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';", '')
               .replaceAll('export const ', 'var ')
               .replace('export function workingNoteToEditorDocument', 'function workingNoteToEditorDocument')
               .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
+            const regenerationSource = fs.readFileSync(regenerationPath, 'utf8')
+              .replace('export function createGeneratedNoteRegenerationController', 'function createGeneratedNoteRegenerationController');
 
             class FakeEvent {
               constructor(type, init = {}) { Object.assign(this, init); this.type = type; this.defaultPrevented = false; }
               preventDefault() { this.defaultPrevented = true; }
-              stopPropagation() {}
+              stopPropagation() { this.propagationStopped = true; }
             }
             class FakeElement {
               constructor() {
@@ -96,10 +100,13 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
             };
             let storedHistoryOpen = 'true';
             const persistedHistoryStates = [];
+            let confirmResult = true;
+            const confirmMessages = [];
             const sandbox = {
               Array,
               Boolean,
               Date,
+              Element: FakeElement,
               Event: FakeEvent,
               FormData: class FormData {},
               HTMLInputElement: FakeInput,
@@ -115,7 +122,7 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
                     document: fakeDocument,
                     CustomEvent: FakeEvent,
                     addEventListener() {},
-                    confirm: () => true,
+                    confirm: (message) => { confirmMessages.push(message); return confirmResult; },
                 localStorage: {
                   getItem: () => storedHistoryOpen,
                   setItem: (_key, value) => {
@@ -129,6 +136,7 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
             };
             sandbox.globalThis = sandbox;
             vm.createContext(sandbox);
+            vm.runInContext(regenerationSource, sandbox, { filename: regenerationPath });
             vm.runInContext(actionsSource, sandbox, { filename: actionsPath });
             vm.runInContext(documentsSource, sandbox, { filename: documentsPath });
 
@@ -159,7 +167,17 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
             const latestFollowupOutput = new FakeElement();
             latestFollowupOutput.dataset.latestFollowupId = 'generated-synthetic';
             latestFollowupOutput.dataset.latestFollowupStatus = 'ready';
+            const noteSelector = new FakeElement();
+            const latestGeneratedOutput = new FakeElement();
+            const noteDeleteButton = new FakeElement();
+            noteDeleteButton.closestMatches['[data-note-hover-delete]'] = noteDeleteButton;
+            const historyDeleteButton = new FakeElement();
+            historyDeleteButton.closestMatches['[data-followup-delete]'] = historyDeleteButton;
+            const deleteLatestFollowupButton = new FakeElement();
             const dom = {
+              noteSelector,
+              latestGeneratedOutput,
+              deleteLatestFollowupButton,
               generateFollowupForm,
               runQuickActionForm,
               runQuickActionSelect: quickActionSelect,
@@ -178,6 +196,8 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
             };
             const requests = [];
             const availabilityDrafts = [];
+            let fetchWorkspaceCalls = 0;
+            let clearWorkingNoteCalls = 0;
             const liveDraftText = 'Synthetic transcript source';
             let failNextRequest = false;
             let flushDictationCalls = 0;
@@ -204,7 +224,7 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
               showFlash: (message, kind) => flashes.push({ message, kind }),
               showCopyToast: () => {},
               parseErrorMessage: async (_response, fallback) => fallback,
-              fetchWorkspace: async () => {},
+              fetchWorkspace: async () => { fetchWorkspaceCalls += 1; },
               pollWorkspace: async () => {},
               scheduleWorkspaceRefreshBurst: () => {},
               syncTranscriptTitleIfNeeded: async () => {},
@@ -232,7 +252,7 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
                   await new Promise((resolve) => { releaseDictationFlush = resolve; });
                 }
               },
-              clearWorkingNote: async () => {},
+              clearWorkingNote: async () => { clearWorkingNoteCalls += 1; },
             });
             const settle = async () => {
               for (let index = 0; index < 4; index += 1) await new Promise((resolve) => setTimeout(resolve, 0));
@@ -388,6 +408,57 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
             await settle();
             assert.deepEqual(JSON.parse(requests.at(-1).options.body), { steering_text: null });
 
+            // Each deletion entry point preserves its messages, guards, and refresh behavior.
+            for (const [name, output, idKey, control, target] of [
+              ['note', latestGeneratedOutput, 'latestGeneratedId', noteSelector, noteDeleteButton],
+              ['history', historyDeleteButton, 'generatedDocumentId', followupHistory, historyDeleteButton],
+              ['latest', latestFollowupOutput, 'latestFollowupId', deleteLatestFollowupButton, null],
+            ]) {
+              const label = name === 'note' ? 'note' : 'follow-up';
+              const confirmation = `Delete this ${label} permanently?${name === 'note' ? '' : ' This cannot be undone.'}`;
+              for (const outcome of ['success', 'cancel', 'missing', 'failure']) {
+                const documentId = outcome === 'missing' ? '' : `${name}-${outcome}`;
+                const requestCount = requests.length;
+                const refreshCount = fetchWorkspaceCalls;
+                const confirmationCount = confirmMessages.length;
+                const flashCount = flashes.length;
+                output.dataset[idKey] = documentId;
+                latestGeneratedOutput.dataset.latestGeneratedKind = 'generated_note';
+                noteDeleteButton.dataset.documentId = documentId;
+                confirmResult = outcome !== 'cancel';
+                failNextRequest = outcome === 'failure';
+                const event = new FakeEvent('click', { target });
+                control.dispatchEvent(event);
+                await settle();
+                const dispatched = outcome === 'success' || outcome === 'failure';
+                assert.equal(requests.length, requestCount + Number(dispatched));
+                assert.equal(fetchWorkspaceCalls, refreshCount + Number(outcome === 'success'));
+                assert.equal(confirmMessages.length, confirmationCount + Number(outcome !== 'missing'));
+                if (outcome !== 'missing') assert.equal(confirmMessages.at(-1), confirmation);
+                if (target) {
+                  assert.equal(event.defaultPrevented, true);
+                  assert.equal(event.propagationStopped, true);
+                }
+                if (dispatched) {
+                  assert.equal(requests.at(-1).url, `/api/v1/generated-documents/${documentId}`);
+                  assert.equal(requests.at(-1).options.method, 'DELETE');
+                  assert.equal(requests.at(-1).options.credentials, 'include');
+                  assert.deepEqual(flashes.at(-1), outcome === 'success'
+                    ? { message: name === 'note' ? 'Note deleted.' : 'Follow-up deleted.', kind: 'success' }
+                    : { message: `Could not delete the ${label}.`, kind: 'error' });
+                } else assert.equal(flashes.length, flashCount);
+              }
+            }
+            confirmResult = true;
+            latestGeneratedOutput.dataset.latestGeneratedKind = 'working_note';
+            const workingNoteRequests = requests.length;
+            const workingNoteConfirmations = confirmMessages.length;
+            noteSelector.dispatchEvent(new FakeEvent('click', { target: noteDeleteButton }));
+            await settle();
+            assert.equal(clearWorkingNoteCalls, 1);
+            assert.equal(requests.length, workingNoteRequests);
+            assert.equal(confirmMessages.length, workingNoteConfirmations);
+
             // Copy aborts when switching away would discard unsaved Follow Up edits.
             const copyCard = new FakeElement();
             copyCard.dataset.documentId = 'different-followup';
@@ -458,6 +529,7 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
             """
         )
         .replace("__ACTIONS_PATH__", repr(str(root / "app" / "static" / "js" / "transcribe" / "actions.js")))
+        .replace("__REGENERATION_PATH__", repr(str(root / "app" / "static" / "js" / "transcribe" / "regeneration.js")))
         .replace("__APP_PATH__", repr(str(root / "app" / "static" / "js" / "transcribe" / "app.js")))
         .replace("__DOCUMENTS_PATH__", repr(str(root / "app" / "static" / "js" / "transcribe" / "documents.js"))),
         encoding="utf-8",

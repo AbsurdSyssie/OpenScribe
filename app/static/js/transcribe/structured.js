@@ -674,10 +674,35 @@ export function createStructuredEditor({
 
   const handleStatementEditorKeydown = (event, row, textarea) => {
     const callbacks = row._openscribeStatementCallbacks;
+    if (event.defaultPrevented) return;
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
-      callbacks?.onAddAfter?.(row);
+      const value = textarea.value || '';
+      const selectionStart = Math.max(0, Math.min(textarea.selectionStart ?? value.length, value.length));
+      const selectionEnd = Math.max(selectionStart, Math.min(textarea.selectionEnd ?? selectionStart, value.length));
+      const checkbox = row.querySelector('[data-structured-line-checkbox], [data-freeform-note-checkbox]');
+      textarea.value = value.slice(0, selectionStart);
+      textarea.setSelectionRange(selectionStart, selectionStart);
+      emitStatementRowChange(row);
+      callbacks?.onAddAfter?.(row, {
+        value: value.slice(selectionEnd),
+        checked: checkbox instanceof HTMLInputElement ? checkbox.checked : true,
+      });
       return;
+    }
+    if (event.key === 'Backspace' && textarea.value.length > 0
+      && textarea.selectionStart === 0 && textarea.selectionEnd === 0) {
+      if (callbacks?.onMergeWithPrevious?.(row)) {
+        event.preventDefault();
+        return;
+      }
+    }
+    if (event.key === 'Delete' && textarea.selectionStart === textarea.value.length
+      && textarea.selectionEnd === textarea.value.length) {
+      if (callbacks?.onMergeWithNext?.(row)) {
+        event.preventDefault();
+        return;
+      }
     }
     if ((event.key === 'Backspace' || event.key === 'Escape') && textarea.value.length === 0) {
       event.preventDefault();
@@ -753,6 +778,8 @@ export function createStructuredEditor({
     sectionKey = '',
     onChange,
     onAddAfter,
+    onMergeWithPrevious,
+    onMergeWithNext,
     onEmptyDelete,
   }) => {
     if (!(row instanceof HTMLElement) || !(checkbox instanceof HTMLInputElement) || !(textarea instanceof HTMLTextAreaElement)) {
@@ -776,7 +803,9 @@ export function createStructuredEditor({
     checkbox.setAttribute('aria-label', `Select ${sectionLabel} statement`);
     textarea.dataset.sectionKey = sectionKey;
     textarea.dataset.sectionLabel = sectionLabel;
-    row._openscribeStatementCallbacks = { onChange, onAddAfter, onEmptyDelete };
+    row._openscribeStatementCallbacks = {
+      onChange, onAddAfter, onMergeWithPrevious, onMergeWithNext, onEmptyDelete,
+    };
     row.dataset.statementEditorBound = 'true';
     syncStatementRowVisualState(row);
     return row;
@@ -794,6 +823,8 @@ export function createStructuredEditor({
     lineRowAttr,
     onChange,
     onAddAfter,
+    onMergeWithPrevious,
+    onMergeWithNext,
     onEmptyDelete,
   }) => {
     const row = document.createElement('div');
@@ -833,6 +864,8 @@ export function createStructuredEditor({
       sectionKey,
       onChange,
       onAddAfter,
+      onMergeWithPrevious,
+      onMergeWithNext,
       onEmptyDelete,
     });
   };
@@ -1104,13 +1137,53 @@ export function createStructuredEditor({
       const sectionContainer = structuredSectionForRow(row);
       invalidateCopyReviewForEdit({ mode: 'structured', sectionKey: sectionContainer?.dataset?.sectionKey || '' });
     },
-    onAddAfter: (currentRow) => {
+    onAddAfter: (currentRow, { value = '', checked = true } = {}) => {
       const sectionContainer = structuredSectionForRow(currentRow);
       if (!(sectionContainer instanceof HTMLElement)) return;
-      const nextRow = addGeneratedStructuredLine(sectionContainer, '', currentRow, true);
+      const nextRow = addGeneratedStructuredLine(sectionContainer, value, currentRow, checked);
       window.requestAnimationFrame(() => {
-        focusStatementEditor(nextRow?.querySelector('[data-structured-line-input]'));
+        const input = nextRow?.querySelector('[data-structured-line-input]');
+        focusStatementEditor(input);
+        input?.setSelectionRange(0, 0);
       });
+    },
+    onMergeWithPrevious: (currentRow) => {
+      const previousRow = currentRow.previousElementSibling;
+      if (!(previousRow instanceof HTMLElement) || !previousRow.matches('[data-structured-statement-row]')) {
+        return;
+      }
+      const previousInput = previousRow.querySelector('[data-structured-line-input]');
+      const currentInput = currentRow.querySelector('[data-structured-line-input]');
+      if (!(previousInput instanceof HTMLTextAreaElement) || !(currentInput instanceof HTMLTextAreaElement)) return;
+      const joinPosition = previousInput.value.length;
+      previousInput.value += currentInput.value;
+      removeGeneratedStructuredDraftLine(currentRow);
+      currentRow.remove();
+      emitStatementRowChange(previousRow);
+      window.requestAnimationFrame(() => {
+        focusStatementEditor(previousInput);
+        previousInput.setSelectionRange(joinPosition, joinPosition);
+      });
+      return true;
+    },
+    onMergeWithNext: (currentRow) => {
+      const nextRow = currentRow.nextElementSibling;
+      if (!(nextRow instanceof HTMLElement) || !nextRow.matches('[data-structured-statement-row]')) {
+        return;
+      }
+      const currentInput = currentRow.querySelector('[data-structured-line-input]');
+      const nextInput = nextRow.querySelector('[data-structured-line-input]');
+      if (!(currentInput instanceof HTMLTextAreaElement) || !(nextInput instanceof HTMLTextAreaElement)) return;
+      const joinPosition = currentInput.value.length;
+      currentInput.value += nextInput.value;
+      removeGeneratedStructuredDraftLine(nextRow);
+      nextRow.remove();
+      emitStatementRowChange(currentRow);
+      window.requestAnimationFrame(() => {
+        focusStatementEditor(currentInput);
+        currentInput.setSelectionRange(joinPosition, joinPosition);
+      });
+      return true;
     },
     onEmptyDelete: (currentRow) => {
       const sectionContainer = structuredSectionForRow(currentRow);
@@ -1142,11 +1215,51 @@ export function createStructuredEditor({
       invalidateCopyReviewForEdit({ mode: 'freeform' });
       onNoteEditorChanged?.();
     },
-    onAddAfter: (currentRow) => {
-      const nextRow = addGeneratedFreeformLine('', currentRow, true);
+    onAddAfter: (currentRow, { value = '', checked = true } = {}) => {
+      const nextRow = addGeneratedFreeformLine(value, currentRow, checked);
       window.requestAnimationFrame(() => {
-        focusStatementEditor(nextRow?.querySelector('[data-freeform-note-input]'));
+        const input = nextRow?.querySelector('[data-freeform-note-input]');
+        focusStatementEditor(input);
+        input?.setSelectionRange(0, 0);
       });
+    },
+    onMergeWithPrevious: (currentRow) => {
+      const previousRow = currentRow.previousElementSibling;
+      if (!(previousRow instanceof HTMLElement) || !previousRow.matches('[data-freeform-note-row]')) {
+        return;
+      }
+      const previousInput = previousRow.querySelector('[data-freeform-note-input]');
+      const currentInput = currentRow.querySelector('[data-freeform-note-input]');
+      if (!(previousInput instanceof HTMLTextAreaElement) || !(currentInput instanceof HTMLTextAreaElement)) return;
+      const joinPosition = previousInput.value.length;
+      previousInput.value += currentInput.value;
+      removeGeneratedFreeformDraftLine(currentRow);
+      currentRow.remove();
+      emitStatementRowChange(previousRow);
+      window.requestAnimationFrame(() => {
+        focusStatementEditor(previousInput);
+        previousInput.setSelectionRange(joinPosition, joinPosition);
+      });
+      return true;
+    },
+    onMergeWithNext: (currentRow) => {
+      const nextRow = currentRow.nextElementSibling;
+      if (!(nextRow instanceof HTMLElement) || !nextRow.matches('[data-freeform-note-row]')) {
+        return;
+      }
+      const currentInput = currentRow.querySelector('[data-freeform-note-input]');
+      const nextInput = nextRow.querySelector('[data-freeform-note-input]');
+      if (!(currentInput instanceof HTMLTextAreaElement) || !(nextInput instanceof HTMLTextAreaElement)) return;
+      const joinPosition = currentInput.value.length;
+      currentInput.value += nextInput.value;
+      removeGeneratedFreeformDraftLine(nextRow);
+      nextRow.remove();
+      emitStatementRowChange(currentRow);
+      window.requestAnimationFrame(() => {
+        focusStatementEditor(currentInput);
+        currentInput.setSelectionRange(joinPosition, joinPosition);
+      });
+      return true;
     },
     onEmptyDelete: (currentRow) => {
       const previousRow = getAdjacentStatementRow(currentRow, 'previous');

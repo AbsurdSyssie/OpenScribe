@@ -478,6 +478,425 @@ def test_long_freeform_note_keeps_row_editing_without_per_row_event_bindings(sta
     assert "Changed freeform line" in result["editedOutput"]
 
 
+@pytest.mark.parametrize(
+    ("mode", "value", "selection_start", "selection_end", "expected"),
+    [
+        ("structured", "before after", 6, 6, ("before", " after")),
+        ("structured", "at end", 6, 6, ("at end", "")),
+        ("structured", "before selected after", 7, 16, ("before ", "after")),
+        ("freeform", "before after", 6, 6, ("before", " after")),
+        ("freeform", "at end", 6, 6, ("at end", "")),
+        ("freeform", "before selected after", 7, 16, ("before ", "after")),
+    ],
+)
+def test_enter_splits_note_line_updates_draft_and_focuses_new_line(
+    static_repo_server, mode, value, selection_start, selection_end, expected
+):
+    with _browser_page(static_repo_server) as page:
+        if mode == "structured":
+            _install_editor(page, static_repo_server)
+            row_selector = "[data-structured-statement-row]"
+            input_selector = "[data-structured-line-input]"
+            checkbox_selector = "[data-structured-line-checkbox]"
+        else:
+            _install_freeform_editor(page, static_repo_server, line_count=2)
+            row_selector = "[data-freeform-note-row]"
+            input_selector = "[data-freeform-note-input]"
+            checkbox_selector = "[data-freeform-note-checkbox]"
+
+        result = page.evaluate(
+            """({ rowSelector, inputSelector, checkboxSelector, value, selectionStart, selectionEnd, mode }) => {
+              const row = document.querySelector(rowSelector);
+              const input = row.querySelector(inputSelector);
+              const checkbox = row.querySelector(checkboxSelector);
+              checkbox.checked = false;
+              input.value = value;
+              input.setSelectionRange(selectionStart, selectionEnd);
+              input.focus();
+              input.dispatchEvent(new KeyboardEvent('keydown', {
+                bubbles: true, cancelable: true, key: 'Enter',
+              }));
+              const nextRow = row.nextElementSibling;
+              const nextInput = nextRow.querySelector(inputSelector);
+              return new Promise((resolve) => requestAnimationFrame(() => resolve({
+                values: [input.value, nextInput.value],
+                checked: [checkbox.checked, nextRow.querySelector(checkboxSelector).checked],
+                activeInput: document.activeElement === nextInput,
+                selection: [nextInput.selectionStart, nextInput.selectionEnd],
+                serialized: window.testEditor.serializeCurrentNoteEditor({ mode }),
+              })));
+            }""",
+            {
+                "rowSelector": row_selector,
+                "inputSelector": input_selector,
+                "checkboxSelector": checkbox_selector,
+                "value": value,
+                "selectionStart": selection_start,
+                "selectionEnd": selection_end,
+                "mode": mode,
+            },
+        )
+
+    assert result["values"] == list(expected)
+    assert result["checked"] == [False, False]
+    assert result["activeInput"] is True
+    assert result["selection"] == [0, 0]
+    expected_saved_text = "\n".join(part.strip() for part in expected if part.strip())
+    if mode == "structured":
+        assert result["serialized"]["sections"][0]["text"] == expected_saved_text
+    else:
+        assert result["serialized"]["edited_output_text"] == "\n".join(
+            part for part in (expected_saved_text, "Freeform line 1") if part
+        )
+
+
+@pytest.mark.parametrize("mode", ["structured", "freeform"])
+def test_backspace_at_line_start_merges_with_previous_line_and_preserves_cursor_and_draft(
+    static_repo_server, mode
+):
+    with _browser_page(static_repo_server) as page:
+        if mode == "structured":
+            _install_editor(page, static_repo_server, lines_per_section=2)
+            row_selector = "[data-structured-statement-row]"
+            input_selector = "[data-structured-line-input]"
+            checkbox_selector = "[data-structured-line-checkbox]"
+        else:
+            _install_freeform_editor(page, static_repo_server, line_count=2)
+            row_selector = "[data-freeform-note-row]"
+            input_selector = "[data-freeform-note-input]"
+            checkbox_selector = "[data-freeform-note-checkbox]"
+
+        initial_row_count = page.evaluate(
+            """({ rowSelector, inputSelector, checkboxSelector, mode }) => {
+              const rows = [...document.querySelectorAll(rowSelector)];
+              rows[0].querySelector(inputSelector).value = 'Previous';
+              rows[0].querySelector(checkboxSelector).checked = false;
+              rows[1].querySelector(inputSelector).value = ' current';
+              rows[1].querySelector(checkboxSelector).checked = true;
+              const current = rows[1].querySelector(inputSelector);
+              current.focus();
+              current.setSelectionRange(0, 0);
+              const rowRoot = mode === 'structured'
+                ? document.querySelector('[data-generated-structured-section]')
+                : document;
+              return rowRoot.querySelectorAll(rowSelector).length;
+            }""",
+            {
+                "rowSelector": row_selector,
+                "inputSelector": input_selector,
+                "checkboxSelector": checkbox_selector,
+                "mode": mode,
+            },
+        )
+        page.keyboard.press("Backspace")
+        result = page.evaluate(
+            """({ rowSelector, inputSelector, checkboxSelector, mode }) => new Promise((resolve) => {
+              requestAnimationFrame(() => {
+                const rowRoot = mode === 'structured'
+                  ? document.querySelector('[data-generated-structured-section]')
+                  : document;
+                const rows = [...rowRoot.querySelectorAll(rowSelector)];
+                const input = rows[0].querySelector(inputSelector);
+                resolve({
+                  rowCount: rows.length,
+                  value: input.value,
+                  checked: rows[0].querySelector(checkboxSelector).checked,
+                  activeInput: document.activeElement === input,
+                  selection: [input.selectionStart, input.selectionEnd],
+                  serialized: window.testEditor.serializeCurrentNoteEditor({ mode }),
+                });
+              });
+            })""",
+            {
+                "rowSelector": row_selector,
+                "inputSelector": input_selector,
+                "checkboxSelector": checkbox_selector,
+                "mode": mode,
+            },
+        )
+
+    assert result["rowCount"] == initial_row_count - 1
+    assert result["value"] == "Previous current"
+    assert result["checked"] is False
+    assert result["activeInput"] is True
+    assert result["selection"] == [8, 8]
+    if mode == "structured":
+        assert result["serialized"]["sections"][0]["text"] == "Previous current"
+    else:
+        assert result["serialized"]["edited_output_text"] == "Previous current"
+
+
+def test_backspace_at_structured_section_start_does_not_merge_across_sections(static_repo_server):
+    with _browser_page(static_repo_server) as page:
+        _install_editor(page, static_repo_server)
+        before_row_counts = page.evaluate(
+            """() => {
+              const sections = [...document.querySelectorAll('[data-generated-structured-section]')];
+              const previous = sections[0].querySelector('[data-structured-line-input]');
+              const current = sections[1].querySelector('[data-structured-line-input]');
+              previous.value = 'History';
+              current.value = 'Examination';
+              const beforeRowCounts = sections.map((section) => section.querySelectorAll('[data-structured-statement-row]').length);
+              current.focus();
+              current.setSelectionRange(0, 0);
+              return beforeRowCounts;
+            }"""
+        )
+        page.keyboard.press("Backspace")
+        result = page.evaluate(
+            """(beforeRowCounts) => {
+              const sections = [...document.querySelectorAll('[data-generated-structured-section]')];
+              return {
+                values: sections.map((section) => section.querySelector('[data-structured-line-input]').value),
+                rowCounts: sections.map((section) => section.querySelectorAll('[data-structured-statement-row]').length),
+                beforeRowCounts,
+              };
+            }""",
+            before_row_counts,
+        )
+
+    assert result["values"] == ["History", "Examination"]
+    assert result["rowCounts"] == result["beforeRowCounts"]
+
+
+@pytest.mark.parametrize("mode", ["structured", "freeform"])
+@pytest.mark.parametrize(("current_value", "next_value"), [("Current", " next"), ("Current", ""), ("", "Next")])
+def test_delete_at_line_end_merges_with_next_line_and_preserves_cursor_checkbox_and_draft(
+    static_repo_server, mode, current_value, next_value
+):
+    with _browser_page(static_repo_server) as page:
+        if mode == "structured":
+            _install_editor(page, static_repo_server, lines_per_section=2)
+            row_selector = "[data-structured-statement-row]"
+            input_selector = "[data-structured-line-input]"
+            checkbox_selector = "[data-structured-line-checkbox]"
+        else:
+            _install_freeform_editor(page, static_repo_server, line_count=2)
+            row_selector = "[data-freeform-note-row]"
+            input_selector = "[data-freeform-note-input]"
+            checkbox_selector = "[data-freeform-note-checkbox]"
+
+        initial_row_count = page.evaluate(
+            """({ rowSelector, inputSelector, checkboxSelector, currentValue, nextValue }) => {
+              const rows = [...document.querySelectorAll(rowSelector)];
+              const current = rows[0].querySelector(inputSelector);
+              current.value = currentValue;
+              rows[0].querySelector(checkboxSelector).checked = false;
+              rows[1].querySelector(inputSelector).value = nextValue;
+              rows[1].querySelector(checkboxSelector).checked = true;
+              current.focus();
+              current.setSelectionRange(current.value.length, current.value.length);
+              const rowRoot = current.closest('[data-generated-structured-section]') || document;
+              return rowRoot.querySelectorAll(rowSelector).length;
+            }""",
+            {
+                "rowSelector": row_selector,
+                "inputSelector": input_selector,
+                "checkboxSelector": checkbox_selector,
+                "currentValue": current_value,
+                "nextValue": next_value,
+            },
+        )
+        page.keyboard.press("Delete")
+        result = page.evaluate(
+            """({ rowSelector, inputSelector, checkboxSelector, mode }) => new Promise((resolve) => {
+              requestAnimationFrame(() => {
+                const input = document.activeElement;
+                const rowRoot = mode === 'structured'
+                  ? input.closest('[data-generated-structured-section]')
+                  : document;
+                const rows = [...rowRoot.querySelectorAll(rowSelector)];
+                const mergedInput = rows[0].querySelector(inputSelector);
+                resolve({
+                  rowCount: rows.length,
+                  value: mergedInput.value,
+                  checked: rows[0].querySelector(checkboxSelector).checked,
+                  activeInput: document.activeElement === mergedInput,
+                  selection: [mergedInput.selectionStart, mergedInput.selectionEnd],
+                  serialized: window.testEditor.serializeCurrentNoteEditor({ mode }),
+                });
+              });
+            })""",
+            {
+                "rowSelector": row_selector,
+                "inputSelector": input_selector,
+                "checkboxSelector": checkbox_selector,
+                "mode": mode,
+            },
+        )
+
+    assert result["rowCount"] == initial_row_count - 1
+    assert result["value"] == current_value + next_value
+    assert result["checked"] is False
+    assert result["activeInput"] is True
+    assert result["selection"] == [len(current_value), len(current_value)]
+    if mode == "structured":
+        assert result["serialized"]["sections"][0]["text"] == (current_value + next_value).strip()
+    else:
+        assert result["serialized"]["edited_output_text"] == current_value + next_value
+
+
+def test_delete_at_structured_section_end_does_not_merge_across_sections(static_repo_server):
+    with _browser_page(static_repo_server) as page:
+        _install_editor(page, static_repo_server)
+        before_row_counts = page.evaluate(
+            """() => {
+              const sections = [...document.querySelectorAll('[data-generated-structured-section]')];
+              const current = [...sections[0].querySelectorAll('[data-structured-line-input]')].at(-1);
+              const next = sections[1].querySelector('[data-structured-line-input]');
+              current.value = 'History';
+              next.value = 'Examination';
+              current.focus();
+              current.setSelectionRange(current.value.length, current.value.length);
+              return sections.map((section) => section.querySelectorAll('[data-structured-statement-row]').length);
+            }"""
+        )
+        page.keyboard.press("Delete")
+        result = page.evaluate(
+            """() => {
+              const sections = [...document.querySelectorAll('[data-generated-structured-section]')];
+              const current = [...sections[0].querySelectorAll('[data-structured-line-input]')].at(-1);
+              const next = sections[1].querySelector('[data-structured-line-input]');
+              return {
+                rowCounts: sections.map((section) => section.querySelectorAll('[data-structured-statement-row]').length),
+                values: [current.value, next.value],
+                selection: [current.selectionStart, current.selectionEnd],
+              };
+            }"""
+        )
+
+    assert result["values"] == ["History", "Examination"]
+    assert result["rowCounts"] == before_row_counts
+    assert result["selection"] == [7, 7]
+
+
+def test_delete_at_final_freeform_line_end_keeps_native_noop(static_repo_server):
+    with _browser_page(static_repo_server) as page:
+        _install_freeform_editor(page, static_repo_server, line_count=1)
+        page.evaluate(
+            """() => {
+              const input = document.querySelector('[data-freeform-note-input]');
+              input.value = 'Final line';
+              input.focus();
+              input.setSelectionRange(input.value.length, input.value.length);
+            }"""
+        )
+        page.keyboard.press("Delete")
+        result = page.evaluate(
+            """() => {
+              const input = document.querySelector('[data-freeform-note-input]');
+              return { value: input.value, selection: [input.selectionStart, input.selectionEnd] };
+            }"""
+        )
+
+    assert result == {"value": "Final line", "selection": [10, 10]}
+
+
+@pytest.mark.parametrize(
+    ("selection_start", "selection_end", "expected_value", "expected_cursor"),
+    [(5, 5, "alphabeta", 5), (0, 5, " beta", 0)],
+)
+def test_delete_away_from_collapsed_line_end_keeps_native_editing(
+    static_repo_server, selection_start, selection_end, expected_value, expected_cursor
+):
+    with _browser_page(static_repo_server) as page:
+        _install_freeform_editor(page, static_repo_server, line_count=2)
+        page.evaluate(
+            """({ selectionStart, selectionEnd }) => {
+              const input = document.querySelector('[data-freeform-note-input]');
+              input.value = 'alpha beta';
+              input.focus();
+              input.setSelectionRange(selectionStart, selectionEnd);
+            }""",
+            {"selectionStart": selection_start, "selectionEnd": selection_end},
+        )
+        page.keyboard.press("Delete")
+        result = page.evaluate(
+            """() => {
+              const input = document.querySelector('[data-freeform-note-input]');
+              return { value: input.value, selection: [input.selectionStart, input.selectionEnd] };
+            }"""
+        )
+
+    assert result == {"value": expected_value, "selection": [expected_cursor, expected_cursor]}
+
+
+@pytest.mark.parametrize(
+    ("mode", "selection_start", "selection_end", "expected_value", "expected_cursor"),
+    [
+        ("structured", 6, 6, "alphabeta", 5),
+        ("structured", 0, 5, " beta", 0),
+        ("freeform", 6, 6, "alphabeta", 5),
+        ("freeform", 0, 5, " beta", 0),
+    ],
+)
+def test_backspace_away_from_collapsed_line_start_keeps_native_editing(
+    static_repo_server, mode, selection_start, selection_end, expected_value, expected_cursor
+):
+    with _browser_page(static_repo_server) as page:
+        if mode == "structured":
+            _install_editor(page, static_repo_server)
+            input_selector = "[data-structured-line-input]"
+        else:
+            _install_freeform_editor(page, static_repo_server, line_count=1)
+            input_selector = "[data-freeform-note-input]"
+        page.evaluate(
+            """({ inputSelector, selectionStart, selectionEnd }) => {
+              const input = document.querySelector(inputSelector);
+              input.value = 'alpha beta';
+              input.focus();
+              input.setSelectionRange(selectionStart, selectionEnd);
+            }""",
+            {
+                "inputSelector": input_selector,
+                "selectionStart": selection_start,
+                "selectionEnd": selection_end,
+            },
+        )
+        page.keyboard.press("Backspace")
+        result = page.evaluate(
+            """(inputSelector) => {
+              const input = document.querySelector(inputSelector);
+              return { value: input.value, selection: [input.selectionStart, input.selectionEnd] };
+            }""",
+            input_selector,
+        )
+
+    assert result == {"value": expected_value, "selection": [expected_cursor, expected_cursor]}
+
+
+def test_enter_expands_active_smart_phrase_without_splitting_note_line(static_repo_server):
+    with _browser_page(static_repo_server) as page:
+        _install_editor(page, static_repo_server)
+        result = page.evaluate(
+            """async ({ moduleUrl }) => {
+              const { attachSmartPhraseExpander } = await import(moduleUrl);
+              let expansions = 0;
+              attachSmartPhraseExpander({
+                smartPhrases: [{ id: 'phrase-1', trigger: 'HELLO', expansion_text: 'Hello there' }],
+                onExpanded: () => { expansions += 1; },
+              });
+              const row = document.querySelector('[data-structured-statement-row]');
+              const input = row.querySelector('[data-structured-line-input]');
+              const rowCount = document.querySelectorAll('[data-structured-statement-row]').length;
+              input.value = '/hello';
+              input.setSelectionRange(6, 6);
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.dispatchEvent(new KeyboardEvent('keydown', {
+                bubbles: true, cancelable: true, key: 'Enter',
+              }));
+              return {
+                expansions,
+                rowCountUnchanged: document.querySelectorAll('[data-structured-statement-row]').length === rowCount,
+                value: input.value,
+              };
+            }""",
+            {"moduleUrl": f"{static_repo_server}/app/static/js/transcribe/smart-phrases.js"},
+        )
+
+    assert result == {"expansions": 1, "rowCountUnchanged": True, "value": "Hello there"}
+
+
 def test_hydrated_generated_note_starts_copy_review_without_rebuilding_rows(static_repo_server):
     with _browser_page(static_repo_server) as page:
         result = page.evaluate(

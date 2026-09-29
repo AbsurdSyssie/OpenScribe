@@ -139,12 +139,13 @@ export function attachSmartPhraseExpander({ smartPhrases, onExpanded }) {
 
   const insertActivePhrase = () => {
     if (!(activeInput instanceof HTMLTextAreaElement) || !activeToken || !activeMatches.length) return false;
+    const input = activeInput;
     const phrase = activeMatches[activeIndex] || activeMatches[0];
-    const next = buildReplacement(activeInput, activeToken, phrase.expansion_text);
-    activeInput.value = next.value;
-    activeInput.setSelectionRange(next.cursor, next.cursor);
-    activeInput.dispatchEvent(new Event('input', { bubbles: true }));
-    activeInput.focus();
+    const next = buildReplacement(input, activeToken, phrase.expansion_text);
+    input.value = next.value;
+    input.setSelectionRange(next.cursor, next.cursor);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
     closeMenu();
     onExpanded?.({ phrase });
     return true;
@@ -192,7 +193,7 @@ export function attachSmartPhraseExpander({ smartPhrases, onExpanded }) {
       event.preventDefault();
       closeMenu();
     }
-  });
+  }, true);
 
   menu.addEventListener('mousedown', () => {
     clickingMenu = true;

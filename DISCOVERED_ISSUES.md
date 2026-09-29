@@ -1,14 +1,14 @@
 # Discovered issues
 
-## Stale Scribe stylesheet cache key assertion — 2026-09-24
+## Stale Scribe stylesheet cache key assertion — 2026-09-24 (resolved 2026-09-29)
 
 - Discovery commit: `118ed37`.
 - Location: `tests/test_workspace_scribe_layout_contract.py`, `test_scribe_mobile_dictation_modal_owns_the_top_layer_and_safe_viewport`.
 - Assertion: `assert 'transcribe.css?v=20260911-note-regeneration-layer-fix' in read("app/templates/transcribe/_head_assets.html")`.
 - Observed problem: the template at HEAD uses `transcribe.css?v=20260920-session-sidebar-timestamp-skeleton`, so this unrelated contract test fails despite no change to that stylesheet link in the recording-lock work.
 - Impact: the broader workspace layout contract run reports a failure unrelated to the behavior under change.
-- Not fixed here because stylesheet cache-key maintenance is outside the recording navigation lock change.
-- Follow-up: update the assertion to match the maintained asset key or assert the intended stylesheet behavior without pinning a stale cache key.
+- Not fixed during the recording navigation lock change because stylesheet cache-key maintenance was outside its scope.
+- Resolved by updating the assertion to match the maintained asset key in `tests/test_workspace_scribe_layout_contract.py`.
 
 ## SPLIT-SOURCE-ONLY-MATERIALIZATION — 2026-09-26 (resolved 2026-09-27)
 

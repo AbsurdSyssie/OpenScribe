@@ -2051,13 +2051,28 @@ let statusDetailsHideTimer = null;
           return;
         }
         const values = [...new Set(highlightEntities.map((entity) => entity.value))];
-        const sourceByValue = new Map(highlightEntities.map((entity) => [entity.value.toLowerCase(), entity.source]));
+        const entityByValue = new Map();
+        highlightEntities.forEach((entity) => {
+          const key = entity.value.toLowerCase();
+          const existing = entityByValue.get(key);
+          if (!existing || entity.source === 'manual') entityByValue.set(key, entity);
+        });
         const pattern = new RegExp(`(${values.map(escapeRegExp).join('|')})`, 'gi');
-        activeDraft.innerHTML = text
-          .split(pattern)
+        const parts = text.split(pattern);
+        let textOffset = 0;
+        activeDraft.innerHTML = parts
           .map((part) => {
-            const source = sourceByValue.get(part.toLowerCase());
-            if (!source) return escapeHtml(part);
+            const partStart = textOffset;
+            textOffset += part.length;
+            const entity = entityByValue.get(part.toLowerCase());
+            if (!entity) return escapeHtml(part);
+            const source = entity.source;
+            const isDetectedLatinInitial = source === 'detected' && /^[A-Za-z]$/.test(entity.value);
+            const isStandaloneToken = !isDetectedLatinInitial || (
+              !/[\p{L}\p{M}\p{N}_]$/u.test(text.slice(Math.max(0, partStart - 2), partStart))
+              && !/^[\p{L}\p{M}\p{N}_]/u.test(text.slice(textOffset, textOffset + 2))
+            );
+            if (isDetectedLatinInitial && (part !== entity.value || !isStandaloneToken)) return escapeHtml(part);
             const className = source === 'clinical' ? 'clinical-highlight' : 'pii-highlight';
             const visibleText = maskPii && source !== 'clinical' ? maskedPiiText(part) : part;
             return `<mark class="${className}" data-real-value="${escapeHtml(part)}">${escapeHtml(visibleText)}</mark>`;
@@ -2943,6 +2958,7 @@ let statusDetailsHideTimer = null;
         link.className = 'flex-1 min-w-0';
         link.href = `${routeBase}?transcript_id=${encodeURIComponent(item.id)}`;
         link.dataset.sessionLink = '';
+        link.dataset.recordingNavigation = '';
         link.dataset.transcriptId = item.id;
 
         const titleRow = document.createElement('div');
@@ -2974,6 +2990,7 @@ let statusDetailsHideTimer = null;
         link.append(titleRow, metadata);
         row.append(checkbox, link);
         wrapper.append(row);
+        document.dispatchEvent(new CustomEvent('openscribe:recording-navigation-added', { detail: { element: link } }));
         return wrapper;
       };
 

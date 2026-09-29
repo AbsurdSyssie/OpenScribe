@@ -22,7 +22,7 @@ import pytest
 import pyotp
 from fastapi import Request, UploadFile
 from fastapi.routing import APIRoute
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from scripts.seed_dev_accounts import ensure_dev_system_admin, repair_dev_user_content_key_if_needed
@@ -9085,6 +9085,213 @@ def test_empty_legacy_structured_working_note_does_not_lock_mode(client, db_sess
     assert listed_transcript["has_working_note"] is False
 
 
+@pytest.mark.parametrize(
+    (
+        "persisted_mode",
+        "structured_context",
+        "freeform_text",
+        "expected_mode",
+        "expected_freeform_text",
+        "expected_structured_note",
+        "expected_freeform_reads",
+    ),
+    [
+        (
+            TranscriptWorkingNoteMode.freeform,
+            None,
+            "  Untrimmed synthetic note.  ",
+            TranscriptWorkingNoteMode.freeform,
+            "  Untrimmed synthetic note.  ",
+            None,
+            1,
+        ),
+        (TranscriptWorkingNoteMode.freeform, None, " \t", None, "", None, 1),
+        (
+            TranscriptWorkingNoteMode.freeform,
+            {"profile": "emis", "sections": {"problem": ["Unused structured content"]}},
+            "Synthetic freeform note",
+            TranscriptWorkingNoteMode.freeform,
+            "Synthetic freeform note",
+            None,
+            1,
+        ),
+        (
+            TranscriptWorkingNoteMode.structured,
+            {"profile": "emis", "sections": {"problem": ["Synthetic problem"]}},
+            None,
+            TranscriptWorkingNoteMode.structured,
+            "",
+            {"profile": "emis", "sections": {"problem": ["Synthetic problem"]}},
+            0,
+        ),
+        (TranscriptWorkingNoteMode.structured, {"profile": "emis", "sections": {}}, None, None, "", None, 0),
+        (
+            None,
+            {"profile": "emis", "sections": {"tasks": ["Synthetic task"]}},
+            None,
+            TranscriptWorkingNoteMode.structured,
+            "",
+            {"profile": "emis", "sections": {"tasks": ["Synthetic task"]}},
+            0,
+        ),
+    ],
+)
+def test_working_note_detail_reuses_decoded_fields(
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+    persisted_mode,
+    structured_context,
+    freeform_text,
+    expected_mode,
+    expected_freeform_text,
+    expected_structured_note,
+    expected_freeform_reads,
+):
+    team = make_team(name="Working note detail reads")
+    owner = make_user(email=f"working-note-detail-{uuid4()}@example.com", password="password-1", team=team)
+    transcript = Transcript(
+        id=uuid4(),
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Synthetic note",
+        working_note_mode=persisted_mode,
+        working_note_updated_at=utcnow(),
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    transcript.structured_context_json = encrypt_json_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcripts",
+        field="structured_context_json",
+        record_id=transcript.id,
+        plaintext=structured_context,
+    )
+    transcript.freeform_working_note_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcripts",
+        field="freeform_working_note_encrypted",
+        record_id=transcript.id,
+        plaintext=freeform_text,
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    structured_reader = transcript_service.transcript_structured_context
+    freeform_reader = transcript_service.freeform_working_note_text
+    reads = {"structured": 0, "freeform": 0}
+
+    def read_structured(*args, **kwargs):
+        reads["structured"] += 1
+        return structured_reader(*args, **kwargs)
+
+    def read_freeform(*args, **kwargs):
+        reads["freeform"] += 1
+        return freeform_reader(*args, **kwargs)
+
+    monkeypatch.setattr(transcript_service, "transcript_structured_context", read_structured)
+    monkeypatch.setattr(transcript_service, "freeform_working_note_text", read_freeform)
+
+    detail = transcript_service.working_note_detail(db_session, owner, transcript_id=transcript.id)
+
+    assert detail["mode"] is expected_mode
+    assert detail["freeform_text"] == expected_freeform_text
+    assert detail["structured_note"] == expected_structured_note
+    assert detail["updated_at"] == (transcript.working_note_updated_at if expected_mode is not None else None)
+    assert reads == {"structured": 1, "freeform": expected_freeform_reads}
+
+
+def test_working_note_detail_propagates_required_field_read_failures(db_session, make_team, make_user, monkeypatch):
+    team = make_team(name="Working note detail failures")
+    owner = make_user(email="working-note-detail-failures@example.com", password="password-1", team=team)
+    transcript = Transcript(
+        id=uuid4(),
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Synthetic note",
+        working_note_mode=TranscriptWorkingNoteMode.freeform,
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    structured_failure = AppError(500, "content_crypto_invalid", "Structured field failed")
+
+    def raise_structured_failure(*_args, **_kwargs):
+        raise structured_failure
+
+    monkeypatch.setattr(transcript_service, "transcript_structured_context", raise_structured_failure)
+    with pytest.raises(AppError) as raised:
+        transcript_service.working_note_detail(db_session, owner, transcript_id=transcript.id)
+    assert raised.value is structured_failure
+
+    monkeypatch.setattr(transcript_service, "transcript_structured_context", lambda *_args, **_kwargs: None)
+    freeform_failure = AppError(500, "content_crypto_invalid", "Freeform field failed")
+
+    def raise_freeform_failure(*_args, **_kwargs):
+        raise freeform_failure
+
+    monkeypatch.setattr(transcript_service, "freeform_working_note_text", raise_freeform_failure)
+    with pytest.raises(AppError) as raised:
+        transcript_service.working_note_detail(db_session, owner, transcript_id=transcript.id)
+    assert raised.value is freeform_failure
+
+    structured_reads = 0
+
+    def unexpected_structured_read(*_args, **_kwargs):
+        nonlocal structured_reads
+        structured_reads += 1
+        pytest.fail("freeform mode lookup must not read structured context")
+
+    monkeypatch.setattr(transcript_service, "transcript_structured_context", unexpected_structured_read)
+    monkeypatch.setattr(transcript_service, "freeform_working_note_text", lambda *_args, **_kwargs: "Synthetic note")
+    assert transcript_service.transcript_working_note_mode(db_session, transcript=transcript) is TranscriptWorkingNoteMode.freeform
+    assert structured_reads == 0
+
+
+def test_working_note_detail_rejects_malformed_structured_context_for_freeform_note(
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Malformed freeform structured context")
+    owner = make_user(email="malformed-freeform-context@example.com", password="password-1", team=team)
+    transcript = Transcript(
+        id=uuid4(),
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Synthetic note",
+        working_note_mode=TranscriptWorkingNoteMode.freeform,
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    transcript.structured_context_json = encrypt_json_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcripts",
+        field="structured_context_json",
+        record_id=transcript.id,
+        plaintext={"profile": "emis", "sections": {"unsupported": ["Synthetic"]}},
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    with pytest.raises(AppError) as raised:
+        transcript_service.working_note_detail(db_session, owner, transcript_id=transcript.id)
+    assert raised.value.status_code == 422
+    assert raised.value.code == "validation_error"
+
+
 def test_transcript_patch_rejects_invalid_structured_context_without_clearing_working_note(
     client,
     db_session,
@@ -15867,6 +16074,576 @@ def test_transcript_list_endpoint_pages_owner_consults_by_keyset(
     assert [item["title"] for item in other_page.json()["items"]] == ["Other consult"]
 
 
+def test_transcript_history_page_batches_successful_ingestion_completion_metadata(
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+):
+    team = make_team(name="Batched transcript history metadata")
+    owner = make_user(email="batched-history-owner@example.com", password="password-1", team=team)
+    other = make_user(email="batched-history-other@example.com", password="password-2", team=team)
+    base_time = utcnow() - timedelta(days=1)
+
+    def make_transcript(*, owner_user_id, title: str, created_offset: int, expires_at=None):
+        return Transcript(
+            owner_user_id=owner_user_id,
+            team_id=team.id,
+            title=title,
+            ingestion_mode=TranscriptIngestionMode.whole_file,
+            status=TranscriptStatus.ready,
+            retention_days_applied=30,
+            retention_expires_at=expires_at or base_time + timedelta(days=30),
+            created_at=base_time + timedelta(minutes=created_offset),
+        )
+
+    newest = make_transcript(owner_user_id=owner.id, title="Newest", created_offset=4)
+    second_newest = make_transcript(owner_user_id=owner.id, title="Second newest", created_offset=3)
+    cursor_row = make_transcript(owner_user_id=owner.id, title="Cursor row", created_offset=2)
+    appended_active = make_transcript(owner_user_id=owner.id, title="Appended active", created_offset=1)
+    foreign = make_transcript(owner_user_id=other.id, title="Foreign", created_offset=5)
+    expired = make_transcript(
+        owner_user_id=owner.id,
+        title="Expired",
+        created_offset=6,
+        expires_at=utcnow() - timedelta(seconds=1),
+    )
+    db_session.add_all([newest, second_newest, cursor_row, appended_active, foreign, expired])
+    db_session.flush()
+    successful_at = base_time + timedelta(hours=1)
+    newest_completed_at = successful_at + timedelta(minutes=1)
+    second_completed_at = successful_at + timedelta(minutes=2)
+
+    def make_job(transcript: Transcript, **kwargs) -> TranscriptIngestionJob:
+        return make_ingestion_job_for_transcript(
+            transcript,
+            job_kind=TranscriptIngestionJobKind.audio_file,
+            source_filename="recording.wav",
+            **kwargs,
+        )
+
+    db_session.add_all(
+        [
+            make_job(transcript, status=status, completed_at=completed_at)
+            for transcript, status, completed_at in [
+                (newest, TranscriptIngestionJobStatus.applied, newest_completed_at),
+                (newest, TranscriptIngestionJobStatus.completed, successful_at),
+                (newest, TranscriptIngestionJobStatus.failed, second_completed_at + timedelta(minutes=5)),
+                (newest, TranscriptIngestionJobStatus.queued, None),
+                (second_newest, TranscriptIngestionJobStatus.completed, second_completed_at),
+                (foreign, TranscriptIngestionJobStatus.applied, second_completed_at + timedelta(minutes=10)),
+                (expired, TranscriptIngestionJobStatus.applied, second_completed_at + timedelta(minutes=11)),
+            ]
+        ]
+    )
+    db_session.commit()
+
+    def unexpected_single_lookup(*_args, **_kwargs):
+        raise AssertionError("history rows with a prefetched map must not use per-row completion lookups")
+
+    monkeypatch.setattr(transcribe_workspace, "latest_successful_ingestion_completed_at_service", unexpected_single_lookup)
+    batch_ids: list[set[UUID]] = []
+    batch_lookup = transcribe_workspace.latest_successful_ingestion_completed_at_by_transcript_id_service
+
+    def record_batch_lookup(db, *, transcript_ids):
+        batch_ids.append(set(transcript_ids))
+        return batch_lookup(db, transcript_ids=transcript_ids)
+
+    monkeypatch.setattr(
+        transcribe_workspace,
+        "latest_successful_ingestion_completed_at_by_transcript_id_service",
+        record_batch_lookup,
+    )
+    statements: list[str] = []
+
+    def capture_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    db_session.expire_all()
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", capture_statement)
+    try:
+        first_page = transcribe_workspace.list_transcript_history_page(
+            db_session,
+            owner,
+            limit=2,
+            include_transcript=appended_active,
+        )
+    finally:
+        event.remove(bind, "before_cursor_execute", capture_statement)
+
+    metadata_queries = [
+        statement
+        for statement in statements
+        if statement.lstrip().lower().startswith("select")
+        and "transcript_ingestion_jobs" in statement.lower()
+    ]
+    assert len(metadata_queries) == 1
+    assert batch_ids == [{newest.id, second_newest.id, appended_active.id}]
+    assert [item.title for item in first_page["items"]] == ["Newest", "Second newest", "Appended active"]
+    assert [item.latest_successful_ingestion_completed_at for item in first_page["items"]] == [
+        newest_completed_at,
+        second_completed_at,
+        None,
+    ]
+    assert first_page["has_more"] is True
+    assert first_page["next_cursor"]
+
+    second_page = transcribe_workspace.list_transcript_history_page(
+        db_session,
+        owner,
+        limit=2,
+        cursor=first_page["next_cursor"],
+    )
+    assert [item.title for item in second_page["items"]] == ["Cursor row", "Appended active"]
+    assert second_page["has_more"] is False
+    assert second_page["next_cursor"] is None
+
+
+def test_transcript_history_page_batches_blank_draft_content_fallbacks(
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+):
+    team = make_team(name="Batched transcript history content")
+    owner = make_user(email="batched-history-content@example.com", password="password-1", team=team)
+    other = make_user(email="batched-history-content-other@example.com", password="password-2", team=team)
+    base_time = utcnow() - timedelta(days=1)
+
+    def make_transcript(*, owner_user_id, title: str, created_offset: int, draft: str, expires_at=None):
+        transcript = Transcript(
+            owner_user_id=owner_user_id,
+            team_id=team.id,
+            title=title,
+            ingestion_mode=TranscriptIngestionMode.whole_file,
+            status=TranscriptStatus.ready,
+            retention_days_applied=30,
+            retention_expires_at=expires_at or base_time + timedelta(days=30),
+            created_at=base_time + timedelta(minutes=created_offset),
+        )
+        db_session.add(transcript)
+        db_session.flush()
+        transcript.current_draft_text_encrypted = encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner_user_id,
+            table="transcripts",
+            field="current_draft_text_encrypted",
+            record_id=transcript.id,
+            plaintext=draft,
+        )
+        return transcript
+
+    def add_version(transcript: Transcript, *, version_no: int, text: str | None):
+        version = TranscriptVersion(transcript_id=transcript.id, version_no=version_no, text_encrypted="corrupt" if text is None else "")
+        db_session.add(version)
+        db_session.flush()
+        if text is not None:
+            version.text_encrypted = encrypt_text_for_owner(
+                db_session,
+                owner_user_id=transcript.owner_user_id,
+                table="transcript_versions",
+                field="text_encrypted",
+                record_id=version.id,
+                plaintext=text,
+            )
+        return version
+
+    populated = make_transcript(owner_user_id=owner.id, title="Current draft", created_offset=6, draft="current")
+    add_version(populated, version_no=1, text=None)
+    historical = make_transcript(owner_user_id=owner.id, title="Historical", created_offset=5, draft="")
+    add_version(historical, version_no=1, text="")
+    add_version(historical, version_no=2, text="historical")
+    add_version(historical, version_no=3, text="")
+    all_blank = make_transcript(owner_user_id=owner.id, title="All blank", created_offset=4, draft="")
+    add_version(all_blank, version_no=1, text="")
+    add_version(all_blank, version_no=2, text="")
+    no_versions = make_transcript(owner_user_id=owner.id, title="No versions", created_offset=3, draft="")
+    lookahead = make_transcript(owner_user_id=owner.id, title="Lookahead", created_offset=2, draft="")
+    add_version(lookahead, version_no=1, text=None)
+    appended_active = make_transcript(owner_user_id=owner.id, title="Appended active", created_offset=1, draft="")
+    add_version(appended_active, version_no=1, text="historical")
+    foreign = make_transcript(owner_user_id=other.id, title="Foreign", created_offset=7, draft="")
+    add_version(foreign, version_no=1, text=None)
+    expired = make_transcript(
+        owner_user_id=owner.id,
+        title="Expired",
+        created_offset=8,
+        draft="",
+        expires_at=utcnow() - timedelta(seconds=1),
+    )
+    add_version(expired, version_no=1, text=None)
+    db_session.commit()
+
+    original_draft_reader = transcribe_workspace.transcript_draft_text_service
+    original_version_reader = transcribe_workspace.transcript_version_text_service
+    draft_reads: list[UUID] = []
+    version_reads: list[UUID] = []
+
+    def draft_reader(*args, **kwargs):
+        transcript = kwargs["transcript"]
+        draft_reads.append(transcript.id)
+        return original_draft_reader(*args, **kwargs)
+
+    def version_reader(*args, **kwargs):
+        version = kwargs["transcript_version"]
+        version_reads.append(version.transcript_id)
+        return original_version_reader(*args, **kwargs)
+
+    monkeypatch.setattr(transcribe_workspace, "transcript_draft_text_service", draft_reader)
+    monkeypatch.setattr(transcribe_workspace, "transcript_version_text_service", version_reader)
+    statements: list[tuple[str, object]] = []
+
+    def capture_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append((statement, _parameters))
+
+    db_session.expire_all()
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", capture_statement)
+    try:
+        page = transcribe_workspace.list_transcript_history_page(
+            db_session,
+            owner,
+            limit=4,
+            include_transcript=appended_active,
+        )
+    finally:
+        event.remove(bind, "before_cursor_execute", capture_statement)
+
+    version_queries = [
+        (statement, parameters)
+        for statement, parameters in statements
+        if statement.lstrip().lower().startswith("select") and "transcript_versions" in statement.lower()
+    ]
+    assert len(version_queries) == 1
+    query_parameters = version_queries[0][1]
+    assert isinstance(query_parameters, dict)
+    assert lookahead.id not in query_parameters.values()
+    assert foreign.id not in query_parameters.values()
+    assert expired.id not in query_parameters.values()
+    assert draft_reads == [populated.id, historical.id, all_blank.id, no_versions.id, appended_active.id]
+    assert populated.id not in version_reads
+    assert lookahead.id not in version_reads
+    assert foreign.id not in version_reads
+    assert expired.id not in version_reads
+    assert {item.title: item.has_transcript_content for item in page["items"]} == {
+        "Current draft": True,
+        "Historical": True,
+        "All blank": False,
+        "No versions": False,
+        "Appended active": True,
+    }
+
+
+def test_transcript_history_content_prefetch_avoids_empty_and_populated_version_queries(
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+):
+    team = make_team(name="Transcript history content query avoidance")
+    owner = make_user(email="history-content-query-avoidance@example.com", password="password-1", team=team)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Current draft",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript.current_draft_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcripts",
+        field="current_draft_text_encrypted",
+        record_id=transcript.id,
+        plaintext="current",
+    )
+    db_session.add(TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="corrupt"))
+    db_session.commit()
+    monkeypatch.setattr(
+        transcribe_workspace,
+        "transcript_version_text_service",
+        lambda *_args, **_kwargs: pytest.fail("populated drafts must not read historical fields"),
+    )
+
+    def version_query_count(action) -> int:
+        statements: list[str] = []
+
+        def capture_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+            statements.append(statement)
+
+        bind = db_session.get_bind()
+        event.listen(bind, "before_cursor_execute", capture_statement)
+        try:
+            action()
+        finally:
+            event.remove(bind, "before_cursor_execute", capture_statement)
+        return sum(
+            statement.lstrip().lower().startswith("select") and "transcript_versions" in statement.lower()
+            for statement in statements
+        )
+
+    assert version_query_count(lambda: transcribe_workspace.list_transcript_history_page(db_session, owner)) == 0
+    empty_owner = make_user(email="history-content-empty@example.com", password="password-1", team=team)
+    assert version_query_count(lambda: transcribe_workspace.list_transcript_history_page(db_session, empty_owner)) == 0
+
+
+def test_transcript_history_content_prefetch_streams_version_rows_with_crypto_reads(
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+):
+    team = make_team(name="Transcript history streamed versions")
+    owner = make_user(email="history-streamed-versions@example.com", password="password-1", team=team)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Long blank history",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript.current_draft_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcripts",
+        field="current_draft_text_encrypted",
+        record_id=transcript.id,
+        plaintext="",
+    )
+    for version_no in range(1, 122):
+        version = TranscriptVersion(transcript_id=transcript.id, version_no=version_no, text_encrypted="")
+        db_session.add(version)
+        db_session.flush()
+        version.text_encrypted = encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=version.id,
+            plaintext="",
+        )
+    db_session.commit()
+    original_version_reader = transcribe_workspace.transcript_version_text_service
+    version_reads = 0
+    original_scalars = db_session.scalars
+    tracked_results = []
+    batch_sizes: list[int] = []
+
+    class TrackingScalarResult:
+        def __init__(self, result):
+            self.result = result
+            self.close_calls = 0
+
+        @property
+        def closed(self):
+            return self.result.closed
+
+        def partitions(self, size):
+            for batch in self.result.partitions(size):
+                batch_sizes.append(len(batch))
+                yield batch
+
+        def close(self):
+            self.close_calls += 1
+            self.result.close()
+
+    def track_version_scalars(statement, *args, **kwargs):
+        result = original_scalars(statement, *args, **kwargs)
+        if statement.column_descriptions[0].get("entity") is TranscriptVersion:
+            tracked_result = TrackingScalarResult(result)
+            tracked_results.append(tracked_result)
+            return tracked_result
+        return result
+
+    def version_reader(*args, **kwargs):
+        nonlocal version_reads
+        assert tracked_results and not tracked_results[0].closed
+        version_reads += 1
+        return original_version_reader(*args, **kwargs)
+
+    nested_active_key_queries_open: list[bool] = []
+
+    def capture_active_key_query(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if "user_encryption_keys" in statement.lower() and tracked_results:
+            nested_active_key_queries_open.append(not tracked_results[0].closed)
+
+    monkeypatch.setattr(db_session, "scalars", track_version_scalars)
+    monkeypatch.setattr(transcribe_workspace, "transcript_version_text_service", version_reader)
+    db_session.expire_all()
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", capture_active_key_query)
+    try:
+        assert transcribe_workspace._transcript_content_by_id_for_history_page(db_session, [transcript]) == {transcript.id: False}
+    finally:
+        event.remove(bind, "before_cursor_execute", capture_active_key_query)
+
+    assert version_reads == 121
+    assert batch_sizes == [100, 21]
+    assert len(tracked_results) == 1
+    assert tracked_results[0].close_calls == 1
+    assert tracked_results[0].closed is True
+    assert len(nested_active_key_queries_open) >= 121
+    assert all(nested_active_key_queries_open)
+
+
+def test_transcript_history_page_propagates_required_historical_content_read_failure(
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+):
+    team = make_team(name="Transcript history content failure")
+    owner = make_user(email="history-content-failure@example.com", password="password-1", team=team)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Blank draft",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    transcript.current_draft_text_encrypted = encrypt_text_for_owner(
+        db_session,
+        owner_user_id=owner.id,
+        table="transcripts",
+        field="current_draft_text_encrypted",
+        record_id=transcript.id,
+        plaintext="",
+    )
+    db_session.add(TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="corrupt"))
+    db_session.commit()
+    expected_error = AppError(500, "content_crypto_invalid", "Synthetic historical field failure")
+    original_scalars = db_session.scalars
+    tracked_results = []
+
+    class TrackingScalarResult:
+        def __init__(self, result):
+            self.result = result
+            self.close_calls = 0
+
+        def partitions(self, size):
+            return self.result.partitions(size)
+
+        @property
+        def closed(self):
+            return self.result.closed
+
+        def close(self):
+            self.close_calls += 1
+            self.result.close()
+
+    def track_version_scalars(statement, *args, **kwargs):
+        result = original_scalars(statement, *args, **kwargs)
+        if statement.column_descriptions[0].get("entity") is TranscriptVersion:
+            tracked_result = TrackingScalarResult(result)
+            tracked_results.append(tracked_result)
+            return tracked_result
+        return result
+
+    monkeypatch.setattr(db_session, "scalars", track_version_scalars)
+
+    def raise_historical_read_failure(*_args, **_kwargs):
+        raise expected_error
+
+    monkeypatch.setattr(transcribe_workspace, "transcript_version_text_service", raise_historical_read_failure)
+
+    with pytest.raises(AppError) as error:
+        transcribe_workspace.list_transcript_history_page(db_session, owner)
+
+    assert error.value is expected_error
+    assert len(tracked_results) == 1
+    assert tracked_results[0].close_calls == 1
+    assert tracked_results[0].closed is True
+    assert db_session.scalar(select(TranscriptVersion.id).where(TranscriptVersion.transcript_id == transcript.id)) is not None
+
+
+def test_transcript_completion_metadata_batch_empty_and_list_response_fallbacks(
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+):
+    team = make_team(name="Transcript metadata fallbacks")
+    owner = make_user(email="metadata-fallback-owner@example.com", password="password-1", team=team)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Visit",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.commit()
+
+    statements: list[str] = []
+
+    def capture_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", capture_statement)
+    try:
+        assert transcript_service.latest_successful_ingestion_completed_at_by_transcript_id(
+            db_session,
+            transcript_ids=[],
+        ) == {}
+    finally:
+        event.remove(bind, "before_cursor_execute", capture_statement)
+    assert statements == []
+
+    monkeypatch.setattr(transcribe_workspace, "_transcript_has_content", lambda *_args: False)
+    working_note_modes = [TranscriptWorkingNoteMode.structured, None]
+
+    def working_note_mode(*_args, **_kwargs):
+        return working_note_modes.pop(0)
+
+    monkeypatch.setattr(transcribe_workspace, "transcript_working_note_mode_service", working_note_mode)
+    single_lookup_ids: list[UUID] = []
+
+    def single_lookup(_db, *, transcript_id):
+        single_lookup_ids.append(transcript_id)
+        return utcnow()
+
+    monkeypatch.setattr(transcribe_workspace, "latest_successful_ingestion_completed_at_service", single_lookup)
+    standalone = transcribe_workspace.transcript_list_item_response(db_session, transcript)
+    assert standalone.latest_successful_ingestion_completed_at is not None
+    assert single_lookup_ids == [transcript.id]
+    assert standalone.working_note_mode is TranscriptWorkingNoteMode.structured
+    assert standalone.has_working_note is True
+    assert working_note_modes == [None]
+
+    def unexpected_prefetched_fallback(*_args, **_kwargs):
+        pytest.fail("prefetched misses must not fall back")
+
+    monkeypatch.setattr(transcribe_workspace, "latest_successful_ingestion_completed_at_service", unexpected_prefetched_fallback)
+    monkeypatch.setattr(transcribe_workspace, "_transcript_has_content", unexpected_prefetched_fallback)
+    prefetched_miss = transcribe_workspace.transcript_list_item_response(
+        db_session,
+        transcript,
+        ingestion_completion_times={},
+        has_transcript_content_by_id={transcript.id: False},
+    )
+    assert prefetched_miss.latest_successful_ingestion_completed_at is None
+    assert prefetched_miss.has_transcript_content is False
+    assert prefetched_miss.working_note_mode is None
+    assert prefetched_miss.has_working_note is False
+    assert working_note_modes == []
+
+
 def test_transcript_list_endpoint_rejects_invalid_cursor(client, make_team, make_user):
     team = make_team(name="Bad Cursor Team")
     make_user(email="bad-cursor@example.com", password="password-1", team=team, team_role=TeamRole.user)
@@ -16636,6 +17413,58 @@ def test_transcribe_workspace_stream_resolution_does_not_block_event_loop(monkey
 
     assert elapsed < 0.08
     assert "event: workspace" in event
+
+
+def test_transcribe_workspace_stream_serializes_each_valid_payload_once(monkeypatch):
+    payloads = iter(
+        [
+            {"z": "Synthetic\nUnicode: é", "a": True},
+            {"a": True, "z": "Synthetic\nUnicode: é"},
+            {"z": "Synthetic\nUnicode: é", "a": 1},
+            None,
+        ]
+    )
+    serialized_payloads: list[dict[str, object]] = []
+    json_dumps = transcribe_workspace.json.dumps
+
+    def resolve_payload(**_kwargs):
+        return next(payloads)
+
+    def record_json_dumps(payload, *args, **kwargs):
+        serialized_payloads.append(payload)
+        return json_dumps(payload, *args, **kwargs)
+
+    async def no_sleep(_seconds):
+        return None
+
+    async def never_disconnected():
+        return False
+
+    monkeypatch.setattr(transcribe_workspace, "resolve_realtime_workspace_payload", resolve_payload)
+    monkeypatch.setattr(transcribe_workspace.json, "dumps", record_json_dumps)
+    monkeypatch.setattr(transcribe_workspace.asyncio, "sleep", no_sleep)
+
+    async def exercise_stream():
+        stream = transcribe_workspace.stream_transcribe_workspace_events(
+            request=SimpleNamespace(is_disconnected=never_disconnected),
+            raw_session_token="session-token",
+            transcript_id=None,
+            queued_transcript_id=None,
+            once=False,
+        )
+        return [event async for event in stream]
+
+    events = asyncio.run(exercise_stream())
+
+    assert serialized_payloads == [
+        {"z": "Synthetic\nUnicode: é", "a": True},
+        {"a": True, "z": "Synthetic\nUnicode: é"},
+        {"z": "Synthetic\nUnicode: é", "a": 1},
+    ]
+    assert events == [
+        'event: workspace\ndata: {"a":true,"z":"Synthetic\\nUnicode: \\u00e9"}\n\n',
+        'event: workspace\ndata: {"a":1,"z":"Synthetic\\nUnicode: \\u00e9"}\n\n',
+    ]
 
 
 def test_transcript_title_update_is_owner_only(client, db_session, make_team, make_user):

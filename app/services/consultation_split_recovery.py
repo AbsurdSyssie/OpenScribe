@@ -15,13 +15,16 @@ from app.models import (
     ConsultationSplitExecutionStatus, ConsultationSplitTopicDisposition,
     ConsultationSplitTopicOutcome, ConsultationSplitTopicOutcomeStatus, TeamLlmConfig, TeamRole, User, utcnow,
 )
-from app.services.consultation_split_generation import prepare_split_generation_recovery_request
+from app.services.consultation_split_generation import (
+    prepare_split_generation_recovery_request,
+    split_generation_request_snapshot,
+)
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.consultation_splits import (
     queue_split_execution, read_split_batch_json, read_split_execution_json, read_split_topic_outcome_output,
 )
 from app.services.llm import resolve_user_llm
-from app.services.llm_adapters.runtime import build_provider_snapshot, generation_request_snapshot
+from app.services.llm_adapters.runtime import build_provider_snapshot
 from app.services.preferences import consultation_splitting_enabled, consultation_splitting_feature_enabled
 from app.services.task_outbox import try_publish_task_dispatch_safely
 from app.services.transcripts import transcript_is_expired
@@ -159,11 +162,8 @@ def _queue_recovery(
         note_options_snapshot=read_split_batch_json(db, actor, batch=batch, field="note_options_snapshot_encrypted") or {},
         failed_topic_uuids=[topic.topic_uuid for topic in failed], accepted_sibling_outputs=siblings,
     )
-    messages = prepared.request_body["messages"]
-    request = generation_request_snapshot(
-        adapter_kind=config.adapter_kind, model=model.strip(), user_id=actor.id,
-        system_message=messages[0]["content"], user_message=messages[1]["content"],
-        output_token_cap=prepared.output_token_cap, response_json_schema=prepared.response_json_schema,
+    request = split_generation_request_snapshot(
+        prepared, adapter_kind=config.adapter_kind, model=model.strip(), user_id=actor.id,
     )
     execution, _attempt, dispatch = queue_split_execution(
         db, actor, kind=ConsultationSplitExecutionKind.generation, batch=batch,

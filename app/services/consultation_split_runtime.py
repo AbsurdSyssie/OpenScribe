@@ -48,7 +48,11 @@ from app.services.consultation_split_analysis import (
     CONSULTATION_SPLIT_MAX_CANDIDATES,
     parse_split_analysis_output,
 )
-from app.services.consultation_split_locks import lock_consultation_split_source_scope
+from app.services.consultation_split_locks import (
+    AnalysisExecutionLockRequirements,
+    LockedAnalysisExecutionWork,
+    lock_analysis_execution_work,
+)
 from app.services.consultation_split_pre_submit import (
     PrepareSplitAnalysisSubmissionResult,
     PreparedSplitAnalysisSubmission,
@@ -95,16 +99,6 @@ class SplitAnalysisRuntimeResult:
     outcome: SplitAnalysisRuntimeOutcome
     execution_id: UUID
     error_code: str | None = None
-
-
-@dataclass(slots=True)
-class _LockedProcessingWork:
-    owner: User
-    transcript: Transcript
-    execution: ConsultationSplitExecution
-    analysis: ConsultationSplitAnalysis
-    attempt: ProviderAttempt
-    dispatch: TaskDispatchOutbox
 
 
 def _safe_int(value: object, *, upper: int) -> int | None:
@@ -213,78 +207,22 @@ def _is_durably_submitted_for_provider_call(db: Session, *, execution_id: UUID) 
         )
 
 
-def _lock_processing_work(db: Session, *, execution_id: UUID, expected_status: ConsultationSplitExecutionStatus) -> _LockedProcessingWork | None:
-    """Lock the exact owner-to-dispatch lineage for a single analysis execution."""
-    identity = db.scalar(select(ConsultationSplitExecution).where(ConsultationSplitExecution.id == execution_id))
-    if identity is None:
-        return None
-    scope = lock_consultation_split_source_scope(
-        db,
-        owner_user_id=identity.owner_user_id,
-        transcript_id=identity.transcript_id,
+def _lock_processing_work(
+    db: Session, *, execution_id: UUID, expected_status: ConsultationSplitExecutionStatus,
+) -> LockedAnalysisExecutionWork | None:
+    """Lock analysis work while preserving runtime-owned transition checks."""
+    return lock_analysis_execution_work(
+        db, execution_id=execution_id,
+        requirements=AnalysisExecutionLockRequirements(
+            execution_status=expected_status,
+            analysis_status=None,
+            attempt_status=None,
+            dispatch_kind=TaskDispatchKind.consultation_split_analysis,
+        ),
     )
-    if scope is None:
-        return None
-    owner = scope.owner
-    transcript = scope.transcript
-    execution = db.scalar(
-        select(ConsultationSplitExecution)
-        .where(ConsultationSplitExecution.id == execution_id)
-        .with_for_update()
-    )
-    if (
-        execution is None
-        or execution.kind is not ConsultationSplitExecutionKind.analysis
-        or execution.status is not expected_status
-        or execution.analysis_id is None
-        or execution.batch_id is not None
-    ):
-        return None
-    analysis = db.scalar(
-        select(ConsultationSplitAnalysis)
-        .where(ConsultationSplitAnalysis.id == execution.analysis_id)
-        .with_for_update()
-    )
-    attempt = db.scalar(
-        select(ProviderAttempt)
-        .where(ProviderAttempt.consultation_split_execution_id == execution.id)
-        .with_for_update()
-    )
-    dispatch = db.scalar(
-        select(TaskDispatchOutbox)
-        .where(
-            TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_execution,
-            TaskDispatchOutbox.source_id == execution.id,
-        )
-        .with_for_update()
-    )
-    if analysis is None or attempt is None or dispatch is None:
-        return None
-    if (
-        owner.is_system_admin
-        or owner.team_id is None
-        or transcript.owner_user_id != owner.id
-        or transcript.team_id != owner.team_id
-        or execution.owner_user_id != owner.id
-        or execution.team_id != owner.team_id
-        or execution.transcript_id != transcript.id
-        or analysis.owner_user_id != owner.id
-        or analysis.team_id != owner.team_id
-        or analysis.transcript_id != transcript.id
-        or attempt.owner_user_id != owner.id
-        or attempt.team_id != transcript.team_id
-        or attempt.transcript_id != transcript.id
-        or attempt.correlation_id != execution.id
-        or attempt.attempt_number != 1
-        or attempt.attempt_kind.value != "consultation_split_analysis"
-        or dispatch.dispatch_kind is not TaskDispatchKind.consultation_split_analysis
-        or dispatch.state not in {TaskDispatchState.pending, TaskDispatchState.published}
-    ):
-        return None
-    return _LockedProcessingWork(owner, transcript, execution, analysis, attempt, dispatch)
 
 
-def _retention_binding_matches(work: _LockedProcessingWork) -> bool:
+def _retention_binding_matches(work: LockedAnalysisExecutionWork) -> bool:
     return (
         work.execution.retention_expires_at == work.transcript.retention_expires_at
         and work.analysis.retention_expires_at == work.transcript.retention_expires_at
@@ -294,7 +232,7 @@ def _retention_binding_matches(work: _LockedProcessingWork) -> bool:
 def _cancel_queued_locked(
     db: Session,
     *,
-    work: _LockedProcessingWork,
+    work: LockedAnalysisExecutionWork,
     code: str,
     stale: bool = False,
 ) -> SplitAnalysisRuntimeResult:
@@ -469,7 +407,7 @@ def _submit_prepared(
 
 def _usage_event(
     *,
-    work: _LockedProcessingWork,
+    work: LockedAnalysisExecutionWork,
     event_type: ProviderUsageEventType,
     status: str,
     usage: dict[str, int | None] | None,
@@ -502,7 +440,7 @@ def _usage_event(
 def _settle_processing_attempt(
     db: Session,
     *,
-    work: _LockedProcessingWork,
+    work: LockedAnalysisExecutionWork,
     usage: dict[str, int | None] | None,
     outcome: AttemptOutcome,
     error_code: str | None = None,

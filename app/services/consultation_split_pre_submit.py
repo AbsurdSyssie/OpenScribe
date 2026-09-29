@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 
 from app.errors import AppError
 from app.models import (
-    AttemptKind,
     AttemptStatus,
     ConsultationSplitAnalysis,
     ConsultationSplitAnalysisStatus,
@@ -36,12 +35,15 @@ from app.models import (
     utcnow,
 )
 from app.services.consultation_split_analysis import prepare_split_analysis_request
-from app.services.consultation_split_locks import lock_consultation_split_source_scope
+from app.services.consultation_split_locks import (
+    AnalysisExecutionLockRequirements,
+    LockedAnalysisExecutionWork,
+    lock_analysis_execution_work,
+)
 from app.services.consultation_split_sources import current_consultation_split_analysis_source_matches
 from app.services.consultation_splits import (
     read_split_analysis_json,
     read_split_execution_json,
-    split_execution_phase_mapping,
 )
 from app.services.llm_adapters.runtime import validate_provider_snapshot_for_config
 from app.services.llm_adapters.types import LlmProviderSnapshot
@@ -52,20 +54,6 @@ from app.services.transcripts import transcript_is_expired
 
 
 PrepareSplitAnalysisSubmissionOutcome = Literal["prepared", "failed", "stale", "noop"]
-
-# Generation has a distinct immutable batch contract.  Keep the public
-# pre-submit entry point here with analysis, while its implementation lives
-# beside the generation runtime to avoid a second, drifting request builder.
-def prepare_queued_split_generation_for_submission(db: Session, *, execution_id: UUID):
-    """Resolve a generation credential outside the final submission transaction.
-
-    The returned private tuple is consumed only by the generation runtime.
-    It revalidates the frozen batch snapshots and never reads live clinical or
-    template content.
-    """
-    from app.services.consultation_split_generation_runtime import _prepared
-    return _prepared(db, execution_id)
-
 
 @dataclass(frozen=True, slots=True)
 class PreparedSplitAnalysisSubmission:
@@ -95,16 +83,6 @@ class _CredentialConfigIdentity:
     vault_secret_ref: str
 
 
-@dataclass(slots=True)
-class _LockedAnalysisWork:
-    owner: User
-    transcript: Transcript
-    execution: ConsultationSplitExecution
-    analysis: ConsultationSplitAnalysis
-    attempt: ProviderAttempt
-    dispatch: TaskDispatchOutbox
-
-
 def _credential_config_identity(config: TeamLlmConfig) -> _CredentialConfigIdentity:
     return _CredentialConfigIdentity(
         config_id=config.id,
@@ -124,13 +102,23 @@ def _credential_matches_auth_mode(config: TeamLlmConfig, credential: object | No
     return False
 
 
-def _preliminary_config(db: Session, *, execution_id: UUID) -> TeamLlmConfig | None:
-    """Read and detach the bound config in a short, separate transaction."""
+def read_queued_split_phase_config(
+    db: Session,
+    *,
+    execution_id: UUID,
+    kind: ConsultationSplitExecutionKind,
+) -> TeamLlmConfig | None:
+    """Read and detach a queued phase config before credential resolution.
+
+    Each caller declares its phase explicitly.  This keeps the credential read
+    outside the final lock transaction without allowing one phase to prepare
+    another phase's queued work.
+    """
     with Session(bind=db.get_bind(), future=True) as preliminary_db:
         execution = preliminary_db.get(ConsultationSplitExecution, execution_id)
         if (
             execution is None
-            or execution.kind is not ConsultationSplitExecutionKind.analysis
+            or execution.kind is not kind
             or execution.status is not ConsultationSplitExecutionStatus.queued
             or execution.llm_config_id is None
         ):
@@ -144,89 +132,22 @@ def _preliminary_config(db: Session, *, execution_id: UUID) -> TeamLlmConfig | N
         return config
 
 
-def _lock_viable_analysis_work(db: Session, *, execution_id: UUID) -> _LockedAnalysisWork | None:
-    """Acquire the final lock chain and reject work already won elsewhere."""
-    identity = db.scalar(select(ConsultationSplitExecution).where(ConsultationSplitExecution.id == execution_id))
-    if identity is None:
-        return None
-    scope = lock_consultation_split_source_scope(
-        db,
-        owner_user_id=identity.owner_user_id,
-        transcript_id=identity.transcript_id,
+def _lock_viable_analysis_work(db: Session, *, execution_id: UUID) -> LockedAnalysisExecutionWork | None:
+    """Acquire queued/reserved analysis work for the pre-submit contract."""
+    return lock_analysis_execution_work(
+        db, execution_id=execution_id,
+        requirements=AnalysisExecutionLockRequirements(
+            execution_status=ConsultationSplitExecutionStatus.queued,
+            analysis_status=ConsultationSplitAnalysisStatus.queued,
+            attempt_status=AttemptStatus.reserved,
+        ),
     )
-    if scope is None:
-        return None
-    owner = scope.owner
-    transcript = scope.transcript
-    execution = db.scalar(
-        select(ConsultationSplitExecution)
-        .where(ConsultationSplitExecution.id == execution_id)
-        .with_for_update()
-    )
-    if (
-        execution is None
-        or execution.kind is not ConsultationSplitExecutionKind.analysis
-        or execution.status is not ConsultationSplitExecutionStatus.queued
-        or execution.analysis_id is None
-        or execution.batch_id is not None
-    ):
-        return None
-    analysis = db.scalar(
-        select(ConsultationSplitAnalysis)
-        .where(ConsultationSplitAnalysis.id == execution.analysis_id)
-        .with_for_update()
-    )
-    if analysis is None or analysis.status is not ConsultationSplitAnalysisStatus.queued:
-        return None
-    attempt = db.scalar(
-        select(ProviderAttempt)
-        .where(ProviderAttempt.consultation_split_execution_id == execution.id)
-        .with_for_update()
-    )
-    dispatch = db.scalar(
-        select(TaskDispatchOutbox)
-        .where(
-            TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_execution,
-            TaskDispatchOutbox.source_id == execution.id,
-        )
-        .with_for_update()
-    )
-    expected_attempt_kind, _feature, expected_dispatch_kind = split_execution_phase_mapping(execution.kind)
-    if (
-        attempt is None
-        or attempt.status is not AttemptStatus.reserved
-        or attempt.attempt_kind is not expected_attempt_kind
-        or expected_attempt_kind is not AttemptKind.consultation_split_analysis
-        or attempt.owner_user_id != owner.id
-        or attempt.team_id != transcript.team_id
-        or attempt.transcript_id != transcript.id
-        or attempt.correlation_id != execution.id
-        or attempt.attempt_number != 1
-        or dispatch is None
-        or dispatch.dispatch_kind is not expected_dispatch_kind
-        or dispatch.state not in {TaskDispatchState.pending, TaskDispatchState.published}
-    ):
-        return None
-    if (
-        owner.team_id is None
-        or owner.is_system_admin
-        or transcript.owner_user_id != owner.id
-        or transcript.team_id != owner.team_id
-        or execution.owner_user_id != owner.id
-        or execution.team_id != owner.team_id
-        or execution.transcript_id != transcript.id
-        or analysis.owner_user_id != owner.id
-        or analysis.team_id != owner.team_id
-        or analysis.transcript_id != transcript.id
-    ):
-        return None
-    return _LockedAnalysisWork(owner, transcript, execution, analysis, attempt, dispatch)
 
 
 def _terminal_failure(
     db: Session,
     *,
-    work: _LockedAnalysisWork,
+    work: LockedAnalysisExecutionWork,
     code: str,
     stale: bool = False,
     cancel_execution: bool = False,
@@ -269,7 +190,9 @@ def prepare_queued_split_analysis_for_submission(
             "Consultation split preparation requires a clean database session",
         )
 
-    preliminary_config = _preliminary_config(db, execution_id=execution_id)
+    preliminary_config = read_queued_split_phase_config(
+        db, execution_id=execution_id, kind=ConsultationSplitExecutionKind.analysis,
+    )
     credential: object | None = None
     credential_failed = preliminary_config is None
     preliminary_identity = _credential_config_identity(preliminary_config) if preliminary_config is not None else None

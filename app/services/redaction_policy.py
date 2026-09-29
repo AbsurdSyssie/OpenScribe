@@ -69,6 +69,17 @@ ADDRESS_LEADING_STOPWORDS = {
 }
 
 FIELD_LABEL_PATTERN = re.compile(r"^[A-Z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+){0,7}$")
+LABELLED_ACKNOWLEDGEMENT_PREFIX_PATTERN = re.compile(
+    r"(?:^|[.!?]\s+|\n+)"
+    r"(?:(?:the\s+)?(?:patient|pt\.?|doctor|clinician)\s*:\s*|"
+    r"(?:(?:the\s+)?(?:patient|pt\.?|doctor|clinician)|he|she|they)\s+"
+    r"(?:replied|responded|said|answered|answers|acknowledged|affirmed)\s*:?\s*)"
+    r"(?:[\"“]\s*)?$",
+    re.IGNORECASE,
+)
+ACKNOWLEDGEMENT_SUFFIX_PATTERN = re.compile(
+    r"^\s*(?:(?:[\"”]\s*)?[.?!](?:[\"”]\s*)?(?=\s|$)|(?:[\"”]\s*)?$)"
+)
 
 
 def _is_speaker_label(value: str) -> bool:
@@ -166,6 +177,16 @@ def normalize_span_bounds(
     if start >= end:
         return None
     return start, end
+
+
+def is_labelled_acknowledgement_person(text: str, start: int, end: int, entity_type: str) -> bool:
+    """Recognize native NER filler false positives only in labelled acknowledgements."""
+    if entity_type != "PERSON" or text[start:end].casefold() not in {"mhmm", "mm-hmm"}:
+        return False
+    return bool(
+        LABELLED_ACKNOWLEDGEMENT_PREFIX_PATTERN.search(text[:start])
+        and ACKNOWLEDGEMENT_SUFFIX_PATTERN.match(text[end:])
+    )
 
 
 def should_keep_detection(text: str, result: Any) -> bool:

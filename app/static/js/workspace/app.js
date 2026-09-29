@@ -64,27 +64,42 @@ function openRecentFromQuery() {
 }
 
 let recordingActive = false;
-const previousTabIndexes = new WeakMap();
+const recordingNavigationStates = new WeakMap();
 function warnBeforeUnload(event) { event.preventDefault(); event.returnValue = ''; }
+function applyRecordingLock(element, locked = recordingActive) {
+  if (!element?.matches?.('[data-recording-navigation]')) return;
+  if (locked) {
+    if (!recordingNavigationStates.has(element)) {
+      recordingNavigationStates.set(element, {
+        title: element.getAttribute('title'),
+        ariaDisabled: element.getAttribute('aria-disabled'),
+        tabIndex: element.getAttribute('tabindex'),
+        disabled: element instanceof HTMLButtonElement ? element.disabled : null,
+      });
+    }
+    element.classList.add('workspace-navigation-disabled');
+    element.title = RECORDING_MESSAGE;
+    if (element instanceof HTMLButtonElement) element.disabled = true;
+    if (element instanceof HTMLAnchorElement) {
+      element.setAttribute('aria-disabled', 'true');
+      element.setAttribute('tabindex', '-1');
+    }
+    return;
+  }
+  const original = recordingNavigationStates.get(element);
+  if (!original) return;
+  element.classList.remove('workspace-navigation-disabled');
+  if (original.title === null) element.removeAttribute('title'); else element.setAttribute('title', original.title);
+  if (element instanceof HTMLButtonElement) element.disabled = original.disabled;
+  if (element instanceof HTMLAnchorElement) {
+    if (original.ariaDisabled === null) element.removeAttribute('aria-disabled'); else element.setAttribute('aria-disabled', original.ariaDisabled);
+    if (original.tabIndex === null) element.removeAttribute('tabindex'); else element.setAttribute('tabindex', original.tabIndex);
+  }
+  recordingNavigationStates.delete(element);
+}
 function setRecordingLock(locked) {
   recordingActive = Boolean(locked);
-  document.querySelectorAll('[data-recording-navigation]').forEach((element) => {
-    if (recordingActive && element.dataset.recordingOriginalTitle === undefined) element.dataset.recordingOriginalTitle = element.getAttribute('title') || '';
-    element.classList.toggle('workspace-navigation-disabled', recordingActive);
-    if (recordingActive) element.title = RECORDING_MESSAGE;
-    else if (element.dataset.recordingOriginalTitle !== undefined) element.title = element.dataset.recordingOriginalTitle;
-    if (element instanceof HTMLButtonElement) element.disabled = recordingActive;
-    if (element instanceof HTMLAnchorElement) {
-      if (recordingActive) {
-        previousTabIndexes.set(element, element.getAttribute('tabindex'));
-        element.setAttribute('aria-disabled', 'true'); element.setAttribute('tabindex', '-1');
-      } else {
-        element.removeAttribute('aria-disabled');
-        const previous = previousTabIndexes.get(element);
-        if (previous === null || previous === undefined) element.removeAttribute('tabindex'); else element.setAttribute('tabindex', previous);
-      }
-    }
-  });
+  document.querySelectorAll('[data-recording-navigation]').forEach((element) => applyRecordingLock(element));
   window.removeEventListener('beforeunload', warnBeforeUnload);
   if (recordingActive) window.addEventListener('beforeunload', warnBeforeUnload);
 }
@@ -95,6 +110,9 @@ document.addEventListener('openscribe:recording-started', () => setRecordingLock
 document.addEventListener('openscribe:recording-stopped', () => setRecordingLock(false));
 document.addEventListener('openscribe:recording-cancelled', () => setRecordingLock(false));
 document.addEventListener('openscribe:recording-failed', () => setRecordingLock(false));
+document.addEventListener('openscribe:recording-navigation-added', (event) => {
+  applyRecordingLock(event.detail?.element);
+});
 
 function initDrawer() {
   const drawer = document.querySelector('#workspace-sidebar');
@@ -145,4 +163,4 @@ rememberActiveTranscript(); initDrawer(); initSidebarSizing(); setRecordingLock(
 window.requestAnimationFrame(openRecentFromQuery);
 window.lucide?.createIcons();
 
-export { LAST_TRANSCRIPT_KEY, RECORDING_MESSAGE, backToScribeUrl, setRecordingLock };
+export { LAST_TRANSCRIPT_KEY, RECORDING_MESSAGE, applyRecordingLock, backToScribeUrl, setRecordingLock };

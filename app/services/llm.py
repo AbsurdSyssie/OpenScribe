@@ -81,7 +81,12 @@ def _gemini_auth_mode(payload) -> LlmAuthMode:
     )
 
 
-def _list_openai_compatible_models(*, api_key: str, base_url: str) -> list[str]:
+def _fetch_bounded_model_discovery_json(
+    *,
+    api_key: str,
+    base_url: str,
+    failure_message: str,
+) -> object:
     require_safe_provider_url(base_url)
     try:
         with httpx.stream(
@@ -103,11 +108,20 @@ def _list_openai_compatible_models(*, api_key: str, base_url: str) -> list[str]:
         raise AppError(
             502,
             "llm_inspection_failed",
-            "Could not load available models from the provider.",
+            failure_message,
             {"provider_status": exc.response.status_code},
         ) from exc
     except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover
-        raise AppError(502, "llm_inspection_failed", "Could not load available models from the provider.") from exc
+        raise AppError(502, "llm_inspection_failed", failure_message) from exc
+    return payload
+
+
+def _list_openai_compatible_models(*, api_key: str, base_url: str) -> list[str]:
+    payload = _fetch_bounded_model_discovery_json(
+        api_key=api_key,
+        base_url=base_url,
+        failure_message="Could not load available models from the provider.",
+    )
 
     records = payload.get("data") if isinstance(payload, dict) else []
     models: set[str] = set()
@@ -170,27 +184,11 @@ def _list_openai_chat_models(*, api_key: str, base_url: str) -> list[str]:
 
 
 def _list_mistral_chat_models(*, api_key: str, base_url: str) -> list[str]:
-    require_safe_provider_url(base_url)
-    try:
-        with httpx.stream(
-            "GET",
-            f"{base_url.rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=10.0,
-        ) as response:
-            response.raise_for_status()
-            payload = json.loads(read_limited_httpx_response(response, max_bytes=MODEL_DISCOVERY_MAX_RESPONSE_BYTES))
-    except httpx.HTTPStatusError as exc:  # pragma: no cover
-        if exc.response.status_code in {401, 403}:
-            raise AppError(
-                401,
-                "llm_invalid_credential",
-                "The API key was rejected by the provider.",
-                {"provider_status": exc.response.status_code},
-            ) from exc
-        raise AppError(502, "llm_inspection_failed", "Could not load available Mistral chat models", {"provider_status": exc.response.status_code}) from exc
-    except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover
-        raise AppError(502, "llm_inspection_failed", "Could not load available Mistral chat models") from exc
+    payload = _fetch_bounded_model_discovery_json(
+        api_key=api_key,
+        base_url=base_url,
+        failure_message="Could not load available Mistral chat models",
+    )
 
     records = payload.get("data") if isinstance(payload, dict) else []
     if not isinstance(records, list):
@@ -211,27 +209,11 @@ def _list_mistral_chat_models(*, api_key: str, base_url: str) -> list[str]:
 
 
 def _list_together_chat_models(*, api_key: str, base_url: str) -> list[str]:
-    require_safe_provider_url(base_url)
-    try:
-        with httpx.stream(
-            "GET",
-            f"{base_url.rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=10.0,
-        ) as response:
-            response.raise_for_status()
-            payload = json.loads(read_limited_httpx_response(response, max_bytes=MODEL_DISCOVERY_MAX_RESPONSE_BYTES))
-    except httpx.HTTPStatusError as exc:  # pragma: no cover
-        if exc.response.status_code in {401, 403}:
-            raise AppError(
-                401,
-                "llm_invalid_credential",
-                "The API key was rejected by the provider.",
-                {"provider_status": exc.response.status_code},
-            ) from exc
-        raise AppError(502, "llm_inspection_failed", "Could not load available Together AI chat models", {"provider_status": exc.response.status_code}) from exc
-    except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover
-        raise AppError(502, "llm_inspection_failed", "Could not load available Together AI chat models") from exc
+    payload = _fetch_bounded_model_discovery_json(
+        api_key=api_key,
+        base_url=base_url,
+        failure_message="Could not load available Together AI chat models",
+    )
 
     records = payload.get("data") if isinstance(payload, dict) else payload
     if not isinstance(records, list):

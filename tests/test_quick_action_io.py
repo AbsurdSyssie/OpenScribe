@@ -386,6 +386,65 @@ def test_preflight_matches_template_exact_copy_and_suffix_semantics(
     assert preview["entries"][1]["selected_by_default"] is True
 
 
+def test_preflight_batches_active_name_matches_without_loading_unmatched_or_inactive_versions(
+    db_session,
+    make_user,
+    make_quick_action,
+):
+    actor = make_user()
+    make_quick_action(owner=actor, actor=actor, team=actor.team, name="SOAP", description=None, prompt_text="Write a follow-up")
+    make_quick_action(owner=actor, actor=actor, team=actor.team, name="Letter", description=None, prompt_text="Write a letter")
+    make_quick_action(owner=actor, actor=actor, team=actor.team, name="Inactive", description=None, is_active=False)
+    statements: list[str] = []
+
+    def capture_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", capture_statement)
+    try:
+        preview = plan_quick_action_bundle_import(
+            db_session,
+            actor,
+            destination=TemplateScope.user,
+            raw_bundle=bundle_bytes(
+                quick_action(" SOAP "),
+                quick_action("SOAP", prompt="Different"),
+                quick_action("letter", prompt="Write a letter"),
+            ),
+        )
+        active_version_selects = [statement for statement in statements if "quick_action_versions" in statement]
+        statements.clear()
+        plan_quick_action_bundle_import(db_session, actor, destination=TemplateScope.user, raw_bundle=bundle_bytes(quick_action("No match")))
+        no_match_version_selects = [statement for statement in statements if "quick_action_versions" in statement]
+        statements.clear()
+        plan_quick_action_bundle_import(db_session, actor, destination=TemplateScope.user, raw_bundle=bundle_bytes(quick_action("inactive")))
+        inactive_version_selects = [statement for statement in statements if "quick_action_versions" in statement]
+    finally:
+        event.remove(bind, "before_cursor_execute", capture_statement)
+
+    assert [entry["status"] for entry in preview["entries"]] == ["exact_copy", "renamed", "exact_copy"]
+    assert [entry["proposed_name"] for entry in preview["entries"]] == ["SOAP copy 2", "SOAP copy 3", "letter copy 2"]
+    assert [entry["selected_by_default"] for entry in preview["entries"]] == [False, True, False]
+    assert preview["summary"] == {"total": 3, "importable": 3, "exact_copies": 2, "invalid": 0, "renamed": 1, "unknown_fields": 0}
+    assert len(active_version_selects) == 1
+    assert no_match_version_selects == []
+    assert inactive_version_selects == []
+
+
+def test_preflight_preserves_missing_matched_version_failure(db_session, make_user):
+    actor = make_user()
+    missing = QuickAction(scope=TemplateScope.user, owner_user_id=actor.id, name="Missing", is_active=True, created_by_user_id=actor.id)
+    db_session.add(missing)
+    db_session.commit()
+
+    with pytest.raises(AppError) as exc_info:
+        plan_quick_action_bundle_import(db_session, actor, destination=TemplateScope.user, raw_bundle=bundle_bytes(quick_action("Missing")))
+
+    assert (exc_info.value.status_code, exc_info.value.code, exc_info.value.message) == (404, "not_found", "Quick action version not found")
+    assert exc_info.value.details == {"resource": "quick_action_version", "quick_action_id": str(missing.id)}
+
+
 def test_preflight_suffix_truncates_to_model_limit(
     db_session,
     make_user,

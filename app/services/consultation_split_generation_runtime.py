@@ -9,7 +9,7 @@ import json
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Literal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -18,21 +18,29 @@ from app.errors import AppError
 from app.models import (AttemptOutcome, AttemptStatus, ConsultationSplitAnalysis, ConsultationSplitBatch, ConsultationSplitBatchTopic,
     ConsultationSplitBatchStatus, ConsultationSplitExecution, ConsultationSplitExecutionKind,
     ConsultationSplitExecutionStatus, ConsultationSplitTopicDisposition, ConsultationSplitTopicOutcome,
-    ConsultationSplitTopicOutcomeStatus, GeneratedDocument, GeneratedDocumentGeneratorType,
-    GeneratedDocumentSection, GeneratedDocumentStatus, ProviderAttempt, ProviderFeatureType,
+    ConsultationSplitTopicOutcomeStatus, ProviderAttempt, ProviderFeatureType,
     ProviderUsageEvent, ProviderUsageEventType, TaskDispatchOutbox, TaskDispatchSourceKind,
-    TaskDispatchState, TeamLlmConfig, TemplateMode, Transcript, TranscriptVersion, User, utcnow)
+    TaskDispatchState, TeamLlmConfig, Transcript, TranscriptVersion, User, utcnow)
 from app.services.consultation_split_generation import (SplitGenerationTopic, parse_split_generation_partial,
-    prepare_split_generation_request, prepare_split_generation_recovery_request)
+    prepare_split_generation_request, prepare_split_generation_recovery_request,
+    split_generation_request_snapshot)
 from app.services.consultation_splits import read_split_topic_outcome_output
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.consultation_splits import read_split_batch_json, read_split_batch_phi_index, read_split_execution_json
-from app.services.content_crypto import encrypt_json_for_existing_owner, encrypt_text_for_owner
+from app.services.content_crypto import encrypt_json_for_existing_owner
 from app.services.llm_adapters import runtime as llm_runtime
-from app.services.llm_adapters.runtime import generation_request_snapshot, validate_provider_snapshot_for_config
+from app.services.llm_adapters.runtime import validate_provider_snapshot_for_config
 from app.services.llm_adapters.types import LlmProviderSnapshot
 from app.services.llm_credentials import resolve_generation_credential
-from app.services.consultation_split_pre_submit import _credential_config_identity
+from app.services.consultation_split_pre_submit import (
+    _credential_config_identity,
+    read_queued_split_phase_config,
+)
+from app.services.consultation_split_materialization import (
+    SplitDocumentProviderMetadata,
+    materialize_split_document,
+    require_batch_materialization_version,
+)
 from app.services.provider_errors import safe_provider_error_code
 from app.services.quotas import cancel_provider_attempt, mark_provider_attempt_submitted, settle_provider_attempt_tokens, settle_provider_attempt_unknown_tokens
 from app.services.task_outbox import cancel_pending_task_dispatch
@@ -44,7 +52,6 @@ SPLIT_GENERATION_PROVIDER_DEADLINE_SECONDS = 600
 RECOVERABLE_GENERATION_RESPONSE_MAX_CHARS = 2_097_152
 
 
-GENERIC_SPLIT_DOCUMENT_TITLE = "Consultation split note"
 GenerationOutcome = Literal["ready", "failed", "in_flight", "noop"]
 
 @dataclass(frozen=True, slots=True)
@@ -132,14 +139,18 @@ def _lock_work(db: Session, execution_id: UUID, *, status: ConsultationSplitExec
     )
 
 
-def _has_valid_materialization_binding(work: _Work) -> bool:
+def _has_valid_materialization_binding(db: Session, work: _Work) -> bool:
     """Require the confirmation-bound version; workers must never create one."""
     version = work.materialization_transcript_version
+    try:
+        require_batch_materialization_version(
+            db,
+            batch=work.batch, transcript_id=work.transcript.id, version=version,
+        )
+    except AppError:
+        return False
     return (
-        version is not None
-        and work.batch.materialization_transcript_version_id == version.id
-        and version.transcript_id == work.transcript.id
-        and work.batch.retention_expires_at == work.transcript.retention_expires_at
+        work.batch.retention_expires_at == work.transcript.retention_expires_at
         and work.execution.retention_expires_at == work.transcript.retention_expires_at
     )
 
@@ -213,11 +224,10 @@ def _prepared(db: Session, execution_id: UUID) -> tuple[_Work, LlmProviderSnapsh
     # the final database transaction.
     if db.in_transaction():
         raise AppError(500, "consultation_split_pre_submit_transaction_active", "Split generation preparation requires a clean database session")
-    with Session(bind=db.get_bind(), future=True) as lookup:
-        execution = lookup.get(ConsultationSplitExecution, execution_id)
-        config = lookup.get(TeamLlmConfig, execution.llm_config_id) if execution and execution.llm_config_id else None
-        preliminary_identity = _credential_config_identity(config) if config is not None else None
-        if config: lookup.expunge(config)
+    config = read_queued_split_phase_config(
+        db, execution_id=execution_id, kind=ConsultationSplitExecutionKind.generation,
+    )
+    preliminary_identity = _credential_config_identity(config) if config is not None else None
     credential = None
     try: credential = resolve_generation_credential(config) if config else None
     except (AppError, TypeError, ValueError): pass
@@ -226,7 +236,7 @@ def _prepared(db: Session, execution_id: UUID) -> tuple[_Work, LlmProviderSnapsh
     now = utcnow()
     if transcript_is_expired(work.transcript, now=now) or work.attempt.reservation_valid_until <= now:
         return _terminal(db, work, "consultation_split_source_expired" if transcript_is_expired(work.transcript, now=now) else "consultation_split_reservation_expired", submitted=False)
-    if not _has_valid_materialization_binding(work):
+    if not _has_valid_materialization_binding(db, work):
         return _terminal(db, work, "consultation_split_materialization_binding_invalid", submitted=False)
     config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == work.execution.llm_config_id).with_for_update()) if work.execution.llm_config_id else None
     if config is None or config.team_id != work.transcript.team_id:
@@ -250,8 +260,9 @@ def _prepared(db: Session, execution_id: UUID) -> tuple[_Work, LlmProviderSnapsh
             siblings = {topic.topic_uuid: read_split_topic_outcome_output(db, work.owner, outcome=work.outcomes[topic.id])
                         for topic in work.topics if work.outcomes[topic.id].status is ConsultationSplitTopicOutcomeStatus.validated}
             prepared = prepare_split_generation_recovery_request(source_snapshot=source, clinical_snapshot=clinical, confirmed_plan=plan, note_options_snapshot=options, failed_topic_uuids=failed, accepted_sibling_outputs=siblings)
-        messages = prepared.request_body["messages"]
-        request = generation_request_snapshot(adapter_kind=config.adapter_kind, model=provider.model, user_id=work.owner.id, system_message=messages[0]["content"], user_message=messages[1]["content"], output_token_cap=prepared.output_token_cap, response_json_schema=prepared.response_json_schema)
+        request = split_generation_request_snapshot(
+            prepared, adapter_kind=config.adapter_kind, model=provider.model, user_id=work.owner.id,
+        )
         if request != read_split_execution_json(db, work.owner, execution=work.execution, field="request_payload_encrypted"): raise AppError(422, "invalid", "invalid")
     except (AppError, UnicodeDecodeError, KeyError, TypeError):
         return _terminal(db, work, "consultation_split_provider_binding_invalid", submitted=False)
@@ -286,7 +297,7 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
     ):
         db.rollback()
         return SplitGenerationRuntimeResult("in_flight", execution_id)
-    if not _has_valid_materialization_binding(work):
+    if not _has_valid_materialization_binding(db, work):
         return _terminal(db, work, "consultation_split_materialization_binding_invalid", submitted=True)
     parsed_response = False
     try:
@@ -321,8 +332,6 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
         for note in parsed.notes:
             topic=by_uuid[note.topic_uuid]; outcome=work.outcomes[topic.id]
             if outcome.status not in {ConsultationSplitTopicOutcomeStatus.pending, ConsultationSplitTopicOutcomeStatus.failed}: raise AppError(502, "invalid", "invalid")
-            template=next(item["template"] for item in plan["topics"] if UUID(item["topic_uuid"]) == note.topic_uuid)
-            rendered = note.content if isinstance(note.content, str) else json.dumps(note.content, separators=(",", ":"), sort_keys=True)
             outcome.output_encrypted=encrypt_json_for_existing_owner(
                 db, owner_user_id=work.owner.id, table="consultation_split_topic_outcomes",
                 field="output_encrypted", record_id=outcome.id,
@@ -424,24 +433,24 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
         # Only now may documents be materialized. Provider output remains
         # redacted in the immutable outcome; the owner-facing document gets
         # its frozen placeholders restored at this final boundary.
+        materialization_version = require_batch_materialization_version(
+            db, batch=work.batch, transcript_id=work.transcript.id,
+            version=work.materialization_transcript_version,
+        )
+        provider_metadata = SplitDocumentProviderMetadata(
+            work.execution.llm_config_id, work.execution.provider_model,
+            work.execution.provider_adapter, work.execution.provider_base_url,
+        )
         for note in complete_notes:
             topic=by_uuid[note.topic_uuid]; outcome=work.outcomes[topic.id]
             template=next(item["template"] for item in plan["topics"] if UUID(item["topic_uuid"]) == note.topic_uuid)
-            content = (
-                reidentify_text(note.content, phi_index=phi_index)
-                if isinstance(note.content, str)
-                else {key: reidentify_text(value, phi_index=phi_index) for key, value in note.content.items()}
+            materialize_split_document(
+                db, owner=work.owner, batch=work.batch, topic=topic,
+                accepted_output={"content": note.content, "mode": note.mode},
+                template_snapshot=template, phi_index=phi_index,
+                materialization_version=materialization_version,
+                provider_metadata=provider_metadata,
             )
-            rendered = content if isinstance(content, str) else json.dumps(content, separators=(",", ":"), sort_keys=True)
-            doc=GeneratedDocument(id=uuid4(), owner_user_id=work.owner.id, team_id=work.transcript.team_id, transcript_id=work.transcript.id, transcript_version_id=work.materialization_transcript_version.id, redaction_run_id=work.analysis.redaction_run_id, consultation_split_batch_topic_id=topic.id, consultation_split_topic_uuid=topic.topic_uuid, generator_type=GeneratedDocumentGeneratorType.template, template_version_id=None, llm_config_id=work.execution.llm_config_id, source_template_name=GENERIC_SPLIT_DOCUMENT_TITLE, prompt_snapshot_text=None, status=GeneratedDocumentStatus.ready, title=GENERIC_SPLIT_DOCUMENT_TITLE, document_mode=TemplateMode(note.mode), original_output_text_encrypted="", edited_output_text_encrypted="", retention_expires_at=work.transcript.retention_expires_at, model_used=work.execution.provider_model, llm_adapter_kind=work.execution.provider_adapter, llm_base_url=work.execution.provider_base_url)
-            doc.regeneration_lineage_id = doc.id
-            doc.original_output_text_encrypted=encrypt_text_for_owner(db, owner_user_id=work.owner.id, table="generated_documents", field="original_output_text_encrypted", record_id=doc.id, plaintext=rendered) or ""
-            doc.edited_output_text_encrypted=encrypt_text_for_owner(db, owner_user_id=work.owner.id, table="generated_documents", field="edited_output_text_encrypted", record_id=doc.id, plaintext=rendered) or ""
-            db.add(doc)
-            if isinstance(content, dict):
-                for index, definition in enumerate(template["structured_sections"]["sections"]):
-                    key=definition["section_key"]; section=GeneratedDocumentSection(id=uuid4(), generated_document_id=doc.id, section_key=key, section_label=definition["section_label"], section_order=definition["section_order"], original_text_encrypted="", edited_text_encrypted="")
-                    section.original_text_encrypted=encrypt_text_for_owner(db, owner_user_id=work.owner.id, table="generated_document_sections", field="original_text_encrypted", record_id=section.id, plaintext=content[key]) or ""; section.edited_text_encrypted=encrypt_text_for_owner(db, owner_user_id=work.owner.id, table="generated_document_sections", field="edited_text_encrypted", record_id=section.id, plaintext=content[key]) or ""; db.add(section)
             # Preserve the accepted ciphertext byte-for-byte.  Materialization
             # adds a document; it never rewrites provider output.
             outcome.status = ConsultationSplitTopicOutcomeStatus.ready

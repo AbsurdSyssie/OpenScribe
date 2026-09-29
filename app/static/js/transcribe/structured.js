@@ -382,6 +382,7 @@ export function createStructuredEditor({
     }
     setCopyReviewStatus('Generated note changed. Scroll to the bottom before copying.');
     syncCopyReviewUi();
+    copyReviewLayoutCheck?.();
   };
 
   const resetCopyReviewStateForDocument = () => {

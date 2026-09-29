@@ -68,7 +68,7 @@ from app.services.consultation_splits import create_split_batch, create_split_ba
 from app.services.consultation_split_confirmation import confirm_split_draft
 from app.services.consultation_split_regeneration import regenerate_confirmed_split_batch
 from app.services.consultation_split_recovery import QueuedSplitRecovery
-from app.services.consultation_split_generation_runtime import GENERIC_SPLIT_DOCUMENT_TITLE
+from app.services.consultation_split_materialization import GENERIC_SPLIT_DOCUMENT_TITLE
 from app.services.templates import delete_personal_template
 from app.services.task_outbox import PUBLISH_ERROR_CODE
 from app.services.transcripts import set_freeform_working_note_text

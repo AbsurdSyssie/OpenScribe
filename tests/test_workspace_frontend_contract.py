@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 
@@ -46,6 +47,7 @@ def test_workspace_sidebar_has_required_order_roles_and_recording_markers():
 
 def test_workspace_js_uses_session_memory_recording_events_and_native_history():
     script = read("app/static/js/workspace/app.js")
+    transcribe_script = read("app/static/js/transcribe/app.js")
     assert "openscribe.workspace.lastTranscriptId" in script
     assert "openscribe:recording-started" in script
     assert "openscribe:recording-stopped" in script
@@ -56,6 +58,88 @@ def test_workspace_js_uses_session_memory_recording_events_and_native_history():
     assert "open_recent" in script
     assert "history.replaceState" in script
     assert "pushState" not in script
+    assert "recordingNavigationStates.has(element)" in script
+    assert "openscribe:recording-navigation-added" in script
+    assert "link.dataset.recordingNavigation = '';" in transcribe_script
+    assert "new CustomEvent('openscribe:recording-navigation-added', { detail: { element: link } })" in transcribe_script
+
+
+def test_workspace_recording_lock_applies_to_late_session_links_and_restores_them(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    runner = tmp_path / "workspace_recording_lock_runner.cjs"
+    runner.write_text(
+        """
+        const assert = require('node:assert/strict');
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+
+        class Element {
+          constructor() {
+            this.attributes = new Map();
+            this.dataset = {};
+            this.disabled = false;
+            this.classList = {
+              values: new Set(),
+              add: (value) => this.classList.values.add(value),
+              remove: (value) => this.classList.values.delete(value),
+              toggle: (value, enabled) => enabled ? this.classList.values.add(value) : this.classList.values.delete(value),
+            };
+          }
+          get title() { return this.getAttribute('title') || ''; }
+          set title(value) { this.setAttribute('title', value); }
+          getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
+          setAttribute(name, value) { this.attributes.set(name, String(value)); }
+          removeAttribute(name) { this.attributes.delete(name); }
+          matches(selector) { return selector === '[data-recording-navigation]' && this.dataset.recordingNavigation !== undefined; }
+          closest() { return null; }
+          getClientRects() { return [{}]; }
+        }
+        class HTMLAnchorElement extends Element {}
+        class HTMLButtonElement extends Element {}
+        const handlers = new Map();
+        const navigation = [];
+        const document = {
+          body: { dataset: {} },
+          querySelector: () => null,
+          querySelectorAll: (selector) => selector === '[data-recording-navigation]' ? navigation : [],
+          addEventListener: (name, handler) => handlers.set(name, handler),
+        };
+        const window = {
+          addEventListener() {}, removeEventListener() {}, requestAnimationFrame(callback) { callback(); },
+          matchMedia() { return { matches: false }; }, sessionStorage: { getItem() { return ''; }, setItem() {} },
+          location: { href: 'https://example.test/workspace' }, history: { replaceState() {} }, lucide: null,
+        };
+        const source = fs.readFileSync(__SOURCE_PATH__, 'utf8')
+          .replace(/export \\{[^}]+\\};/, '');
+        const sandbox = { document, window, URL, HTMLAnchorElement, HTMLButtonElement, WeakMap };
+        vm.createContext(sandbox);
+        vm.runInContext(source, sandbox, { filename: __SOURCE_PATH__ });
+
+        const lateLink = new HTMLAnchorElement();
+        lateLink.dataset.recordingNavigation = '';
+        lateLink.setAttribute('title', 'Open consultation');
+        lateLink.setAttribute('tabindex', '3');
+        lateLink.setAttribute('aria-disabled', 'false');
+
+        sandbox.setRecordingLock(true);
+        handlers.get('openscribe:recording-navigation-added')({ detail: { element: lateLink } });
+        navigation.push(lateLink);
+        assert.equal(lateLink.title, 'Finish or cancel the recording before leaving Scribe.');
+        assert.equal(lateLink.getAttribute('aria-disabled'), 'true');
+        assert.equal(lateLink.getAttribute('tabindex'), '-1');
+        assert.equal(lateLink.classList.values.has('workspace-navigation-disabled'), true);
+
+        sandbox.setRecordingLock(true);
+        sandbox.setRecordingLock(false);
+        assert.equal(lateLink.title, 'Open consultation');
+        assert.equal(lateLink.getAttribute('aria-disabled'), 'false');
+        assert.equal(lateLink.getAttribute('tabindex'), '3');
+        assert.equal(lateLink.classList.values.has('workspace-navigation-disabled'), false);
+        """.replace("__SOURCE_PATH__", repr(str(root / "app/static/js/workspace/app.js"))),
+        encoding="utf-8",
+    )
+
+    subprocess.run(["node", str(runner)], check=True, cwd=root)
 
 
 def test_media_controller_emits_authoritative_workspace_recording_events():

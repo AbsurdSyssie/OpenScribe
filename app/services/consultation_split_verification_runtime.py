@@ -16,6 +16,7 @@ from app.models import (AttemptOutcome, AttemptStatus, ConsultationSplitBatch,
     ProviderAttempt, TaskDispatchOutbox, TaskDispatchSourceKind, TaskDispatchState,
     TeamLlmConfig, Transcript, User, utcnow)
 from app.services.consultation_split_partial import _materialize_available_split_notes_locked
+from app.services.consultation_split_materialization import require_batch_materialization_version
 from app.services.consultation_split_verification import apply_split_verification_response
 from app.services.consultation_split_verification import prepare_split_verification_request
 from app.services.consultation_split_pre_submit import _credential_config_identity
@@ -89,11 +90,49 @@ def _valid_verification_stage(work) -> bool:
     )
 
 
+def _finish_materialization_binding_invalid(db: Session, work) -> None:
+    """Durably terminalize a verifier whose confirmed document lineage is gone."""
+    execution, batch, _owner, _transcript, _attempt, _dispatch, _topics, _outcomes = work
+    now = utcnow()
+    code = "consultation_split_materialization_binding_invalid"
+    execution.status = ConsultationSplitExecutionStatus.failed
+    execution.error_code = code
+    execution.completed_at = now
+    execution.recoverable_response_encrypted = None
+    if _valid_verification_stage(work):
+        batch.status = ConsultationSplitBatchStatus.failed
+        batch.verification_status = ConsultationSplitVerificationStatus.unchecked
+        batch.verification_reason = code
+        batch.verification_completed_at = now
+        batch.verification_correction_count = None
+        batch.completed_at = now
+    db.commit()
+
+
 def _finish(db: Session, work, *, reason: str | None, verified: bool, corrected: dict | None = None,
             correction_count: int | None = None, submitted: bool = False, usage: dict | None = None) -> None:
     execution, batch, owner, transcript, attempt, dispatch, topics, outcomes = work
     now = utcnow()
     valid_stage = _valid_verification_stage(work)
+    if valid_stage:
+        try:
+            require_batch_materialization_version(
+                db, batch=batch, transcript_id=transcript.id,
+            )
+        except AppError:
+            if submitted:
+                if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int):
+                    settle_provider_attempt_tokens(db, attempt_id=attempt.id, reported_total_tokens=usage["total_tokens"],
+                        reported_input_tokens=usage.get("input_tokens"), reported_output_tokens=usage.get("output_tokens"),
+                        outcome=AttemptOutcome.failed)
+                else:
+                    settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id)
+            else:
+                cancel_provider_attempt(db, attempt_id=attempt.id, now=now)
+                if dispatch.state is TaskDispatchState.pending:
+                    cancel_pending_task_dispatch(db, task_id=dispatch.task_id)
+            _finish_materialization_binding_invalid(db, work)
+            return
     if submitted:
         if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int):
             settle_provider_attempt_tokens(db, attempt_id=attempt.id, reported_total_tokens=usage["total_tokens"],
@@ -175,6 +214,13 @@ def fail_open_verification_execution(
     if not valid_stage:
         db.commit()
         return True
+    try:
+        require_batch_materialization_version(
+            db, batch=batch, transcript_id=transcript.id,
+        )
+    except AppError:
+        _finish_materialization_binding_invalid(db, work)
+        return True
     batch.verification_status = ConsultationSplitVerificationStatus.unchecked
     batch.verification_reason = reason
     batch.verification_completed_at = now
@@ -219,6 +265,12 @@ def _prepare(db: Session, execution_id: UUID):
     execution, batch, owner, transcript, attempt, _dispatch, topics, outcomes = work
     if not _valid_verification_stage(work):
         return work, None, None, "verification_provider_config_invalid"
+    try:
+        require_batch_materialization_version(
+            db, batch=batch, transcript_id=transcript.id,
+        )
+    except AppError:
+        return work, None, None, "consultation_split_materialization_binding_invalid"
     if transcript_is_expired(transcript) or attempt.reservation_valid_until <= utcnow():
         return work, None, None, "verification_source_expired"
     config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == execution.llm_config_id).with_for_update()) if execution.llm_config_id else None

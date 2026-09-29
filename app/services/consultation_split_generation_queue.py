@@ -14,11 +14,14 @@ from sqlalchemy.orm import Session
 
 from app.errors import AppError
 from app.models import ConsultationSplitBatch, ConsultationSplitBatchStatus, ConsultationSplitExecution, ConsultationSplitExecutionKind, User, utcnow
-from app.services.consultation_split_generation import prepare_split_generation_request
+from app.services.consultation_split_generation import (
+    prepare_split_generation_request,
+    split_generation_request_snapshot,
+)
 from app.services.consultation_splits import queue_split_execution, read_split_batch_json
 from app.services.content_crypto import encrypt_json_for_existing_owner
 from app.services.llm import resolve_user_llm
-from app.services.llm_adapters.runtime import build_provider_snapshot, generation_request_snapshot
+from app.services.llm_adapters.runtime import build_provider_snapshot
 
 SPLIT_GENERATION_RESERVATION_SECONDS = 1_500
 
@@ -74,20 +77,9 @@ def queue_confirmed_split_generation(
         confirmed_plan=read_split_batch_json(db, owner, batch=batch, field="confirmed_plan_encrypted") or {},
         note_options_snapshot=read_split_batch_json(db, owner, batch=batch, field="note_options_snapshot_encrypted") or {},
     )
-    messages = prepared.request_body["messages"]
-    system_message = messages[0]["content"] if isinstance(messages, list) and isinstance(messages[0], dict) else None
-    user_message = messages[1]["content"] if isinstance(messages, list) and isinstance(messages[1], dict) else None
-    if not isinstance(system_message, str) or not isinstance(user_message, str):
-        raise AppError(500, "consultation_split_request_payload_invalid", "Consultation split content is unavailable")
     provider = build_provider_snapshot(config=config, model=model)
-    request = generation_request_snapshot(
-        adapter_kind=config.adapter_kind,
-        model=model,
-        user_id=owner.id,
-        system_message=system_message,
-        user_message=user_message,
-        output_token_cap=prepared.output_token_cap,
-        response_json_schema=prepared.response_json_schema,
+    request = split_generation_request_snapshot(
+        prepared, adapter_kind=config.adapter_kind, model=model, user_id=owner.id,
     )
     # Confirmation's provider snapshot is write-once and contains no secret.
     existing_batch_snapshot = read_split_batch_json(db, owner, batch=batch, field="provider_snapshot_encrypted")

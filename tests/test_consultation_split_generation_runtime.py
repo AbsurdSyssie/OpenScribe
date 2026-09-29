@@ -50,7 +50,10 @@ from app.schemas.consultation_split import ConsultationSplitDraftConfirmRequest
 from app.services.consultation_split_confirmation import confirm_split_draft
 from app.services.consultation_split_drafts import create_split_draft, create_split_draft_topic
 from app.services.consultation_split_generation_runtime import process_consultation_split_generation_execution
-from app.services.consultation_split_verification_runtime import process_consultation_split_verification_execution
+from app.services.consultation_split_verification_runtime import (
+    fail_open_verification_execution,
+    process_consultation_split_verification_execution,
+)
 from app.services.consultation_split_partial import keep_available_split_notes
 from app.services.consultation_split_recovery import (
     queue_automatic_split_recovery,
@@ -215,11 +218,12 @@ def _run(db, execution_id):
 
 def _queue_selected_verification(
     db, owner, make_llm_config, make_llm_selection, make_template, monkeypatch,
+    *, source_only=None,
 ):
     """Build one queued verifier with validated originals and no documents yet."""
     transcript, generation_id = _queue(
         db, owner, make_llm_config, make_llm_selection, make_template,
-        monkeypatch, structured_only=True,
+        monkeypatch, structured_only=True, source_only=source_only,
     )
     config = db.scalar(
         select(TeamLlmSelection).where(TeamLlmSelection.team_id == owner.team_id)
@@ -248,6 +252,45 @@ def _verification_response(db, execution_id):
             ConsultationSplitBatchTopic.disposition == ConsultationSplitTopicDisposition.separate_note,
         ))
     })
+
+
+def _invalidate_materialization_binding(db, owner, batch, *, binding):
+    if binding == "missing":
+        batch.materialization_transcript_version_id = None
+        db.commit()
+        return
+    other = Transcript(
+        owner_user_id=owner.id, team_id=owner.team_id, title="Other synthetic consultation",
+        ingestion_mode=TranscriptIngestionMode.whole_file, status=TranscriptStatus.ready,
+        retention_days_applied=30, retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db.add(other)
+    db.flush()
+    version = TranscriptVersion(transcript_id=other.id, version_no=1, text_encrypted="")
+    db.add(version)
+    db.flush()
+    version.text_encrypted = encrypt_text_for_owner(
+        db, owner_user_id=owner.id, table="transcript_versions", field="text_encrypted",
+        record_id=version.id, plaintext="Other synthetic transcript",
+    ) or ""
+    batch.materialization_transcript_version_id = version.id
+    db.commit()
+
+
+def _assert_invalid_verifier_binding_terminal(db, verification_id, batch_id, accepted_ciphertexts):
+    verification, batch, attempt, outcomes = _rows(db, verification_id)
+    assert verification.status is ConsultationSplitExecutionStatus.failed
+    assert verification.error_code == "consultation_split_materialization_binding_invalid"
+    assert batch.id == batch_id
+    assert batch.status is ConsultationSplitBatchStatus.failed
+    assert batch.verification_status is ConsultationSplitVerificationStatus.unchecked
+    assert batch.verification_reason == "consultation_split_materialization_binding_invalid"
+    assert all(outcome.verified_output_encrypted is None for outcome in outcomes)
+    assert {outcome.id: outcome.output_encrypted for outcome in outcomes} == accepted_ciphertexts
+    assert db.scalars(select(GeneratedDocument).where(
+        GeneratedDocument.transcript_id == verification.transcript_id,
+    )).all() == []
+    return attempt
 
 
 def _disable_split_gate(db, owner, monkeypatch, gate):
@@ -766,7 +809,7 @@ def test_keep_partial_primary_failure_rolls_back_replays_and_serializes_concurre
     assert primary.status is ConsultationSplitTopicOutcomeStatus.failed
     assert survivor.status is ConsultationSplitTopicOutcomeStatus.validated
 
-    partial_module = __import__("app.services.consultation_split_partial", fromlist=["encrypt_text_for_owner"])
+    partial_module = __import__("app.services.consultation_split_materialization", fromlist=["encrypt_text_for_owner"])
     original_encrypt = partial_module.encrypt_text_for_owner
     monkeypatch.setattr(partial_module, "encrypt_text_for_owner", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("synthetic keep failure")))
     with pytest.raises(RuntimeError, match="synthetic keep failure"):
@@ -842,6 +885,71 @@ def test_keep_available_notes_reidentifies_saved_phi_placeholders(
     ) for section in sections} == {"Synthetic Patient problem", "Review Synthetic Patient"}
 
 
+@pytest.mark.parametrize("source_only", ["working_note", "dictation"])
+def test_keep_available_notes_materializes_source_only_survivor_with_batch_bound_version(
+    db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch, source_only,
+):
+    owner = make_user(email=f"generation-keep-source-only-{source_only}-{uuid4()}@example.com")
+    transcript, execution_id = _queue(
+        db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch,
+        source_only=source_only,
+    )
+    monkeypatch.setattr(
+        "app.services.consultation_split_recovery.queue_automatic_split_recovery",
+        lambda *_args, **_kwargs: None,
+    )
+    _provider(monkeypatch, _response(db_session, execution_id, malformed=True), [])
+    assert _run(db_session, execution_id).outcome == "ready"
+
+    _execution, batch, _attempt, _outcomes = _rows(db_session, execution_id)
+    analysis = db_session.get(ConsultationSplitAnalysis, batch.analysis_id)
+    assert analysis is not None and analysis.transcript_version_id is None
+    assert batch.materialization_transcript_version_id is not None
+
+    documents = keep_available_split_notes(
+        db_session, owner, transcript_id=transcript.id, batch_id=batch.id,
+    )
+
+    assert len(documents) == 1
+    assert {document.transcript_version_id for document in documents} == {
+        batch.materialization_transcript_version_id
+    }
+
+
+@pytest.mark.parametrize("source_only", ["working_note", "dictation"])
+def test_verification_failure_materializes_source_only_batch_with_bound_version(
+    db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch, source_only,
+):
+    owner = make_user(email=f"verification-source-only-{source_only}-{uuid4()}@example.com")
+    transcript, verification_id = _queue_selected_verification(
+        db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch,
+        source_only=source_only,
+    )
+    _verification, batch, _attempt, _outcomes = _rows(db_session, verification_id)
+    analysis = db_session.get(ConsultationSplitAnalysis, batch.analysis_id)
+    assert analysis is not None and analysis.transcript_version_id is None
+    assert batch.materialization_transcript_version_id is not None
+    monkeypatch.setattr(
+        "app.services.consultation_split_verification_runtime.resolve_generation_credential",
+        lambda _config: "token",
+    )
+    monkeypatch.setattr(
+        "app.services.consultation_split_verification_runtime.llm_runtime.invoke_llm",
+        lambda **_kwargs: ("not-json", {"total_tokens": 2}),
+    )
+
+    db_session.rollback()
+    process_consultation_split_verification_execution(db_session, execution_id=verification_id)
+
+    documents = db_session.scalars(select(GeneratedDocument).where(
+        GeneratedDocument.transcript_id == transcript.id,
+    )).all()
+    assert len(documents) == 2
+    assert {document.transcript_version_id for document in documents} == {
+        batch.materialization_transcript_version_id
+    }
+
+
 def test_generation_non_separate_outcome_is_ready_encrypted_and_has_no_document(db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch):
     owner = make_user(email=f"generation-disposition-{uuid4()}@example.com")
     _transcript, execution_id = _queue(db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch, included=True)
@@ -859,7 +967,7 @@ def test_generation_persistence_failure_rolls_back_children_and_provider_errors_
     owner = make_user(email=f"generation-rollback-{uuid4()}@example.com")
     _transcript, execution_id = _queue(db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch)
     calls = []; _provider(monkeypatch, _response(db_session, execution_id), calls)
-    runtime = __import__("app.services.consultation_split_generation_runtime", fromlist=["encrypt_text_for_owner"])
+    runtime = __import__("app.services.consultation_split_materialization", fromlist=["encrypt_text_for_owner"])
     original = runtime.encrypt_text_for_owner; count = {"value": 0}
     def fail_midway(*args, **kwargs):
         count["value"] += 1
@@ -1140,6 +1248,92 @@ def test_selected_checker_runs_once_before_structured_outputs_materialize(
     assert batch.verification_status.value == "verified"
     assert batch.status is ConsultationSplitBatchStatus.ready
     assert len(db_session.scalars(select(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript.id)).all()) == 2
+
+
+@pytest.mark.parametrize("binding", ["missing", "wrong_root"])
+def test_verification_rejects_invalid_materialization_binding_before_provider_submission(
+    db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch, binding,
+):
+    owner = make_user(email=f"verification-binding-before-submit-{binding}-{uuid4()}@example.com")
+    _transcript, verification_id = _queue_selected_verification(
+        db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch,
+    )
+    _verification, batch, _attempt, outcomes = _rows(db_session, verification_id)
+    batch_id = batch.id
+    accepted_ciphertexts = {outcome.id: outcome.output_encrypted for outcome in outcomes}
+    _invalidate_materialization_binding(db_session, owner, batch, binding=binding)
+    calls = []
+    monkeypatch.setattr(
+        "app.services.consultation_split_verification_runtime.resolve_generation_credential",
+        lambda _config: "token",
+    )
+    monkeypatch.setattr(
+        "app.services.consultation_split_verification_runtime.llm_runtime.invoke_llm",
+        lambda **_kwargs: calls.append(1),
+    )
+
+    process_consultation_split_verification_execution(db_session, execution_id=verification_id)
+
+    attempt = _assert_invalid_verifier_binding_terminal(
+        db_session, verification_id, batch_id, accepted_ciphertexts,
+    )
+    assert calls == []
+    assert attempt.status is AttemptStatus.cancelled
+    assert attempt.submitted_at is None
+
+
+@pytest.mark.parametrize("binding", ["missing", "wrong_root"])
+@pytest.mark.parametrize("finalization", ["response_replay", "fail_open"])
+def test_verification_invalid_materialization_binding_terminalizes_replay_and_fail_open(
+    db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch,
+    binding, finalization,
+):
+    owner = make_user(email=f"verification-binding-{finalization}-{binding}-{uuid4()}@example.com")
+    _transcript, verification_id = _queue_selected_verification(
+        db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch,
+    )
+    verification, batch, attempt, outcomes = _rows(db_session, verification_id)
+    batch_id = batch.id
+    accepted_ciphertexts = {outcome.id: outcome.output_encrypted for outcome in outcomes}
+    _invalidate_materialization_binding(db_session, owner, batch, binding=binding)
+    verification = db_session.get(ConsultationSplitExecution, verification_id)
+    attempt = db_session.scalar(select(ProviderAttempt).where(
+        ProviderAttempt.consultation_split_execution_id == verification_id,
+    ))
+    assert verification is not None and attempt is not None
+    now = utcnow()
+    mark_provider_attempt_submitted(
+        db_session, attempt_id=attempt.id, now=now, deadline_at=now + timedelta(minutes=10),
+    )
+    verification.status = ConsultationSplitExecutionStatus.processing
+    if finalization == "response_replay":
+        verification.recoverable_response_encrypted = encrypt_json_for_owner(
+            db_session, owner_user_id=owner.id, table="consultation_split_executions",
+            field="recoverable_response_encrypted", record_id=verification.id,
+            plaintext={"text": _verification_response(db_session, verification_id), "usage": {"total_tokens": 2}},
+        ) or ""
+    db_session.commit()
+    calls = []
+    monkeypatch.setattr(
+        "app.services.consultation_split_verification_runtime.llm_runtime.invoke_llm",
+        lambda **_kwargs: calls.append(1),
+    )
+
+    if finalization == "response_replay":
+        db_session.rollback()
+        process_consultation_split_verification_execution(db_session, execution_id=verification_id)
+    else:
+        assert fail_open_verification_execution(
+            db_session, execution_id=verification_id,
+            reason="provider_attempt_outcome_unknown", terminalized_at=now,
+        ) is True
+
+    settled = _assert_invalid_verifier_binding_terminal(
+        db_session, verification_id, batch_id, accepted_ciphertexts,
+    )
+    assert calls == []
+    assert settled.status is AttemptStatus.settled
+    assert settled.settled_at is not None
 
 
 @pytest.mark.parametrize("gate", ["deployment", "preference"])

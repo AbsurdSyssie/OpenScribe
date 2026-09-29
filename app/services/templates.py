@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 import httpx
 from fastapi import Request
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
-from sqlalchemy import case, func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 from pydantic import ValidationError
@@ -353,6 +353,37 @@ def _latest_template_version(db: Session, *, template_id: UUID) -> PromptTemplat
     if version is None:
         raise AppError(404, "not_found", "Template version not found", {"resource": "template_version", "template_id": str(template_id)})
     return version
+
+
+def _latest_template_versions(
+    db: Session, *, template_ids: list[UUID]
+) -> dict[UUID, PromptTemplateVersion]:
+    """Load each requested template's latest version in one query."""
+    if not template_ids:
+        return {}
+    latest_version_nos = (
+        select(
+            PromptTemplateVersion.template_id,
+            func.max(PromptTemplateVersion.version_no).label("version_no"),
+        )
+        .where(PromptTemplateVersion.template_id.in_(template_ids))
+        .group_by(PromptTemplateVersion.template_id)
+        .subquery()
+    )
+    return {
+        version.template_id: version
+        for version in db.scalars(
+            select(PromptTemplateVersion).join(
+                latest_version_nos,
+                and_(
+                    PromptTemplateVersion.template_id
+                    == latest_version_nos.c.template_id,
+                    PromptTemplateVersion.version_no
+                    == latest_version_nos.c.version_no,
+                ),
+            )
+        )
+    }
 
 
 def _latest_quick_action_version(db: Session, *, quick_action_id: UUID) -> QuickActionVersion:
@@ -783,10 +814,14 @@ def export_template_bundle(db: Session, actor: User, *, template_ids: list[UUID]
     by_id = {template.id: template for template in visible}
     if any(template_id not in by_id for template_id in template_ids):
         raise AppError(404, "not_found", "One or more templates were not found", {"resource": "template"})
+
+    latest_versions = _latest_template_versions(db, template_ids=template_ids)
     entries: list[dict[str, object]] = []
     for template_id in template_ids:
         template = by_id[template_id]
-        version = _latest_template_version(db, template_id=template.id)
+        version = latest_versions.get(template.id)
+        if version is None:
+            raise AppError(404, "not_found", "Template version not found", {"resource": "template_version", "template_id": str(template.id)})
         template_config = _template_version_config(version)
         entries.append(
             {
@@ -932,8 +967,7 @@ def _import_content(entry: TemplateBundleEntry) -> tuple[object, ...]:
     )
 
 
-def _stored_template_content(db: Session, template: PromptTemplate) -> tuple[object, ...]:
-    version = _latest_template_version(db, template_id=template.id)
+def _stored_template_content(template: PromptTemplate, version: PromptTemplateVersion) -> tuple[object, ...]:
     template_config = _template_version_config(version)
     normalized_config = template_config.model_dump(mode="json") if template_config is not None else None
     return (
@@ -948,6 +982,16 @@ def plan_template_bundle_import(db: Session, actor: User, *, destination: Templa
     entries, warnings, entry_issues = parse_template_bundle(raw_bundle)
     existing = _destination_templates(db, actor, destination=destination)
     by_name = {template.name.strip().lower(): template for template in existing}
+    matched_template_ids: set[UUID] = set()
+    for entry in entries:
+        if entry is None:
+            continue
+        matched = by_name.get(_serialize_asset_name(entry.name).lower())
+        if matched is not None and matched.is_active:
+            matched_template_ids.add(matched.id)
+    latest_versions = _latest_template_versions(
+        db, template_ids=list(matched_template_ids)
+    )
     reserved = set(by_name)
     preview: list[dict[str, object]] = []
     counts = {"total": len(entries), "importable": 0, "exact_copies": 0, "invalid": 0, "renamed": 0, "unknown_fields": len(warnings)}
@@ -959,7 +1003,10 @@ def plan_template_bundle_import(db: Session, actor: User, *, destination: Templa
         name = _serialize_asset_name(entry.name)
         normalized = name.lower()
         matched = by_name.get(normalized)
-        exact = bool(matched and matched.is_active and _stored_template_content(db, matched) == _import_content(entry))
+        version = latest_versions.get(matched.id) if matched and matched.is_active else None
+        if matched and matched.is_active and version is None:
+            raise AppError(404, "not_found", "Template version not found", {"resource": "template_version", "template_id": str(matched.id)})
+        exact = bool(version and _stored_template_content(matched, version) == _import_content(entry))
         proposed_name = name
         status = "ready"
         if normalized in reserved:
@@ -1469,6 +1516,10 @@ def list_generated_documents_for_transcript(db: Session, actor: User, *, transcr
     return list(
         db.scalars(
             select(GeneratedDocument)
+            .options(
+                selectinload(GeneratedDocument.sections),
+                selectinload(GeneratedDocument.redaction_run).selectinload(RedactionRun.entities),
+            )
             .where(GeneratedDocument.transcript_id == transcript_id, GeneratedDocument.owner_user_id == actor.id)
             .order_by(GeneratedDocument.created_at.desc(), GeneratedDocument.id.desc())
         )
@@ -2258,6 +2309,38 @@ def _generate_freeform_output_gemini(
     )
 
 
+def _invoke_frozen_llm(
+    *,
+    config: TeamLlmConfig,
+    adapter_kind: LlmAdapterKind,
+    base_url: str,
+    provider_config: dict[str, object] | None,
+    credential: object | None,
+    request_body: dict[str, object],
+) -> tuple[str, GenerationUsage]:
+    """Dispatch already-snapshotted provider request data after submission."""
+    if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
+        return _generate_freeform_output_openai(
+            api_key=credential if isinstance(credential, str) else "",
+            base_url=base_url,
+            request_body=request_body,
+        )
+    if adapter_kind is LlmAdapterKind.ollama_chat:
+        return _generate_freeform_output_ollama(
+            base_url=base_url,
+            bearer_token=credential if isinstance(credential, str) else None,
+            request_body=request_body,
+        )
+    if adapter_kind is LlmAdapterKind.gemini_enterprise:
+        return _generate_freeform_output_gemini(
+            config=config,
+            provider_config=dict(provider_config or {}),
+            credential=credential,
+            request_body=request_body,
+        )
+    raise AppError(422, "business_rule_violation", "Unsupported LLM adapter", {"adapter_kind": adapter_kind.value})
+
+
 def _request_output_token_cap(request_body: dict[str, object]) -> int | None:
     return llm_runtime.request_output_token_cap(request_body)
 
@@ -3019,19 +3102,14 @@ def _run_hallucination_check(
                 db.commit()
             raise
         try:
-            if config.adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
-                response_text, checker_usage = _generate_freeform_output_openai(api_key=runtime_credential if isinstance(runtime_credential, str) else "", base_url=config.base_url, request_body=request_body)
-            elif config.adapter_kind is LlmAdapterKind.ollama_chat:
-                response_text, checker_usage = _generate_freeform_output_ollama(base_url=config.base_url, bearer_token=runtime_credential if isinstance(runtime_credential, str) else None, request_body=request_body)
-            elif config.adapter_kind is LlmAdapterKind.gemini_enterprise:
-                response_text, checker_usage = _generate_freeform_output_gemini(
-                    config=config,
-                    provider_config=dict(config.provider_config_json or {}),
-                    credential=runtime_credential,
-                    request_body=request_body,
-                )
-            else:  # pragma: no cover
-                raise AppError(422, "business_rule_violation", "Unsupported LLM adapter", {"adapter_kind": config.adapter_kind.value})
+            response_text, checker_usage = _invoke_frozen_llm(
+                config=config,
+                adapter_kind=config.adapter_kind,
+                base_url=config.base_url,
+                provider_config=dict(config.provider_config_json or {}),
+                credential=runtime_credential,
+                request_body=request_body,
+            )
         except AppError as exc:
             settled = _settle_hallucination_check_attempt(
                 db,
@@ -4624,6 +4702,45 @@ def _settle_main_generation_terminal(
         db.add(settled)
 
 
+def _fail_generated_document_after_submit(
+    db: Session,
+    *,
+    document: GeneratedDocument,
+    config: TeamLlmConfig,
+    exc: AppError | None = None,
+    output_redacted: str | None = None,
+    usage: GenerationUsage | None = None,
+    include_provider_http_status: bool = False,
+) -> GeneratedDocument:
+    """Persist one post-submit terminal failure with safe metadata and settlement."""
+    document.status = GeneratedDocumentStatus.failed
+    document.error_code = exc.code if exc is not None else "llm_generation_failed"
+    document.error_message = (exc.message if exc is not None else "LLM generation failed")[:255]
+    document.provider_error_code = (exc.details or {}).get("provider_error_code") if exc is not None else None
+    if include_provider_http_status:
+        document.provider_http_status = (exc.details or {}).get("provider_http_status") if exc is not None else None
+    if output_redacted is not None:
+        set_generated_document_text(
+            db,
+            document=document,
+            field="failed_provider_output_redacted_encrypted",
+            plaintext=output_redacted,
+        )
+    document.completed_at = utcnow()
+    db.add(document)
+    _settle_main_generation_terminal(db, document=document, usage=usage, success=False)
+    db.commit()
+    db.refresh(document)
+    _record_generation_usage_event(
+        db,
+        event="llm_generation_failed",
+        document=document,
+        config=config,
+        status=document.status.value,
+    )
+    return document
+
+
 def _terminalize_generation_after_unhandled_error(
     db: Session,
     *,
@@ -5045,51 +5162,20 @@ def _process_split_regenerated_document(
     document = claimed_document
     _record_generation_usage_event(db, event="llm_generation_started", document=document, config=config, status=document.status.value)
     try:
-        if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
-            generated_text, usage = _generate_freeform_output_openai(
-                api_key=credential if isinstance(credential, str) else "",
-                base_url=document.llm_base_url or config.base_url,
-                request_body=request_body,
-            )
-        elif adapter_kind is LlmAdapterKind.ollama_chat:
-            generated_text, usage = _generate_freeform_output_ollama(
-                base_url=document.llm_base_url or config.base_url,
-                bearer_token=credential if isinstance(credential, str) else None,
-                request_body=request_body,
-            )
-        elif adapter_kind is LlmAdapterKind.gemini_enterprise:
-            generated_text, usage = _generate_freeform_output_gemini(
-                config=config,
-                provider_config=dict(document.llm_provider_config_json or {}),
-                credential=credential,
-                request_body=request_body,
-            )
-        else:  # pragma: no cover - persisted adapter validation rejects this.
-            raise AppError(422, "business_rule_violation", "Unsupported LLM adapter")
+        generated_text, usage = _invoke_frozen_llm(
+            config=config,
+            adapter_kind=adapter_kind,
+            base_url=document.llm_base_url or config.base_url,
+            provider_config=dict(document.llm_provider_config_json or {}),
+            credential=credential,
+            request_body=request_body,
+        )
     except AppError as exc:
-        document.status = GeneratedDocumentStatus.failed
-        document.error_code = exc.code
-        document.error_message = exc.message[:255]
-        document.provider_error_code = (exc.details or {}).get("provider_error_code")
-        document.provider_http_status = (exc.details or {}).get("provider_http_status")
-        document.completed_at = utcnow()
-        db.add(document)
-        _settle_main_generation_terminal(db, document=document, usage=None, success=False)
-        db.commit()
-        db.refresh(document)
-        _record_generation_usage_event(db, event="llm_generation_failed", document=document, config=config, status=document.status.value)
-        return document
+        return _fail_generated_document_after_submit(
+            db, document=document, config=config, exc=exc, include_provider_http_status=True
+        )
     except Exception:
-        document.status = GeneratedDocumentStatus.failed
-        document.error_code = "llm_generation_failed"
-        document.error_message = "LLM generation failed"
-        document.completed_at = utcnow()
-        db.add(document)
-        _settle_main_generation_terminal(db, document=document, usage=None, success=False)
-        db.commit()
-        db.refresh(document)
-        _record_generation_usage_event(db, event="llm_generation_failed", document=document, config=config, status=document.status.value)
-        return document
+        return _fail_generated_document_after_submit(db, document=document, config=config)
 
     try:
         parsed = parse_split_generation_partial(generated_text, topics=[contract_topic])
@@ -5123,23 +5209,9 @@ def _process_split_regenerated_document(
                 })
             restored_text = _render_structured_sections_text(structured_sections)
     except AppError as exc:
-        document.status = GeneratedDocumentStatus.failed
-        document.error_code = exc.code
-        document.error_message = exc.message[:255]
-        document.provider_error_code = (exc.details or {}).get("provider_error_code")
-        set_generated_document_text(
-            db,
-            document=document,
-            field="failed_provider_output_redacted_encrypted",
-            plaintext=generated_text,
+        return _fail_generated_document_after_submit(
+            db, document=document, config=config, exc=exc, output_redacted=generated_text, usage=usage
         )
-        document.completed_at = utcnow()
-        db.add(document)
-        _settle_main_generation_terminal(db, document=document, usage=usage, success=False)
-        db.commit()
-        db.refresh(document)
-        _record_generation_usage_event(db, event="llm_generation_failed", document=document, config=config, status=document.status.value)
-        return document
 
     set_generated_document_text(db, document=document, field="original_output_text_encrypted", plaintext=restored_text)
     set_generated_document_text(db, document=document, field="edited_output_text_encrypted", plaintext=restored_text)
@@ -5465,51 +5537,20 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
 
     try:
         request_body = llm_request_payload
-        if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
-            generated_text, usage = _generate_freeform_output_openai(
-                api_key=runtime_credential if isinstance(runtime_credential, str) else "",
-                base_url=base_url,
-                request_body=request_body,
-            )
-        elif adapter_kind is LlmAdapterKind.ollama_chat:
-            generated_text, usage = _generate_freeform_output_ollama(
-                base_url=base_url,
-                bearer_token=runtime_credential if isinstance(runtime_credential, str) else None,
-                request_body=request_body,
-            )
-        elif adapter_kind is LlmAdapterKind.gemini_enterprise:
-            generated_text, usage = _generate_freeform_output_gemini(
-                config=config,
-                provider_config=dict(document.llm_provider_config_json or {}),
-                credential=runtime_credential,
-                request_body=request_body,
-            )
-        else:  # pragma: no cover
-            raise AppError(422, "business_rule_violation", "Unsupported LLM adapter", {"adapter_kind": adapter_kind.value})
+        generated_text, usage = _invoke_frozen_llm(
+            config=config,
+            adapter_kind=adapter_kind,
+            base_url=base_url,
+            provider_config=dict(document.llm_provider_config_json or {}),
+            credential=runtime_credential,
+            request_body=request_body,
+        )
     except AppError as exc:
-        document.status = GeneratedDocumentStatus.failed
-        document.error_code = exc.code
-        document.error_message = exc.message[:255]
-        document.provider_error_code = (exc.details or {}).get("provider_error_code")
-        document.provider_http_status = (exc.details or {}).get("provider_http_status")
-        document.completed_at = utcnow()
-        db.add(document)
-        _settle_main_generation_terminal(db, document=document, usage=None, success=False)
-        db.commit()
-        db.refresh(document)
-        _record_generation_usage_event(db, event="llm_generation_failed", document=document, config=config, status=document.status.value)
-        return document
+        return _fail_generated_document_after_submit(
+            db, document=document, config=config, exc=exc, include_provider_http_status=True
+        )
     except Exception:
-        document.status = GeneratedDocumentStatus.failed
-        document.error_code = "llm_generation_failed"
-        document.error_message = "LLM generation failed"
-        document.completed_at = utcnow()
-        db.add(document)
-        _settle_main_generation_terminal(db, document=document, usage=None, success=False)
-        db.commit()
-        db.refresh(document)
-        _record_generation_usage_event(db, event="llm_generation_failed", document=document, config=config, status=document.status.value)
-        return document
+        return _fail_generated_document_after_submit(db, document=document, config=config)
 
     phi_index = combined_phi_index(db, redaction_run, extra_phi_index=list(extra_phi_index))
 
@@ -5570,23 +5611,9 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
             restored_title = None
             structured_sections = []
     except AppError as exc:
-        document.status = GeneratedDocumentStatus.failed
-        document.error_code = exc.code
-        document.error_message = exc.message[:255]
-        document.provider_error_code = (exc.details or {}).get("provider_error_code")
-        set_generated_document_text(
-            db,
-            document=document,
-            field="failed_provider_output_redacted_encrypted",
-            plaintext=generated_text,
+        return _fail_generated_document_after_submit(
+            db, document=document, config=config, exc=exc, output_redacted=generated_text, usage=usage
         )
-        document.completed_at = utcnow()
-        db.add(document)
-        _settle_main_generation_terminal(db, document=document, usage=usage, success=False)
-        db.commit()
-        db.refresh(document)
-        _record_generation_usage_event(db, event="llm_generation_failed", document=document, config=config, status=document.status.value)
-        return document
     set_generated_document_text(db, document=document, field="original_output_text_encrypted", plaintext=restored_text)
     set_generated_document_text(db, document=document, field="edited_output_text_encrypted", plaintext=restored_text)
     document.failed_provider_output_redacted_encrypted = None

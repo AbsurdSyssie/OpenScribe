@@ -196,7 +196,7 @@ def _install_freeform_editor(page, base_url, *, line_count=376):
 def test_split_placeholder_uses_the_existing_generation_screen(static_repo_server):
     with _browser_page(static_repo_server) as page:
         _install_editor(page, static_repo_server)
-        page.evaluate(
+        before_row_counts = page.evaluate(
             """() => window.testEditor.renderGeneratedOutput({
               id: 'split-placeholder:transcript-1:topic-1',
               kind: 'split_placeholder',
@@ -365,6 +365,51 @@ def test_copy_review_uses_the_clipping_scroll_container_bottom(static_repo_serve
     assert result["scrollContainerBottom"] < result["viewportHeight"]
     assert "Scroll to the bottom" in result["beforeRowReachesContainerBottom"]
     assert result["afterRowReachesContainerBottom"] is None
+
+
+def test_copy_review_rechecks_a_short_section_after_selection_changes(static_repo_server):
+    with _browser_page(static_repo_server) as page:
+        _install_editor(page, static_repo_server)
+        page.wait_for_timeout(50)
+
+        result = page.evaluate(
+            """async () => {
+              const section = document.querySelector('[data-generated-structured-section]');
+              const finalRow = section.querySelector('[data-structured-statement-row]:last-child');
+              const input = finalRow.querySelector('[data-structured-line-input]');
+              const checkbox = finalRow.querySelector('[data-structured-line-checkbox]');
+              const sectionRect = {
+                bottom: 100, height: 100, left: 0, right: 500, top: 0, width: 500,
+              };
+              const rowRect = {
+                bottom: 100, height: 40, left: 0, right: 500, top: 60, width: 500,
+              };
+              section.getBoundingClientRect = () => sectionRect;
+              section.getClientRects = () => [sectionRect];
+              finalRow.getBoundingClientRect = () => rowRect;
+              finalRow.getClientRects = () => [rowRect];
+
+              input.value += ' changed';
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              await new Promise((resolve) => requestAnimationFrame(resolve));
+              await new Promise((resolve) => requestAnimationFrame(resolve));
+              const copyObserver = window.testObservers.find((observer) => observer.targets.has(section));
+              copyObserver.trigger([section]);
+              const beforeSelectionChange = window.testEditor.noteCopyReviewBlocker({ section });
+
+              checkbox.checked = false;
+              checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+              await new Promise((resolve) => requestAnimationFrame(resolve));
+              await new Promise((resolve) => requestAnimationFrame(resolve));
+              return {
+                beforeSelectionChange,
+                afterSelectionChange: window.testEditor.noteCopyReviewBlocker({ section }),
+              };
+            }"""
+        )
+
+    assert result["beforeSelectionChange"] is None
+    assert result["afterSelectionChange"] is None
 
 
 def test_copy_stays_locked_until_deferred_rows_are_laid_out(static_repo_server):

@@ -799,12 +799,6 @@ def transcript_has_working_note(db: Session, *, transcript: Transcript) -> bool:
 def transcript_working_note_mode(db: Session, *, transcript: Transcript) -> TranscriptWorkingNoteMode | None:
     if transcript.working_note_mode is TranscriptWorkingNoteMode.freeform:
         return TranscriptWorkingNoteMode.freeform if freeform_working_note_text(db, transcript=transcript).strip() else None
-    if transcript.working_note_mode is TranscriptWorkingNoteMode.structured:
-        return (
-            TranscriptWorkingNoteMode.structured
-            if normalize_structured_working_note(transcript_structured_context(db, transcript=transcript)) is not None
-            else None
-        )
     return (
         TranscriptWorkingNoteMode.structured
         if normalize_structured_working_note(transcript_structured_context(db, transcript=transcript)) is not None
@@ -815,11 +809,16 @@ def transcript_working_note_mode(db: Session, *, transcript: Transcript) -> Tran
 def working_note_detail(db: Session, actor: User, *, transcript_id: UUID) -> dict:
     transcript = _get_owner_transcript_for_ingestion(db, actor, transcript_id=transcript_id)
     structured_note = normalize_structured_working_note(transcript_structured_context(db, transcript=transcript))
-    mode = transcript_working_note_mode(db, transcript=transcript)
+    freeform_text = ""
+    if transcript.working_note_mode is TranscriptWorkingNoteMode.freeform:
+        freeform_text = freeform_working_note_text(db, transcript=transcript)
+        mode = TranscriptWorkingNoteMode.freeform if freeform_text.strip() else None
+    else:
+        mode = TranscriptWorkingNoteMode.structured if structured_note is not None else None
     return {
         "transcript_id": transcript.id,
         "mode": mode,
-        "freeform_text": freeform_working_note_text(db, transcript=transcript) if mode is TranscriptWorkingNoteMode.freeform else "",
+        "freeform_text": freeform_text if mode is TranscriptWorkingNoteMode.freeform else "",
         "structured_note": structured_note if mode is TranscriptWorkingNoteMode.structured else None,
         "updated_at": transcript.working_note_updated_at if mode is not None else None,
     }
@@ -958,6 +957,31 @@ def latest_successful_ingestion_completed_at(db: Session, *, transcript_id: UUID
         .order_by(TranscriptIngestionJob.completed_at.desc(), TranscriptIngestionJob.id.desc())
         .limit(1)
     )
+
+
+def latest_successful_ingestion_completed_at_by_transcript_id(
+    db: Session,
+    *,
+    transcript_ids: list[UUID],
+) -> dict[UUID, datetime]:
+    """Return latest successful completion timestamps for the selected transcript IDs."""
+    if not transcript_ids:
+        return {}
+    rows = db.execute(
+        select(
+            TranscriptIngestionJob.transcript_id,
+            func.max(TranscriptIngestionJob.completed_at),
+        )
+        .where(
+            TranscriptIngestionJob.transcript_id.in_(transcript_ids),
+            TranscriptIngestionJob.status.in_(
+                [TranscriptIngestionJobStatus.applied, TranscriptIngestionJobStatus.completed]
+            ),
+            TranscriptIngestionJob.completed_at.is_not(None),
+        )
+        .group_by(TranscriptIngestionJob.transcript_id)
+    )
+    return {transcript_id: completed_at for transcript_id, completed_at in rows}
 
 
 def _has_pending_ingestion_jobs(db: Session, *, transcript_id: UUID) -> bool:

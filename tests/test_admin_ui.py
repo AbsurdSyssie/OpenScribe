@@ -6958,6 +6958,8 @@ def test_mfa_challenge_gives_clear_authenticator_code_guidance():
     assert challenge_form_end < logout_form_start
     assert ".mfa-device-visual" in auth_css
     assert ".mfa-code-input" in auth_css
+    assert ".js .auth-page .mfa-code-input" not in auth_css
+    assert "opacity: 0;" not in auth_css
     assert mfa_html.count('data-mfa-code-slot>') == 6
     assert 'data-mfa-countdown' not in mfa_html
     assert 'setInterval' not in mfa_html

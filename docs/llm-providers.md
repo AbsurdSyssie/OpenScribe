@@ -65,6 +65,8 @@ Model lists come from live discovery. OpenScribe no longer supplies built-in LLM
 
 Gemini discovery/finalization differs from API-key providers and is described below.
 
+OpenAI-compatible, Mistral, and Together model discovery share a bounded JSON transport in `app/services/llm.py`. It retains provider URL validation, a 10-second timeout, and a 1 MiB response limit; each preset keeps its own model filtering and public error messages.
+
 ## Secrets
 
 Bearer tokens remain Vault-backed. API responses expose `has_secret` only and never return `vault_secret_ref` or raw secret material.
@@ -86,6 +88,8 @@ Queued or processing dependent LLM work—generated documents, template suggesti
 Queued generation resolves its Vault-backed credential before the provider attempt is marked submitted. A definite credential-read failure therefore fails the generated document and cancels its reservation without quota usage; only work that reaches the provider-dispatch boundary may consume quota. If duplicate workers both observe queued work, a preflight failure from the worker that loses the atomic dispatch claim cannot fail or settle the winner's already submitted attempt.
 
 ## Generated Document Request Payloads
+
+Template generation, follow-ups, Quick Actions, regeneration, template suggestions, and hallucination checks use the shared generation dispatcher in `app/services/templates.py`. Callers supply the selected request and provider settings and retain responsibility for credential resolution and attempt submission. Generated-document failures after submission share terminal persistence and quota settlement; pre-submit cancellation remains separate.
 
 New generated documents store an encrypted snapshot of the outbound LLM request on `generated_documents.llm_request_payload_json_encrypted`.
 

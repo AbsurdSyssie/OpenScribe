@@ -27,7 +27,7 @@ from app.services.content_crypto import decrypt_text_for_owner, encrypt_text_for
 from app.services.deidentification import active_team_deidentification_provider, read_deidentification_provider_bearer_token
 from app.services.provider_inspection import ProviderResponseTooLargeError, read_limited_httpx_response
 
-from .redaction_policy import filter_analyzer_results, normalize_span_bounds
+from .redaction_policy import filter_analyzer_results, is_labelled_acknowledgement_person, normalize_span_bounds
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -119,6 +119,8 @@ def _filter_results(text: str, raw_results: list[Any]) -> list[Span]:
         if normalized_bounds is None:
             continue
         start, end = normalized_bounds
+        if is_labelled_acknowledgement_person(text, start, end, str(result.entity_type)):
+            continue
         spans.append(Span(start=start, end=end, entity_type=str(result.entity_type), score=float(result.score)))
     return spans
 

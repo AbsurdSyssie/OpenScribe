@@ -18,6 +18,7 @@ from app.models import TemplateMode
 from app.schemas.templates import EMIS_SECTION_KEYS, StructuredTemplateConfig
 from app.schemas.transcripts import EMIS_WORKING_NOTE_SECTION_KEYS
 from app.services.quotas import estimate_token_reservation
+from app.services.llm_adapters.runtime import generation_request_snapshot
 from app.services.templates import (
     NOTE_GENERATION_DETAIL_GUIDANCE,
     NOTE_GENERATION_LENGTH_TOKEN_CAPS,
@@ -164,6 +165,28 @@ class PreparedSplitGenerationRequest:
             f"output_token_cap={self.output_token_cap}, reservation_units={self.reservation_units})"
         )
 
+
+def split_generation_request_snapshot(
+    prepared: PreparedSplitGenerationRequest,
+    *,
+    adapter_kind: str,
+    model: str,
+    user_id: UUID,
+) -> dict[str, object]:
+    """Wrap a validated prepared split request in its provider request snapshot."""
+    messages = prepared.request_body.get("messages")
+    if (
+        not isinstance(messages, list)
+        or len(messages) != 2
+        or not all(isinstance(message, dict) and isinstance(message.get("content"), str) for message in messages)
+    ):
+        raise _invalid_input()
+    return generation_request_snapshot(
+        adapter_kind=adapter_kind, model=model, user_id=user_id,
+        system_message=messages[0]["content"], user_message=messages[1]["content"],
+        output_token_cap=prepared.output_token_cap,
+        response_json_schema=prepared.response_json_schema,
+    )
 
 def split_generation_response_json_schema(topics: Sequence[SplitGenerationTopic] | None = None) -> dict[str, object]:
     """Return the exact provider-facing envelope schema.

@@ -232,7 +232,7 @@ def test_valid_result_uses_redacted_text_dispatches_once_and_reads_current_name(
         seen.append(user_message)
         assert "Alice" not in user_message and "Secret" not in user_message
         return '{"template_id":"%s","confidence":"high","reason":"Best fit"}' % candidates[0].id, {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
-    monkeypatch.setattr("app.services.template_suggestions._generate_freeform_output_openai", provider)
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", provider)
 
     assert process_template_suggestion(db_session, job_id=job.id).status is TemplateSuggestionStatus.completed
     assert process_template_suggestion(db_session, job_id=job.id).status is TemplateSuggestionStatus.completed
@@ -268,7 +268,7 @@ def test_low_or_invalid_provider_output_never_exposes_a_suggestion(
     monkeypatch.setattr("app.services.template_suggestions.redact_transient_text", lambda *_args, **_kwargs: {"redacted_text": "safe", "phi_index": []})
     monkeypatch.setattr("app.services.template_suggestions._apply_manual_pii_redaction", lambda *_args, **_kwargs: ("safe", "", []))
     monkeypatch.setattr("app.services.template_suggestions._resolve_generation_credential", lambda *_: "token")
-    monkeypatch.setattr("app.services.template_suggestions._generate_freeform_output_openai", lambda **_: (output, {"total_tokens": 2}))
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", lambda **_: (output, {"total_tokens": 2}))
     processed = process_template_suggestion(db_session, job_id=job.id)
     _, result = get_template_suggestion(db_session, user, transcript_id=transcript.id)
     assert result is None
@@ -295,7 +295,7 @@ def test_selected_template_is_snapshotted_and_sent_as_current_context(
     def provider(**kwargs):
         seen.append(kwargs["request_body"]["messages"][1]["content"])
         return '{"template_id":null,"confidence":"high","reason":"Already appropriate"}', {"total_tokens": 2}
-    monkeypatch.setattr("app.services.template_suggestions._generate_freeform_output_openai", provider)
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", provider)
     assert process_template_suggestion(db_session, job_id=job.id).status is TemplateSuggestionStatus.completed
     assert '"current_template":{"id":"%s"' % candidates[0].id in seen[0]
 
@@ -314,7 +314,7 @@ def test_provider_returning_current_template_is_suppressed(
     monkeypatch.setattr("app.services.template_suggestions._apply_manual_pii_redaction", lambda *_args, **_kwargs: ("safe", "", []))
     monkeypatch.setattr("app.services.template_suggestions._resolve_generation_credential", lambda *_: "token")
     monkeypatch.setattr(
-        "app.services.template_suggestions._generate_freeform_output_openai",
+        "app.services.templates._generate_freeform_output_openai",
         lambda **_: (
             '{"template_id":"%s","confidence":"high","reason":"Best fit"}' % candidates[0].id,
             {"total_tokens": 2},
@@ -337,7 +337,7 @@ def test_provider_failure_is_generic_and_suppressed(
     monkeypatch.setattr("app.services.template_suggestions.redact_transient_text", lambda *_args, **_kwargs: {"redacted_text": "safe", "phi_index": []})
     monkeypatch.setattr("app.services.template_suggestions._apply_manual_pii_redaction", lambda *_args, **_kwargs: ("safe", "", []))
     monkeypatch.setattr("app.services.template_suggestions._resolve_generation_credential", lambda *_: "token")
-    monkeypatch.setattr("app.services.template_suggestions._generate_freeform_output_openai", lambda **_: (_ for _ in ()).throw(RuntimeError("sensitive provider detail")))
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", lambda **_: (_ for _ in ()).throw(RuntimeError("sensitive provider detail")))
     failed = process_template_suggestion(db_session, job_id=job.id)
     assert failed.status is TemplateSuggestionStatus.failed
     assert failed.error_code == "template_suggestion_failed"
@@ -364,7 +364,7 @@ def test_suggestion_lifecycle_logs_transitions_without_content(
     monkeypatch.setattr("app.services.template_suggestions._apply_manual_pii_redaction", lambda *_args, **_kwargs: ("safe", "", []))
     monkeypatch.setattr("app.services.template_suggestions._resolve_generation_credential", lambda *_: "credential-should-not-appear")
     monkeypatch.setattr(
-        "app.services.template_suggestions._generate_freeform_output_openai",
+        "app.services.templates._generate_freeform_output_openai",
         lambda **_: (
             '{"template_id":"%s","confidence":"high","reason":"Sensitive provider explanation"}' % candidates[0].id,
             {"total_tokens": 12},

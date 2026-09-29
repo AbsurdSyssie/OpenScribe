@@ -6,7 +6,7 @@ request cannot turn an uncertain provider outcome into another submission.
 from __future__ import annotations
 
 import json
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -17,15 +17,15 @@ from app.models import (ConsultationSplitBatch, ConsultationSplitBatchStatus,
     ConsultationSplitExecutionStatus,
     ConsultationSplitBatchTopic, ConsultationSplitTopicDisposition,
     ConsultationSplitTopicOutcome, ConsultationSplitTopicOutcomeStatus,
-    GeneratedDocument, GeneratedDocumentGeneratorType, GeneratedDocumentSection,
-    GeneratedDocumentStatus, TeamRole, TemplateMode, User)
+    GeneratedDocument, TeamRole, TemplateMode, User)
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.consultation_splits import (read_split_batch_topic_template_snapshot,
     read_split_batch_phi_index, read_split_topic_outcome_output, read_split_topic_outcome_verified_output)
-from app.services.content_crypto import encrypt_text_for_owner
-from app.services.consultation_split_generation_runtime import GENERIC_SPLIT_DOCUMENT_TITLE
+from app.services.consultation_split_materialization import (
+    materialize_split_document,
+    require_batch_materialization_version,
+)
 from app.services.preferences import consultation_splitting_enabled, consultation_splitting_feature_enabled
-from app.services.redaction import reidentify_text
 from app.services.transcripts import transcript_is_expired
 
 
@@ -153,38 +153,21 @@ def _materialize_available_split_notes_locked(
                 if not isinstance(key, str) or not isinstance(content.get(key), str):
                     raise AppError(500, "consultation_split_outcome_invalid", "Split batch is unavailable")
         material.append((topic, outcome, accepted, template))
+    # Every materialization path uses confirmation's immutable version rather
+    # than the nullable analysis source version. Validate it before creating
+    # any document so a broken binding cannot publish a prefix.
+    materialization_version = require_batch_materialization_version(
+        db, batch=batch, transcript_id=transcript_id,
+    )
     documents: list[GeneratedDocument] = []
     phi_index = read_split_batch_phi_index(db, actor, batch=batch)
     for topic, outcome, accepted, template in material:
-        raw_content = accepted["content"]
-        content = (
-            reidentify_text(raw_content, phi_index=phi_index)
-            if isinstance(raw_content, str)
-            else {key: reidentify_text(value, phi_index=phi_index) for key, value in raw_content.items()}
+        document = materialize_split_document(
+            db, owner=actor, batch=batch, topic=topic,
+            accepted_output=accepted, template_snapshot=template, phi_index=phi_index,
+            materialization_version=materialization_version,
         )
-        mode = TemplateMode(accepted["mode"])
-        rendered = content if isinstance(content, str) else json.dumps(content, separators=(",", ":"), sort_keys=True)
-        document = GeneratedDocument(id=uuid4(), owner_user_id=actor.id, team_id=batch.team_id,
-            transcript_id=batch.transcript_id, transcript_version_id=batch.analysis.transcript_version_id,
-            redaction_run_id=batch.analysis.redaction_run_id, consultation_split_batch_topic_id=topic.id,
-            consultation_split_topic_uuid=topic.topic_uuid, generator_type=GeneratedDocumentGeneratorType.template,
-            template_version_id=None, llm_config_id=None, source_template_name=GENERIC_SPLIT_DOCUMENT_TITLE,
-            prompt_snapshot_text=None, status=GeneratedDocumentStatus.ready, title=GENERIC_SPLIT_DOCUMENT_TITLE,
-            document_mode=mode, original_output_text_encrypted="", edited_output_text_encrypted="",
-            retention_expires_at=batch.retention_expires_at)
-        document.regeneration_lineage_id = document.id
-        document.original_output_text_encrypted = encrypt_text_for_owner(db, owner_user_id=actor.id, table="generated_documents", field="original_output_text_encrypted", record_id=document.id, plaintext=rendered) or ""
-        document.edited_output_text_encrypted = encrypt_text_for_owner(db, owner_user_id=actor.id, table="generated_documents", field="edited_output_text_encrypted", record_id=document.id, plaintext=rendered) or ""
-        db.add(document); documents.append(document)
-        if isinstance(content, dict):
-            for definition in template.get("structured_sections", {}).get("sections", []):
-                key = definition.get("section_key")
-                section = GeneratedDocumentSection(id=uuid4(), generated_document_id=document.id, section_key=key,
-                    section_label=definition["section_label"], section_order=definition["section_order"],
-                    original_text_encrypted="", edited_text_encrypted="")
-                section.original_text_encrypted = encrypt_text_for_owner(db, owner_user_id=actor.id, table="generated_document_sections", field="original_text_encrypted", record_id=section.id, plaintext=content[key]) or ""
-                section.edited_text_encrypted = encrypt_text_for_owner(db, owner_user_id=actor.id, table="generated_document_sections", field="edited_text_encrypted", record_id=section.id, plaintext=content[key]) or ""
-                db.add(section)
+        documents.append(document)
         outcome.status = ConsultationSplitTopicOutcomeStatus.ready
     batch.status = ConsultationSplitBatchStatus.completed_partial
     # The acknowledgement's first id is the primary when it survived, otherwise

@@ -149,6 +149,8 @@ The workspace exposes minimized owner-only PII/redaction state.
 - Manual PII can be added/deleted by the owner.
 - Detected/manual values are encrypted and participate in pre-LLM redaction/post-generation reidentification.
 - Provider/audit/usage metadata excludes original values and content.
+- Native Presidio suppresses `Mhmm`/`mm-hmm` only in complete speaker-labelled acknowledgements or attributed replies (for example, `Patient: Mhmm.` or `She said Mhmm.`). Standalone or continuing phrases retain the engine's detection result for clinician review.
+- Detected single Latin-letter PII highlights match only the exact-case standalone token; manual PII retains its existing case-insensitive matching behavior.
 
 ## Layout and refresh contract
 

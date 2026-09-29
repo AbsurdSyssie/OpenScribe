@@ -28,8 +28,7 @@ from app.services.quotas import (
 from app.services.redaction import redact_transient_text
 from app.services.task_outbox import add_pending_task_dispatch, try_publish_task_dispatch_safely
 from app.services.templates import (
-    _apply_manual_pii_redaction, _generate_freeform_output_gemini,
-    _generate_freeform_output_ollama, _generate_freeform_output_openai,
+    _apply_manual_pii_redaction, _invoke_frozen_llm,
     _extract_first_balanced_json_object, _generation_request_snapshot, _resolve_generation_credential,
     list_available_templates_for_user,
 )
@@ -399,14 +398,14 @@ def process_template_suggestion(db: Session, *, job_id: UUID) -> TemplateSuggest
     _log("template_suggestion_provider_submitted", job=locked, adapter_kind=locked.llm_adapter_kind)
     try:
         adapter = LlmAdapterKind(locked.llm_adapter_kind)
-        if adapter in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}:
-            output, usage = _generate_freeform_output_openai(api_key=credential if isinstance(credential, str) else "", base_url=locked.llm_base_url, request_body=request_body)
-        elif adapter is LlmAdapterKind.ollama_chat:
-            output, usage = _generate_freeform_output_ollama(base_url=locked.llm_base_url, bearer_token=credential if isinstance(credential, str) else None, request_body=request_body)
-        elif adapter is LlmAdapterKind.gemini_enterprise:
-            output, usage = _generate_freeform_output_gemini(config=config, provider_config=dict(locked.llm_provider_config_json or {}), credential=credential, request_body=request_body)
-        else:
-            raise ValueError("unsupported adapter")
+        output, usage = _invoke_frozen_llm(
+            config=config,
+            adapter_kind=adapter,
+            base_url=locked.llm_base_url,
+            provider_config=dict(locked.llm_provider_config_json or {}),
+            credential=credential,
+            request_body=request_body,
+        )
         parsed = _ProviderSuggestion.model_validate(_extract_json(output))
         candidate_ids = {str(item.get("id")) for item in locked.candidates_snapshot_json if isinstance(item, dict)}
         selected_id = str((locked.selected_template_snapshot_json or {}).get("id") or "")

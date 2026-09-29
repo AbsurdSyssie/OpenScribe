@@ -11,7 +11,6 @@ from app.models import QuickAction, QuickActionVersion, TemplateMode, TemplateSc
 from app.schemas.quick_action_io import QuickActionBundleEntry
 from app.services.security_audit import record_security_event
 from app.services.templates import (
-    _latest_quick_action_version,
     _require_team_leader,
     _require_team_member,
     _serialize_asset_name,
@@ -28,6 +27,37 @@ _BUNDLE_FIELDS = {"format", "format_version", "quick_actions"}
 _ENTRY_FIELDS = {"name", "description", "latest_version"}
 _VERSION_FIELDS = {"mode", "prompt_text"}
 _IGNORED_FIELD_MESSAGE = "Field was not recognised and will not be imported"
+
+
+def _latest_quick_action_versions(
+    db: Session, *, quick_action_ids: list[UUID]
+) -> dict[UUID, QuickActionVersion]:
+    """Load each requested Quick Action's latest version in one query."""
+    if not quick_action_ids:
+        return {}
+    latest_version_nos = (
+        select(
+            QuickActionVersion.quick_action_id,
+            func.max(QuickActionVersion.version_no).label("version_no"),
+        )
+        .where(QuickActionVersion.quick_action_id.in_(quick_action_ids))
+        .group_by(QuickActionVersion.quick_action_id)
+        .subquery()
+    )
+    return {
+        version.quick_action_id: version
+        for version in db.scalars(
+            select(QuickActionVersion).join(
+                latest_version_nos,
+                and_(
+                    QuickActionVersion.quick_action_id
+                    == latest_version_nos.c.quick_action_id,
+                    QuickActionVersion.version_no
+                    == latest_version_nos.c.version_no,
+                ),
+            )
+        )
+    }
 
 
 def export_quick_action_bundle(
@@ -75,28 +105,9 @@ def export_quick_action_bundle(
             {"resource": "quick_action"},
         )
 
-    latest_version_nos = (
-        select(
-            QuickActionVersion.quick_action_id,
-            func.max(QuickActionVersion.version_no).label("version_no"),
-        )
-        .where(QuickActionVersion.quick_action_id.in_(quick_action_ids))
-        .group_by(QuickActionVersion.quick_action_id)
-        .subquery()
+    latest_versions = _latest_quick_action_versions(
+        db, quick_action_ids=quick_action_ids
     )
-    latest_versions = {
-        version.quick_action_id: version
-        for version in db.scalars(
-            select(QuickActionVersion).join(
-                latest_version_nos,
-                and_(
-                    QuickActionVersion.quick_action_id
-                    == latest_version_nos.c.quick_action_id,
-                    QuickActionVersion.version_no == latest_version_nos.c.version_no,
-                ),
-            )
-        )
-    }
 
     entries: list[dict[str, object]] = []
     for quick_action_id in quick_action_ids:
@@ -338,13 +349,9 @@ def _import_content(entry: QuickActionBundleEntry) -> tuple[object, ...]:
 
 
 def _stored_quick_action_content(
-    db: Session,
     quick_action: QuickAction,
+    version: QuickActionVersion,
 ) -> tuple[object, ...]:
-    version = _latest_quick_action_version(
-        db,
-        quick_action_id=quick_action.id,
-    )
     return (
         (quick_action.description or "").strip() or None,
         version.mode.value,
@@ -380,6 +387,16 @@ def plan_quick_action_bundle_import(
         quick_action.name.strip().lower(): quick_action
         for quick_action in existing
     }
+    matched_quick_action_ids: set[UUID] = set()
+    for entry in entries:
+        if entry is None:
+            continue
+        matched = by_name.get(_serialize_asset_name(entry.name).lower())
+        if matched is not None and matched.is_active:
+            matched_quick_action_ids.add(matched.id)
+    latest_versions = _latest_quick_action_versions(
+        db, quick_action_ids=list(matched_quick_action_ids)
+    )
     reserved = set(by_name)
     preview: list[dict[str, object]] = []
     counts = {
@@ -411,10 +428,24 @@ def plan_quick_action_bundle_import(
         name = _serialize_asset_name(entry.name)
         normalized = name.lower()
         matched = by_name.get(normalized)
+        version = (
+            latest_versions.get(matched.id)
+            if matched and matched.is_active
+            else None
+        )
+        if matched and matched.is_active and version is None:
+            raise AppError(
+                404,
+                "not_found",
+                "Quick action version not found",
+                {
+                    "resource": "quick_action_version",
+                    "quick_action_id": str(matched.id),
+                },
+            )
         exact = bool(
-            matched
-            and matched.is_active
-            and _stored_quick_action_content(db, matched)
+            version
+            and _stored_quick_action_content(matched, version)
             == _import_content(entry)
         )
         proposed_name = name

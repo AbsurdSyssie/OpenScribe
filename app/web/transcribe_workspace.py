@@ -74,12 +74,12 @@ from ..services.transcripts import (
     latest_ingestion_job_for_transcript as latest_ingestion_job_for_transcript_service,
     ingestion_retry_source_expired as ingestion_retry_source_expired_service,
     latest_successful_ingestion_completed_at as latest_successful_ingestion_completed_at_service,
+    latest_successful_ingestion_completed_at_by_transcript_id as latest_successful_ingestion_completed_at_by_transcript_id_service,
     next_live_chunk_sequence_no_for_transcript as next_live_chunk_sequence_no_for_transcript_service,
     reconcile_transcript_status as reconcile_transcript_status_service,
     manual_pii_entity_value as manual_pii_entity_value_service,
     transcript_is_expired as transcript_is_expired_service,
     transcript_draft_text as transcript_draft_text_service,
-    transcript_has_working_note as transcript_has_working_note_service,
     transcript_working_note_mode as transcript_working_note_mode_service,
     transcript_structured_context as transcript_structured_context_service,
     transcript_version_text as transcript_version_text_service,
@@ -343,15 +343,63 @@ def _transcript_has_content(db: Session, transcript: Transcript) -> bool:
     return any((transcript_version_text_service(db, transcript_version=version) or "").strip() for version in versions)
 
 
-def transcript_list_item_response(db: Session, transcript: Transcript) -> TranscriptListItem:
-    payload = TranscriptListItem.model_validate(transcript, from_attributes=True).model_dump()
-    payload["has_transcript_content"] = _transcript_has_content(db, transcript)
-    payload["latest_successful_ingestion_completed_at"] = latest_successful_ingestion_completed_at_service(
-        db,
-        transcript_id=transcript.id,
+def _transcript_content_by_id_for_history_page(
+    db: Session,
+    transcripts: list[Transcript],
+) -> dict[UUID, bool]:
+    """Read page-row drafts once and batch only their blank-draft histories."""
+    content_by_id: dict[UUID, bool] = {}
+    blank_draft_ids: list[UUID] = []
+    for transcript in transcripts:
+        draft_text = transcript_draft_text_service(db, transcript=transcript) or ""
+        has_content = bool(draft_text.strip())
+        content_by_id[transcript.id] = has_content
+        if not has_content:
+            blank_draft_ids.append(transcript.id)
+
+    if not blank_draft_ids:
+        return content_by_id
+
+    versions = db.scalars(
+        select(TranscriptVersion)
+        .where(TranscriptVersion.transcript_id.in_(blank_draft_ids))
+        .execution_options(yield_per=100)
     )
-    payload["working_note_mode"] = transcript_working_note_mode_service(db, transcript=transcript)
-    payload["has_working_note"] = transcript_has_working_note_service(db, transcript=transcript)
+    try:
+        for version_batch in versions.partitions(100):
+            for version in version_batch:
+                if content_by_id[version.transcript_id]:
+                    continue
+                content_by_id[version.transcript_id] = bool(
+                    (transcript_version_text_service(db, transcript_version=version) or "").strip()
+                )
+    finally:
+        versions.close()
+    return content_by_id
+
+
+def transcript_list_item_response(
+    db: Session,
+    transcript: Transcript,
+    *,
+    ingestion_completion_times: dict[UUID, datetime] | None = None,
+    has_transcript_content_by_id: dict[UUID, bool] | None = None,
+) -> TranscriptListItem:
+    payload = TranscriptListItem.model_validate(transcript, from_attributes=True).model_dump()
+    if has_transcript_content_by_id is None:
+        payload["has_transcript_content"] = _transcript_has_content(db, transcript)
+    else:
+        payload["has_transcript_content"] = has_transcript_content_by_id.get(transcript.id, False)
+    if ingestion_completion_times is None:
+        payload["latest_successful_ingestion_completed_at"] = latest_successful_ingestion_completed_at_service(
+            db,
+            transcript_id=transcript.id,
+        )
+    else:
+        payload["latest_successful_ingestion_completed_at"] = ingestion_completion_times.get(transcript.id)
+    working_note_mode = transcript_working_note_mode_service(db, transcript=transcript)
+    payload["working_note_mode"] = working_note_mode
+    payload["has_working_note"] = working_note_mode is not None
     return TranscriptListItem.model_validate(payload)
 
 
@@ -423,8 +471,21 @@ def list_transcript_history_page(
         page_ids = {transcript.id for transcript in page_rows}
         if include_transcript.id not in page_ids:
             page_rows.append(include_transcript)
+    ingestion_completion_times = latest_successful_ingestion_completed_at_by_transcript_id_service(
+        db,
+        transcript_ids=[transcript.id for transcript in page_rows],
+    )
+    has_transcript_content_by_id = _transcript_content_by_id_for_history_page(db, page_rows)
     return {
-        "items": [transcript_list_item_response(db, transcript) for transcript in page_rows],
+        "items": [
+            transcript_list_item_response(
+                db,
+                transcript,
+                ingestion_completion_times=ingestion_completion_times,
+                has_transcript_content_by_id=has_transcript_content_by_id,
+            )
+            for transcript in page_rows
+        ],
         "next_cursor": next_cursor,
         "has_more": has_more,
     }
@@ -1162,7 +1223,7 @@ async def stream_transcribe_workspace_events(
     queued_transcript_id: str | None,
     once: bool,
 ):
-    last_payload_json: str | None = None
+    last_event: str | None = None
     sent_initial_event = False
     heartbeat_interval_seconds = 15.0
     poll_interval_seconds = 1.0
@@ -1182,12 +1243,12 @@ async def stream_transcribe_workspace_events(
         if payload is None:
             break
 
-        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        serialized_event = serialize_sse_event(event="workspace", payload=payload)
         current_time = asyncio.get_running_loop().time()
-        if payload_json != last_payload_json:
-            last_payload_json = payload_json
+        if serialized_event != last_event:
+            last_event = serialized_event
             next_heartbeat_at = current_time + heartbeat_interval_seconds
-            yield serialize_sse_event(event="workspace", payload=payload)
+            yield serialized_event
             sent_initial_event = True
             if once:
                 break

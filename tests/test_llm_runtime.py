@@ -197,6 +197,47 @@ def test_invoke_llm_dispatches_from_snapshot(monkeypatch):
     assert calls == [{"base_url": "http://localhost:11434", "bearer_token": None, "request_body": {"model": "llama"}}]
 
 
+@pytest.mark.parametrize(
+    ("adapter_kind", "wrapper_name", "credential", "expected"),
+    [
+        (LlmAdapterKind.openai_chat, "_generate_freeform_output_openai", "token", {"api_key": "token"}),
+        (LlmAdapterKind.ollama_chat, "_generate_freeform_output_ollama", "token", {"bearer_token": "token"}),
+        (LlmAdapterKind.gemini_enterprise, "_generate_freeform_output_gemini", {"synthetic": "credential"}, {"credential": {"synthetic": "credential"}}),
+    ],
+)
+def test_templates_frozen_dispatch_uses_saved_request_fields(
+    monkeypatch, adapter_kind, wrapper_name, credential, expected,
+):
+    config = SimpleNamespace(base_url="https://mutable-provider.example", provider_config_json={"project_id": "mutable"})
+    captured = {}
+    request_body = {"model": "saved-model"}
+    provider_config = {"project_id": "saved-project", "location": "eu"}
+
+    def wrapper(**kwargs):
+        captured.update(kwargs)
+        return "generated", runtime.generation_usage(total_tokens=3)
+
+    monkeypatch.setattr(template_service, wrapper_name, wrapper)
+
+    output, usage = template_service._invoke_frozen_llm(
+        config=config,
+        adapter_kind=adapter_kind,
+        base_url="https://saved-provider.example",
+        provider_config=provider_config,
+        credential=credential,
+        request_body=request_body,
+    )
+
+    assert (output, usage["total_tokens"]) == ("generated", 3)
+    assert captured["request_body"] is request_body
+    assert captured["request_body"]["model"] == "saved-model"
+    if adapter_kind is LlmAdapterKind.gemini_enterprise:
+        assert captured["provider_config"] == provider_config
+    else:
+        assert captured["base_url"] == "https://saved-provider.example"
+    assert all(captured[key] == value for key, value in expected.items())
+
+
 def test_invoke_llm_rejects_invalid_snapshot_adapter():
     snapshot = LlmProviderSnapshot(
         llm_config_id=str(_USER_ID), provider_preset="custom", adapter_kind="unsafe",

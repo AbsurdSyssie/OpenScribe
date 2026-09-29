@@ -3,9 +3,10 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError as PydanticValidationError
 from jsonschema import validate
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from app.errors import AppError
 from app.models import PromptTemplate, PromptTemplateVersion, SecurityAuditEvent, TeamRole, TemplateMode, TemplateScope
@@ -246,6 +247,93 @@ def test_import_stores_label_free_config_and_export_normalizes_legacy_config(db_
     assert "section_label" not in exported["templates"][0]["latest_version"]["config_json"]["sections"][0]
 
 
+def test_export_batches_latest_versions_and_preserves_mixed_output_order(db_session, make_user):
+    actor = make_user()
+    freeform_template = add_template(db_session, actor=actor, name="Freeform", prompt="Old freeform")
+    structured_template = add_template(db_session, actor=actor, name="Structured", prompt="Old structured", active=False)
+    db_session.add_all(
+        [
+            PromptTemplateVersion(
+                template_id=freeform_template.id,
+                version_no=2,
+                mode=TemplateMode.freeform,
+                prompt_text="Latest freeform",
+                created_by_user_id=actor.id,
+            ),
+            PromptTemplateVersion(
+                template_id=structured_template.id,
+                version_no=2,
+                mode=TemplateMode.structured,
+                prompt_text="Latest structured",
+                config_json={
+                    "profile": "emis",
+                    "sections": [{"section_key": "problem", "instruction": "Summarise the problem.", "section_order": 1}],
+                },
+                created_by_user_id=actor.id,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    statements: list[str] = []
+
+    def capture_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", capture_statement)
+    try:
+        exported = export_template_bundle(db_session, actor, template_ids=[structured_template.id, freeform_template.id])
+    finally:
+        event.remove(bind, "before_cursor_execute", capture_statement)
+
+    assert [entry["name"] for entry in exported["templates"]] == ["Structured", "Freeform"]
+    assert [entry["latest_version"]["prompt_text"] for entry in exported["templates"]] == ["Latest structured", "Latest freeform"]
+    assert exported["templates"][0]["latest_version"]["config_json"] == {
+        "profile": "emis",
+        "sections": [{"section_key": "problem", "instruction": "Summarise the problem.", "section_order": 1}],
+    }
+    version_selects = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith("SELECT") and "template_versions" in statement
+    ]
+    assert len(version_selects) == 1
+
+
+def test_export_rejects_missing_roots_before_querying_versions_and_preserves_missing_version_error(db_session, make_team, make_user):
+    own_team = make_team(name="Own template export")
+    other_team = make_team(name="Other template export")
+    actor = make_user(email="template-export@example.com", team=own_team)
+    other = make_user(email="other-template-export@example.com", team=other_team)
+    own = add_template(db_session, actor=actor, name="Own")
+    foreign = add_template(db_session, actor=other, name="Foreign")
+    versionless = PromptTemplate(scope=TemplateScope.user, owner_user_id=actor.id, name="Versionless", is_active=True, created_by_user_id=actor.id)
+    db_session.add(versionless)
+    db_session.commit()
+
+    statements: list[str] = []
+
+    def capture_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", capture_statement)
+    try:
+        with pytest.raises(AppError) as foreign_error:
+            export_template_bundle(db_session, actor, template_ids=[own.id, foreign.id])
+        foreign_statements = list(statements)
+        with pytest.raises(AppError) as missing_version_error:
+            export_template_bundle(db_session, actor, template_ids=[versionless.id])
+    finally:
+        event.remove(bind, "before_cursor_execute", capture_statement)
+
+    assert foreign_error.value.details == {"resource": "template"}
+    assert not any("template_versions" in statement for statement in foreign_statements)
+    assert (missing_version_error.value.status_code, missing_version_error.value.code, missing_version_error.value.message) == (404, "not_found", "Template version not found")
+    assert missing_version_error.value.details == {"resource": "template_version", "template_id": str(versionless.id)}
+
+
 def test_import_preflight_and_commit_handle_exact_copy_and_suffix_atomically(db_session, make_user):
     user = make_user()
     existing = PromptTemplate(scope=TemplateScope.user, owner_user_id=user.id, name="SOAP", description=None, is_active=True, created_by_user_id=user.id)
@@ -266,6 +354,86 @@ def test_import_preflight_and_commit_handle_exact_copy_and_suffix_atomically(db_
 
     assert [item["name"] for item in result["created"]] == ["SOAP copy 2", "SOAP copy 3"]
     assert db_session.scalar(select(func.count()).select_from(PromptTemplate).where(PromptTemplate.owner_user_id == user.id)) == 3
+
+
+def test_preflight_batches_active_name_matches_without_loading_unmatched_or_inactive_versions(db_session, make_user):
+    actor = make_user()
+    add_template(db_session, actor=actor, name="SOAP")
+    add_template(db_session, actor=actor, name="Letter", prompt="Write a letter")
+    add_template(db_session, actor=actor, name="Inactive", active=False)
+    statements: list[str] = []
+
+    def capture_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", capture_statement)
+    try:
+        preview = plan_template_bundle_import(
+            db_session,
+            actor,
+            destination=TemplateScope.user,
+            raw_bundle=bundle_bytes(
+                freeform(" SOAP "),
+                freeform("SOAP", prompt="Different"),
+                freeform("letter", prompt="Write a letter"),
+            ),
+        )
+        active_version_selects = [statement for statement in statements if "template_versions" in statement]
+        statements.clear()
+        plan_template_bundle_import(db_session, actor, destination=TemplateScope.user, raw_bundle=bundle_bytes(freeform("No match")))
+        no_match_version_selects = [statement for statement in statements if "template_versions" in statement]
+        statements.clear()
+        plan_template_bundle_import(db_session, actor, destination=TemplateScope.user, raw_bundle=bundle_bytes(freeform("inactive")))
+        inactive_version_selects = [statement for statement in statements if "template_versions" in statement]
+    finally:
+        event.remove(bind, "before_cursor_execute", capture_statement)
+
+    assert [entry["status"] for entry in preview["entries"]] == ["exact_copy", "renamed", "exact_copy"]
+    assert [entry["proposed_name"] for entry in preview["entries"]] == ["SOAP copy 2", "SOAP copy 3", "letter copy 2"]
+    assert [entry["selected_by_default"] for entry in preview["entries"]] == [False, True, False]
+    assert preview["summary"] == {"total": 3, "importable": 3, "exact_copies": 2, "invalid": 0, "renamed": 1, "unknown_fields": 0}
+    assert len(active_version_selects) == 1
+    assert no_match_version_selects == []
+    assert inactive_version_selects == []
+
+
+def test_preflight_preserves_missing_and_malformed_matched_version_failure_order(db_session, make_user):
+    actor = make_user()
+    missing = PromptTemplate(scope=TemplateScope.user, owner_user_id=actor.id, name="Missing", is_active=True, created_by_user_id=actor.id)
+    db_session.add(missing)
+    db_session.commit()
+    malformed = add_template(db_session, actor=actor, name="Malformed")
+    db_session.add(PromptTemplateVersion(template_id=malformed.id, version_no=2, mode=TemplateMode.structured, prompt_text="Prompt", config_json={"profile": "emis", "sections": "invalid"}, created_by_user_id=actor.id))
+    db_session.commit()
+    with pytest.raises(AppError) as missing_first:
+        plan_template_bundle_import(db_session, actor, destination=TemplateScope.user, raw_bundle=bundle_bytes(freeform("Missing"), freeform("Malformed")))
+    with pytest.raises(PydanticValidationError):
+        plan_template_bundle_import(db_session, actor, destination=TemplateScope.user, raw_bundle=bundle_bytes(freeform("Malformed"), freeform("Missing")))
+
+    assert missing_first.value.details == {"resource": "template_version", "template_id": str(missing.id)}
+
+
+def test_import_replans_against_a_newer_matched_template_version(db_session, make_user, monkeypatch):
+    actor = make_user()
+    template = add_template(db_session, actor=actor, name="SOAP")
+    raw = bundle_bytes(freeform("SOAP"))
+    preflight = plan_template_bundle_import(db_session, actor, destination=TemplateScope.user, raw_bundle=raw)
+    db_session.add(PromptTemplateVersion(template_id=template.id, version_no=2, mode=TemplateMode.freeform, prompt_text="New prompt", created_by_user_id=actor.id))
+    db_session.commit()
+    imported_plans: list[dict[str, object]] = []
+
+    def observe_import_plan(*args, **kwargs):
+        plan = plan_template_bundle_import(*args, **kwargs)
+        imported_plans.append(plan)
+        return plan
+
+    monkeypatch.setattr("app.services.templates.plan_template_bundle_import", observe_import_plan)
+    import_template_bundle(db_session, actor, destination=TemplateScope.user, raw_bundle=raw, selected_indexes=[0])
+
+    assert preflight["entries"][0]["status"] == "exact_copy"
+    assert len(imported_plans) == 1
+    assert imported_plans[0]["entries"][0]["status"] == "renamed"
 
 
 def test_team_import_requires_leader_without_writes(db_session, make_user):

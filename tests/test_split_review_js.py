@@ -24,8 +24,8 @@ def test_split_review_workspace_accessibility_hooks_and_cachebusters():
     assert 'data-split-review-create' in workspace
     assert 'splitReview.js?v=20260912-split-review-auto-edit' in app_js
     assert 'splitReviewController?.applyWorkspaceState' in app_js
-    assert 'app.js?v=20260918-retired-note-workspace' in shell
-    assert 'transcribe.css?v=20260911-note-regeneration-layer-fix' in head
+    assert 'app.js?v=20260930-detected-pii-override' in shell
+    assert 'transcribe.css?v=20260930-detected-pii-override' in head
     assert 'data-split-continue-one-note hidden' in workspace
     assert 'data-split-review-confirm' not in workspace
     assert 'data-split-review-continue' not in workspace

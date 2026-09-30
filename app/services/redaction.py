@@ -17,9 +17,12 @@ from app.errors import AppError
 from app.models import (
     DeidentificationAdapterKind,
     DeidentificationProvider,
+    DetectedPiiDismissal,
     RedactionEntity,
     RedactionRun,
     RedactionRunStatus,
+    Transcript,
+    TranscriptStatus,
     TranscriptVersion,
     utcnow,
 )
@@ -55,6 +58,22 @@ class DeidentificationDetectionResult:
     spans: list[Span]
     api_provider: str
     api_model_or_version: str | None = None
+
+
+@dataclass(frozen=True)
+class RedactionSourceSpan:
+    entity: RedactionEntity
+    start: int
+    end: int
+    text: str
+
+
+@dataclass(frozen=True)
+class EffectiveRedaction:
+    redacted_text: str
+    phi_index: list[dict[str, Any]]
+    dismissed_entity_ids: frozenset[uuid.UUID]
+    requires_review_dismissal_ids: frozenset[uuid.UUID]
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -506,6 +525,337 @@ def _redaction_run_to_phi_index(db: Session, run: RedactionRun) -> list[dict[str
         }
         for entity in ordered
     ]
+
+
+def _redaction_source_spans(db: Session, *, run: RedactionRun) -> dict[uuid.UUID, RedactionSourceSpan]:
+    """Recover the immutable source coordinates represented by a redaction run.
+
+    A run stores a lossless sequence of literal text and numbered placeholders.
+    Replaying that sequence against its encrypted transcript version is the only
+    safe way to associate a detected entity with one source occurrence without
+    adding mutable coordinates to the baseline entity record.
+    """
+    redacted_text = redaction_run_text(db, run=run)
+    transcript_text = decrypt_text_for_owner(
+        db,
+        owner_user_id=run.owner_user_id,
+        table="transcript_versions",
+        field="text_encrypted",
+        record_id=run.transcript_version_id,
+        stored_value=run.transcript_version.text_encrypted,
+    )
+    if redacted_text is None or transcript_text is None:
+        raise AppError(409, "redaction_override_requires_review", "The detected PII needs to be reviewed again")
+
+    entity_by_placeholder = {entity.placeholder: entity for entity in run.entities}
+    source_cursor = 0
+    redacted_cursor = 0
+    spans: dict[uuid.UUID, RedactionSourceSpan] = {}
+    for token in PHI_TOKEN_PATTERN.finditer(redacted_text):
+        literal = redacted_text[redacted_cursor:token.start()]
+        if not transcript_text.startswith(literal, source_cursor):
+            raise AppError(409, "redaction_override_requires_review", "The detected PII needs to be reviewed again")
+        source_cursor += len(literal)
+        entity = entity_by_placeholder.get(token.group(0))
+        if entity is None:
+            raise AppError(409, "redaction_override_requires_review", "The detected PII needs to be reviewed again")
+        if entity.id in spans:
+            # Entity placeholders are one occurrence each.  A malformed or
+            # ambiguous run must never turn a single owner decision into a
+            # broader unredaction.
+            raise AppError(409, "redaction_override_requires_review", "The detected PII needs to be reviewed again")
+        value = redaction_entity_original_value(db, entity=entity)
+        source_end = source_cursor + len(value)
+        if not value or transcript_text[source_cursor:source_end] != value:
+            raise AppError(409, "redaction_override_requires_review", "The detected PII needs to be reviewed again")
+        spans[entity.id] = RedactionSourceSpan(entity=entity, start=source_cursor, end=source_end, text=value)
+        source_cursor = source_end
+        redacted_cursor = token.end()
+
+    if transcript_text[source_cursor:] != redacted_text[redacted_cursor:]:
+        raise AppError(409, "redaction_override_requires_review", "The detected PII needs to be reviewed again")
+    return spans
+
+
+def redaction_source_offsets(db: Session, *, run: RedactionRun) -> dict[uuid.UUID, tuple[int, int]]:
+    """Return exact detected-occurrence offsets, or none when the run is uncertain.
+
+    Offsets are derived only from the current encrypted source/run pair and are
+    intended for the owner workspace.  They are not persisted or logged.
+    """
+    try:
+        spans = _redaction_source_spans(db, run=run)
+    except AppError:
+        return {}
+    return {entity_id: (span.start, span.end) for entity_id, span in spans.items()}
+
+
+def _active_dismissals_for_run(db: Session, *, run: RedactionRun) -> list[DetectedPiiDismissal]:
+    return list(
+        db.scalars(
+            select(DetectedPiiDismissal)
+            .where(
+                DetectedPiiDismissal.transcript_id == run.transcript_id,
+                DetectedPiiDismissal.transcript_version_id == run.transcript_version_id,
+                DetectedPiiDismissal.owner_user_id == run.owner_user_id,
+            )
+            .order_by(DetectedPiiDismissal.created_at.asc(), DetectedPiiDismissal.id.asc())
+        )
+    )
+
+
+def _dismissals_matching_run(
+    db: Session,
+    *,
+    run: RedactionRun,
+) -> tuple[dict[uuid.UUID, DetectedPiiDismissal], set[uuid.UUID]]:
+    dismissals = _active_dismissals_for_run(db, run=run)
+    # Existing successful redaction output is authoritative when there are no
+    # override decisions.  Do not introduce a new reconstruction requirement
+    # into ordinary copy/generation/workspace reads.
+    if not dismissals:
+        return {}, set()
+    try:
+        spans = _redaction_source_spans(db, run=run)
+    except AppError as exc:
+        if exc.code == "redaction_override_requires_review":
+            return {}, {dismissal.id for dismissal in dismissals}
+        raise
+    spans_by_identity = {(span.start, span.end, span.text): entity_id for entity_id, span in spans.items()}
+    matched: dict[uuid.UUID, DetectedPiiDismissal] = {}
+    requires_review: set[uuid.UUID] = set()
+    for dismissal in dismissals:
+        source_text = decrypt_text_for_owner(
+            db,
+            owner_user_id=dismissal.owner_user_id,
+            table="detected_pii_dismissals",
+            field="source_text_encrypted",
+            record_id=dismissal.id,
+            stored_value=dismissal.source_text_encrypted,
+        )
+        if not source_text:
+            requires_review.add(dismissal.id)
+            continue
+        entity_id = spans_by_identity.get((dismissal.source_start_index, dismissal.source_end_index, source_text))
+        if entity_id is not None:
+            matched[entity_id] = dismissal
+            continue
+        # A newer run may no longer detect this span.  It remains redacted if
+        # it detects a non-identical/overlapping occurrence, pending review.
+        overlaps_detected = any(
+            dismissal.source_start_index < span.end and dismissal.source_end_index > span.start
+            for span in spans.values()
+        )
+        if overlaps_detected:
+            requires_review.add(dismissal.id)
+    return matched, requires_review
+
+
+def detected_pii_dismissed_entity_ids(db: Session, *, run: RedactionRun) -> frozenset[uuid.UUID]:
+    """Return current-run entity IDs whose owner dismissal still matches exactly."""
+    matched, _ = _dismissals_matching_run(db, run=run)
+    return frozenset(matched)
+
+
+def effective_redaction_text_and_phi_index(db: Session, *, run: RedactionRun) -> EffectiveRedaction:
+    """Apply exact, owner-scoped dismissals without changing baseline records.
+
+    Manual PII is intentionally not applied here.  Callers apply the existing
+    manual-protection pass after this result, so a manual protection always
+    redacts even a dismissed detector occurrence.
+    """
+    matched, requires_review = _dismissals_matching_run(db, run=run)
+    baseline_text = redaction_run_text(db, run=run)
+    if baseline_text is None:
+        raise AppError(409, "redaction_override_requires_review", "The detected PII needs to be reviewed again")
+    entity_by_placeholder = {entity.placeholder: entity for entity in run.entities}
+
+    def replace(match: re.Match[str]) -> str:
+        entity = entity_by_placeholder.get(match.group(0))
+        if entity is None or entity.id not in matched:
+            return match.group(0)
+        span_text = redaction_entity_original_value(db, entity=entity)
+        return span_text
+
+    dismissed_ids = frozenset(matched)
+    return EffectiveRedaction(
+        redacted_text=PHI_TOKEN_PATTERN.sub(replace, baseline_text),
+        phi_index=[
+            item
+            for item in _redaction_run_to_phi_index(db, run)
+            if entity_by_placeholder.get(str(item["placeholder"])) is None
+            or entity_by_placeholder[str(item["placeholder"])].id not in dismissed_ids
+        ],
+        dismissed_entity_ids=dismissed_ids,
+        requires_review_dismissal_ids=frozenset(requires_review),
+    )
+
+
+def _owner_detected_pii_entity_for_dismissal(
+    db: Session,
+    owner_user_id: uuid.UUID,
+    *,
+    transcript_id: uuid.UUID,
+    entity_id: uuid.UUID,
+) -> tuple[Transcript, RedactionRun, RedactionEntity]:
+    transcript = db.scalar(
+        select(Transcript)
+        .where(Transcript.id == transcript_id, Transcript.owner_user_id == owner_user_id, Transcript.retention_expires_at > utcnow())
+        .with_for_update()
+    )
+    if transcript is None:
+        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
+    row = db.execute(
+        select(RedactionRun, RedactionEntity)
+        .join(RedactionEntity, RedactionEntity.redaction_run_id == RedactionRun.id)
+        .where(
+            RedactionEntity.id == entity_id,
+            RedactionRun.transcript_id == transcript.id,
+            RedactionRun.owner_user_id == owner_user_id,
+            RedactionRun.status == RedactionRunStatus.succeeded,
+        )
+        .with_for_update()
+    ).first()
+    if row is None:
+        raise AppError(404, "not_found", "Detected PII entity not found", {"resource": "detected_pii_entity", "entity_id": str(entity_id)})
+    run, entity = row
+    current_text = (
+        decrypt_text_for_owner(
+            db,
+            owner_user_id=owner_user_id,
+            table="transcripts",
+            field="current_draft_text_encrypted",
+            record_id=transcript.id,
+            stored_value=transcript.current_draft_text_encrypted,
+        )
+        or ""
+    ).strip()
+    version_text = (
+        decrypt_text_for_owner(
+            db,
+            owner_user_id=owner_user_id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=run.transcript_version_id,
+            stored_value=run.transcript_version.text_encrypted,
+        )
+        or ""
+    ).strip()
+    current_version_id = None
+    for version in db.scalars(
+        select(TranscriptVersion)
+        .where(TranscriptVersion.transcript_id == transcript.id)
+        .order_by(TranscriptVersion.version_no.desc(), TranscriptVersion.created_at.desc(), TranscriptVersion.id.desc())
+    ):
+        candidate_text = (
+            decrypt_text_for_owner(
+                db,
+                owner_user_id=owner_user_id,
+                table="transcript_versions",
+                field="text_encrypted",
+                record_id=version.id,
+                stored_value=version.text_encrypted,
+            )
+            or ""
+        ).strip()
+        if candidate_text == current_text:
+            current_version_id = version.id
+            break
+    latest_run_id = db.scalar(
+        select(RedactionRun.id)
+        .where(
+            RedactionRun.transcript_version_id == run.transcript_version_id,
+            RedactionRun.owner_user_id == owner_user_id,
+            RedactionRun.status == RedactionRunStatus.succeeded,
+        )
+        .order_by(RedactionRun.created_at.desc(), RedactionRun.id.desc())
+        .limit(1)
+    )
+    if (
+        transcript.status is not TranscriptStatus.ready
+        or not current_text
+        or current_text != version_text
+        or current_version_id != run.transcript_version_id
+        or latest_run_id != run.id
+    ):
+        raise AppError(409, "redaction_override_requires_review", "The detected PII needs to be reviewed again")
+    return transcript, run, entity
+
+
+def dismiss_detected_pii_entity_service(
+    db: Session,
+    owner: Any,
+    *,
+    transcript_id: uuid.UUID,
+    entity_id: uuid.UUID,
+) -> bool:
+    transcript, run, entity = _owner_detected_pii_entity_for_dismissal(
+        db, owner.id, transcript_id=transcript_id, entity_id=entity_id
+    )
+    span = _redaction_source_spans(db, run=run).get(entity.id)
+    if span is None:
+        raise AppError(409, "redaction_override_requires_review", "The detected PII needs to be reviewed again")
+    existing = db.scalar(
+        select(DetectedPiiDismissal)
+        .where(
+            DetectedPiiDismissal.transcript_version_id == run.transcript_version_id,
+            DetectedPiiDismissal.source_start_index == span.start,
+            DetectedPiiDismissal.source_end_index == span.end,
+        )
+        .with_for_update()
+    )
+    if existing is not None:
+        return False
+    dismissal_id = uuid.uuid4()
+    db.add(
+        DetectedPiiDismissal(
+            id=dismissal_id,
+            transcript_id=transcript.id,
+            transcript_version_id=run.transcript_version_id,
+            owner_user_id=owner.id,
+            team_id=transcript.team_id,
+            source_start_index=span.start,
+            source_end_index=span.end,
+            source_text_encrypted=encrypt_text_for_owner(
+                db,
+                owner_user_id=owner.id,
+                table="detected_pii_dismissals",
+                field="source_text_encrypted",
+                record_id=dismissal_id,
+                plaintext=span.text,
+            ),
+        )
+    )
+    db.commit()
+    return True
+
+
+def restore_detected_pii_entity_service(
+    db: Session,
+    owner: Any,
+    *,
+    transcript_id: uuid.UUID,
+    entity_id: uuid.UUID,
+) -> bool:
+    _, run, entity = _owner_detected_pii_entity_for_dismissal(db, owner.id, transcript_id=transcript_id, entity_id=entity_id)
+    span = _redaction_source_spans(db, run=run).get(entity.id)
+    if span is None:
+        raise AppError(409, "redaction_override_requires_review", "The detected PII needs to be reviewed again")
+    dismissal = db.scalar(
+        select(DetectedPiiDismissal)
+        .where(
+            DetectedPiiDismissal.transcript_version_id == run.transcript_version_id,
+            DetectedPiiDismissal.owner_user_id == owner.id,
+            DetectedPiiDismissal.source_start_index == span.start,
+            DetectedPiiDismissal.source_end_index == span.end,
+        )
+        .with_for_update()
+    )
+    if dismissal is None:
+        return False
+    db.delete(dismissal)
+    db.commit()
+    return True
 
 
 def ensure_redaction_run_for_transcript_version(db: Session, *, transcript_version: TranscriptVersion) -> RedactionRun:

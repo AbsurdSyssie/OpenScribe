@@ -375,6 +375,10 @@ Owner PII/redaction routes:
 - `POST /api/v1/transcripts/{transcript_id}/manual-pii`
 - `DELETE /api/v1/transcripts/{transcript_id}/manual-pii/{entity_id}`
 - `POST /api/v1/transcripts/{transcript_id}/pii-entities/reveal`
+- `POST /api/v1/transcripts/{transcript_id}/copy-redacted`
+- `POST|DELETE /api/v1/transcripts/{transcript_id}/detected-pii/{entity_id}/dismiss`
+
+Current, actionable detected PII entries in the owner workspace and reveal response include `start_index` and `end_index` as source-text character positions. Positions are null when the saved occurrence cannot be verified or the run is stale. The browser uses them to locate individual occurrences; they do not grant access to another owner's content.
 
 Owner generation/document routes:
 

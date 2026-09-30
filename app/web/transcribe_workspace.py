@@ -85,7 +85,11 @@ from ..services.transcripts import (
     transcript_version_text as transcript_version_text_service,
     working_note_detail as working_note_detail_service,
 )
-from ..services.redaction import redaction_entity_original_value as redaction_entity_original_value_service
+from ..services.redaction import (
+    detected_pii_dismissed_entity_ids,
+    redaction_entity_original_value as redaction_entity_original_value_service,
+    redaction_source_offsets,
+)
 from ..services.clinical_nlp import clinical_entity_value as clinical_entity_value_service
 from ..services.consultation_split_api import read_workspace_split_analysis, read_workspace_split_batch
 from ..services.consultation_split_drafts import read_split_draft
@@ -500,6 +504,9 @@ def _pii_entity_response(
     source: str,
     value: str | None,
     include_values: bool,
+    dismissed: bool = False,
+    start_index: int | None = None,
+    end_index: int | None = None,
 ) -> TranscriptPiiEntitySummary | TranscriptPiiEntityDetail:
     if include_values:
         return TranscriptPiiEntityDetail(
@@ -510,6 +517,9 @@ def _pii_entity_response(
             occurrence_count=occurrence_count,
             source=source,
             has_value=True,
+            dismissed=dismissed,
+            start_index=start_index,
+            end_index=end_index,
         )
     return TranscriptPiiEntitySummary(
         id=id,
@@ -518,6 +528,9 @@ def _pii_entity_response(
         occurrence_count=occurrence_count,
         source=source,
         has_value=True,
+        dismissed=dismissed,
+        start_index=start_index,
+        end_index=end_index,
     )
 
 
@@ -538,18 +551,55 @@ def transcript_pii_entities_response(
         .order_by(RedactionRun.created_at.desc(), RedactionRun.id.desc())
         .limit(1)
     )
+    actionable_run_id = None
+    if transcript.status is TranscriptStatus.ready:
+        current_text = (transcript_draft_text_service(db, transcript=transcript) or "").strip()
+        if current_text:
+            current_version = next(
+                (
+                    version
+                    for version in db.scalars(
+                        select(TranscriptVersion)
+                        .where(TranscriptVersion.transcript_id == transcript.id)
+                        .order_by(TranscriptVersion.version_no.desc(), TranscriptVersion.created_at.desc(), TranscriptVersion.id.desc())
+                    )
+                    if (transcript_version_text_service(db, transcript_version=version) or "").strip() == current_text
+                ),
+                None,
+            )
+            if current_version is not None:
+                actionable_run_id = db.scalar(
+                    select(RedactionRun.id)
+                    .where(
+                        RedactionRun.transcript_id == transcript.id,
+                        RedactionRun.transcript_version_id == current_version.id,
+                        RedactionRun.owner_user_id == transcript.owner_user_id,
+                        RedactionRun.status == RedactionRunStatus.succeeded,
+                    )
+                    .order_by(RedactionRun.created_at.desc(), RedactionRun.id.desc())
+                    .limit(1)
+                )
     if redaction_run is None or redaction_run.status is not RedactionRunStatus.succeeded:
         detected_entities = []
     else:
+        dismissed_entity_ids = (
+            detected_pii_dismissed_entity_ids(db, run=redaction_run)
+            if redaction_run.id == actionable_run_id
+            else frozenset()
+        )
+        source_offsets = redaction_source_offsets(db, run=redaction_run) if redaction_run.id == actionable_run_id else {}
         detected_entities = [
             _pii_entity_response(
-                id=None,
+                id=entity.id if entity.id in source_offsets else None,
                 entity_type=entity.entity_type,
                 value=redaction_entity_original_value_service(db, entity=entity) if include_values else None,
                 placeholder=entity.placeholder,
                 occurrence_count=entity.occurrence_count,
                 source="detected",
                 include_values=include_values,
+                dismissed=entity.id in dismissed_entity_ids,
+                start_index=source_offsets.get(entity.id, (None, None))[0],
+                end_index=source_offsets.get(entity.id, (None, None))[1],
             )
             for entity in sorted(redaction_run.entities, key=lambda item: item.entity_order)
         ]
@@ -574,18 +624,19 @@ def transcript_pii_entities_response(
     )
     clinical_entities = []
     if clinical_run is not None and clinical_run.status is RedactionRunStatus.succeeded:
-        clinical_entities = [
-            _pii_entity_response(
+        for entity in sorted(clinical_run.entities, key=lambda item: item.entity_order):
+            value = clinical_entity_value_service(db, entity=entity)
+            if len(value.strip()) <= 1:
+                continue
+            clinical_entities.append(_pii_entity_response(
                 id=None,
                 entity_type=entity.entity_type,
-                value=clinical_entity_value_service(db, entity=entity) if include_values else None,
+                value=value if include_values else None,
                 placeholder="Clinical NLP",
                 occurrence_count=entity.occurrence_count,
                 source="clinical",
                 include_values=include_values,
-            )
-            for entity in sorted(clinical_run.entities, key=lambda item: item.entity_order)
-        ]
+            ))
     return detected_entities + clinical_entities + [
         transcript_manual_pii_entity_response(db, entity, include_values=include_values)
         for entity in manual_entities

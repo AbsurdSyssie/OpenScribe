@@ -90,7 +90,7 @@ def successful_redacted_clinical_hints(
     hints: list[dict[str, str]] = []
     for entity in entities:
         value = clinical_entity_value(db, entity=entity).strip()
-        if entity.entity_type.strip() and value:
+        if entity.entity_type.strip() and len(value) > 1:
             hints.append({"entity_type": entity.entity_type, "text": value})
     return hints
 
@@ -122,6 +122,7 @@ def successful_redacted_clinical_hint_identity(
                 "created_at": entity.created_at.isoformat(),
             }
             for entity in entities
+            if len(clinical_entity_value(db, entity=entity).strip()) > 1
         ],
     }
 
@@ -326,6 +327,7 @@ def ensure_clinical_entity_run_for_transcript_version(
             span
             for span in detection.spans
             if span.entity_type.strip().upper() in CLINICAL_ENTITY_TYPES
+            and len(source_text[span.start:span.end].strip()) > 1
         ]
         run.entity_count = len(clinical_spans)
         for index, span in enumerate(clinical_spans, start=1):

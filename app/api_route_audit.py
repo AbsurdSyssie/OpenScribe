@@ -445,6 +445,8 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         json_body=_json(entity_type="PERSON", value="Audit Patient", occurrence_count=1),
     ),
     AuditCase("DELETE", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/manual-pii/{PLACEHOLDER_UUID_2}", AccessTier.full),
+    AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/detected-pii/{PLACEHOLDER_UUID_2}/dismiss", AccessTier.full),
+    AuditCase("DELETE", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/detected-pii/{PLACEHOLDER_UUID_2}/dismiss", AccessTier.full),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/pii-entities/reveal", AccessTier.full),
     AuditCase(
         "POST",
@@ -531,6 +533,7 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         AccessTier.full,
     ),
     AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/working-note", AccessTier.full),
+    AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/copy-redacted", AccessTier.full),
     AuditCase(
         "PATCH",
         f"/api/v1/transcripts/{PLACEHOLDER_UUID}/working-note",

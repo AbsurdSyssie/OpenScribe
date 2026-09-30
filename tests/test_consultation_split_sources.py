@@ -516,7 +516,7 @@ def test_preparation_reads_only_successful_redacted_clinical_hints(db_session, m
         status=RedactionRunStatus.succeeded,
         source_text_redacted=True,
         api_provider="native",
-        entity_count=1,
+        entity_count=2,
     )
     db_session.add(clinical_run)
     db_session.flush()
@@ -533,6 +533,19 @@ def test_preparation_reads_only_successful_redacted_clinical_hints(db_session, m
         record_id=entity.id, plaintext="cough",
     ) or ""
     db_session.add(entity)
+    one_character = ClinicalEntity(
+        id=uuid4(),
+        clinical_entity_run_id=clinical_run.id,
+        entity_order=2,
+        entity_type="DISEASE",
+        value_encrypted="",
+        normalized_value_hash="synthetic-one-character",
+    )
+    one_character.value_encrypted = encrypt_text_for_owner(
+        db_session, owner_user_id=owner.id, table="clinical_entities", field="value_encrypted",
+        record_id=one_character.id, plaintext="a",
+    ) or ""
+    db_session.add(one_character)
     db_session.flush()
 
     assert successful_redacted_clinical_hints(

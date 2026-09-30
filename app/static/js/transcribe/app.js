@@ -1,4 +1,4 @@
-import { attachTranscribeActions } from './actions.js?v=20260918-retired-note-workspace';
+import { attachTranscribeActions } from './actions.js?v=20260930-detected-pii-override';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
 import { createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationLoadingHtml } from './documents.js?v=20260918-retired-note-workspace';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
@@ -180,6 +180,7 @@ import {
       const selectStructuredSelectionButton = document.querySelector('[data-select-structured-selection]');
       const structuredCopyStatus = document.querySelector('[data-structured-copy-status]');
       const copyTranscriptButton = document.querySelector('[data-copy-transcript]');
+      const copyRedactedTranscriptButton = document.querySelector('[data-copy-redacted-transcript]');
       const tabActions = [...document.querySelectorAll('[data-tab-action]')];
       const templateModeBadge = document.querySelector('[data-selected-template-mode]');
       const sessionList = document.querySelector('[data-session-list]');
@@ -1983,11 +1984,20 @@ let statusDetailsHideTimer = null;
             occurrence_count: Number.parseInt(entity?.occurrence_count ?? 1, 10) || 1,
             source: entity?.source || 'detected',
             id: entity?.id || null,
+            dismissed: Boolean(entity?.dismissed),
             has_value: Boolean(entity?.has_value),
+            start_index: Number.isInteger(entity?.start_index) ? entity.start_index : null,
+            end_index: Number.isInteger(entity?.end_index) ? entity.end_index : null,
           }))
           .filter((entity) => entity.value.length > 0 || entity.placeholder.length > 0)
           .filter((entity) => {
-            const key = `${entity.source}\u0000${entity.entity_type.toLowerCase()}\u0000${(entity.value || entity.placeholder).toLowerCase()}`;
+            // Without an actionable ID, each detected or clinical row still
+            // represents a separate occurrence.  Never collapse its count.
+            if (entity.source === 'clinical' || (entity.source === 'detected' && !entity.id)) return true;
+            const valueKey = `${entity.entity_type.toLowerCase()}\u0000${(entity.value || entity.placeholder).toLowerCase()}`;
+            const key = entity.source === 'detected' && entity.id
+              ? `${entity.source}\u0000${entity.id}`
+              : `${entity.source}\u0000${valueKey}`;
             if (seen.has(key)) return false;
             seen.add(key);
             return true;
@@ -2007,6 +2017,10 @@ let statusDetailsHideTimer = null;
             entity.source || 'detected',
             String(entity.entity_type || 'PII').toLowerCase(),
             entity.value || '',
+            entity.id || '',
+            entity.dismissed ? 'dismissed' : 'active',
+            entity.start_index ?? '',
+            entity.end_index ?? '',
           ].join('\u0000'))
           .sort()
           .join('\u0001');
@@ -2043,41 +2057,44 @@ let statusDetailsHideTimer = null;
           activeDraft.textContent = '';
           return;
         }
-        const highlightEntities = uniquePiiEntities(entities)
-          .map((entity) => ({ value: entity.value, source: entity.source || 'detected' }))
-          .sort((left, right) => right.value.length - left.value.length);
-        if (highlightEntities.length === 0) {
-          activeDraft.textContent = text;
-          return;
-        }
-        const values = [...new Set(highlightEntities.map((entity) => entity.value))];
-        const entityByValue = new Map();
-        highlightEntities.forEach((entity) => {
-          const key = entity.value.toLowerCase();
-          const existing = entityByValue.get(key);
-          if (!existing || entity.source === 'manual') entityByValue.set(key, entity);
+        const candidates = [];
+        const codepoints = Array.from(text);
+        uniquePiiEntities(entities).forEach((entity) => {
+          if (!entity.value || entity.dismissed) return;
+          if (entity.source === 'detected') {
+            const start = entity.start_index;
+            const end = entity.end_index;
+            if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end > codepoints.length) return;
+            if (codepoints.slice(start, end).join('') !== entity.value) return;
+            candidates.push({
+              start: codepoints.slice(0, start).join('').length,
+              end: codepoints.slice(0, end).join('').length,
+              entity,
+            });
+          } else if (entity.source === 'manual') {
+            const pattern = new RegExp(escapeRegExp(entity.value), 'gi');
+            for (const match of text.matchAll(pattern)) {
+              if (entity.value.length === 1 && (
+                /[\p{L}\p{M}\p{N}_]/u.test(text[match.index - 1] || '')
+                || /[\p{L}\p{M}\p{N}_]/u.test(text[match.index + match[0].length] || '')
+              )) continue;
+              candidates.push({ start: match.index, end: match.index + match[0].length, entity });
+            }
+          }
         });
-        const pattern = new RegExp(`(${values.map(escapeRegExp).join('|')})`, 'gi');
-        const parts = text.split(pattern);
-        let textOffset = 0;
-        activeDraft.innerHTML = parts
-          .map((part) => {
-            const partStart = textOffset;
-            textOffset += part.length;
-            const entity = entityByValue.get(part.toLowerCase());
-            if (!entity) return escapeHtml(part);
-            const source = entity.source;
-            const isDetectedLatinInitial = source === 'detected' && /^[A-Za-z]$/.test(entity.value);
-            const isStandaloneToken = !isDetectedLatinInitial || (
-              !/[\p{L}\p{M}\p{N}_]$/u.test(text.slice(Math.max(0, partStart - 2), partStart))
-              && !/^[\p{L}\p{M}\p{N}_]/u.test(text.slice(textOffset, textOffset + 2))
-            );
-            if (isDetectedLatinInitial && (part !== entity.value || !isStandaloneToken)) return escapeHtml(part);
-            const className = source === 'clinical' ? 'clinical-highlight' : 'pii-highlight';
-            const visibleText = maskPii && source !== 'clinical' ? maskedPiiText(part) : part;
-            return `<mark class="${className}" data-real-value="${escapeHtml(part)}">${escapeHtml(visibleText)}</mark>`;
-          })
-          .join('');
+        candidates.sort((left, right) => left.start - right.start || right.end - left.end);
+        let offset = 0;
+        const parts = [];
+        candidates.forEach(({ start, end, entity }) => {
+          if (start < offset) return;
+          parts.push(escapeHtml(text.slice(offset, start)));
+          const value = text.slice(start, end);
+          const visibleText = maskPii ? maskedPiiText(value) : value;
+          parts.push(`<mark class="pii-highlight" data-real-value="${escapeHtml(value)}"${entity.id ? ` data-pii-highlight-id="${escapeHtml(entity.id)}"` : ''}>${escapeHtml(visibleText)}</mark>`);
+          offset = end;
+        });
+        parts.push(escapeHtml(text.slice(offset)));
+        activeDraft.innerHTML = parts.join('');
       };
 
       const renderDraft = (text, options = {}) => {
@@ -3372,6 +3389,20 @@ let statusDetailsHideTimer = null;
           .replaceAll("'", '&#39;');
       };
 
+      const groupPiiEntities = (entities) => {
+        const groups = new Map();
+        entities.forEach((entity) => {
+          if (entity.source === 'clinical' && Array.from(entity.value || '').length <= 1) return;
+          const key = `${entity.source}:${encodeURIComponent((entity.value || entity.placeholder).trim().toLocaleLowerCase())}`;
+          if (!groups.has(key)) groups.set(key, { key, source: entity.source, value: entity.value, entities: [], types: new Set(), count: 0 });
+          const group = groups.get(key);
+          group.entities.push(entity);
+          group.types.add(entity.entity_type);
+          group.count += entity.source === 'detected' ? 1 : entity.occurrence_count;
+        });
+        return [...groups.values()];
+      };
+
       const renderPiiEntities = (entities = [], options = {}) => {
         if (!piiCount || !piiTableWrap) return;
         const rawBaseEntities = Array.isArray(entities) ? entities : [];
@@ -3383,10 +3414,13 @@ let statusDetailsHideTimer = null;
         const manualWorkspaceEntities = options.includeWorkspaceManual === false
           ? []
           : workspaceTranscriptPiiEntities.filter((entity) => entity.source === 'manual');
-        const rows = uniquePiiEntities([...baseEntities, ...manualWorkspaceEntities]);
+        const rows = uniquePiiEntities([...baseEntities, ...manualWorkspaceEntities])
+          .filter((entity) => entity.source !== 'clinical' || Array.from(entity.value).length > 1);
         const displayRows = allowReveal
           ? rows
           : rows.map((entity) => ({ ...entity, value: '' }));
+        const expandedGroups = new Set([...piiTableWrap.querySelectorAll('[data-pii-group][open]')].map((node) => node.dataset.piiGroup));
+        const groups = groupPiiEntities(displayRows);
         currentPiiEntities = displayRows;
         if (updateTranscriptHighlights) {
           renderDraft(currentDraftText || readActiveDraftText(), { force: true });
@@ -3395,7 +3429,7 @@ let statusDetailsHideTimer = null;
           piiVisibilityToggle.textContent = piiMasked ? 'Show PII' : 'Hide PII';
           piiVisibilityToggle.setAttribute('aria-pressed', piiMasked ? 'true' : 'false');
         }
-        piiCount.textContent = String(displayRows.length);
+        piiCount.textContent = String(groups.reduce((total, group) => total + group.count, 0));
         const redactionStatus = workspaceRedactionStatus?.status || 'not_run';
         if (piiStatus) {
           piiStatus.classList.toggle('pii-status--error', redactionStatus === 'failed');
@@ -3412,7 +3446,9 @@ let statusDetailsHideTimer = null;
         if (clinicalNlpStatus) {
           clinicalNlpStatus.classList.toggle('pii-status--error', clinicalStatus === 'failed');
           if (clinicalStatus === 'succeeded') {
-            const count = Number(workspaceClinicalNlpStatus?.entity_count || 0);
+            const count = workspaceTranscriptPiiEntities.filter((entity) => (
+              entity.source === 'clinical' && Array.from(entity.value || '').length > 1
+            )).length;
             clinicalNlpStatus.textContent = `Clinical NLP complete: ${count} item${count === 1 ? '' : 's'}.`;
           } else if (clinicalStatus === 'failed') {
             const errorCode = workspaceClinicalNlpStatus?.error_code;
@@ -3421,7 +3457,7 @@ let statusDetailsHideTimer = null;
             clinicalNlpStatus.textContent = 'Clinical NLP has not run for this transcript yet.';
           }
         }
-        if (displayRows.length === 0) {
+        if (groups.length === 0) {
           const emptyText = redactionStatus === 'succeeded'
             ? 'No PII identified in the latest redaction check.'
             : (redactionStatus === 'failed'
@@ -3440,19 +3476,26 @@ let statusDetailsHideTimer = null;
               </tr>
             </thead>
             <tbody data-pii-table-body>
-              ${displayRows.map((entity) => `
-                <tr data-pii-source="${escapeHtml(entity.source || '')}" data-pii-entity-id="${escapeHtml(entity.id || '')}">
-                  <td><span class="pii-type ${entity.source === 'clinical' ? 'pii-type--clinical' : ''}">${escapeHtml(String(entity.entity_type || '').replaceAll('_', ' '))}</span></td>
+              ${groups.map((group) => `
+                <tr data-pii-source="${escapeHtml(group.source || '')}">
+                  <td><span class="pii-type ${group.source === 'clinical' ? 'pii-type--clinical' : (group.source === 'manual' ? 'pii-type--manual' : '')}">${escapeHtml([...group.types].map((type) => String(type || '').replaceAll('_', ' ')).join(', '))}</span><span class="pii-source-label">${group.source === 'manual' ? 'Manual' : (group.source === 'clinical' ? 'Clinical NLP' : 'Detected')}</span></td>
                   <td>
-                    <span class="pii-value" data-real-value="${escapeHtml(entity.value || '')}">${escapeHtml(piiMasked && entity.source !== 'clinical' ? maskedPiiText(entity.value || '') : (entity.value || ''))}</span>
+                    <span class="pii-value" data-real-value="${escapeHtml(group.value || '')}">${escapeHtml(piiMasked && group.source !== 'clinical' ? maskedPiiText(group.value || '') : (group.value || ''))}</span>
                   </td>
                   <td class="pii-count-cell">
-                    <span>${escapeHtml(entity.occurrence_count ?? 0)}</span>
-                    ${entity.source === 'manual' && entity.id ? `
-                      <button type="button" class="pii-row-delete" data-pii-delete="${escapeHtml(entity.id)}" aria-label="Remove manual PII">
-                        <i class="w-3.5 h-3.5" data-lucide="trash-2"></i>
-                      </button>
-                    ` : ''}
+                    <details class="pii-occurrences" data-pii-group="${escapeHtml(group.key)}"${expandedGroups.has(group.key) ? ' open' : ''}>
+                      <summary>${group.count} ${group.count === 1 ? 'occurrence' : 'occurrences'}</summary>
+                      <div class="pii-occurrences__list">
+                        ${group.entities.map((entity, index) => `
+                          <div class="pii-occurrence" data-pii-entity-id="${escapeHtml(entity.id || '')}"${entity.dismissed ? ' data-pii-dismissed="true"' : ''}>
+                            <span>${group.count > 1 ? `#${index + 1} · ` : ''}${escapeHtml(String(entity.entity_type || '').replaceAll('_', ' '))}${entity.dismissed ? ' · false positive' : ''}</span>
+                            ${entity.source === 'detected' && entity.value && Number.isInteger(entity.start_index) && Number.isInteger(entity.end_index) ? `<button type="button" class="pii-row-jump" data-pii-jump="${escapeHtml(entity.id || '')}">Find in transcript</button>` : ''}
+                            ${entity.source === 'manual' && entity.id ? `<button type="button" class="pii-row-delete" data-pii-delete="${escapeHtml(entity.id)}" aria-label="Remove this manual PII entry">Remove</button>` : ''}
+                            ${entity.source === 'detected' && entity.id ? `<button type="button" class="pii-row-override${entity.dismissed ? ' pii-row-override--restore' : ''}" data-pii-dismiss="${escapeHtml(entity.id)}" data-pii-dismissed="${entity.dismissed ? 'true' : 'false'}" aria-label="${entity.dismissed ? 'Restore detected PII occurrence' : 'Mark detected PII occurrence as a false positive'}">${entity.dismissed ? 'Undo' : 'Mark false positive'}</button>` : ''}
+                          </div>
+                        `).join('')}
+                      </div>
+                    </details>
                   </td>
                 </tr>
               `).join('')}
@@ -3505,6 +3548,63 @@ let statusDetailsHideTimer = null;
       });
 
       piiTableWrap?.addEventListener('click', async (event) => {
+        const jumpTrigger = event.target instanceof Element ? event.target.closest('[data-pii-jump]') : null;
+        if (jumpTrigger) {
+          const entity = currentPiiEntities.find((item) => item.id === jumpTrigger.dataset.piiJump && item.source === 'detected');
+          const codepoints = Array.from(currentDraftText || '');
+          if (!entity || !Number.isInteger(entity.start_index) || !Number.isInteger(entity.end_index)
+            || codepoints.slice(entity.start_index, entity.end_index).join('') !== entity.value) {
+            showFlash('This occurrence is no longer at the saved position. Refresh the transcript before reviewing it.', 'error');
+            return;
+          }
+          if (piiMasked) {
+            piiMasked = false;
+            renderPiiEntities(currentPiiEntities, { includeWorkspaceManual: false, updateTranscriptHighlights: false });
+            renderDraft(currentDraftText, { force: true });
+          }
+          const start = codepoints.slice(0, entity.start_index).join('').length;
+          const end = codepoints.slice(0, entity.end_index).join('').length;
+          if (activeDraft instanceof HTMLTextAreaElement || activeDraft instanceof HTMLInputElement) {
+            activeDraft.focus();
+            activeDraft.setSelectionRange(start, end);
+            activeDraft.scrollIntoView({ block: 'center' });
+          } else if (activeDraft) {
+            const walker = document.createTreeWalker(activeDraft, NodeFilter.SHOW_TEXT);
+            let node = walker.nextNode();
+            let offset = 0;
+            let startNode = null;
+            let endNode = null;
+            let startOffset = 0;
+            let endOffset = 0;
+            while (node) {
+              const next = offset + node.textContent.length;
+              if (!startNode && start >= offset && start < next) {
+                startNode = node;
+                startOffset = start - offset;
+              }
+              if (end <= next) {
+                endNode = node;
+                endOffset = end - offset;
+                break;
+              }
+              offset = next;
+              node = walker.nextNode();
+            }
+            if (startNode && endNode) {
+              const range = document.createRange();
+              range.setStart(startNode, startOffset);
+              range.setEnd(endNode, endOffset);
+              const selection = window.getSelection();
+              selection?.removeAllRanges();
+              selection?.addRange(range);
+              activeDraft.focus();
+              const selectionRect = range.getBoundingClientRect();
+              const draftRect = activeDraft.getBoundingClientRect();
+              activeDraft.scrollTop += selectionRect.top - draftRect.top - activeDraft.clientHeight / 2;
+            }
+          }
+          return;
+        }
         const revealTrigger = event.target instanceof Element ? event.target.closest('[data-pii-reveal]') : null;
         if (revealTrigger && transcriptId) {
           revealTrigger.disabled = true;
@@ -3522,6 +3622,37 @@ let statusDetailsHideTimer = null;
           } catch (error) {
             showFlash(error instanceof Error ? error.message : 'Could not reveal PII values.', 'error');
             revealTrigger.disabled = false;
+          }
+          return;
+        }
+        const overrideTrigger = event.target instanceof Element ? event.target.closest('[data-pii-dismiss]') : null;
+        if (overrideTrigger && transcriptId) {
+          const entityId = overrideTrigger.dataset.piiDismiss || '';
+          if (!entityId) return;
+          const overrideTranscriptId = transcriptId;
+          const isDismissed = overrideTrigger.dataset.piiDismissed === 'true';
+          overrideTrigger.disabled = true;
+          try {
+            const response = await csrfFetch(`/api/v1/transcripts/${overrideTranscriptId}/detected-pii/${entityId}/dismiss`, {
+              method: isDismissed ? 'DELETE' : 'POST',
+              credentials: 'include',
+            });
+            if (!response.ok) {
+              throw new Error(await parseErrorMessage(response, isDismissed ? 'Could not restore detected PII.' : 'Could not mark this as a false positive.'));
+            }
+            if (transcriptId !== overrideTranscriptId) return;
+            workspaceTranscriptPiiEntities = workspaceTranscriptPiiEntities.map((entity) => (
+              entity.id === entityId && entity.source === 'detected'
+                ? { ...entity, dismissed: !isDismissed }
+                : entity
+            ));
+            renderPiiEntities(workspaceTranscriptPiiEntities, { includeWorkspaceManual: false });
+            void fetchWorkspace(overrideTranscriptId, { guardTranscriptId: overrideTranscriptId });
+          } catch (error) {
+            if (transcriptId === overrideTranscriptId) {
+              showFlash(error instanceof Error ? error.message : (isDismissed ? 'Could not restore detected PII.' : 'Could not mark this as a false positive.'), 'error');
+              overrideTrigger.disabled = false;
+            }
           }
           return;
         }
@@ -4303,6 +4434,7 @@ let statusDetailsHideTimer = null;
           clearStructuredSelectionButton,
           copyStructuredLinesButton,
           copyTranscriptButton,
+          copyRedactedTranscriptButton,
           fileInput,
           followupSelector,
           followupHistory,

@@ -1676,6 +1676,10 @@ class TranscriptVersion(Base):
         back_populates="transcript_version",
         cascade="all, delete-orphan",
     )
+    detected_pii_dismissals: Mapped[list["DetectedPiiDismissal"]] = relationship(
+        back_populates="transcript_version",
+        cascade="all, delete-orphan",
+    )
     clinical_entity_runs: Mapped[list["ClinicalEntityRun"]] = relationship(
         back_populates="transcript_version",
         cascade="all, delete-orphan",
@@ -1737,6 +1741,44 @@ class RedactionEntity(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     redaction_run: Mapped[RedactionRun] = relationship(back_populates="entities")
+
+
+class DetectedPiiDismissal(Base):
+    """An owner decision to unredact one detected source occurrence.
+
+    The decision stores an encrypted copy of the exact source occurrence and
+    immutable source coordinates.  It therefore survives a rerun for the same
+    transcript version only when the detector still identifies that exact
+    occurrence; it cannot silently apply to a new transcript version.
+    """
+
+    __tablename__ = "detected_pii_dismissals"
+    __table_args__ = (
+        UniqueConstraint(
+            "transcript_version_id",
+            "source_start_index",
+            "source_end_index",
+            name="uq_detected_pii_dismissal_source_span",
+        ),
+        CheckConstraint("source_start_index >= 0", name="ck_detected_pii_dismissal_start_nonnegative"),
+        CheckConstraint("source_end_index > source_start_index", name="ck_detected_pii_dismissal_span_positive"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False
+    )
+    transcript_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("transcript_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    source_start_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_end_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_text_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    transcript_version: Mapped[TranscriptVersion] = relationship(back_populates="detected_pii_dismissals")
 
 
 class TranscriptManualPiiEntity(Base):

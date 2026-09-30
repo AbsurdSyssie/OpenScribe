@@ -78,6 +78,7 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "default_templates",
         "default_template_versions",
         "deidentification_providers",
+        "detected_pii_dismissals",
         "generated_document_sections",
         "generated_documents",
         "post_consultation_dictation_segments",
@@ -1097,6 +1098,9 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     provider_usage_event_columns = {column["name"] for column in inspector.get_columns("provider_usage_events")}
     redaction_run_columns = {column["name"] for column in inspector.get_columns("redaction_runs")}
     redaction_entity_columns = {column["name"] for column in inspector.get_columns("redaction_entities")}
+    detected_pii_dismissal_columns = {column["name"] for column in inspector.get_columns("detected_pii_dismissals")}
+    detected_pii_dismissal_indexes = inspector.get_indexes("detected_pii_dismissals")
+    detected_pii_dismissal_checks = inspector.get_check_constraints("detected_pii_dismissals")
     clinical_entity_run_columns = {column["name"] for column in inspector.get_columns("clinical_entity_runs")}
     clinical_entity_columns = {column["name"] for column in inspector.get_columns("clinical_entities")}
     clinical_entity_run_fks = inspector.get_foreign_keys("clinical_entity_runs")
@@ -1114,6 +1118,21 @@ def test_alembic_head_adds_onboarding_and_session_tables():
     smart_phrase_fks = inspector.get_foreign_keys("smart_phrases")
 
     assert {"full_name", "must_change_password", "onboarding_state"} <= user_columns
+    assert {
+        "id",
+        "transcript_id",
+        "transcript_version_id",
+        "owner_user_id",
+        "team_id",
+        "source_start_index",
+        "source_end_index",
+        "source_text_encrypted",
+        "created_at",
+    } <= detected_pii_dismissal_columns
+    assert any(item["name"] == "ix_detected_pii_dismissals_owner_version" for item in detected_pii_dismissal_indexes)
+    assert {"ck_detected_pii_dismissal_start_nonnegative", "ck_detected_pii_dismissal_span_positive"} <= {
+        item["name"] for item in detected_pii_dismissal_checks
+    }
     assert {"id", "secret_ref", "attempt_count", "last_error_code", "next_attempt_at", "created_at", "updated_at"} == transcript_audio_cleanup_columns
     assert transcript_audio_cleanup_fks == []
     assert any(item["name"] == "ix_transcript_audio_cleanup_jobs_next_attempt_at" for item in transcript_audio_cleanup_indexes)

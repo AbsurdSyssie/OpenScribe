@@ -43,7 +43,8 @@ from app.services.content_crypto import (
 )
 from app.services.dictations import dictation_effective_text
 from app.services.redaction import (
-    combined_phi_index,
+    detected_pii_dismissed_entity_ids,
+    effective_redaction_text_and_phi_index,
     ensure_redaction_run_for_transcript_version,
     next_placeholder_index,
     redact_transient_text,
@@ -581,6 +582,10 @@ def resolve_consultation_split_analysis_source_state(
             db, transcript=transcript, create_digest_key=create_digest_key
         ),
         "manual_pii": _manual_pii_identity(db, transcript=transcript),
+        "detected_pii_dismissals": (
+            sorted(str(entity_id) for entity_id in detected_pii_dismissed_entity_ids(db, run=redaction_run))
+            if redaction_run is not None else []
+        ),
         "clinical_nlp_hints": _optional_clinical_hint_identity(
             db,
             transcript_version=version,
@@ -724,8 +729,9 @@ def _prepared_analysis_source_snapshot(
     source_state: ConsultationSplitAnalysisSourceState,
 ) -> dict[str, Any]:
     """Build the complete encrypted-only redacted source payload."""
-    transcript_text = redaction_run_text(db, run=redaction_run).strip() if redaction_run is not None else ""
-    base_phi_index = combined_phi_index(db, redaction_run) if redaction_run is not None else []
+    effective_redaction = effective_redaction_text_and_phi_index(db, run=redaction_run) if redaction_run is not None else None
+    transcript_text = effective_redaction.redacted_text.strip() if effective_redaction is not None else ""
+    base_phi_index = effective_redaction.phi_index if effective_redaction is not None else []
     start_index = next_placeholder_index(redaction_run) if redaction_run is not None else 1
 
     working_mode, working_note = _working_note_source_value(db, transcript=transcript)

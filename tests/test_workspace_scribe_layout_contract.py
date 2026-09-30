@@ -144,7 +144,7 @@ def test_scribe_mobile_dictation_modal_owns_the_top_layer_and_safe_viewport():
     assert "body.modal-open [data-workspace-scribe-main] { z-index: 200; }" in transcribe_css
     assert "padding: var(--mobile-safe-top, env(safe-area-inset-top, 0px)) 0 var(--mobile-safe-bottom, env(safe-area-inset-bottom, 0px));" in transcribe_css
     assert "height: 100%; max-height: 100%; min-height: 0;" in transcribe_css
-    assert 'transcribe.css?v=20260920-session-sidebar-timestamp-skeleton' in read("app/templates/transcribe/_head_assets.html")
+    assert 'transcribe.css?v=20260930-detected-pii-override' in read("app/templates/transcribe/_head_assets.html")
 
 
 def test_shared_modal_close_control_centres_its_icon():
@@ -165,10 +165,10 @@ def test_scribe_mobile_flow_assets_have_current_cache_keys():
     legacy_transcribe = read("app/templates/transcribe.html")
 
     assert 'workspace/app.js?v=20260924-dynamic-recording-lock' in workspace
-    assert 'transcribe/app.js?v=20260924-dynamic-recording-lock' in shell_extras
+    assert 'transcribe/app.js?v=20260930-detected-pii-override' in shell_extras
     assert 'transcribe/mobile.js?v=20260823-mobile-toast' in shell_extras
     assert 'documents.js?v=20260918-retired-note-workspace' in read("app/static/js/transcribe/app.js")
-    assert 'transcribe-mobile.css?v=20260823-mobile-recent' in legacy_transcribe
+    assert 'transcribe-mobile.css?v=20260930-detected-pii-override' in legacy_transcribe
     assert 'src="/static/js/transcribe/mobile.js' not in legacy_transcribe
 
 

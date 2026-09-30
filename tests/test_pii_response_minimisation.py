@@ -176,6 +176,40 @@ def test_reveal_pii_entities_requires_csrf(raw_client, db_session, make_user):
     assert response.status_code == 403
 
 
+def test_detected_pii_dismissal_routes_require_csrf(raw_client, db_session, make_user):
+    user = make_user(email="pii-dismiss-csrf@example.com", mfa_required=False, mfa_enabled=False)
+    transcript = _transcript_with_pii(db_session, owner=user)
+    entity = db_session.query(RedactionEntity).join(RedactionRun).filter(RedactionRun.transcript_id == transcript.id).one()
+    assert _login(raw_client, email=user.email).status_code == 200
+
+    dismiss = raw_client.post(
+        f"/api/v1/transcripts/{transcript.id}/detected-pii/{entity.id}/dismiss",
+        headers={"Origin": "http://testserver"},
+    )
+    restore = raw_client.delete(
+        f"/api/v1/transcripts/{transcript.id}/detected-pii/{entity.id}/dismiss",
+        headers={"Origin": "http://testserver"},
+    )
+
+    assert dismiss.status_code == 403
+    assert restore.status_code == 403
+
+
+def test_expired_transcript_rejects_detected_pii_dismissal_routes(client, db_session, make_user):
+    user = make_user(email="pii-dismiss-expired@example.com", mfa_required=False, mfa_enabled=False)
+    transcript = _transcript_with_pii(db_session, owner=user)
+    entity = db_session.query(RedactionEntity).join(RedactionRun).filter(RedactionRun.transcript_id == transcript.id).one()
+    transcript.retention_expires_at = utcnow() - timedelta(seconds=1)
+    db_session.commit()
+    assert _login(client, email=user.email).status_code == 200
+
+    dismiss = client.post(f"/api/v1/transcripts/{transcript.id}/detected-pii/{entity.id}/dismiss")
+    restore = client.delete(f"/api/v1/transcripts/{transcript.id}/detected-pii/{entity.id}/dismiss")
+
+    assert dismiss.status_code == 404
+    assert restore.status_code == 404
+
+
 def test_sensitive_api_responses_are_no_store(client, db_session, make_user, make_generated_document):
     user = make_user(email="pii-cache@example.com", mfa_required=False, mfa_enabled=False)
     transcript = _transcript_with_pii(db_session, owner=user)

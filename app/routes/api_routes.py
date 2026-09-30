@@ -127,7 +127,9 @@ from ..schemas import (
     TranscriptIngestionJobDetail,
     TranscriptListPage,
     TranscriptManualPiiEntityCreate,
+    DetectedPiiDismissalResponse,
     TranscriptPiiEntityDetail,
+    RedactedTranscriptCopyResponse,
     TranscriptStart,
     TranscriptUpdate,
     TrustedDeviceStatusResponse,
@@ -354,6 +356,7 @@ from ..services.transcripts import (
     delete_transcripts as delete_transcripts_service,
     finalize_live_capture as finalize_live_capture_service,
     get_active_owner_transcript,
+    redacted_transcript_copy_text as redacted_transcript_copy_text_service,
     queue_audio_chunk_ingestion,
     queue_audio_file_ingestion,
     retry_audio_file_ingestion,
@@ -362,6 +365,10 @@ from ..services.transcripts import (
     transcript_is_expired,
     update_transcript as update_transcript_service,
     working_note_detail as working_note_detail_service,
+)
+from ..services.redaction import (
+    dismiss_detected_pii_entity_service,
+    restore_detected_pii_entity_service,
 )
 from ..web.presentation import (
     clinical_nlp_selection_response,
@@ -1706,6 +1713,64 @@ def delete_transcript_manual_pii(
 ):
     delete_manual_pii_entity_service(db, context.user, transcript_id=transcript_id, entity_id=entity_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@api.post(
+    "/transcripts/{transcript_id}/detected-pii/{entity_id}/dismiss",
+    response_model=DetectedPiiDismissalResponse,
+    responses=error_responses,
+)
+def dismiss_detected_pii_entity(
+    transcript_id: UUID,
+    entity_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    dismiss_detected_pii_entity_service(
+        db,
+        context.user,
+        transcript_id=transcript_id,
+        entity_id=entity_id,
+    )
+    return DetectedPiiDismissalResponse(entity_id=entity_id, dismissed=True)
+
+
+@api.delete(
+    "/transcripts/{transcript_id}/detected-pii/{entity_id}/dismiss",
+    response_model=DetectedPiiDismissalResponse,
+    responses=error_responses,
+)
+def restore_detected_pii_entity(
+    transcript_id: UUID,
+    entity_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    restore_detected_pii_entity_service(
+        db,
+        context.user,
+        transcript_id=transcript_id,
+        entity_id=entity_id,
+    )
+    return DetectedPiiDismissalResponse(entity_id=entity_id, dismissed=False)
+
+
+@api.post(
+    "/transcripts/{transcript_id}/copy-redacted",
+    response_model=RedactedTranscriptCopyResponse,
+    responses=error_responses,
+)
+def copy_redacted_transcript(
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    return JSONResponse(
+        content=RedactedTranscriptCopyResponse(
+            text=redacted_transcript_copy_text_service(db, context.user, transcript_id=transcript_id)
+        ).model_dump(mode="json"),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @api.post(

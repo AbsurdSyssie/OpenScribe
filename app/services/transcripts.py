@@ -33,6 +33,8 @@ from app.models import (
     AttemptStatus,
     ProviderAttempt,
     QuotaResource,
+    RedactionRun,
+    RedactionRunStatus,
     TaskDispatchKind,
     TaskDispatchState,
     transcript_expiry,
@@ -47,7 +49,16 @@ from app.services.audio import (
 )
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner, keyed_digest_for_owner
-from app.services.redaction import ensure_redaction_run_for_transcript_version
+from app.services.redaction import (
+    effective_redaction_text_and_phi_index,
+    ensure_redaction_run_for_transcript_version,
+    next_placeholder_index,
+)
+from app.services.redaction_primitives import (
+    apply_manual_pii_redaction,
+    manual_pii_entities_for_transcript,
+    manual_pii_protections_from_entities,
+)
 from app.services.quotas import (
     cancel_provider_attempt,
     mark_provider_attempt_submitted,
@@ -1133,6 +1144,69 @@ def _get_owner_transcript_for_ingestion(db: Session, owner: User, *, transcript_
 
 def get_active_owner_transcript(db: Session, owner: User, *, transcript_id: UUID) -> Transcript:
     return _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+
+
+def redacted_transcript_copy_text(db: Session, owner: User, *, transcript_id: UUID) -> str:
+    """Return the current saved transcript's redacted text for owner clipboard use.
+
+    This deliberately reads an already persisted successful redaction boundary;
+    copying never starts provider work or falls back to the unredacted draft.
+    """
+    transcript = get_active_owner_transcript(db, owner, transcript_id=transcript_id)
+    if transcript.status is not TranscriptStatus.ready:
+        raise AppError(409, "redacted_transcript_unavailable", "A current redacted transcript is not available yet")
+    current_text = (transcript_draft_text(db, transcript=transcript) or "").strip()
+    if not current_text:
+        raise AppError(409, "redacted_transcript_unavailable", "A non-empty redacted transcript is not available yet")
+
+    transcript_version = _latest_matching_transcript_version(
+        db,
+        transcript=transcript,
+        plaintext=current_text,
+    )
+    if transcript_version is None:
+        raise AppError(409, "redacted_transcript_unavailable", "A current redacted transcript is not available yet")
+
+    redaction_run = db.scalar(
+        select(RedactionRun)
+        .where(
+            RedactionRun.transcript_id == transcript.id,
+            RedactionRun.transcript_version_id == transcript_version.id,
+            RedactionRun.owner_user_id == owner.id,
+        )
+        .order_by(RedactionRun.created_at.desc(), RedactionRun.id.desc())
+        .limit(1)
+    )
+    if (
+        redaction_run is None
+        or redaction_run.status is not RedactionRunStatus.succeeded
+        or not redaction_run.redacted_text_encrypted
+    ):
+        raise AppError(409, "redacted_transcript_unavailable", "A current redacted transcript is not available yet")
+
+    effective_redaction = effective_redaction_text_and_phi_index(db, run=redaction_run)
+    redacted_text = effective_redaction.redacted_text.strip()
+    if not redacted_text:
+        raise AppError(409, "redacted_transcript_unavailable", "A non-empty redacted transcript is not available yet")
+
+    protections = manual_pii_protections_from_entities(
+        db,
+        entities=manual_pii_entities_for_transcript(
+            db,
+            transcript_id=transcript.id,
+            owner_user_id=owner.id,
+        ),
+        value_reader=manual_pii_entity_value,
+    )
+    redacted_text, _, _ = apply_manual_pii_redaction(
+        transcript_text=redacted_text,
+        dictation_text="",
+        start_index=next_placeholder_index(redaction_run),
+        protections=protections,
+    )
+    if not redacted_text.strip():
+        raise AppError(409, "redacted_transcript_unavailable", "A non-empty redacted transcript is not available yet")
+    return redacted_text
 
 
 def _lock_split_source_writer_transcript(db: Session, owner: User, *, transcript_id: UUID) -> Transcript:

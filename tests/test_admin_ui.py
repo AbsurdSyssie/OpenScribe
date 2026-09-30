@@ -4157,6 +4157,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'data-active-status' in page.text
     assert 'data-session-progress' in page.text
     assert 'data-copy-transcript' in page.text
+    assert 'data-copy-redacted-transcript' in page.text
     assert 'data-template-picker-button' in page.text
     assert 'data-template-picker-modal' in page.text
     assert 'data-workspace-settings-link' not in page.text
@@ -4164,6 +4165,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert "Note options" not in page.text
     assert 'data-note-selector' in page.text
     assert 'Copy transcript' in page.text
+    assert 'Copy redacted transcript' in page.text
     assert 'data-select-structured-selection' in page.text
     assert "Record" in page.text
     assert "Upload" in page.text
@@ -4190,7 +4192,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' not in page.text
     assert 'aria-label="Workspace navigation"' in page.text
     assert "My Library" in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260918-retired-note-workspace"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20260930-detected-pii-override"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -4625,7 +4627,7 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
 
     assert page.status_code == 200
     assert "/static/css/tokens.css?v=20260902-control-height" in page.text
-    assert "/static/css/transcribe.css?v=20260911-note-regeneration-layer-fix" in page.text
+    assert "/static/css/transcribe.css?v=20260930-detected-pii-override" in page.text
     assert "/static/css/transcribe-mobile.css" in page.text
     assert "/static/js/workspace/app.js" in page.text
     assert page.text.count("/static/js/transcribe/mobile.js?v=20260823-mobile-toast") == 1
@@ -4915,6 +4917,8 @@ def test_user_transcribe_page_shows_owner_pii_sidebar(
     assert "John Smith" in page.text
     assert "07123 456789" in page.text
     assert "PHONE NUMBER" in page.text
+    assert "Detected" in page.text
+    assert "Add manual PII to protect it in redacted copies and before AI processing." in page.text
     assert '<th scope="col">Source</th>' not in page.text
     assert '<th scope="col">Reveal</th>' not in page.text
     assert 'data-toggle-pii-visibility' in page.text
@@ -5047,7 +5051,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260918-retired-note-workspace" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260930-detected-pii-override" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -6377,7 +6381,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "sessionList.style.minHeight = `${previousListHeight}px`;" in app_js
     assert "sessionList.style.minHeight = '';" in app_js
     assert "const revealSessionRailTranscript = (transcriptIdToReveal, scrollContainer) => {" in app_js
-    assert "} from './sessionRail.js?v=20260920-session-sidebar-timezone';" in app_js
+    assert "} from './sessionRail.js?v=20260920-session-sidebar-timestamp-skeleton';" in app_js
     assert "keepSessionRailItemVisible({ scrollContainer, item, behavior });" in app_js
     assert "scrollContainer?.scrollTo({ top: previousScrollTop, behavior: 'auto' });" in app_js
     assert "document.addEventListener('transcribe:session-panel-opened'" in app_js
@@ -6554,7 +6558,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "runQuickActionTrigger.disabled = !canUsePrimaryFollowupAction;" in app_js
     assert "if (!dom.quickActionContextInput?.value?.trim()) {" in actions_js
     assert "showFlash('Choose a quick action or add context.', 'warning');" in actions_js
-    assert "./actions.js?v=20260918-retired-note-workspace" in app_js
+    assert "./actions.js?v=20260930-detected-pii-override" in app_js
     assert "const isDiscardableEmptyWorkingNoteDraft = () => (" in app_js
     assert "return { kind: 'working_note_empty_draft_discarded' };" in app_js
     assert "Empty working-note draft ignored." in app_js
@@ -6686,6 +6690,9 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert 'data-pii-table-wrap' in workspace_html
     assert 'data-pii-add-form' in workspace_html
     assert 'data-pii-add-value' in workspace_html
+    assert 'Add manual PII to protect it in redacted copies and before AI processing.' in workspace_html
+    assert 'aria-label="Remove this manual PII entry"' in workspace_html
+    assert '<span>Remove</span>' in workspace_html
     assert "const piiCount = document.querySelector('[data-pii-count]');" in app_js
     assert "const piiVisibilityToggle = document.querySelector('[data-toggle-pii-visibility]');" in app_js
     assert "let piiMasked = false;" in app_js
@@ -6693,7 +6700,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const clinicalNlpStatus = document.querySelector('[data-clinical-nlp-status]');" in app_js
     assert "workspaceClinicalNlpStatus = workspace.active_transcript_clinical_nlp_status || { status: 'not_run', entity_count: 0, error_code: null };" in app_js
     assert "Clinical NLP complete:" in app_js
-    assert "activeDraft.innerHTML = text" in app_js
+    assert "activeDraft.innerHTML = parts.join('');" in app_js
     assert "const renderPiiEntities = (entities = [], options = {}) => {" in app_js
     assert "const allowReveal = options.allowReveal !== false;" in app_js
     assert "const updateTranscriptHighlights = options.updateTranscriptHighlights !== false;" in app_js
@@ -6710,8 +6717,10 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "piiAddForm?.addEventListener('submit'" in app_js
     assert "csrfFetch(`/api/v1/transcripts/${transcriptId}/manual-pii`" in app_js
     assert "data-pii-delete" in app_js
+    assert "Remove this manual PII entry" in app_js
+    assert "pii-source-label" in app_js
     assert "piiVisibilityToggle?.addEventListener('click'" in app_js
-    assert "${displayRows.map((entity) => `" in app_js
+    assert "${groups.map((group) => `" in app_js
     assert "renderPiiEntities?.(selectedNote?.pii_entities" not in documents_js
     assert "renderPiiEntities," in app_js
     assert "data-legacy-note-workspace" not in actions_js
@@ -6832,7 +6841,7 @@ def test_generated_document_pii_no_reveal_mode_strips_cached_values():
     assert ": rows.map((entity) => ({ ...entity, value: '' }));" in app_js
     assert "currentPiiEntities = displayRows;" in app_js
     assert "renderDraft(currentDraftText || readActiveDraftText(), { force: true });" in app_js
-    assert "${displayRows.map((entity) => `" in app_js
+    assert "${groups.map((group) => `" in app_js
     assert "renderPiiEntities?.(selectedNote?.pii_entities" not in documents_js
 
 
@@ -6840,7 +6849,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260918-retired-note-workspace" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20260930-detected-pii-override" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

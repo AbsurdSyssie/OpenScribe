@@ -132,10 +132,22 @@ class TranscriptPiiEntitySummary(BaseModel):
     occurrence_count: int
     source: str = "detected"
     has_value: bool = True
+    dismissed: bool = False
+    start_index: int | None = None
+    end_index: int | None = None
 
 
 class TranscriptPiiEntityDetail(TranscriptPiiEntitySummary):
     value: str
+
+
+class RedactedTranscriptCopyResponse(BaseModel):
+    text: str
+
+
+class DetectedPiiDismissalResponse(BaseModel):
+    entity_id: UUID
+    dismissed: bool
 
 
 class TranscriptManualPiiEntityCreate(BaseModel):

@@ -180,6 +180,14 @@ A transcript version can have a redaction run containing encrypted redacted text
 
 Owners can add/delete manual PII values. Values are encrypted and duplicate detection uses an owner-scoped keyed digest rather than a plain hash. Manual values participate in pre-LLM redaction and post-generation reidentification.
 
+An owner can dismiss a detected PII occurrence as a false positive. A dismissal is an encrypted, reversible owner decision; it never changes the source RedactionRun or RedactionEntity. It applies only when the current redaction can prove the same transcript version, source span, and source text. A changed transcript version never inherits it, and an uncertain rerun remains redacted pending review. Manual PII protections are applied after dismissals and always remain redacted.
+
+The review table groups repeated detected values, including detections assigned different types, and shows their total occurrence count. Each occurrence keeps its own reversible decision and can be located in the current transcript using its verified source position. Detected highlighting uses those positions; it does not mark every matching word. Clinical NLP results have no saved source positions, so they are listed without transcript highlighting. New one-character Clinical NLP results are discarded; older one-character results are excluded from the workspace and optional clinical hints.
+
+The effective redaction view is used when copying the redacted transcript and when assembling later generated-note and consultation-split provider sources. A dismissal changes the consultation-split source fingerprint, so an earlier unconfirmed analysis must be prepared again. It does not change already submitted provider requests, confirmed split batches, or existing generated drafts.
+
+The Transcript panel can copy its current redacted text through an owner-only POST+CSRF response with `no-store`. It uses only the successful encrypted redaction run for the exact current saved transcript version, applies current manual PII protections, and fails closed when the transcript is empty or that run is missing, failed, or stale. It never initiates redaction or falls back to the raw transcript.
+
 ## Retention, deletion, and cleanup
 
 - The transcript root owns versions, ingestion and template-suggestion jobs, generated documents, redaction/PII data, working notes, dictation, and related content.

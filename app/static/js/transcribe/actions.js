@@ -435,6 +435,33 @@ export function attachTranscribeActions({
     });
   }
 
+  if (dom.copyRedactedTranscriptButton) {
+    dom.copyRedactedTranscriptButton.addEventListener('click', async () => {
+      const transcriptId = getTranscriptId?.();
+      if (!transcriptId) {
+        showFlash('Select a consultation before copying its redacted transcript.', 'error');
+        return;
+      }
+      const requestedTranscriptId = transcriptId;
+      try {
+        const response = await csrfFetch(`/api/v1/transcripts/${requestedTranscriptId}/copy-redacted`, {
+          method: 'POST',
+          credentials: 'include',
+        });
+        if (!response.ok) throw new Error(await parseErrorMessage(response, 'Could not copy the redacted transcript.'));
+        const payload = await response.json();
+        if (getTranscriptId?.() !== requestedTranscriptId) return;
+        if (!payload || typeof payload.text !== 'string' || !payload.text.trim()) {
+          throw new Error('A non-empty redacted transcript is not available yet.');
+        }
+        await navigator.clipboard.writeText(payload.text);
+        showCopyToast();
+      } catch (error) {
+        showFlash(error instanceof Error ? error.message : 'Could not copy the redacted transcript.', 'error');
+      }
+    });
+  }
+
   if (dom.copyStructuredLinesButton) {
     dom.copyStructuredLinesButton.addEventListener('click', async () => {
       const checkedRows = structuredEditor.collectSelectedNoteLines();

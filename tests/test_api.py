@@ -58,6 +58,7 @@ from app.models import (
     DefaultQuickAction,
     DefaultQuickActionVersion,
     DeidentificationProvider,
+    DetectedPiiDismissal,
     GeneratedDocument,
     GeneratedDocumentSection,
     GeneratedDocumentGeneratorType,
@@ -7746,7 +7747,7 @@ def test_clinical_detection_allows_unredacted_text_for_local_provider(
             return False
 
         def iter_bytes(self):
-            return iter([b'{"entities":[{"start":19,"end":28,"entity_type":"SYMPTOM"}]}'])
+            return iter([b'{"entities":[{"start":1,"end":2,"entity_type":"DISEASE"},{"start":19,"end":28,"entity_type":"SYMPTOM"}]}'])
 
     def fake_post(method, url, *, json, headers, timeout):
         captured_body.update(json)
@@ -7759,9 +7760,12 @@ def test_clinical_detection_allows_unredacted_text_for_local_provider(
     run = db_session.scalar(select(ClinicalEntityRun).where(ClinicalEntityRun.transcript_id == transcript.id))
     assert run is not None
     assert run.source_text_redacted is False
+    assert run.entity_count == 1
     assert captured_body["text"] == "Jane Smith reports dizziness."
-    entity = db_session.scalar(select(ClinicalEntity).where(ClinicalEntity.clinical_entity_run_id == run.id))
-    assert entity is not None
+    entities = list(db_session.scalars(select(ClinicalEntity).where(ClinicalEntity.clinical_entity_run_id == run.id)))
+    assert len(entities) == 1
+    entity = entities[0]
+    assert clinical_entity_value(db_session, entity=entity) == "dizziness"
     raw_sha256 = hashlib.sha256("dizziness".encode("utf-8")).hexdigest()
     assert entity.normalized_value_hash != raw_sha256
     assert entity.normalized_value_hash == keyed_digest_for_owner(
@@ -16824,8 +16828,8 @@ def test_transcribe_workspace_endpoint_returns_owner_pii_entities(
     assert response.status_code == 200
     payload = response.json()
     expected_transcript_entities = [
-        {"id": None, "entity_type": "PERSON", "value": "John Smith", "has_value": True, "placeholder": "[PHI-1]", "occurrence_count": 1, "source": "detected"},
-        {"id": None, "entity_type": "PHONE_NUMBER", "value": "07123 456789", "has_value": True, "placeholder": "[PHI-2]", "occurrence_count": 1, "source": "detected"},
+        {"id": None, "entity_type": "PERSON", "value": "John Smith", "has_value": True, "placeholder": "[PHI-1]", "occurrence_count": 1, "source": "detected", "dismissed": False, "start_index": None, "end_index": None},
+        {"id": None, "entity_type": "PHONE_NUMBER", "value": "07123 456789", "has_value": True, "placeholder": "[PHI-2]", "occurrence_count": 1, "source": "detected", "dismissed": False, "start_index": None, "end_index": None},
     ]
     expected_document_entities = [
         {"entity_type": "PERSON", "has_value": True, "placeholder": "[PHI-1]", "occurrence_count": 1},
@@ -16972,6 +16976,310 @@ def test_owner_can_add_and_delete_manual_pii_entities(
     deleted = client.delete(f"/api/v1/transcripts/{transcript.id}/manual-pii/{entity_id}")
     assert deleted.status_code == 204
     assert db_session.get(TranscriptManualPiiEntity, entity_id) is None
+
+
+def test_owner_can_copy_current_redacted_transcript_with_manual_pii_protections(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_redaction_run,
+):
+    team = make_team(name="Redacted Copy Team")
+    owner = make_user(email="owner-redacted-copy@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Redacted copy workspace session",
+        current_draft_text_encrypted="John Smith attended Riverside House.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="John Smith attended Riverside House.",
+    )
+    db_session.add(version)
+    db_session.commit()
+    make_redaction_run(
+        transcript=transcript,
+        transcript_version=version,
+        owner=owner,
+        redacted_text="[PHI-1] attended Riverside House.",
+    )
+
+    login(client, email="owner-redacted-copy@example.com", password="password-1")
+    manual = client.post(
+        f"/api/v1/transcripts/{transcript.id}/manual-pii",
+        json={"entity_type": "ADDRESS", "value": "Riverside House"},
+    )
+    assert manual.status_code == 201
+
+    response = client.post(f"/api/v1/transcripts/{transcript.id}/copy-redacted")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {"text": "[PHI-1] attended [PHI-2]."}
+    assert "John Smith" not in response.text
+    assert "Riverside House" not in response.text
+
+
+def test_owner_can_dismiss_and_restore_one_detected_pii_occurrence(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_redaction_run,
+):
+    team = make_team(name="Detected PII dismissal team")
+    owner = make_user(email="owner-dismiss-detected@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other = make_user(email="other-dismiss-detected@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        current_draft_text_encrypted="John Smith attended Riverside House.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(
+        transcript_id=transcript.id,
+        version_no=1,
+        text_encrypted="John Smith attended Riverside House.",
+    )
+    db_session.add(version)
+    db_session.commit()
+    run = make_redaction_run(
+        transcript=transcript,
+        transcript_version=version,
+        owner=owner,
+        redacted_text="[PHI-1] attended Riverside House.",
+    )
+    entity = run.entities[0]
+
+    login(client, email="owner-dismiss-detected@example.com", password="password-1")
+    initial_workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
+    assert initial_workspace.status_code == 200
+    assert initial_workspace.json()["active_transcript_pii_entities"][0]["id"] == str(entity.id)
+    assert initial_workspace.json()["active_transcript_pii_entities"][0]["dismissed"] is False
+
+    dismissed = client.post(f"/api/v1/transcripts/{transcript.id}/detected-pii/{entity.id}/dismiss")
+    assert dismissed.status_code == 200
+    assert dismissed.json() == {"entity_id": str(entity.id), "dismissed": True}
+    stored = db_session.scalar(select(DetectedPiiDismissal))
+    assert stored is not None
+    assert stored.transcript_version_id == version.id
+    assert stored.source_start_index == 0
+    assert stored.source_end_index == len("John Smith")
+    assert stored.source_text_encrypted != "John Smith"
+    assert is_encrypted_envelope(stored.source_text_encrypted)
+    assert db_session.get(RedactionRun, run.id).redacted_text_encrypted == "[PHI-1] attended Riverside House."
+
+    workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
+    assert workspace.status_code == 200
+    assert workspace.json()["active_transcript_pii_entities"][0]["dismissed"] is True
+    unredacted = client.post(f"/api/v1/transcripts/{transcript.id}/copy-redacted")
+    assert unredacted.status_code == 200
+    assert unredacted.json() == {"text": "John Smith attended Riverside House."}
+
+    manual = client.post(
+        f"/api/v1/transcripts/{transcript.id}/manual-pii",
+        json={"entity_type": "PERSON", "value": "John Smith"},
+    )
+    assert manual.status_code == 201
+    manual_wins = client.post(f"/api/v1/transcripts/{transcript.id}/copy-redacted")
+    assert manual_wins.status_code == 200
+    assert "John Smith" not in manual_wins.json()["text"]
+    assert "[PHI-2]" in manual_wins.json()["text"]
+
+    restored = client.delete(f"/api/v1/transcripts/{transcript.id}/detected-pii/{entity.id}/dismiss")
+    assert restored.status_code == 200
+    assert restored.json() == {"entity_id": str(entity.id), "dismissed": False}
+    assert db_session.scalar(select(DetectedPiiDismissal)) is None
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="other-dismiss-detected@example.com", password="password-2")
+    forbidden = client.post(f"/api/v1/transcripts/{transcript.id}/detected-pii/{entity.id}/dismiss")
+    assert_error(forbidden, status_code=404, code="not_found", message="Transcript not found")
+
+
+def test_redacted_transcript_copy_fails_closed_for_stale_failed_and_nonowner_runs(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_redaction_run,
+):
+    team = make_team(name="Redacted Copy Boundary Team")
+    owner = make_user(email="owner-redacted-boundary@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other = make_user(email="other-redacted-boundary@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        current_draft_text_encrypted="Current synthetic transcript.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    stale_version = TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="Older synthetic transcript.")
+    current_version = TranscriptVersion(transcript_id=transcript.id, version_no=2, text_encrypted="Current synthetic transcript.")
+    db_session.add_all([stale_version, current_version])
+    db_session.commit()
+    make_redaction_run(
+        transcript=transcript,
+        transcript_version=stale_version,
+        owner=owner,
+        redacted_text="Stale redacted text.",
+    )
+
+    login(client, email="owner-redacted-boundary@example.com", password="password-1")
+    stale = client.post(f"/api/v1/transcripts/{transcript.id}/copy-redacted")
+    assert_error(stale, status_code=409, code="redacted_transcript_unavailable", message="A current redacted transcript is not available yet")
+    assert "Current synthetic transcript" not in stale.text
+
+    make_redaction_run(
+        transcript=transcript,
+        transcript_version=current_version,
+        owner=owner,
+        redacted_text="Current redacted text.",
+        status=RedactionRunStatus.failed,
+    )
+    failed = client.post(f"/api/v1/transcripts/{transcript.id}/copy-redacted")
+    assert_error(failed, status_code=409, code="redacted_transcript_unavailable", message="A current redacted transcript is not available yet")
+
+    client.post("/api/v1/auth/logout")
+    login(client, email="other-redacted-boundary@example.com", password="password-2")
+    forbidden = client.post(f"/api/v1/transcripts/{transcript.id}/copy-redacted")
+    assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
+
+
+def test_redacted_copy_keeps_existing_successful_output_when_no_dismissal_needs_reconstruction(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_redaction_run,
+):
+    team = make_team(name="Legacy redaction output team")
+    owner = make_user(email="owner-legacy-redaction@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        current_draft_text_encrypted="John Smith attended.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="John Smith attended.")
+    db_session.add(version)
+    db_session.commit()
+    make_redaction_run(
+        transcript=transcript,
+        transcript_version=version,
+        owner=owner,
+        redacted_text="[PHI-1] normalized output.",
+    )
+
+    login(client, email="owner-legacy-redaction@example.com", password="password-1")
+    response = client.post(f"/api/v1/transcripts/{transcript.id}/copy-redacted")
+    assert response.status_code == 200
+    assert response.json() == {"text": "[PHI-1] normalized output."}
+
+
+def test_workspace_does_not_expose_stale_detected_pii_as_dismissible(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_redaction_run,
+):
+    team = make_team(name="Stale detected PII workspace team")
+    owner = make_user(email="owner-stale-detected@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        current_draft_text_encrypted="Current synthetic transcript.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    stale_version = TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="Older synthetic transcript.")
+    db_session.add(stale_version)
+    db_session.commit()
+    make_redaction_run(
+        transcript=transcript,
+        transcript_version=stale_version,
+        owner=owner,
+        redacted_text="[PHI-1] synthetic transcript.",
+    )
+
+    login(client, email="owner-stale-detected@example.com", password="password-1")
+    response = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
+    assert response.status_code == 200
+    detected = response.json()["active_transcript_pii_entities"][0]
+    assert detected["source"] == "detected"
+    assert detected["id"] is None
+    assert detected["dismissed"] is False
+
+
+def test_workspace_detected_pii_rows_expose_distinct_exact_occurrence_offsets(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_redaction_run,
+):
+    team = make_team(name="Detected PII source offsets team")
+    owner = make_user(email="owner-detected-offsets@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        current_draft_text_encrypted="Alice met Alice.",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted="Alice met Alice.")
+    db_session.add(version)
+    db_session.commit()
+    make_redaction_run(
+        transcript=transcript,
+        transcript_version=version,
+        owner=owner,
+        redacted_text="[PHI-1] met [PHI-2].",
+        entities=[(1, "PERSON", "Alice"), (2, "PERSON", "Alice")],
+    )
+
+    login(client, email="owner-detected-offsets@example.com", password="password-1")
+    response = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript.id}")
+
+    assert response.status_code == 200
+    detected = response.json()["active_transcript_pii_entities"]
+    assert [(item["value"], item["start_index"], item["end_index"]) for item in detected] == [
+        ("Alice", 0, 5),
+        ("Alice", 10, 15),
+    ]
+    assert len({item["id"] for item in detected}) == 2
 
 
 def test_manual_pii_duplicate_lookup_accepts_legacy_sha256_hash(

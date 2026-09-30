@@ -78,10 +78,9 @@ from app.services.consultation_split_locks import lock_consultation_split_source
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
 from app.services.dictations import dictation_effective_text, get_post_consultation_dictation
 from app.services.redaction import (
-    combined_phi_index,
+    effective_redaction_text_and_phi_index,
     ensure_redaction_run_for_transcript_version,
     next_placeholder_index,
-    redaction_run_text,
     redact_transient_text,
     reidentify_text,
 )
@@ -3381,17 +3380,19 @@ def _redacted_generation_source_texts(
     transcript_version: TranscriptVersion,
     redaction_run,
     dictation_text: str,
-) -> tuple[str, str, list[dict[str, str | int]]]:
-    transcript_text = redaction_run_text(db, run=redaction_run) or ""
+) -> tuple[str, str, list[dict[str, str | int]], list[dict[str, str | int]]]:
+    effective_redaction = effective_redaction_text_and_phi_index(db, run=redaction_run)
+    transcript_text = effective_redaction.redacted_text
+    base_phi_index = effective_redaction.phi_index
     if not dictation_text.strip():
-        return transcript_text, "", []
+        return transcript_text, "", [], base_phi_index
     redacted_dictation_text, phi_index = _redact_dynamic_prompt_text(
         db,
         dictation_text,
         team_id=transcript_version.transcript.team_id,
         start_index=next_placeholder_index(redaction_run),
     )
-    return transcript_text.strip(), (redacted_dictation_text or "").strip(), phi_index
+    return transcript_text.strip(), (redacted_dictation_text or "").strip(), phi_index, base_phi_index
 
 
 def _manual_pii_entities_for_transcript(db: Session, *, transcript_id: UUID, owner_user_id: UUID) -> list[TranscriptManualPiiEntity]:
@@ -5306,7 +5307,7 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
         document=document,
         transcript=live_transcript,
     )
-    transcript_text, dictation_text, extra_phi_index = _redacted_generation_source_texts(
+    transcript_text, dictation_text, extra_phi_index, base_phi_index = _redacted_generation_source_texts(
         db,
         transcript_version=transcript_version,
         redaction_run=redaction_run,
@@ -5552,7 +5553,7 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
     except Exception:
         return _fail_generated_document_after_submit(db, document=document, config=config)
 
-    phi_index = combined_phi_index(db, redaction_run, extra_phi_index=list(extra_phi_index))
+    phi_index = [*base_phi_index, *extra_phi_index]
 
     try:
         if document.generator_type is GeneratedDocumentGeneratorType.template:

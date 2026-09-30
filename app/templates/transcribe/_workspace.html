@@ -757,7 +757,10 @@ data-latest-followup-updated-at="{{ latest_followup_document.updated_at if lates
 <span class="text-sm font-medium text-ink">Consultation sources</span>
 <p class="text-xs text-slate mt-1">Transcript, identified PII, and post-consultation dictation.</p>
 </div>
-<button type="button" class="btn-ghost-sm" data-copy-transcript>Copy transcript</button>
+<div class="transcript-copy-actions">
+<button type="button" class="btn-ghost-sm" data-copy-transcript title="Copies the original transcript, including PII">Copy transcript</button>
+<button type="button" class="btn-ghost-sm" data-copy-redacted-transcript title="Review the redacted text before sharing">Copy redacted transcript</button>
+</div>
 <div class="mobile-transcript-actions"><button type="button" class="mobile-transcript-details" data-mobile-pii-open aria-controls="mobile-pii-sheet" aria-expanded="false">Details</button><button type="button" class="mobile-transcript-details" data-mobile-dictation-open aria-expanded="false">Dictation</button></div>
 </div>
 </div>
@@ -811,7 +814,7 @@ No post-consultation dictation yet.
 <div class="mobile-sheet-heading"><span>Transcript details</span><button type="button" data-mobile-pii-close aria-label="Close transcript details"><i data-lucide="x" aria-hidden="true"></i></button></div>
 <div class="pii-sidebar__header">
 <div>
-<div class="pii-sidebar__kicker">PII</div>
+<div class="pii-sidebar__kicker">Transcript review</div>
 <h3 class="pii-sidebar__title">Review items</h3>
 </div>
 <button type="button" class="btn-ghost-sm" data-toggle-pii-visibility aria-pressed="false">Hide PII</button>
@@ -819,11 +822,13 @@ No post-consultation dictation yet.
 </div>
 <form class="pii-add-form" data-pii-add-form>
 <label class="sr-only" for="pii-add-type">PII type</label>
-<input id="pii-add-type" type="text" class="pii-add-input pii-add-input--type" placeholder="Type" data-pii-add-type>
+<input id="pii-add-type" type="text" class="pii-add-input pii-add-input--type" placeholder="Type" data-pii-add-type aria-describedby="pii-manual-help">
 <label class="sr-only" for="pii-add-value">PII value</label>
-<input id="pii-add-value" type="text" class="pii-add-input" placeholder="Add missed PII" data-pii-add-value>
-<button type="submit" class="pii-add-button" aria-label="Add PII">Add</button>
+<input id="pii-add-value" type="text" class="pii-add-input" placeholder="Add PII to protect" data-pii-add-value aria-describedby="pii-manual-help">
+<button type="submit" class="pii-add-button">Add PII</button>
 </form>
+<p id="pii-manual-help" class="pii-manual-help">Add manual PII to protect it in redacted copies and before AI processing.</p>
+<p class="pii-override-warning">Marking a detected item as a false positive means future redacted copies and AI requests may include its original text. A manual PII entry still redacts that value.</p>
 {% set redaction_status = active_transcript_redaction_status.status if active_transcript_redaction_status else 'not_run' %}
 {% set redaction_error_code = active_transcript_redaction_status.error_code if active_transcript_redaction_status else none %}
 <div class="pii-status{% if redaction_status == 'failed' %} pii-status--error{% endif %}" data-pii-status>
@@ -859,17 +864,20 @@ Clinical NLP has not run for this transcript yet.
 </thead>
 <tbody data-pii-table-body>
 {% for entity in active_transcript_pii_entities %}
-<tr>
-<td><span class="pii-type{% if entity.source == 'clinical' %} pii-type--clinical{% endif %}">{{ entity.entity_type|replace('_', ' ') }}</span></td>
+<tr{% if entity.source == 'detected' and entity.dismissed|default(false) %} data-pii-dismissed="true"{% endif %}>
+<td><span class="pii-type{% if entity.source == 'clinical' %} pii-type--clinical{% elif entity.source == 'manual' %} pii-type--manual{% endif %}">{{ entity.entity_type|replace('_', ' ') }}</span><span class="pii-source-label">{% if entity.source == 'manual' %}Manual{% elif entity.source == 'clinical' %}Clinical NLP{% else %}Detected{% endif %}</span></td>
 <td>
 <span class="pii-value" data-real-value="{{ entity.value if entity.value is defined else '' }}">{{ entity.value if entity.value is defined else '' }}</span>
 </td>
 <td class="pii-count-cell">
 <span>{{ entity.occurrence_count }}</span>
 {% if entity.source == 'manual' and entity.id %}
-<button type="button" class="pii-row-delete" data-pii-delete="{{ entity.id }}" aria-label="Remove manual PII">
-<i class="w-3.5 h-3.5" data-lucide="trash-2"></i>
+<button type="button" class="pii-row-delete" data-pii-delete="{{ entity.id }}" aria-label="Remove this manual PII entry">
+<i class="w-3.5 h-3.5" data-lucide="trash-2" aria-hidden="true"></i><span>Remove</span>
 </button>
+{% endif %}
+{% if entity.source == 'detected' and entity.id %}
+<button type="button" class="pii-row-override{% if entity.dismissed|default(false) %} pii-row-override--restore{% endif %}" data-pii-dismiss="{{ entity.id }}" data-pii-dismissed="{{ 'true' if entity.dismissed|default(false) else 'false' }}" aria-label="{% if entity.dismissed|default(false) %}Restore detected PII{% else %}Mark detected PII as a false positive{% endif %}">{% if entity.dismissed|default(false) %}Undo{% else %}Mark false positive{% endif %}</button>
 {% endif %}
 </td>
 </tr>

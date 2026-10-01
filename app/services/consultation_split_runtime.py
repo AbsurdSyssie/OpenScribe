@@ -780,11 +780,14 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
             db, work=work, usage=usage, outcome=AttemptOutcome.succeeded
         )
         now = utcnow()
-        # A split review needs at least two meaningful topics. A valid
-        # single-topic proposal follows the ordinary one-note path just like
-        # an empty proposal; retaining it as ``ready`` would incorrectly open
-        # the split workflow.
-        is_not_required = len(proposal["topics"]) < 2
+        # A split review needs at least two separate notes. Included and
+        # excluded findings remain useful proposal context, but do not create
+        # another note and therefore must not open split review on their own.
+        separate_note_count = sum(
+            topic["disposition"] == "separate_note"
+            for topic in proposal["topics"]
+        )
+        is_not_required = separate_note_count < 2
         work.analysis.status = (
             ConsultationSplitAnalysisStatus.not_required
             if is_not_required

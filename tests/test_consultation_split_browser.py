@@ -438,6 +438,66 @@ def test_browser_split_source_only_materializes_drafts_with_batch_bound_empty_ve
         context.close()
 
 
+def test_browser_dictation_save_generate_closes_only_after_split_intent_acceptance(
+    split_browser,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    monkeypatch,
+):
+    """Dictation closes before a successful split review can open, but stays open on rejection."""
+    monkeypatch.setenv("CONSULTATION_SPLITTING_ENABLED", "true")
+    context, _ = split_browser
+    owner, _ = _prepare_owner(
+        db_session,
+        make_team,
+        make_user,
+        make_llm_config,
+        make_llm_selection,
+        make_template,
+    )
+    accepted_id = _create_consultation(
+        db_session, owner, title="Accepted dictation request", source_only="dictation"
+    )
+    rejected_id = _create_consultation(
+        db_session, owner, title="Rejected dictation request", source_only="dictation"
+    )
+    page = context.new_page()
+    try:
+        _login(page, owner.email)
+        page.goto(f"/transcribe?transcript_id={accepted_id}")
+        page.locator("[data-dictation-cta]").click()
+        modal = page.locator("[data-dictation-modal]")
+        modal.wait_for(state="visible")
+        with page.expect_response(lambda response: "/consultation-split-intents" in response.url) as response_info:
+            modal.locator("[data-dictation-save-generate]").click()
+        assert response_info.value.status in {200, 202}
+        modal.wait_for(state="hidden")
+
+        page.goto(f"/transcribe?transcript_id={rejected_id}")
+        page.route(
+            "**/consultation-split-intents",
+            lambda route: route.fulfill(
+                status=400,
+                content_type="application/json",
+                body='{"detail":"Synthetic rejection."}',
+            ),
+        )
+        page.locator("[data-dictation-cta]").click()
+        modal = page.locator("[data-dictation-modal]")
+        modal.wait_for(state="visible")
+        with page.expect_response(lambda response: "/consultation-split-intents" in response.url) as response_info:
+            modal.locator("[data-dictation-save-generate]").click()
+        assert response_info.value.status == 400
+        assert modal.is_visible()
+    finally:
+        page.close()
+        context.close()
+
+
 def test_browser_split_partial_recovery_exposes_and_keeps_only_available_drafts(
     split_browser, db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch,
 ):

@@ -107,7 +107,7 @@ Follow-ups and Quick Actions:
 - subsequent segments append in order;
 - editing combined text makes it authoritative for later generation;
 - intentionally clearing edited combined text suppresses segment fallback;
-- Save & generate uses the selected template and the shared generation guard.
+- Save & generate uses the selected template and the shared generation guard; the modal closes after an accepted generation request and stays open when that request fails.
 
 ## File upload and microphone batch
 

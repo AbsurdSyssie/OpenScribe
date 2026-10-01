@@ -1,5 +1,15 @@
 # Discovered issues
 
+## SPLIT-PREFERENCE-BROWSER-CHECKBOX-CLICK — 2026-10-01
+
+- Discovery commit: `32eaf7caf2f6a26929195ee1d06e8f9b2dab97d7`.
+- Location: `tests/test_consultation_split_browser.py:252`, `test_browser_team_leader_split_preference_persists_across_workspace_navigation`; `app/static/css/components.css:208-209`, compact switch styling.
+- Exact excerpt: `split_toggle.check()` targets the 1px checkbox while `.switch-compact__track` occupies the visible switch area.
+- Observed problem: Playwright times out because the track intercepts pointer events. The test failed the same way on its own rerun; the other four browser tests passed.
+- Likely impact: this browser regression cannot verify preference persistence; the styled label may still respond to ordinary user clicks.
+- Not fixed during the note-split confirmation change because the preference control and its test are outside the affected flow.
+- Follow-up: test the accessible switch through its visible label or adjust the control's hit target, then rerun this browser regression.
+
 ## Stale Scribe stylesheet cache key assertion — 2026-09-24 (resolved 2026-09-29)
 
 - Discovery commit: `118ed37`.

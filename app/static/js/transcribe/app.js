@@ -11,7 +11,7 @@ import { csrfFetch } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
 import { createTemplateSuggestionController } from './templateSuggestions.js?v=20260830-template-suggestion-preference';
- import { createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration } from './splitReview.js?v=20260912-split-review-auto-edit';
+ import { createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration } from './splitReview.js?v=20261001-add-problem';
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,
@@ -3785,6 +3785,9 @@ let statusDetailsHideTimer = null;
              transcriptId: generationTranscriptId,
              templateId,
              confirmedBatchId: ['ready', 'completed_partial'].includes(latestSplitBatch?.status) ? latestSplitBatch.batch_id : null,
+             onAccepted: closeDictationModal ? () => {
+               if (transcriptId === generationTranscriptId) setDictationModalOpen(false);
+             } : null,
            });
          }
          noteGenerationCloseDictationAfterCurrentRequest = closeDictationModal;
@@ -3807,11 +3810,11 @@ let statusDetailsHideTimer = null;
             selectedNoteDocumentId = null;
             setTab('output');
             showFlash('Queued note generation.', 'success');
-            await fetchWorkspace();
-            scheduleWorkspaceRefreshBurst();
-            if (noteGenerationCloseDictationAfterCurrentRequest) {
+            if (noteGenerationCloseDictationAfterCurrentRequest && transcriptId === generationTranscriptId) {
               setDictationModalOpen(false);
             }
+            await fetchWorkspace();
+            scheduleWorkspaceRefreshBurst();
             return true;
           } finally {
             noteGenerationInFlight = null;

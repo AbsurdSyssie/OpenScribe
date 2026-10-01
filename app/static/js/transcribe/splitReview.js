@@ -262,11 +262,12 @@ export async function dispatchTemplateGeneration({
   transcriptId = null,
   templateId = null,
   confirmedBatchId = null,
+  onAccepted = null,
   ordinary = async () => false,
 } = {}) {
   if (capabilityEnabled && splitController) {
-    if (confirmedBatchId) return splitController.regenerateConfirmedBatch({ transcriptId, batchId: confirmedBatchId });
-    return splitController.start({ transcriptId, templateId });
+    if (confirmedBatchId) return splitController.regenerateConfirmedBatch({ transcriptId, batchId: confirmedBatchId, onAccepted });
+    return splitController.start({ transcriptId, templateId, onAccepted });
   }
   return ordinary();
 }
@@ -492,7 +493,20 @@ export function createSplitGenerateController({
       reviewController?.open?.();
     }
   };
-  const start = async ({ transcriptId: requestedTranscriptId = getTranscriptId(), templateId: requestedTemplateId = getTemplateId() } = {}) => {
+  const notifyAccepted = (candidate, onAccepted) => {
+    if (!current(candidate) || !same(getTranscriptId(), candidate.transcriptId) || typeof onAccepted !== 'function') return;
+    try {
+      onAccepted({ transcriptId: candidate.transcriptId });
+    } catch (_) {
+      // The request is already accepted. A caller's cosmetic follow-up must
+      // not change its durable operation state or retry semantics.
+    }
+  };
+  const start = async ({
+    transcriptId: requestedTranscriptId = getTranscriptId(),
+    templateId: requestedTemplateId = getTemplateId(),
+    onAccepted = null,
+  } = {}) => {
     if (!getCapabilityEnabled()) {
       setContinueAvailable(false);
       return false;
@@ -577,6 +591,7 @@ export function createSplitGenerateController({
       candidate.analysisId = payload?.analysis?.analysis_id || null;
       candidate.intentId = payload?.intent_id || null;
       candidate.pending = false;
+      notifyAccepted(candidate, onAccepted);
       applyWorkspaceState({ capabilityEnabled: true, transcriptId: candidate.transcriptId, analysis: payload?.analysis || null });
       return true;
     } catch (_) {
@@ -658,7 +673,11 @@ export function createSplitGenerateController({
       }
     }
   };
-  const regenerateConfirmedBatch = async ({ transcriptId: requestedTranscriptId = getTranscriptId(), batchId } = {}) => {
+  const regenerateConfirmedBatch = async ({
+    transcriptId: requestedTranscriptId = getTranscriptId(),
+    batchId,
+    onAccepted = null,
+  } = {}) => {
     const transcriptId = requestedTranscriptId;
     if (!getCapabilityEnabled() || !transcriptId || !batchId || operation?.pending) return false;
     const candidate = { token: ++generation, transcriptId, pending: true };
@@ -686,6 +705,7 @@ export function createSplitGenerateController({
         return false;
       }
       const result = await response.json();
+      notifyAccepted(candidate, onAccepted);
       onSplitBatchStarted({
         draft: getConfirmedDraft(),
         batchId: result?.batch_id || batchId,
@@ -725,6 +745,9 @@ export function normalizeSplitDraft(draft) {
   const topics = !malformed
     ? draft.topics.map((topic, index) => enforcePrimaryDisposition({
       topic_uuid: topic?.topic_uuid ?? null,
+      // Browser-only key for unsaved clinician additions. It is used only for
+      // DOM identity and is deliberately omitted from the replacement payload.
+      client_key: topic?.client_key ?? null,
       title: asString(topic?.title),
       order: Number.isInteger(topic?.order) ? topic.order : index,
       is_primary: Boolean(topic?.is_primary),
@@ -765,6 +788,21 @@ export function validateSplitDraft(draft) {
   if (primaries.length !== 1) return { valid: false, message: 'Choose exactly one primary topic.' };
   if (primaries[0].disposition !== 'separate_note') {
     return { valid: false, message: 'The primary topic must be a separate note.' };
+  }
+  return { valid: true, message: '' };
+}
+
+export function validateSplitDraftForConfirmation(draft) {
+  const validation = validateSplitDraft(draft);
+  if (!validation.valid) return validation;
+  const separateNoteCount = (draft?.topics || []).filter(
+    (topic) => topic?.disposition === 'separate_note',
+  ).length;
+  if (separateNoteCount < 2 || separateNoteCount > 6) {
+    return {
+      valid: false,
+      message: 'Add another separate note to create a note split.',
+    };
   }
   return { valid: true, message: '' };
 }
@@ -843,6 +881,7 @@ export function createSplitReviewController({
   problemCount = modal?.querySelector('[data-split-review-problem-count]'),
   saveButton = modal?.querySelector('[data-split-review-save]'),
   createButton = modal?.querySelector('[data-split-review-create]'),
+  addButton = modal?.querySelector('[data-split-review-add]'),
   continueButton = modal?.querySelector('[data-split-review-continue]'),
   confirmButton = modal?.querySelector('[data-split-review-confirm]'),
   closeButtons = modal ? [...modal.querySelectorAll('[data-split-review-close]')] : [],
@@ -874,6 +913,7 @@ export function createSplitReviewController({
   let latestBatch = null;
   let editPreparationKey = null;
   let editPreparation = null;
+  let nextClientTopicKey = 0;
   const createNotesButton = createButton || confirmButton;
 
   const setOpenState = (isOpen) => {
@@ -901,17 +941,33 @@ export function createSplitReviewController({
     closeButtons.forEach((button) => { button.disabled = saving; });
     if (modal) modal.setAttribute('aria-busy', String(saving));
     const validation = readOnly ? { valid: false } : validateSplitDraft(localDraft);
+    const confirmationValidation = readOnly ? { valid: false } : validateSplitDraftForConfirmation(localDraft);
     if (saveButton) saveButton.disabled = controlsDisabled || !dirty || !validation.valid;
+    if (addButton) {
+      const atTopicLimit = (localDraft?.topics?.length || 0) >= 6;
+      addButton.hidden = readOnly;
+      addButton.disabled = controlsDisabled || atTopicLimit;
+    }
     if (continueButton) {
       continueButton.hidden = !continueAvailable;
       continueButton.disabled = !continueAvailable || continuing;
     }
     if (createNotesButton) {
-      const confirmable = !readOnly && !dirty && validation.valid && Boolean(getConfirmIntentId());
+      const confirmable = !readOnly && !dirty && confirmationValidation.valid && Boolean(getConfirmIntentId());
       createNotesButton.hidden = !confirmable && !confirming;
       createNotesButton.disabled = !confirmable || confirming;
     }
-    if (!readOnly && !validation.valid && dirty) setStatus(validation.message, 'warning');
+    if (!readOnly && !validation.valid && dirty) {
+      setStatus(validation.message, 'warning');
+    } else if (!readOnly && !confirmationValidation.valid && !status?.textContent) {
+      setStatus(confirmationValidation.message, 'one-note-guidance');
+    } else if (
+      !readOnly
+      && confirmationValidation.valid
+      && status?.dataset.statusKind === 'one-note-guidance'
+    ) {
+      setStatus('');
+    }
   };
 
   const getPrimaryTopic = () => (localDraft?.topics || []).find((topic) => topic.is_primary);
@@ -920,7 +976,7 @@ export function createSplitReviewController({
     const topics = localDraft?.topics || [];
     const noteCount = topics.filter((topic) => topic.disposition === 'separate_note').length;
     if (problemCount) {
-      problemCount.textContent = `${topics.length} problem${topics.length === 1 ? '' : 's'} detected`;
+      problemCount.textContent = `${topics.length} problem${topics.length === 1 ? '' : 's'} in review`;
     }
     if (createNotesButton) {
       createNotesButton.textContent = `Create ${noteCount} note${noteCount === 1 ? '' : 's'}`;
@@ -970,6 +1026,7 @@ export function createSplitReviewController({
       const fieldset = document.createElement('fieldset');
       fieldset.className = 'split-review-topic';
       fieldset.dataset.topicUuid = asString(topic.topic_uuid);
+      fieldset.dataset.topicKey = asString(topic.client_key || topic.topic_uuid);
 
       if (topic.disposition === 'include_in_primary' || topic.disposition === 'exclude_from_notes') {
         const merged = topic.disposition === 'include_in_primary';
@@ -983,7 +1040,7 @@ export function createSplitReviewController({
         name.textContent = topic.title;
         const description = document.createElement('div');
         description.className = 'split-review-topic__description';
-        description.textContent = 'Detected problem';
+        description.textContent = topic.client_key ? 'Added problem' : 'Detected problem';
         heading.append(name, description);
         header.append(heading);
         fieldset.append(header);
@@ -1034,6 +1091,23 @@ export function createSplitReviewController({
       }
       fieldset.append(header);
 
+      if (!readOnly) {
+        const titleLabel = document.createElement('label');
+        titleLabel.className = 'field-label split-review-topic__title';
+        const titleText = document.createElement('span');
+        titleText.textContent = 'Problem title';
+        const titleInput = document.createElement('input');
+        titleInput.type = 'text';
+        titleInput.value = topic.title;
+        titleInput.maxLength = 255;
+        titleInput.required = true;
+        titleInput.dataset.splitReviewTitle = 'true';
+        titleInput.dataset.topicKey = asString(topic.client_key || topic.topic_uuid);
+        titleInput.setAttribute('aria-label', `Problem title for ${topic.title || 'new problem'}`);
+        titleLabel.append(titleText, titleInput);
+        fieldset.append(titleLabel);
+      }
+
       const templateLabel = document.createElement('label');
       templateLabel.className = 'field-label split-review-topic__template';
       const templateText = document.createElement('span');
@@ -1042,7 +1116,7 @@ export function createSplitReviewController({
       selectWrap.className = 'select-wrap';
       const templateSelect = document.createElement('select');
       templateSelect.dataset.splitReviewTemplate = 'true';
-      templateSelect.dataset.topicUuid = asString(topic.topic_uuid);
+      templateSelect.dataset.topicKey = asString(topic.client_key || topic.topic_uuid);
       templateSelect.setAttribute('aria-label', `Template for ${topic.title || 'problem'}`);
       topicTemplateOptions(asString(topic.template_id)).forEach((optionData) => {
         const option = document.createElement('option');
@@ -1055,27 +1129,44 @@ export function createSplitReviewController({
       templateLabel.append(templateText, selectWrap);
       fieldset.append(templateLabel);
 
-      if (!topic.is_primary) {
+      if (!topic.is_primary || topic.client_key) {
         const actions = document.createElement('div');
         actions.className = 'split-review-topic__actions';
 
-        const merge = document.createElement('button');
-        merge.type = 'button';
-        merge.className = 'split-review-topic__text-action';
-        merge.dataset.splitReviewMerge = '';
-        merge.textContent = 'Merge into primary';
+        if (!topic.is_primary) {
+          const merge = document.createElement('button');
+          merge.type = 'button';
+          merge.className = 'split-review-topic__text-action';
+          merge.dataset.splitReviewMerge = '';
+          merge.textContent = 'Merge into primary';
+          actions.append(merge);
 
-        const separator = document.createElement('span');
-        separator.setAttribute('aria-hidden', 'true');
-        separator.textContent = '·';
+          const separator = document.createElement('span');
+          separator.setAttribute('aria-hidden', 'true');
+          separator.textContent = '·';
+          actions.append(separator);
 
-        const skip = document.createElement('button');
-        skip.type = 'button';
-        skip.className = 'split-review-topic__text-action split-review-topic__text-action--danger';
-        skip.dataset.splitReviewSkip = '';
-        skip.textContent = 'Skip';
-
-        actions.append(merge, separator, skip);
+          const skip = document.createElement('button');
+          skip.type = 'button';
+          skip.className = 'split-review-topic__text-action split-review-topic__text-action--danger';
+          skip.dataset.splitReviewSkip = '';
+          skip.textContent = 'Skip';
+          actions.append(skip);
+        }
+        if (topic.client_key) {
+          if (actions.children.length) {
+            const separator = document.createElement('span');
+            separator.setAttribute('aria-hidden', 'true');
+            separator.textContent = '·';
+            actions.append(separator);
+          }
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.className = 'split-review-topic__text-action split-review-topic__text-action--danger';
+          remove.dataset.splitReviewRemove = '';
+          remove.textContent = 'Remove';
+          actions.append(remove);
+        }
         fieldset.append(actions);
       }
 
@@ -1085,7 +1176,27 @@ export function createSplitReviewController({
     updateControlState();
   };
 
-  const findTopic = (uuid) => localDraft?.topics?.find((topic) => asString(topic.topic_uuid) === asString(uuid));
+  const topicKey = (topic) => asString(topic?.client_key || topic?.topic_uuid);
+  const findTopic = (key) => localDraft?.topics?.find((topic) => topicKey(topic) === asString(key));
+
+  const addProblem = () => {
+    if (isReadOnly() || saving || confirming || (localDraft?.topics?.length || 0) >= 6) return false;
+    const topics = localDraft.topics;
+    const clientKey = `new-topic-${++nextClientTopicKey}`;
+    topics.push(enforcePrimaryDisposition({
+      topic_uuid: null,
+      client_key: clientKey,
+      title: '',
+      is_primary: topics.length === 0,
+      disposition: 'separate_note',
+      template_id: null,
+    }));
+    dirty = true;
+    render();
+    const titleInput = topicList?.querySelector(`[data-split-review-title][data-topic-key="${clientKey}"]`);
+    safeFocus(titleInput);
+    return true;
+  };
 
   const markDirty = () => {
     if (isReadOnly() || saving) return;
@@ -1248,7 +1359,15 @@ export function createSplitReviewController({
       expectedUpdatedAt = saved?.updated_at || null;
       dirty = false;
       render();
-      setStatus('Saved.', 'success');
+      const confirmationValidation = validateSplitDraftForConfirmation(localDraft);
+      setStatus(
+        confirmationValidation.valid
+          ? 'Saved.'
+          : (continueAvailable
+            ? 'Saved. Continue as one note uses the template selected when you started Create.'
+            : confirmationValidation.message),
+        confirmationValidation.valid ? 'success' : 'one-note-guidance',
+      );
       showMessage('Note split saved.', 'success');
       return true;
     } catch (_) {
@@ -1280,7 +1399,7 @@ export function createSplitReviewController({
     if (confirming || saving || dirty || isReadOnly()) return false;
     const activeTranscriptId = transcriptId || getTranscriptId();
     const intentId = getConfirmIntentId();
-    const validation = validateSplitDraft(localDraft);
+    const validation = validateSplitDraftForConfirmation(localDraft);
     if (!activeTranscriptId || !intentId || !expectedUpdatedAt || !validation.valid) return false;
     const draftId = localDraft.draft_id;
     const confirmationTranscriptId = activeTranscriptId;
@@ -1357,9 +1476,9 @@ export function createSplitReviewController({
   topicList?.addEventListener('click', (event) => {
     if (saving) return;
     const target = event.target instanceof Element ? event.target : null;
-    const fieldset = target?.closest('[data-topic-uuid]');
+    const fieldset = target?.closest('[data-topic-key]');
     if (!fieldset) return;
-    const topic = findTopic(fieldset.dataset.topicUuid);
+    const topic = findTopic(fieldset.dataset.topicKey);
     if (!topic) return;
 
     if (target.closest('[data-split-review-make-primary]')) {
@@ -1381,19 +1500,33 @@ export function createSplitReviewController({
       topic.disposition = 'separate_note';
       render();
       markDirty();
+    } else if (target.closest('[data-split-review-remove]') && topic.client_key) {
+      localDraft.topics = localDraft.topics.filter((item) => item !== topic);
+      if (localDraft.topics.length && !localDraft.topics.some((item) => item.is_primary)) {
+        localDraft.topics[0].is_primary = true;
+        localDraft.topics[0].disposition = 'separate_note';
+      }
+      render();
+      markDirty();
     }
   });
-  topicList?.addEventListener('change', (event) => {
+  const editTopic = (event) => {
     if (saving) return;
     const input = event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement ? event.target : null;
     if (!input) return;
-    const topic = findTopic(input.dataset.topicUuid);
+    const topic = findTopic(input.dataset.topicKey);
     if (!topic) return;
     if (input.hasAttribute('data-split-review-template')) {
       topic.template_id = input.value || null;
       markDirty();
+    } else if (input.hasAttribute('data-split-review-title')) {
+      topic.title = input.value;
+      markDirty();
     }
-  });
+  };
+  topicList?.addEventListener('input', editTopic);
+  topicList?.addEventListener('change', editTopic);
+  addButton?.addEventListener('click', () => { addProblem(); });
   saveButton?.addEventListener('click', () => { void save(); });
   continueButton?.addEventListener('click', () => { void continueOneNote(); });
   createNotesButton?.addEventListener('click', () => { void confirm(); });
@@ -1422,11 +1555,17 @@ export function createSplitReviewController({
     close,
     open,
     render,
+    addProblem,
     save,
     continueAsOneNote: continueOneNote,
     confirm,
     setContinueAvailable: (available) => {
       continueAvailable = Boolean(available);
+      const validation = validateSplitDraft(localDraft);
+      const confirmationValidation = validateSplitDraftForConfirmation(localDraft);
+      if (continueAvailable && validation.valid && !confirmationValidation.valid) {
+        setStatus('Choose at least two separate notes to create a note split. Continue as one note uses the template selected when you started Create.', 'one-note-guidance');
+      }
       updateControlState();
     },
     isDirty: () => dirty,

@@ -1170,6 +1170,17 @@ transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.1
   font-size: 0.73rem;
 }
 
+.split-review-topic__title {
+  display: grid;
+  gap: 0.35rem;
+
+  margin-top: 0.65rem;
+}
+
+.split-review-topic__title input {
+  width: 100%;
+}
+
 .split-review-topic.is-primary {
   padding-left: 0.75rem;
 }

@@ -1094,6 +1094,68 @@ def test_draft_seed_drops_deleted_template_and_put_requires_template_for_new_top
     assert no_template.value.code == "validation_error"
 
 
+def test_draft_replace_assigns_uuid_and_encrypts_clinician_added_topic(
+    db_session, make_user, make_template, monkeypatch,
+):
+    owner = make_user(email="split-draft-clinician-add@example.com")
+    transcript = _transcript(db_session, owner)
+    template = make_template(scope=TemplateScope.user, owner=owner, actor=owner)
+    current_version = PromptTemplateVersion(
+        template_id=template.id,
+        version_no=2,
+        mode=TemplateMode.freeform,
+        prompt_text="Current synthetic template",
+        created_by_user_id=owner.id,
+    )
+    db_session.add(current_version)
+    db_session.commit()
+    _, first_uuid, _ = _ready_two_topic_analysis(db_session, owner, transcript)
+    _enable_split(db_session, owner, monkeypatch)
+    monkeypatch.setattr("app.services.consultation_split_drafts._source_matches", lambda *_args: True)
+    initialized = initialize_or_reuse_split_draft(db_session, owner, transcript_id=transcript.id)
+
+    saved = replace_split_draft(
+        db_session,
+        owner,
+        transcript_id=transcript.id,
+        payload=ConsultationSplitDraftReplace(
+            expected_updated_at=initialized.updated_at,
+            topics=[
+                ConsultationSplitDraftTopicReplace(
+                    topic_uuid=first_uuid,
+                    title="First synthetic topic",
+                    is_primary=True,
+                    disposition="separate_note",
+                    template_id=None,
+                ),
+                ConsultationSplitDraftTopicReplace(
+                    title="Clinician-added synthetic problem",
+                    is_primary=False,
+                    disposition="separate_note",
+                    template_id=template.id,
+                ),
+            ],
+        ),
+    )
+
+    added = saved.topics[1]
+    stored = db_session.scalar(
+        select(ConsultationSplitDraftTopic).where(
+            ConsultationSplitDraftTopic.draft_id == saved.draft_id,
+            ConsultationSplitDraftTopic.topic_uuid == added.topic_uuid,
+        )
+    )
+    assert added.topic_uuid not in {first_uuid}
+    assert added.title == "Clinician-added synthetic problem"
+    assert added.template_id == template.id
+    assert added.template_version_id == current_version.id
+    assert stored is not None
+    assert stored.topic_order == 1
+    assert stored.template_version_id == current_version.id
+    assert is_encrypted_envelope(stored.title_encrypted)
+    assert "Clinician-added synthetic problem" not in stored.title_encrypted
+
+
 def test_draft_replace_rejects_foreign_uuid_and_uses_latest_accessible_template(db_session, make_user, make_template, monkeypatch):
     owner = make_user(email="split-draft-template-current@example.com")
     transcript = _transcript(db_session, owner)

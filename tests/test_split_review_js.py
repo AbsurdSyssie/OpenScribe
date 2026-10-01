@@ -21,16 +21,17 @@ def test_split_review_workspace_accessibility_hooks_and_cachebusters():
     assert 'Review note split' in workspace
     assert 'Review later' in workspace
     assert 'data-split-review-problem-count' in workspace
+    assert 'data-split-review-add' in workspace
     assert 'data-split-review-create' in workspace
-    assert 'splitReview.js?v=20260912-split-review-auto-edit' in app_js
+    assert 'splitReview.js?v=20261001-add-problem' in app_js
     assert 'splitReviewController?.applyWorkspaceState' in app_js
-    assert 'app.js?v=20260930-detected-pii-override' in shell
-    assert 'transcribe.css?v=20260930-detected-pii-override' in head
+    assert 'app.js?v=20261001-dictation-generation-close' in shell
+    assert 'transcribe.css?v=20261001-add-problem' in head
     assert 'data-split-continue-one-note hidden' in workspace
     assert 'data-split-review-confirm' not in workspace
     assert 'data-split-review-continue' not in workspace
     controller = (ROOT / "app/static/js/transcribe/splitReview.js").read_text()
-    assert 'data-split-review-title' not in controller
+    assert 'data-split-review-title' in controller
     assert 'data-split-review-primary' not in controller
     assert 'data-split-review-disposition' not in controller
     assert 'data-split-retry-missing hidden' in workspace
@@ -43,7 +44,7 @@ def test_split_review_serialization_preserves_uuid_and_primary_rule(tmp_path):
     module_uri = (ROOT / "app/static/js/transcribe/splitReview.js").as_uri()
     runner.write_text(
         f"""
-const {{ normalizeSplitDraft, serializeSplitDraft, validateSplitDraft }} = await import('{module_uri}');
+const {{ normalizeSplitDraft, serializeSplitDraft, validateSplitDraft, validateSplitDraftForConfirmation }} = await import('{module_uri}');
 const uuid = '00000000-0000-0000-0000-000000000001';
 const draft = normalizeSplitDraft({{
   draft_id: 'draft-1', updated_at: '2026-01-01T00:00:00Z', status: 'active',
@@ -63,6 +64,18 @@ const missingTemplate = normalizeSplitDraft({{
 const missingTemplateValidation = validateSplitDraft(missingTemplate);
 if (missingTemplateValidation.valid || missingTemplateValidation.message !== 'Choose a template for each separate note.') {{
   throw new Error('a separate note without a template was confirmable');
+}}
+const oneNote = normalizeSplitDraft({{
+  draft_id: 'one-note', updated_at: '2026-01-01T00:00:00Z', status: 'active',
+  topics: [
+    {{ topic_uuid: uuid, title: 'Primary', order: 0, is_primary: true, disposition: 'separate_note', template_id: 'template-1' }},
+    {{ topic_uuid: '00000000-0000-0000-0000-000000000002', title: 'Included finding', order: 1, is_primary: false, disposition: 'include_in_primary', template_id: null }},
+  ],
+}});
+if (!validateSplitDraft(oneNote).valid) throw new Error('a valid one-note draft was no longer saveable');
+const oneNoteConfirmation = validateSplitDraftForConfirmation(oneNote);
+if (oneNoteConfirmation.valid || oneNoteConfirmation.message !== 'Add another separate note to create a note split.') {{
+  throw new Error('a one-note draft was confirmable');
 }}
 const malformed = normalizeSplitDraft({{ draft_id: 'too-many', status: 'active', topics: Array.from({{ length: 7 }}, (_, index) => ({{ topic_uuid: `topic-${{index}}`, title: `Topic ${{index}}` }})) }});
 if (!malformed.malformed || malformed.status !== 'unavailable' || validateSplitDraft(malformed).valid) throw new Error('malformed draft was editable');
@@ -486,6 +499,71 @@ if (calls !== 2 || reviewStarts !== 0) throw new Error('main Regenerate reopened
     subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
 
 
+def test_split_generation_notifies_dictation_only_after_accepted_request(tmp_path):
+    runner = tmp_path / "split-dictation-accepted-runner.mjs"
+    module_uri = (ROOT / "app/static/js/transcribe/splitReview.js").as_uri()
+    runner.write_text(
+        f"""
+const {{ createSplitGenerateController, dispatchTemplateGeneration }} = await import('{module_uri}');
+const accepted = [];
+const order = [];
+const intentController = createSplitGenerateController({{
+  getCapabilityEnabled: () => true, getTranscriptId: () => 'tx-1', getTemplateId: () => 'template-1',
+  createKey: () => 'intent-key', saveSources: async () => {{}},
+  fetcher: async (url) => url.includes('consultation-split-draft')
+    ? ({{ ok: true, json: async () => ({{ draft_id: 'draft-1', analysis_id: 'analysis-1', status: 'active', topics: [] }}) }})
+    : ({{ ok: true, json: async () => ({{ intent_id: 'intent-1', analysis: {{ analysis_id: 'analysis-1', status: 'ready' }} }}) }}),
+  refreshWorkspace: async () => ({{
+    consultation_split_draft: {{ draft_id: 'draft-1', analysis_id: 'analysis-1', status: 'active', topics: [] }},
+    available_templates: [],
+  }}),
+  reviewController: {{ applyWorkspaceState: () => order.push('review-applied'), open: () => order.push('review-opened') }},
+}});
+await dispatchTemplateGeneration({{
+  capabilityEnabled: true, splitController: intentController, transcriptId: 'tx-1', templateId: 'template-1',
+  onAccepted: () => {{ accepted.push('intent'); order.push('intent-accepted'); }},
+}});
+for (let turn = 0; turn < 5 && !order.includes('review-applied'); turn += 1) await Promise.resolve();
+if (accepted.join() !== 'intent' || order[0] !== 'intent-accepted' || !order.includes('review-applied')) {{
+  throw new Error('accepted intent did not notify before split review state was applied');
+}}
+const rejectedController = createSplitGenerateController({{
+  getCapabilityEnabled: () => true, getTranscriptId: () => 'tx-1', getTemplateId: () => 'template-1',
+  createKey: () => 'rejected-key', saveSources: async () => {{}},
+  fetcher: async () => ({{ ok: false, status: 400, json: async () => ({{}}) }}),
+}});
+await dispatchTemplateGeneration({{
+  capabilityEnabled: true, splitController: rejectedController, transcriptId: 'tx-1', templateId: 'template-1',
+  onAccepted: () => accepted.push('rejected-intent'),
+}});
+if (accepted.length !== 1) throw new Error('rejected intent notified dictation as accepted');
+const regenerationOrder = [];
+const regenerationController = createSplitGenerateController({{
+  getCapabilityEnabled: () => true, getTranscriptId: () => 'tx-1', createKey: () => 'batch-key',
+  fetcher: async () => ({{ ok: true, json: async () => ({{ batch_id: 'batch-2' }}) }}),
+  refreshWorkspace: async () => {{ regenerationOrder.push('refresh'); return null; }},
+}});
+await dispatchTemplateGeneration({{
+  capabilityEnabled: true, splitController: regenerationController, transcriptId: 'tx-1', templateId: 'template-1', confirmedBatchId: 'batch-1',
+  onAccepted: () => {{ accepted.push('regeneration'); regenerationOrder.push('accepted'); }},
+}});
+if (accepted.join() !== 'intent,regeneration' || regenerationOrder.join() !== 'accepted,refresh') {{
+  throw new Error('accepted batch regeneration did not notify before workspace refresh');
+}}
+const rejectedRegenerationController = createSplitGenerateController({{
+  getCapabilityEnabled: () => true, getTranscriptId: () => 'tx-1', createKey: () => 'failed-batch-key',
+  fetcher: async () => ({{ ok: false, status: 409, json: async () => ({{}}) }}),
+}});
+await dispatchTemplateGeneration({{
+  capabilityEnabled: true, splitController: rejectedRegenerationController, transcriptId: 'tx-1', templateId: 'template-1', confirmedBatchId: 'batch-1',
+  onAccepted: () => accepted.push('rejected-regeneration'),
+}});
+if (accepted.join() !== 'intent,regeneration') throw new Error('rejected batch regeneration notified dictation as accepted');
+"""
+    )
+    subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
+
+
 def test_split_review_continue_control_requires_current_browser_intent(tmp_path):
     runner = tmp_path / "split-review-continue-visibility-runner.mjs"
     module_uri = (ROOT / "app/static/js/transcribe/splitReview.js").as_uri()
@@ -729,14 +807,26 @@ const status = new FakeElement('p');
 const problemCount = new FakeElement('div');
 const saveButton = new FakeElement('button');
 const createButton = new FakeElement('button');
+const addButton = new FakeElement('button');
+const continueButton = new FakeElement('button');
 const closeButton = new FakeElement('button');
 const calls = []; let refreshPayload = null;
 const fetcher = async (_url, options) => {{ calls.push(JSON.parse(options.body)); return {{ status: 200, ok: true, json: async () => refreshPayload || {{ draft_id: 'draft-1', status: 'active', updated_at: 'saved', topics: [] }} }}; }};
-const controller = createSplitReviewController({{ trigger, modal, topicList, status, problemCount, saveButton, createButton, closeButtons: [closeButton], fetcher, getTranscriptId: () => 'tx-1', refreshWorkspace: async () => refreshPayload }});
+let continuedOneNote = 0;
+const controller = createSplitReviewController({{ trigger, modal, topicList, status, problemCount, saveButton, createButton, addButton, continueButton, closeButtons: [closeButton], fetcher, getTranscriptId: () => 'tx-1', getConfirmIntentId: () => 'intent-1', continueAsOneNote: async () => {{ continuedOneNote += 1; return true; }}, refreshWorkspace: async () => refreshPayload }});
 const base = {{ draft_id: 'draft-1', status: 'active', updated_at: 'v1', topics: [
   {{ topic_uuid: 'topic-1', title: 'Main problem', order: 0, is_primary: true, disposition: 'separate_note', template_id: 'tpl-1' }},
   {{ topic_uuid: 'topic-2', title: 'Other problem', order: 1, is_primary: false, disposition: 'exclude_from_notes', template_id: 'tpl-1' }}
 ] }};
+controller.applyWorkspaceState({{ draft: base, availableTemplates: [{{ id: 'tpl-1', name: 'General', latest_version: {{ mode: 'freeform' }} }}], nextTranscriptId: 'tx-1' }});
+if (!createButton.hidden || !createButton.disabled || !status.textContent.includes('Add another separate note')) throw new Error('one-note draft exposed invalid split confirmation');
+controller.setContinueAvailable(true);
+if (continueButton.hidden || continueButton.disabled || !status.textContent.includes('template selected when you started Create')) throw new Error('one-note continuation was not explained with its frozen template');
+continueButton.click(); await Promise.resolve();
+if (continuedOneNote !== 1) throw new Error('one-note continuation was unavailable for the browser intent');
+const twoNotes = {{ ...base, topics: base.topics.map((topic) => ({{ ...topic, disposition: 'separate_note' }})) }};
+controller.applyWorkspaceState({{ draft: twoNotes, availableTemplates: [{{ id: 'tpl-1', name: 'General', latest_version: {{ mode: 'freeform' }} }}], nextTranscriptId: 'tx-1' }});
+if (createButton.hidden || createButton.disabled || status.textContent.includes('Add another separate note') || status.textContent.includes('Continue as one note')) throw new Error('one-note guidance remained after restoring a second note');
 controller.applyWorkspaceState({{ draft: base, availableTemplates: [{{ id: 'tpl-1', name: 'General', latest_version: {{ mode: 'freeform' }} }}], nextTranscriptId: 'tx-1' }});
 if (trigger.hidden || trigger.getAttribute('aria-expanded') !== 'false') throw new Error('trigger state');
 trigger.click();
@@ -749,7 +839,7 @@ topicList.querySelectorAll('fieldset')[0].querySelector('[data-split-review-merg
 const template = topicList.querySelector('select[data-split-review-template]'); template.value = 'tpl-1'; template.fire('change');
 const serialized = controller.serialize();
 if (serialized.topics[0].topic_uuid !== 'topic-1' || serialized.topics[0].disposition !== 'include_in_primary' || serialized.topics[1].is_primary !== true || serialized.topics[1].disposition !== 'separate_note') throw new Error('edit serialization');
-if (problemCount.textContent !== '2 problems detected' || createButton.textContent !== 'Create 1 note') throw new Error('split review counts');
+if (problemCount.textContent !== '2 problems in review' || createButton.textContent !== 'Create 1 note') throw new Error('split review counts');
 closeButton.click();
 if (!modal.hidden || trigger.getAttribute('aria-expanded') !== 'false') throw new Error('close state');
 trigger.click();
@@ -843,6 +933,61 @@ const firstConfirm = confirmController.confirm(); const secondConfirm = confirmC
 if (confirmCalls !== 1) throw new Error('confirm was not single-flight');
 activeConfirmTranscript = 'tx-other'; resolveConfirm({{ status: 202, ok: true, json: async () => ({{ idempotency_replayed: false }}) }});
 if (await firstConfirm || await secondConfirm || confirmController.getDraft().status !== 'active') throw new Error('stale transcript confirm response changed draft');
+const savedGuidanceTopicList = new FakeElement('div');
+const savedGuidanceStatus = new FakeElement('p');
+const savedGuidanceDraft = {{ ...base, draft_id: 'saved-guidance', updated_at: 'saved-guidance-v1' }};
+const savedGuidanceController = createSplitReviewController({{
+  trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: savedGuidanceTopicList,
+  status: savedGuidanceStatus, saveButton: new FakeElement('button'), closeButtons: [], getTranscriptId: () => 'tx-1',
+  fetcher: async () => ({{ status: 200, ok: true, json: async () => savedGuidanceDraft }}),
+}});
+savedGuidanceController.applyWorkspaceState({{ draft: savedGuidanceDraft, nextTranscriptId: 'tx-1' }});
+savedGuidanceController.open();
+const savedGuidanceTemplate = savedGuidanceTopicList.querySelector('select[data-split-review-template]');
+savedGuidanceTemplate.value = 'tpl-2'; savedGuidanceTemplate.fire('change');
+await savedGuidanceController.save();
+if (savedGuidanceStatus.dataset.statusKind !== 'one-note-guidance') throw new Error('saved one-note draft lost its dedicated guidance state');
+savedGuidanceController.applyWorkspaceState({{ draft: {{ ...savedGuidanceDraft, topics: savedGuidanceDraft.topics.map((topic) => ({{ ...topic, disposition: 'separate_note' }})) }}, nextTranscriptId: 'tx-1' }});
+if (savedGuidanceStatus.textContent.includes('Add another separate note') || savedGuidanceStatus.textContent.includes('Continue as one note')) throw new Error('saved one-note guidance remained after restoring a second note');
+const addedTopicList = new FakeElement('div');
+const addedAddButton = new FakeElement('button');
+const addedSaveButton = new FakeElement('button');
+const addedCreateButton = new FakeElement('button');
+const addedCalls = [];
+const addedBase = {{ ...base, draft_id: 'clinician-additions', updated_at: 'add-v1', topics: [
+  {{ ...base.topics[0] }},
+  {{ ...base.topics[1], disposition: 'separate_note', template_id: 'tpl-1' }},
+  {{ topic_uuid: 'topic-3', title: 'Third', order: 2, is_primary: false, disposition: 'separate_note', template_id: 'tpl-1' }},
+  {{ topic_uuid: 'topic-4', title: 'Fourth', order: 3, is_primary: false, disposition: 'separate_note', template_id: 'tpl-1' }},
+] }};
+const addedSaved = {{ ...addedBase, updated_at: 'add-v2', topics: [...addedBase.topics, {{ topic_uuid: 'server-added-1', title: 'Added one', order: 4, is_primary: false, disposition: 'separate_note', template_id: 'tpl-1' }}, {{ topic_uuid: 'server-added-2', title: 'Added two', order: 5, is_primary: false, disposition: 'separate_note', template_id: 'tpl-1' }}] }};
+const addedController = createSplitReviewController({{
+  trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: addedTopicList,
+  status: new FakeElement('p'), addButton: addedAddButton, saveButton: addedSaveButton, createButton: addedCreateButton,
+  closeButtons: [], getTranscriptId: () => 'tx-1', getConfirmIntentId: () => 'intent-added',
+  fetcher: async (_url, options) => {{ addedCalls.push(JSON.parse(options.body)); return {{ status: 200, ok: true, json: async () => addedSaved }}; }},
+}});
+addedController.applyWorkspaceState({{ draft: addedBase, availableTemplates: [{{ id: 'tpl-1', name: 'General', latest_version: {{ mode: 'freeform' }} }}], nextTranscriptId: 'tx-1' }});
+addedController.open(); addedAddButton.click(); addedAddButton.click();
+if (addedController.getDraft().topics.length !== 6 || !addedAddButton.disabled) throw new Error('add problem did not enforce the six-topic limit');
+const addedTitles = addedTopicList.querySelectorAll('input[data-split-review-title]');
+const addedTemplates = addedTopicList.querySelectorAll('select[data-split-review-template]');
+addedTitles[4].value = 'Added one'; addedTitles[4].fire('input');
+addedTemplates[4].value = 'tpl-1'; addedTemplates[4].fire('change');
+addedTitles[5].value = 'Added two'; addedTitles[5].fire('input');
+addedTemplates[5].value = 'tpl-1'; addedTemplates[5].fire('change');
+if (!addedCreateButton.hidden || !addedCreateButton.disabled) throw new Error('unsaved clinician additions allowed confirmation');
+await addedController.save();
+if (addedCalls.length !== 1 || addedCalls[0].topics[4].topic_uuid || addedCalls[0].topics[5].topic_uuid) throw new Error('new topics leaked browser identities into PUT');
+if (addedController.getDraft().topics[4].topic_uuid !== 'server-added-1' || addedController.getDraft().topics[5].topic_uuid !== 'server-added-2') throw new Error('saved added topics did not use server UUIDs');
+if (addedCreateButton.hidden || addedCreateButton.disabled) throw new Error('saved valid additions did not enable confirmation');
+const savedTitle = addedTopicList.querySelectorAll('input[data-split-review-title]')[4]; savedTitle.value = 'Corrected added problem'; savedTitle.fire('input');
+if (addedController.getDraft().topics[4].title !== 'Corrected added problem') throw new Error('saved added title was not editable');
+const unsavedTopicList = new FakeElement('div'); const unsavedAddButton = new FakeElement('button');
+const unsavedController = createSplitReviewController({{ trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: unsavedTopicList, addButton: unsavedAddButton, saveButton: new FakeElement('button'), closeButtons: [], getTranscriptId: () => 'tx-1' }});
+unsavedController.applyWorkspaceState({{ draft: {{ ...addedBase, topics: addedBase.topics.slice(0, 4) }}, nextTranscriptId: 'tx-1' }}); unsavedController.open(); unsavedAddButton.click();
+unsavedTopicList.querySelector('[data-split-review-remove]').click();
+if (unsavedController.getDraft().topics.length !== 4 || !unsavedController.isDirty()) throw new Error('unsaved clinician addition was not removable');
 """
     )
     subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})

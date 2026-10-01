@@ -101,6 +101,18 @@ def _provider_success(text, usage=None):
                 {
                     "topics": [
                         {"title": "Primary", "is_primary": True, "disposition": "separate_note", "template_id": None},
+                        {"title": "Related finding", "is_primary": False, "disposition": "include_in_primary", "template_id": None},
+                    ]
+                }
+            ),
+            "not_required",
+        ),
+        (
+            json.dumps(
+                {
+                    "topics": [
+                        {"title": "Primary", "is_primary": True, "disposition": "separate_note", "template_id": None},
+                        {"title": "Excluded finding", "is_primary": False, "disposition": "exclude_from_notes", "template_id": None},
                     ]
                 }
             ),

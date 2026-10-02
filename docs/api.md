@@ -358,6 +358,8 @@ Full-user owner-scoped routes include:
 - `POST /api/v1/transcripts/{transcript_id}/finalize-live-capture`
 - `POST /api/v1/transcripts/{transcript_id}/audio-file`
 - `POST /api/v1/transcripts/{transcript_id}/retry-audio-file`
+- `POST /api/v1/transcripts/{transcript_id}/retry-audio`
+- `POST /api/v1/transcripts/{transcript_id}/ingestion-jobs/{job_id}/retry-audio`
 - `GET /api/v1/transcribe/workspace`
 - `GET /api/v1/transcribe/workspace/stream`
 - `POST /api/v1/transcribe/stt-health/recheck`
@@ -424,9 +426,11 @@ Live defaults:
 - one hour aggregate duration per rolling hour;
 - measured chunk maximum around 30 seconds.
 
-The server measures/probes audio rather than trusting declared duration for enforcement/accounting. Accepted jobs snapshot STT execution metadata and create task-dispatch/quota metadata transactionally.
+The server measures/probes audio rather than trusting declared duration for enforcement/accounting. Accepted jobs snapshot STT execution metadata and create task-dispatch/quota metadata transactionally. Whole-file and live-chunk uploads accept an optional UUID `Idempotency-Key` header. Repeating the exact accepted submission with that key returns its original `202` job response. Reusing a key for a different ingestion kind, live sequence, or byte length returns `409 idempotency_conflict`.
 
-Whole-file source audio required for asynchronous processing/retry is stored under a bounded Vault reference, not a new PostgreSQL audio blob. Its 24-hour expiry starts at the original Vault write and is preserved across retries. Successful processing and transcript deletion clear or durably queue cleanup sooner. At or after the deadline, transcript detail returns `latest_ingestion_retry_expired=true`, `latest_ingestion_retry_available=false`, and retry requires a fresh upload without exposing storage details.
+Source audio required for asynchronous processing/retry is stored under a bounded Vault reference, not a new PostgreSQL audio blob. Its 24-hour expiry starts at the original Vault write and is preserved across automatic and manual retries. Successful processing and transcript deletion clear or durably queue cleanup sooner. At or after the deadline, transcript detail returns `latest_ingestion_retry_expired=true`, `latest_ingestion_retry_available=false`, and retry requires a fresh upload without exposing storage details. Retry requests return `409 ingestion_retry_expired` when that deadline has passed and `409 ingestion_retry_unavailable` when no retained failed source can be retried.
+
+Provider timeout/connection failures and provider HTTP 429/5xx failures receive two durable automatic retries after the initial attempt, scheduled after five then ten seconds. Owner `retry-audio` retries the earliest retained failed live gap or failed file; the job-specific route retries that retained failed job. A live retry retains its original job and sequence number.
 
 Workers normalize to 16 kHz mono PCM WAV, resolve the snapshotted credential, mark the provider attempt submitted only at dispatch, call the adapter under configured timeouts, encrypt result text, settle usage, and reconcile transcript/job state.
 

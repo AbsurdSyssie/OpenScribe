@@ -76,8 +76,13 @@ class TranscriptDetail(TranscriptListItem):
     latest_ingestion_job_status: TranscriptIngestionJobStatus | None = None
     latest_ingestion_error_code: str | None = None
     latest_ingestion_error_message: str | None = None
+    latest_ingestion_automatic_retry_count: int = 0
+    latest_ingestion_next_retry_at: datetime | None = None
     latest_ingestion_retry_available: bool = False
     latest_ingestion_retry_expired: bool = False
+    latest_ingestion_retry_job_id: UUID | None = None
+    latest_ingestion_retry_automatic_count: int | None = None
+    latest_ingestion_retry_next_at: datetime | None = None
 
 
 class StructuredWorkingNotePayload(BaseModel):
@@ -163,6 +168,9 @@ class TranscriptIngestionJobDetail(BaseModel):
     chunk_sequence_no: int | None
     source_filename: str
     status: TranscriptIngestionJobStatus
+    active_attempt_number: int
+    automatic_retry_count: int
+    next_retry_at: datetime | None
     created_at: datetime
     updated_at: datetime
 

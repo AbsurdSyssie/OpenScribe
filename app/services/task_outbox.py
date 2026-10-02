@@ -85,7 +85,7 @@ class CeleryTaskDispatchPublisher:
             return
         if dispatch.dispatch_kind is TaskDispatchKind.ingestion:
             process_transcript_ingestion_job_task.apply_async(
-                kwargs={"job_id": source_id},
+                kwargs={"job_id": source_id, "dispatch_sequence": dispatch.dispatch_sequence},
                 task_id=task_id,
             )
             return
@@ -124,8 +124,8 @@ def _expected_source_kind(dispatch_kind: TaskDispatchKind) -> TaskDispatchSource
     raise ValueError("unsupported task dispatch kind")
 
 
-def _deterministic_task_id(dispatch_kind: TaskDispatchKind, source_kind: TaskDispatchSourceKind, source_id: UUID) -> UUID:
-    return uuid5(_TASK_ID_NAMESPACE, f"{dispatch_kind.value}:{source_kind.value}:{source_id}")
+def _deterministic_task_id(dispatch_kind: TaskDispatchKind, source_kind: TaskDispatchSourceKind, source_id: UUID, dispatch_sequence: int) -> UUID:
+    return uuid5(_TASK_ID_NAMESPACE, f"{dispatch_kind.value}:{source_kind.value}:{source_id}:{dispatch_sequence}")
 
 
 def add_pending_task_dispatch(
@@ -135,6 +135,8 @@ def add_pending_task_dispatch(
     source_id: UUID,
     source_kind: TaskDispatchSourceKind | None = None,
     task_id: UUID | None = None,
+    dispatch_sequence: int = 1,
+    next_attempt_at: datetime | None = None,
 ) -> TaskDispatchOutbox:
     """Add a pending intent and flush only; caller owns commit/rollback.
 
@@ -146,7 +148,9 @@ def add_pending_task_dispatch(
     if source_kind is not None and source_kind is not expected_source_kind:
         raise TaskDispatchPayloadMismatchError("dispatch kind and source kind do not match")
     source_kind = expected_source_kind
-    expected_task_id = _deterministic_task_id(dispatch_kind, source_kind, source_id)
+    if dispatch_sequence < 1:
+        raise TaskDispatchPayloadMismatchError("dispatch sequence must be positive")
+    expected_task_id = _deterministic_task_id(dispatch_kind, source_kind, source_id, dispatch_sequence)
     if task_id is not None and task_id != expected_task_id:
         raise TaskDispatchPayloadMismatchError("task id does not match dispatch payload")
 
@@ -155,6 +159,7 @@ def add_pending_task_dispatch(
             TaskDispatchOutbox.dispatch_kind == dispatch_kind,
             TaskDispatchOutbox.source_kind == source_kind,
             TaskDispatchOutbox.source_id == source_id,
+            TaskDispatchOutbox.dispatch_sequence == dispatch_sequence,
         )
     )
     if existing is not None:
@@ -167,9 +172,10 @@ def add_pending_task_dispatch(
         dispatch_kind=dispatch_kind,
         source_kind=source_kind,
         source_id=source_id,
+        dispatch_sequence=dispatch_sequence,
         state=TaskDispatchState.pending,
         attempt_count=0,
-        next_attempt_at=utcnow(),
+        next_attempt_at=next_attempt_at or utcnow(),
     )
     db.add(dispatch)
     db.flush()

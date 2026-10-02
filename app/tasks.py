@@ -27,11 +27,14 @@ def _stamp_worker_received(db, *, model_class, record_id: UUID) -> None:
 
 
 @celery_app.task(name="openscribe.process_transcript_ingestion_job")
-def process_transcript_ingestion_job_task(*, job_id: str, audio_b64: str | None = None) -> None:
+def process_transcript_ingestion_job_task(*, job_id: str, audio_b64: str | None = None, dispatch_sequence: int | None = None) -> None:
     legacy_audio_bytes = base64.b64decode(audio_b64.encode("ascii")) if audio_b64 else None
     with SessionLocal() as db:
         _stamp_worker_received(db, model_class=TranscriptIngestionJob, record_id=UUID(job_id))
-        process_transcript_ingestion_job(db, job_id=UUID(job_id), legacy_audio_bytes=legacy_audio_bytes)
+        kwargs = {"job_id": UUID(job_id), "legacy_audio_bytes": legacy_audio_bytes}
+        if dispatch_sequence is not None:
+            kwargs["dispatch_sequence"] = dispatch_sequence
+        process_transcript_ingestion_job(db, **kwargs)
 
 
 def enqueue_transcript_ingestion_job(*, job_id: UUID):

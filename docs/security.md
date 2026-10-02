@@ -155,7 +155,7 @@ Generation and ingestion creation use a durable metadata-only task-dispatch outb
 - Provider credentials are resolved before a provider attempt is marked submitted.
 - Definite pre-dispatch credential failure cancels quota reservation without consuming provider quota.
 - Duplicate delivery is handled through database claim/idempotency controls.
-- Uploaded source audio needed for asynchronous processing or retry is stored under a bounded Vault reference. Its deadline is fixed at the original Vault write and does not reset on retry. Successful processing and transcript deletion clear it sooner; the periodic worker expires every remaining source at 24 hours and uses the durable cleanup queue when Vault deletion fails.
+- Uploaded source audio needed for asynchronous processing or retry is stored under a bounded Vault reference. Its deadline is fixed at the original Vault write and does not reset on automatic or manual retry. Successful processing and transcript deletion clear it sooner; the periodic worker expires every remaining source at 24 hours and uses the durable cleanup queue when Vault deletion fails. Pending unaccepted audio is held only in current-tab JavaScript memory, never Web Storage, IndexedDB, task/audit metadata, URLs, or logs; it is lost when that tab's browser state is destroyed.
 - Retention cleanup, failed-ingestion source expiry, transcript-audio cleanup, provider-secret cleanup, audit expiry, legal-document expiry, and quota lifecycle processing run every 10 seconds.
 
 ## Security audit

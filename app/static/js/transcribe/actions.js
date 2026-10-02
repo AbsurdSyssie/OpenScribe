@@ -37,6 +37,45 @@ export function attachTranscribeActions({
   let followupSubmitting = false;
   let followupRegenerating = false;
   let quickActionComboboxOpen = false;
+  let pendingWholeFileUpload = null;
+  const pendingAudioRetryOwner = 'file-upload';
+  const sharedPendingAudioRetry = () => dom.pendingAudioRetryButton?._openscribePendingAudioRetry || null;
+
+  const newUploadIdempotencyKey = () => {
+    if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+    if (!window.crypto?.getRandomValues) return null;
+    const bytes = window.crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  };
+  const isRecoverableUploadResponse = (response) => response.status === 429 || response.status >= 500;
+  const uploadRetryDelayMs = (attempt, response = null) => {
+    const retryAfterSeconds = Number(response?.headers?.get?.('Retry-After'));
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) return Math.min(retryAfterSeconds * 1000, 10000);
+    return Math.min(2000 * (2 ** Math.max(0, attempt - 1)), 10000);
+  };
+  const clearPendingWholeFileUpload = () => {
+    pendingWholeFileUpload = null;
+    if (sharedPendingAudioRetry()?.owner === pendingAudioRetryOwner) {
+      dom.pendingAudioRetryButton._openscribePendingAudioRetry = null;
+    }
+    if (dom.pendingAudioRetryRegion) dom.pendingAudioRetryRegion.hidden = true;
+    if (dom.pendingAudioRetryMessage) dom.pendingAudioRetryMessage.textContent = '';
+    if (dom.pendingAudioRetryButton) dom.pendingAudioRetryButton.disabled = false;
+  };
+  const showPendingWholeFileUpload = (message, retry, transcriptId) => {
+    pendingWholeFileUpload = { retry, transcriptId };
+    if (dom.pendingAudioRetryButton) {
+      dom.pendingAudioRetryButton._openscribePendingAudioRetry = {
+        owner: pendingAudioRetryOwner, retry, transcriptId,
+      };
+    }
+    if (dom.pendingAudioRetryMessage) dom.pendingAudioRetryMessage.textContent = `${message} Audio is still available in this tab.`;
+    if (dom.pendingAudioRetryRegion) dom.pendingAudioRetryRegion.hidden = false;
+    if (dom.pendingAudioRetryButton) dom.pendingAudioRetryButton.disabled = false;
+  };
 
   const noteRegenerationController = createGeneratedNoteRegenerationController({
     root: dom.noteSelector,
@@ -724,30 +763,102 @@ export function attachTranscribeActions({
       event.preventDefault();
       const transcriptId = getTranscriptId();
       if (!transcriptId || !dom.fileInput?.files || dom.fileInput.files.length === 0) return;
-      setVisibleStatus('uploading');
-      setSessionProgress('Uploading your recording...');
-      setRetryAvailability(false);
-      try {
-        await syncTranscriptTitleIfNeeded();
-        const formData = new FormData();
-        formData.append('audio', dom.fileInput.files[0], dom.fileInput.files[0].name);
-        const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/audio-file`, {
-          method: 'POST',
-          body: formData,
-          credentials: 'include',
-        });
-        if (!response.ok) {
-          throw new Error(await parseErrorMessage(response, 'Could not send the recording.'));
+      if (sharedPendingAudioRetry()) {
+        showFlash('Retry the pending audio upload before choosing another recording.', 'error');
+        return;
+      }
+      const file = dom.fileInput.files[0];
+      const idempotencyKey = newUploadIdempotencyKey();
+      const retry = async () => {
+        if (dom.pendingAudioRetryButton) dom.pendingAudioRetryButton.disabled = true;
+        setVisibleStatus('uploading');
+        setSessionProgress('Uploading your recording...');
+        setRetryAvailability(false);
+        let lastError = new Error('Could not send the recording.');
+        const maxAttempts = idempotencyKey ? 3 : 1;
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+          let response = null;
+          try {
+            await syncTranscriptTitleIfNeeded();
+            const formData = new FormData();
+            formData.append('audio', file, file.name);
+            response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/audio-file`, {
+              method: 'POST',
+              body: formData,
+              credentials: 'include',
+              headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+            });
+            if (response.ok) {
+              clearPendingWholeFileUpload();
+              showFlash('Recording sent to be turned into text.', 'success');
+              dom.fileInput.value = '';
+              await fetchWorkspace();
+              scheduleWorkspaceRefreshBurst();
+              return true;
+            }
+            lastError = new Error(await parseErrorMessage(response, 'Could not send the recording.'));
+            if (!isRecoverableUploadResponse(response)) throw lastError;
+          } catch (error) {
+            lastError = error instanceof Error ? error : new Error('Could not send the recording.');
+            if (response && !isRecoverableUploadResponse(response)) break;
+          }
+          if (attempt < maxAttempts) {
+            setSessionProgress(`Recording upload was interrupted. Retrying automatically (${attempt} of 2)...`);
+            await new Promise((resolve) => window.setTimeout(resolve, uploadRetryDelayMs(attempt, response)));
+          }
         }
-        showFlash('Recording sent to be turned into text.', 'success');
-        dom.fileInput.value = '';
-        await fetchWorkspace();
-        scheduleWorkspaceRefreshBurst();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Could not send the recording.';
+        const message = lastError.message || 'Could not send the recording.';
         showFlash(message, 'error');
         reflectBackendStatus('failed', message);
         setRetryAvailability(false);
+        showPendingWholeFileUpload(message, retry, transcriptId);
+        return false;
+      };
+      await retry();
+    });
+  }
+
+  dom.pendingAudioRetryButton?.addEventListener('click', () => {
+    const pending = sharedPendingAudioRetry();
+    if (pending?.owner !== pendingAudioRetryOwner) return;
+    const retry = pending.retry;
+    if (typeof retry !== 'function' || pending.transcriptId !== getTranscriptId()) return;
+    dom.pendingAudioRetryButton.disabled = true;
+    void retry();
+  });
+  document.addEventListener('transcribe:active-transcript-changed', () => {
+    const pending = sharedPendingAudioRetry();
+    if (pending?.owner !== pendingAudioRetryOwner || !dom.pendingAudioRetryRegion) return;
+    dom.pendingAudioRetryRegion.hidden = pending.transcriptId !== getTranscriptId();
+  });
+
+  if (dom.retryIngestionForm) {
+    dom.retryIngestionForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const transcriptId = getTranscriptId();
+      if (!transcriptId) return;
+      const retryJobId = dom.retryIngestionJobIdInput?.value || '';
+      if (dom.retryIngestionTrigger) dom.retryIngestionTrigger.disabled = true;
+      setVisibleStatus('uploading');
+      setSessionProgress('Retrying the failed transcription with the retained audio...');
+      try {
+        const endpoint = retryJobId
+          ? `/api/v1/transcripts/${transcriptId}/ingestion-jobs/${retryJobId}/retry-audio`
+          : `/api/v1/transcripts/${transcriptId}/retry-audio`;
+        const response = await csrfFetch(endpoint, {
+          method: 'POST',
+          credentials: 'include',
+        });
+        if (!response.ok) throw new Error(await parseErrorMessage(response, 'Could not retry the failed transcription.'));
+        showFlash('Transcription retry started.', 'success');
+        setRetryAvailability(false);
+        await fetchWorkspace();
+        scheduleWorkspaceRefreshBurst();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Could not retry the failed transcription.';
+        showFlash(message, 'error');
+        reflectBackendStatus('failed', message);
+        if (dom.retryIngestionTrigger) dom.retryIngestionTrigger.disabled = false;
       }
     });
   }

@@ -90,6 +90,8 @@ INGESTION_PROVIDER_DEADLINE_SECONDS = max(
     int(STT_TRANSCRIPTION_TIMEOUT_SECONDS) + 300,
 )
 INGESTION_SOURCE_AUDIO_MAX_AGE = timedelta(hours=24)
+INGESTION_AUTOMATIC_RETRY_LIMIT = 2
+INGESTION_RETRY_BASE_SECONDS = 5
 retry_audio_logger = logging.getLogger("openscribe.retry_audio")
 transcript_redaction_logger = logging.getLogger("openscribe.transcript_redaction")
 transcript_retention_logger = logging.getLogger("openscribe.transcript_retention")
@@ -1030,10 +1032,10 @@ def _has_blocking_live_chunk_failure(db: Session, *, transcript: Transcript) -> 
 def _resolved_transcript_status(db: Session, *, transcript: Transcript) -> TranscriptStatus:
     if transcript.status is TranscriptStatus.recording:
         return TranscriptStatus.recording
-    if _has_pending_ingestion_jobs(db, transcript_id=transcript.id):
-        return TranscriptStatus.transcribing
     if _has_blocking_live_chunk_failure(db, transcript=transcript):
         return TranscriptStatus.failed
+    if _has_pending_ingestion_jobs(db, transcript_id=transcript.id):
+        return TranscriptStatus.transcribing
     latest_job = latest_ingestion_job_for_transcript(db, transcript_id=transcript.id)
     if latest_job is not None and latest_job.status is TranscriptIngestionJobStatus.failed:
         return TranscriptStatus.failed
@@ -1697,7 +1699,7 @@ def _queue_ingestion_attempt_and_dispatch(
         resource=QuotaResource.audio_seconds,
         attempt_kind=AttemptKind.stt_conversation,
         correlation_id=job.id,
-        attempt_number=1,
+        attempt_number=job.active_attempt_number,
         reserved_units=ceil(measured_duration_seconds),
         reservation_valid_until=now + timedelta(seconds=INGESTION_RESERVATION_VALIDITY_SECONDS),
         authorized_at=now,
@@ -1707,7 +1709,10 @@ def _queue_ingestion_attempt_and_dispatch(
         provider_model=job.stt_model_name,
         measured_audio_seconds=measured_duration_seconds,
     )
-    dispatch = add_pending_task_dispatch(db, dispatch_kind=TaskDispatchKind.ingestion, source_id=job.id)
+    dispatch = add_pending_task_dispatch(
+        db, dispatch_kind=TaskDispatchKind.ingestion, source_id=job.id,
+        dispatch_sequence=job.active_attempt_number, next_attempt_at=job.next_retry_at,
+    )
     job.celery_task_id = str(dispatch.task_id)
     db.add(attempt)
     db.add(job)
@@ -1722,6 +1727,7 @@ def queue_audio_chunk_ingestion(
     source_audio_bytes: bytes,
     chunk_sequence_no: int,
     declared_duration_seconds: float | None,
+    request_idempotency_key: str | None = None,
 ) -> tuple[Transcript, TranscriptIngestionJob]:
     transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
     if transcript.ingestion_mode is not TranscriptIngestionMode.live_chunked:
@@ -1731,6 +1737,19 @@ def queue_audio_chunk_ingestion(
             "Transcript ingestion mode does not accept live audio chunks",
             {"ingestion_mode": transcript.ingestion_mode.value},
         )
+    if request_idempotency_key:
+        existing_request = db.scalar(select(TranscriptIngestionJob).where(
+            TranscriptIngestionJob.transcript_id == transcript.id,
+            TranscriptIngestionJob.request_idempotency_key == request_idempotency_key,
+        ))
+        if existing_request is not None:
+            if (
+                existing_request.job_kind is not TranscriptIngestionJobKind.live_chunk
+                or existing_request.chunk_sequence_no != chunk_sequence_no
+                or existing_request.source_audio_size_bytes != len(source_audio_bytes)
+            ):
+                raise AppError(409, "idempotency_conflict", "Upload request conflicts with an existing audio job")
+            return transcript, existing_request
     existing = db.scalar(
         select(TranscriptIngestionJob).where(
             TranscriptIngestionJob.transcript_id == transcript.id,
@@ -1785,6 +1804,7 @@ def queue_audio_chunk_ingestion(
         job_kind=TranscriptIngestionJobKind.live_chunk,
         chunk_sequence_no=chunk_sequence_no,
         source_filename=filename,
+        request_idempotency_key=request_idempotency_key,
         source_audio_blob=None,
         source_audio_vault_ref=source_audio_vault_ref,
         source_audio_size_bytes=len(source_audio_bytes),
@@ -1859,6 +1879,7 @@ def queue_audio_file_ingestion(
     source_audio_vault_ref: str | None = None,
     source_audio_expires_at: datetime | None = None,
     exclude_job_ids: tuple[UUID, ...] = (),
+    request_idempotency_key: str | None = None,
 ) -> tuple[Transcript, TranscriptIngestionJob]:
     transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
     if transcript.ingestion_mode is not TranscriptIngestionMode.whole_file:
@@ -1868,6 +1889,18 @@ def queue_audio_file_ingestion(
             "Transcript ingestion mode does not accept file ingestion",
             {"ingestion_mode": transcript.ingestion_mode.value},
         )
+    if request_idempotency_key:
+        existing_request = db.scalar(select(TranscriptIngestionJob).where(
+            TranscriptIngestionJob.transcript_id == transcript.id,
+            TranscriptIngestionJob.request_idempotency_key == request_idempotency_key,
+        ))
+        if existing_request is not None:
+            if (
+                existing_request.job_kind is not TranscriptIngestionJobKind.audio_file
+                or existing_request.source_audio_size_bytes != len(source_audio_blob)
+            ):
+                raise AppError(409, "idempotency_conflict", "Upload request conflicts with an existing audio job")
+            return transcript, existing_request
     existing_in_progress = db.scalar(
         select(TranscriptIngestionJob).where(
             TranscriptIngestionJob.transcript_id == transcript.id,
@@ -1924,6 +1957,7 @@ def queue_audio_file_ingestion(
         job_kind=TranscriptIngestionJobKind.audio_file,
         chunk_sequence_no=None,
         source_filename=filename,
+        request_idempotency_key=request_idempotency_key,
         source_audio_blob=None,
         source_audio_vault_ref=persisted_source_audio_vault_ref,
         source_audio_size_bytes=len(source_audio_blob),
@@ -2031,6 +2065,68 @@ def retry_audio_file_ingestion(
     return transcript, retry_job, source_audio_blob, latest_job
 
 
+def retry_failed_audio_ingestion(
+    db: Session, owner: User, *, transcript_id: UUID, job_id: UUID | None = None,
+) -> tuple[Transcript, TranscriptIngestionJob]:
+    """Owner-initiated retry of retained failed file or live-chunk audio.
+
+    Live chunks reuse their original job and sequence number, so later chunks
+    cannot be applied out of order.  The Vault ref and its original deadline
+    remain attached to that job.
+    """
+    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    statement = select(TranscriptIngestionJob).where(
+        TranscriptIngestionJob.transcript_id == transcript.id,
+        TranscriptIngestionJob.status == TranscriptIngestionJobStatus.failed,
+    )
+    if job_id is not None:
+        statement = statement.where(TranscriptIngestionJob.id == job_id)
+        candidates = list(db.scalars(statement))
+    elif transcript.ingestion_mode is TranscriptIngestionMode.live_chunked:
+        # The earliest unresolved gap must be retried first for live capture.
+        candidates = list(db.scalars(statement.order_by(TranscriptIngestionJob.chunk_sequence_no.asc(), TranscriptIngestionJob.created_at.asc())))
+    else:
+        candidates = list(db.scalars(statement.order_by(TranscriptIngestionJob.created_at.desc())))
+    if not candidates:
+        raise AppError(409, "ingestion_retry_unavailable", "There is no failed audio available to retry for this session")
+    job = next((candidate for candidate in candidates if _retry_source_available(candidate)), None)
+    if job is None:
+        if any(ingestion_retry_source_expired(candidate) for candidate in candidates):
+            raise AppError(409, "ingestion_retry_expired", "The failed audio has expired. Provide the audio again.")
+        raise AppError(409, "ingestion_retry_unavailable", "The failed audio is no longer available to retry. Provide the audio again.")
+    # Lock in the established User -> Transcript -> Job order before creating
+    # the new quota reservation and dispatch intent.
+    db.scalar(select(User).where(User.id == owner.id).with_for_update())
+    locked = _lock_ingestion_job_and_transcript(db, job_id=job.id)
+    if locked is None:
+        raise AppError(409, "ingestion_retry_unavailable", "The failed audio is no longer available to retry. Provide the audio again.")
+    job, transcript = locked
+    if job.status is not TranscriptIngestionJobStatus.failed or not _retry_source_available(job):
+        _release_ingestion_transaction(db)
+        raise AppError(409, "ingestion_retry_unavailable", "The failed audio is no longer available to retry. Provide the audio again.")
+    job.active_attempt_number += 1
+    job.next_retry_at = utcnow()
+    job.status = TranscriptIngestionJobStatus.queued
+    job.error_code = None
+    job.error_message = None
+    job.started_at = None
+    job.completed_at = None
+    transcript.status = TranscriptStatus.transcribing
+    db.add(job)
+    db.add(transcript)
+    db.flush()
+    _queue_ingestion_attempt_and_dispatch(
+        db, job=job, transcript=transcript,
+        measured_duration_seconds=float(job.source_audio_duration_seconds or job.declared_duration_seconds or 1),
+    )
+    db.commit()
+    db.refresh(job)
+    db.refresh(transcript)
+    if job.celery_task_id:
+        try_publish_task_dispatch_safely(job.celery_task_id)
+    return transcript, job
+
+
 _TERMINAL_INGESTION_JOB_STATUSES = frozenset(
     {
         TranscriptIngestionJobStatus.completed,
@@ -2099,12 +2195,88 @@ def _lock_ingestion_job_and_transcript(
 def _ingestion_attempt(db: Session, *, job_id: UUID, lock: bool = False) -> ProviderAttempt | None:
     statement = select(ProviderAttempt).where(
         ProviderAttempt.correlation_id == job_id,
-        ProviderAttempt.attempt_number == 1,
         ProviderAttempt.attempt_kind == AttemptKind.stt_conversation,
-    )
+    ).order_by(ProviderAttempt.attempt_number.desc()).limit(1)
     if lock:
         statement = statement.with_for_update()
     return db.scalar(statement)
+
+
+def _retry_delay_seconds(automatic_retry_count: int) -> int:
+    return INGESTION_RETRY_BASE_SECONDS * (2 ** max(0, automatic_retry_count - 1))
+
+
+def _is_transient_stt_failure(exc: AppError) -> bool:
+    if exc.code in {"stt_timeout", "stt_unavailable"}:
+        return True
+    if exc.code != "stt_request_failed":
+        return False
+    provider_status = (exc.details or {}).get("provider_status_code")
+    return provider_status == 429 or (isinstance(provider_status, int) and 500 <= provider_status <= 599)
+
+
+def _retry_failure_outcome(exc: AppError) -> AttemptOutcome:
+    """Keep ambiguous submitted-provider cost conservative during retries."""
+    if exc.code in {"stt_timeout", "stt_unavailable"}:
+        return AttemptOutcome.unknown
+    provider_status = (exc.details or {}).get("provider_status_code")
+    if isinstance(provider_status, int) and 500 <= provider_status <= 599:
+        return AttemptOutcome.unknown
+    return AttemptOutcome.failed
+
+
+def _schedule_ingestion_retry(
+    db: Session, *, job_id: UUID, code: str, message: str, outcome: AttemptOutcome, automatic: bool,
+) -> TranscriptIngestionJob | None:
+    """Settle the failed call and durably queue one later provider attempt."""
+    db.rollback()
+    identity = db.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.id == job_id))
+    if identity is None:
+        return None
+    db.scalar(select(User).where(User.id == identity.owner_user_id).with_for_update())
+    locked = _lock_ingestion_job_and_transcript(db, job_id=job_id)
+    if locked is None:
+        return None
+    job, transcript = locked
+    if transcript_is_expired(transcript) or not _retry_source_available(job):
+        return _terminalize_ingestion_job_with_attempt(
+            db, job_id=job.id, code=code, message=message, outcome=outcome,
+        )
+    attempt = _ingestion_attempt(db, job_id=job.id, lock=True)
+    if attempt is None or attempt.status is not AttemptStatus.submitted:
+        return _return_released_ingestion_job(db, job)
+    if automatic and job.automatic_retry_count >= INGESTION_AUTOMATIC_RETRY_LIMIT:
+        return _terminalize_ingestion_job_with_attempt(
+            db, job_id=job.id, code=code, message=message, outcome=outcome,
+        )
+    now = utcnow()
+    settle_provider_attempt_audio(
+        db, attempt_id=attempt.id, measured_audio_seconds=attempt.measured_audio_seconds,
+        outcome=outcome, now=now,
+    )
+    if automatic:
+        job.automatic_retry_count += 1
+        retry_at = now + timedelta(seconds=_retry_delay_seconds(job.automatic_retry_count))
+    else:
+        retry_at = now
+    job.active_attempt_number += 1
+    job.next_retry_at = retry_at
+    job.status = TranscriptIngestionJobStatus.queued
+    job.error_code = None
+    job.error_message = None
+    job.started_at = None
+    job.completed_at = None
+    transcript.status = TranscriptStatus.transcribing
+    db.add(job)
+    db.add(transcript)
+    db.flush()
+    _queue_ingestion_attempt_and_dispatch(
+        db, job=job, transcript=transcript,
+        measured_duration_seconds=float(attempt.measured_audio_seconds),
+    )
+    db.commit()
+    db.refresh(job)
+    return job
 
 
 def _delete_expired_ingestion_transcript(db: Session, *, transcript: Transcript) -> None:
@@ -2187,7 +2359,7 @@ def _claim_queued_ingestion_job(
             TranscriptIngestionJob.id == job.id,
             TranscriptIngestionJob.status == TranscriptIngestionJobStatus.queued,
         )
-        .values(status=TranscriptIngestionJobStatus.processing, started_at=now)
+        .values(status=TranscriptIngestionJobStatus.processing, started_at=now, next_retry_at=None)
     )
     if claim.rowcount != 1:
         _release_ingestion_transaction(db)
@@ -2370,33 +2542,10 @@ def _apply_completed_live_chunks(db: Session, transcript: Transcript) -> None:
             )
         )
         if job is None:
-            failed_job = db.scalar(
-                select(TranscriptIngestionJob).where(
-                    TranscriptIngestionJob.transcript_id == transcript.id,
-                    TranscriptIngestionJob.job_kind == TranscriptIngestionJobKind.live_chunk,
-                    TranscriptIngestionJob.chunk_sequence_no == expected_sequence,
-                    TranscriptIngestionJob.status == TranscriptIngestionJobStatus.failed,
-                )
-            )
-            if failed_job is None:
-                break
-
-            later_completed_job = db.scalar(
-                select(TranscriptIngestionJob.id).where(
-                    TranscriptIngestionJob.transcript_id == transcript.id,
-                    TranscriptIngestionJob.job_kind == TranscriptIngestionJobKind.live_chunk,
-                    TranscriptIngestionJob.chunk_sequence_no > expected_sequence,
-                    TranscriptIngestionJob.status.in_(
-                        [TranscriptIngestionJobStatus.completed, TranscriptIngestionJobStatus.applied]
-                    ),
-                ).limit(1)
-            )
-            if later_completed_job is None:
-                break
-
-            expected_sequence += 1
-            advanced_sequence = True
-            continue
+            # A failed chunk remains an ordering barrier. Its retained source
+            # can be manually retried; completed later chunks wait until the
+            # gap succeeds, so their text cannot be committed out of order.
+            break
         updated_draft_text = _append_chunk_text(
             transcript_draft_text(db, transcript=transcript),
             job_result_text(db, transcript=transcript, job=job) or "",
@@ -2560,11 +2709,16 @@ def process_transcript_ingestion_job(
     *,
     job_id: UUID,
     legacy_audio_bytes: bytes | None = None,
+    dispatch_sequence: int | None = None,
 ) -> TranscriptIngestionJob | None:
     preparation_job = _queued_ingestion_job_for_preparation(db, job_id=job_id)
     if preparation_job is None:
         return None
     if preparation_job.status is not TranscriptIngestionJobStatus.queued:
+        return preparation_job
+    if dispatch_sequence is not None and preparation_job.active_attempt_number != dispatch_sequence:
+        return preparation_job
+    if preparation_job.next_retry_at is not None and preparation_job.next_retry_at > utcnow():
         return preparation_job
 
     if _delete_if_ingestion_root_expired_before_preparation(db, job_id=job_id):
@@ -2742,6 +2896,13 @@ def process_transcript_ingestion_job(
             if transcript.status is TranscriptStatus.ready:
                 _trigger_waiting_generation_dispatches(db, transcript_id=transcript.id)
     except AppError as exc:
+        if _is_transient_stt_failure(exc):
+            retried = _schedule_ingestion_retry(
+                db, job_id=job_id, code=exc.code, message=exc.message,
+                outcome=_retry_failure_outcome(exc), automatic=True,
+            )
+            if retried is not None:
+                return retried
         return _terminalize_ingestion_job_with_attempt(
             db, job_id=job_id, code=exc.code, message=exc.message,
             outcome=AttemptOutcome.failed,

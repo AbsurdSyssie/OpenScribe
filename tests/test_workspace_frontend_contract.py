@@ -150,6 +150,31 @@ def test_media_controller_emits_authoritative_workspace_recording_events():
     assert "openscribe:recording-${state}" in media
 
 
+def test_capture_upload_recovery_keeps_audio_only_in_the_current_tab():
+    media = read("app/static/js/transcribe/media.js")
+    actions = read("app/static/js/transcribe/actions.js")
+    workspace = read("app/templates/transcribe/_workspace.html")
+
+    assert "data-pending-audio-retry" in workspace
+    assert "Audio is still available in this tab." in media
+    assert "Audio is still available in this tab." in actions
+    assert "const maxAttempts = canReplay ? 3 : 1;" in media
+    assert "attempt <= 3" in actions
+    assert "Idempotency-Key" in media and "Idempotency-Key" in actions
+    assert "crypto?.getRandomValues" in media and "crypto?.getRandomValues" in actions
+    assert "canReplay: Boolean(idempotencyKey)" in media
+    assert "const maxAttempts = idempotencyKey ? 3 : 1;" in actions
+    assert "transcribe:active-transcript-changed" in media and "transcribe:active-transcript-changed" in actions
+    assert "indexedDB" not in media.lower() and "indexedDB" not in actions.lower()
+    assert "verifyAccepted" not in media
+    assert "response.status === 409 &&" not in media
+    assert "retryConflict && response.status === 409" in media
+    assert "conflictRetryDelayMs: Number(config.batchRolloverConflictRetryMs || 5000)" in media
+    assert "Previous recording part is still transcribing. Retrying this audio part automatically" in media
+    assert "_openscribePendingAudioRetry" in media and "_openscribePendingAudioRetry" in actions
+    assert "Retry the pending audio upload before starting another recording." in media
+
+
 def test_settings_module_initializers_are_target_scoped():
     script = read("app/static/js/settings/app.js")
     for marker in ("[data-confirm-submit]", "[data-service-toggle]", "[data-stt-selection-form]", "[data-llm-selection-form]", "[data-dirty-guard]"):

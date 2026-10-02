@@ -5,7 +5,7 @@ import logging
 import os
 from uuid import UUID
 
-from fastapi import Body, Depends, File, Form, Request, UploadFile, status
+from fastapi import Body, Depends, File, Form, Header, Request, UploadFile, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -360,6 +360,7 @@ from ..services.transcripts import (
     queue_audio_chunk_ingestion,
     queue_audio_file_ingestion,
     retry_audio_file_ingestion,
+    retry_failed_audio_ingestion,
     save_working_note as save_working_note_service,
     start_transcript as start_transcript_service,
     transcript_is_expired,
@@ -1806,6 +1807,7 @@ def upload_transcript_audio_chunk(
     audio: UploadFile = File(...),
     chunk_sequence_no: int = Form(..., ge=1),
     declared_duration_seconds: float | None = Form(default=None, gt=0),
+    idempotency_key: UUID | None = Header(default=None, alias="Idempotency-Key"),
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
@@ -1818,6 +1820,7 @@ def upload_transcript_audio_chunk(
         source_audio_bytes=audio_bytes,
         chunk_sequence_no=chunk_sequence_no,
         declared_duration_seconds=declared_duration_seconds,
+        request_idempotency_key=str(idempotency_key) if idempotency_key else None,
     )
     refreshed_transcript = db.get(Transcript, transcript.id) or transcript
     return TranscriptIngestionAccepted(
@@ -1833,6 +1836,7 @@ def upload_transcript_audio_file(
     request: Request,
     transcript_id: UUID,
     audio: UploadFile = File(...),
+    idempotency_key: UUID | None = Header(default=None, alias="Idempotency-Key"),
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
@@ -1844,6 +1848,7 @@ def upload_transcript_audio_file(
         transcript_id=transcript_id,
         filename=audio.filename or "audio.bin",
         source_audio_blob=audio_bytes,
+        request_idempotency_key=str(idempotency_key) if idempotency_key else None,
     )
     refreshed_transcript = db.get(Transcript, transcript.id) or transcript
     return TranscriptIngestionAccepted(
@@ -1872,6 +1877,37 @@ def retry_transcript_audio_file(
         clear_storage=True,
         clear_accounting=False,
         delete_backing_secret=True,
+    )
+    refreshed_transcript = db.get(Transcript, transcript.id) or transcript
+    return TranscriptIngestionAccepted(
+        transcript=transcript_detail_response(db, refreshed_transcript),
+        job=TranscriptIngestionJobDetail.model_validate(job, from_attributes=True),
+    )
+
+
+@api.post("/transcripts/{transcript_id}/retry-audio", response_model=TranscriptIngestionAccepted, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
+def retry_transcript_audio(
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    transcript, job = retry_failed_audio_ingestion(db, context.user, transcript_id=transcript_id)
+    refreshed_transcript = db.get(Transcript, transcript.id) or transcript
+    return TranscriptIngestionAccepted(
+        transcript=transcript_detail_response(db, refreshed_transcript),
+        job=TranscriptIngestionJobDetail.model_validate(job, from_attributes=True),
+    )
+
+
+@api.post("/transcripts/{transcript_id}/ingestion-jobs/{job_id}/retry-audio", response_model=TranscriptIngestionAccepted, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
+def retry_transcript_ingestion_job_audio(
+    transcript_id: UUID,
+    job_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    transcript, job = retry_failed_audio_ingestion(
+        db, context.user, transcript_id=transcript_id, job_id=job_id,
     )
     refreshed_transcript = db.get(Transcript, transcript.id) or transcript
     return TranscriptIngestionAccepted(

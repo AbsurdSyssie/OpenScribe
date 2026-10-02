@@ -125,17 +125,22 @@ data-recording-mode-select
 <option value="live_chunked" {% if (active_transcript and active_transcript.ingestion_mode.value == 'live_chunked') or (not active_transcript and preferred_recording_mode == 'live_chunked') %}selected{% endif %}>Live capture</option>
 </select>
 <p class="text-sm text-slate" data-retry-ingestion-expired{% if not active_transcript_retry_expired %} hidden{% endif %}>The failed upload has expired. Upload the audio file again.</p>
-<form method="post" action="/transcribe/retry-file-ingestion" data-retry-ingestion-form{% if active_transcript_retry_expired or not active_transcript or active_transcript.status.value != 'failed' or active_transcript.ingestion_mode.value != 'whole_file' or not active_transcript_latest_job or (not active_transcript_latest_job.source_audio_blob and not active_transcript_latest_job.source_audio_vault_ref) or not active_transcript_latest_job.source_audio_size_bytes or not stt_selection or not stt_available %} hidden{% endif %}>
+<form method="post" action="/transcribe/retry-file-ingestion" data-retry-ingestion-form{% if active_transcript_retry_expired or not active_transcript or not active_transcript_retry_job or not stt_selection or not stt_available %} hidden{% endif %}>
 <input type="hidden" name="transcript_id" value="{% if active_transcript %}{{ active_transcript.id }}{% endif %}" data-retry-transcript-id>
+<input type="hidden" value="{% if active_transcript_retry_job %}{{ active_transcript_retry_job.id }}{% endif %}" data-retry-ingestion-job-id>
 <button
 type="submit"
 class="px-4 py-2 bg-white border border-stone rounded-lg text-sm font-medium text-ink hover:border-teal-muted hover:bg-teal-pale/30 transition disabled:opacity-50"
 data-retry-ingestion-trigger
 data-local-busy-protected
-{% if active_transcript_retry_expired or not active_transcript or active_transcript.status.value != 'failed' or active_transcript.ingestion_mode.value != 'whole_file' or not active_transcript_latest_job or not active_transcript_latest_job.source_audio_size_bytes or not stt_selection or not stt_available %}hidden disabled{% endif %}>
+{% if active_transcript_retry_expired or not active_transcript or not active_transcript_retry_job or not stt_selection or not stt_available %}hidden disabled{% endif %}>
 Try transcription again
 </button>
 </form>
+<div class="text-sm text-slate" data-pending-audio-retry-region hidden aria-live="polite">
+<span data-pending-audio-retry-message></span>
+<button type="button" class="btn-secondary btn-secondary--compact" data-pending-audio-retry>Retry audio upload</button>
+</div>
 
 <button type="button" class="dictation-global-cta" data-dictation-cta data-local-busy-protected {% if active_transcript and (not dictation_stt_selected or not dictation_stt_available) %}title="Recording unavailable. You can type dictation manually."{% endif %}>
 <i class="w-4 h-4" data-lucide="mic-2" aria-hidden="true"></i>

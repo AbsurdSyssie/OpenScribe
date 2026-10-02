@@ -256,6 +256,65 @@ def test_legacy_transcript_ingestion_task_payload_is_accepted(monkeypatch):
     assert captured == {"db": "db-session", "job_id": job_id, "legacy_audio_bytes": b"legacy-audio"}
 
 
+def test_stt_automatic_retry_classifier_is_limited_to_recoverable_provider_failures():
+    from app.services.transcripts import _is_transient_stt_failure
+
+    assert _is_transient_stt_failure(AppError(504, "stt_timeout", "timeout"))
+    assert _is_transient_stt_failure(AppError(502, "stt_unavailable", "unavailable"))
+    assert _is_transient_stt_failure(AppError(502, "stt_request_failed", "failed", {"provider_status_code": 429}))
+    assert _is_transient_stt_failure(AppError(502, "stt_request_failed", "failed", {"provider_status_code": 503}))
+    assert not _is_transient_stt_failure(AppError(502, "stt_request_failed", "failed", {"provider_status_code": 401}))
+    assert not _is_transient_stt_failure(AppError(422, "business_rule_violation", "invalid audio"))
+    assert not _is_transient_stt_failure(AppError(429, "quota_exceeded", "quota"))
+
+
+def test_transient_ingestion_failure_creates_two_durable_retry_attempts_then_fails(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Retry attempts team")
+    owner = make_user(email="retry-attempts@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="retry-attempts-admin@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **_: 1.0)
+    monkeypatch.setattr(
+        "app.services.transcripts.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: NormalizedAudio(filename="retry.wav", content_type="audio/wav", data=kwargs["audio_bytes"]),
+    )
+    monkeypatch.setattr(
+        "app.services.transcripts.transcribe_with_stt_snapshot",
+        lambda *_, **__: (_ for _ in ()).throw(AppError(502, "stt_request_failed", "STT provider request failed", {"provider_status_code": 503})),
+    )
+    login(client, email="retry-attempts@example.com", password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Retry", "ingestion_mode": "whole_file"})
+    uploaded = client.post(
+        f"/api/v1/transcripts/{started.json()['id']}/audio-file",
+        files={"audio": ("retry.wav", make_test_wav_bytes(duration_seconds=1), "audio/wav")},
+    )
+    job_id = UUID(uploaded.json()["job"]["id"])
+
+    for expected_attempt in (1, 2):
+        queued = process_transcript_ingestion_job(db_session, job_id=job_id, dispatch_sequence=expected_attempt)
+        assert queued is not None and queued.status is TranscriptIngestionJobStatus.queued
+        db_session.refresh(queued)
+        assert queued.active_attempt_number == expected_attempt + 1
+        assert queued.automatic_retry_count == expected_attempt
+        assert queued.next_retry_at is not None
+        # A stale delivery cannot bypass the persisted backoff or create a call.
+        assert process_transcript_ingestion_job(db_session, job_id=job_id, dispatch_sequence=expected_attempt) is not None
+        queued.next_retry_at = utcnow() - timedelta(seconds=1)
+        db_session.add(queued)
+        db_session.commit()
+
+    terminal = process_transcript_ingestion_job(db_session, job_id=job_id, dispatch_sequence=3)
+    assert terminal is not None and terminal.status is TranscriptIngestionJobStatus.failed
+    attempts = list(db_session.scalars(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job_id).order_by(ProviderAttempt.attempt_number)))
+    dispatches = list(db_session.scalars(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_id == job_id).order_by(TaskDispatchOutbox.dispatch_sequence)))
+    assert [attempt.attempt_number for attempt in attempts] == [1, 2, 3]
+    assert all(attempt.status is AttemptStatus.settled and attempt.outcome is AttemptOutcome.unknown for attempt in attempts)
+    assert [dispatch.dispatch_sequence for dispatch in dispatches] == [1, 2, 3]
+
+
 def assert_error(response, *, status_code: int, code: str, message: str):
     body = response.json()
     assert response.status_code == status_code
@@ -18906,7 +18965,7 @@ def test_finalize_live_capture_rejects_non_live_transcripts(client, db_session, 
     )
 
 
-def test_transcript_detail_reconciles_completed_live_chunks_after_failed_gap(client, db_session, make_team, make_user):
+def test_transcript_detail_holds_completed_live_chunks_behind_failed_gap(client, db_session, make_team, make_user):
     team = make_team(name="Clinical Team")
     owner = make_user(email="owner-live-gap@example.com", password="password-1", team=team, team_role=TeamRole.leader)
 
@@ -18950,13 +19009,13 @@ def test_transcript_detail_reconciles_completed_live_chunks_after_failed_gap(cli
     detail = client.get(f"/api/v1/transcripts/{transcript.id}")
 
     assert detail.status_code == 200
-    assert detail.json()["current_draft_text"] == "draft-1\nsecond chunk"
+    assert detail.json()["current_draft_text"] == "draft-1"
     assert detail.json()["next_live_chunk_sequence_no_upload"] == 3
-    assert detail.json()["status"] == "ready"
+    assert detail.json()["status"] == "failed"
     refreshed_transcript = db_session.get(Transcript, transcript.id)
     assert refreshed_transcript is not None
-    assert refreshed_transcript.next_live_chunk_sequence_no_applied == 3
-    assert refreshed_transcript.status is TranscriptStatus.ready
+    assert refreshed_transcript.next_live_chunk_sequence_no_applied == 1
+    assert refreshed_transcript.status is TranscriptStatus.failed
     refreshed_job = db_session.scalar(
         select(TranscriptIngestionJob).where(
             TranscriptIngestionJob.transcript_id == transcript.id,
@@ -18964,10 +19023,10 @@ def test_transcript_detail_reconciles_completed_live_chunks_after_failed_gap(cli
         )
     )
     assert refreshed_job is not None
-    assert refreshed_job.status is TranscriptIngestionJobStatus.applied
+    assert refreshed_job.status is TranscriptIngestionJobStatus.completed
 
 
-def test_transcript_detail_reconciles_completed_live_chunks_after_stale_processing_gap(
+def test_transcript_detail_holds_completed_live_chunks_after_stale_processing_gap(
     client, db_session, make_team, make_user, monkeypatch
 ):
     team = make_team(name="Clinical Team")
@@ -19010,9 +19069,9 @@ def test_transcript_detail_reconciles_completed_live_chunks_after_stale_processi
     detail = client.get(f"/api/v1/transcripts/{transcript.id}")
 
     assert detail.status_code == 200
-    assert detail.json()["current_draft_text"] == "draft-1\nsecond chunk"
+    assert detail.json()["current_draft_text"] == "draft-1"
     assert detail.json()["next_live_chunk_sequence_no_upload"] == 3
-    assert detail.json()["status"] == "ready"
+    assert detail.json()["status"] == "failed"
 
     refreshed_stale_job = db_session.get(TranscriptIngestionJob, stale_job.id)
     assert refreshed_stale_job is not None
@@ -19020,7 +19079,7 @@ def test_transcript_detail_reconciles_completed_live_chunks_after_stale_processi
     assert refreshed_stale_job.error_code == "ingestion_processing_stale"
     refreshed_later_job = db_session.get(TranscriptIngestionJob, later_job.id)
     assert refreshed_later_job is not None
-    assert refreshed_later_job.status is TranscriptIngestionJobStatus.applied
+    assert refreshed_later_job.status is TranscriptIngestionJobStatus.completed
 
 
 def test_processing_transcript_ingestion_job_skips_already_failed_job(db_session, make_team, make_user, monkeypatch):
@@ -19622,6 +19681,33 @@ def test_audio_file_upload_queues_job_for_whole_file_mode(
     assert dispatch is not None and str(dispatch.task_id) == job.celery_task_id
 
 
+def test_audio_file_upload_idempotency_replays_accepted_job_after_response_loss(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Upload idempotency team")
+    owner = make_user(email="upload-idempotency@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="upload-idempotency-admin@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **_: 1.0)
+    login(client, email="upload-idempotency@example.com", password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Replay", "ingestion_mode": "whole_file"})
+    url = f"/api/v1/transcripts/{started.json()['id']}/audio-file"
+    key = str(uuid4())
+    first = client.post(url, files={"audio": ("same.wav", b"same-audio", "audio/wav")}, headers={"Idempotency-Key": key})
+    # The transport retry should be evaluated by the idempotency contract,
+    # rather than this test's independent upload-burst throttle.
+    from tests.conftest import clear_test_rate_limit_storage, rate_limit_key_pattern, rate_limit_redis
+    clear_test_rate_limit_storage(rate_limit_redis, key_pattern=rate_limit_key_pattern())
+    replay = client.post(url, files={"audio": ("same.wav", b"same-audio", "audio/wav")}, headers={"Idempotency-Key": key})
+    assert first.status_code == replay.status_code == 202
+    assert replay.json()["job"]["id"] == first.json()["job"]["id"]
+    assert db_session.query(TranscriptIngestionJob).filter(TranscriptIngestionJob.transcript_id == UUID(started.json()["id"])).count() == 1
+    clear_test_rate_limit_storage(rate_limit_redis, key_pattern=rate_limit_key_pattern())
+    incompatible = client.post(url, files={"audio": ("other.wav", b"different-audio", "audio/wav")}, headers={"Idempotency-Key": key})
+    assert_error(incompatible, status_code=409, code="idempotency_conflict", message="Upload request conflicts with an existing audio job")
+
+
 def test_retry_audio_file_route_requeues_failed_blob_for_owner(
     client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
 ):
@@ -19693,6 +19779,89 @@ def test_retry_audio_file_route_requeues_failed_blob_for_owner(
     assert new_job.source_audio_duration_seconds == 15.25
     assert new_job.source_filename == "recording.mp3"
     assert UUID(new_job.celery_task_id)
+
+
+def test_targeted_live_chunk_retry_preserves_gap_and_applies_waiting_chunks(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
+):
+    team = make_team(name="Live retry gap team")
+    owner = make_user(email="live-retry-gap@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="live-retry-gap-admin@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    transcript = Transcript(
+        owner_user_id=owner.id, team_id=team.id, title="Live retry", current_draft_text_encrypted="draft",
+        ingestion_mode=TranscriptIngestionMode.live_chunked, status=TranscriptStatus.failed,
+        next_live_chunk_sequence_no_applied=1, retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    failed = make_ingestion_job_for_transcript(
+        transcript, job_kind=TranscriptIngestionJobKind.live_chunk, chunk_sequence_no=1,
+        source_filename="first.wav", source_audio_vault_ref="secret:openscribe/transcript-ingestion/live-retry/source-audio", source_audio_expires_at=utcnow() + timedelta(hours=24),
+        source_audio_size_bytes=len(make_test_wav_bytes(duration_seconds=1)), declared_duration_seconds=1.0, status=TranscriptIngestionJobStatus.failed,
+        stt_config_id=config.id, stt_adapter_kind=config.adapter_kind.value, stt_base_url=config.base_url,
+        stt_transcribe_path=config.transcribe_path, stt_model_name=config.model_name,
+        stt_file_field_name=config.file_field_name, stt_response_text_path=config.response_text_path,
+    )
+    waiting_id = uuid4()
+    waiting = make_ingestion_job_for_transcript(
+        transcript, id=waiting_id, job_kind=TranscriptIngestionJobKind.live_chunk, chunk_sequence_no=2,
+        source_filename="second.wav", status=TranscriptIngestionJobStatus.completed,
+        result_text_encrypted=encrypt_text_for_owner(
+            db_session, owner_user_id=owner.id, table="transcript_ingestion_jobs", field="result_text_encrypted",
+            record_id=waiting_id, plaintext="second",
+        ),
+    )
+    db_session.add_all([failed, waiting])
+    db_session.commit()
+    source_audio = make_test_wav_bytes(duration_seconds=1)
+    monkeypatch.setattr("app.services.transcripts.read_transcript_ingestion_source_audio", lambda **_: source_audio)
+    monkeypatch.setattr("app.services.transcripts.normalize_audio_to_wav_16k_mono", lambda **kwargs: NormalizedAudio(filename="first.wav", content_type="audio/wav", data=kwargs["audio_bytes"]))
+    monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", lambda *_, **__: "first")
+
+    login(client, email="live-retry-gap@example.com", password="password-1")
+    retried = client.post(f"/api/v1/transcripts/{transcript.id}/ingestion-jobs/{failed.id}/retry-audio")
+    assert retried.status_code == 202, retried.text
+    assert retried.json()["job"]["id"] == str(failed.id)
+    assert retried.json()["job"]["chunk_sequence_no"] == 1
+    assert retried.json()["job"]["active_attempt_number"] == 2
+    processed = process_transcript_ingestion_job(db_session, job_id=failed.id, dispatch_sequence=2)
+    assert processed is not None and processed.status is TranscriptIngestionJobStatus.applied, (processed.error_code, processed.error_message)
+    refreshed_transcript = db_session.get(Transcript, transcript.id)
+    refreshed_waiting = db_session.get(TranscriptIngestionJob, waiting_id)
+    assert refreshed_transcript is not None and refreshed_waiting is not None
+    assert decrypt_transcript_draft(db_session, refreshed_transcript) == "draft\nfirst\nsecond"
+    assert refreshed_transcript.next_live_chunk_sequence_no_applied == 3
+    assert refreshed_waiting.status is TranscriptIngestionJobStatus.applied
+
+
+def test_generic_retry_skips_source_less_legacy_failure_for_retained_new_failure(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection
+):
+    team = make_team(name="Retry candidate team")
+    owner = make_user(email="retry-candidate@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="retry-candidate-admin@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    transcript = Transcript(owner_user_id=owner.id, team_id=team.id, title="Retry candidate", ingestion_mode=TranscriptIngestionMode.whole_file, status=TranscriptStatus.failed, retention_days_applied=30, retention_expires_at=utcnow() + timedelta(days=30))
+    db_session.add(transcript)
+    db_session.flush()
+    old = make_ingestion_job_for_transcript(transcript, job_kind=TranscriptIngestionJobKind.audio_file, source_filename="old.wav", status=TranscriptIngestionJobStatus.failed)
+    retained = make_ingestion_job_for_transcript(
+        transcript, job_kind=TranscriptIngestionJobKind.audio_file, source_filename="new.wav", source_audio_blob=b"new-audio",
+        source_audio_size_bytes=9, source_audio_duration_seconds=1.0, source_audio_expires_at=utcnow() + timedelta(hours=24),
+        status=TranscriptIngestionJobStatus.failed, stt_config_id=config.id, stt_adapter_kind=config.adapter_kind.value,
+        stt_base_url=config.base_url, stt_transcribe_path=config.transcribe_path, stt_model_name=config.model_name,
+        stt_file_field_name=config.file_field_name, stt_response_text_path=config.response_text_path,
+    )
+    db_session.add_all([old, retained])
+    db_session.commit()
+    login(client, email="retry-candidate@example.com", password="password-1")
+    retried = client.post(f"/api/v1/transcripts/{transcript.id}/retry-audio")
+    assert retried.status_code == 202, retried.text
+    assert retried.json()["job"]["id"] == str(retained.id)
 
 
 def test_retry_audio_file_route_excludes_failed_job_from_hourly_budget(

@@ -1402,6 +1402,10 @@ def test_alembic_head_adds_onboarding_and_session_tables():
         "source_audio_vault_ref",
         "source_audio_size_bytes",
         "source_audio_duration_seconds",
+        "request_idempotency_key",
+        "active_attempt_number",
+        "automatic_retry_count",
+        "next_retry_at",
         "declared_duration_seconds",
         "result_text_encrypted",
         "stt_config_id",
@@ -2849,8 +2853,12 @@ def test_quota_accounting_foundation_schema_has_metadata_only_constraints_and_fk
 
     outbox_checks = {item["name"] for item in inspector.get_check_constraints("task_dispatch_outbox")}
     outbox_indexes = {item["name"] for item in inspector.get_indexes("task_dispatch_outbox")}
+    outbox_columns = {item["name"] for item in inspector.get_columns("task_dispatch_outbox")}
+    outbox_uniques = {item["name"] for item in inspector.get_unique_constraints("task_dispatch_outbox")}
     assert {"ck_task_dispatch_outbox_attempt_count_nonnegative", "ck_task_dispatch_outbox_state_timestamps"} <= outbox_checks
     assert {"ix_task_dispatch_outbox_pending_retry", "ix_task_dispatch_outbox_source"} <= outbox_indexes
+    assert "dispatch_sequence" in outbox_columns
+    assert "uq_task_dispatch_outbox_dispatch_source" in outbox_uniques
 
     expected_enums = {
         "quotaresource": ["tokens", "audio_seconds"],

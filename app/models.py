@@ -1851,6 +1851,9 @@ class TranscriptIngestionJob(Base):
     __tablename__ = "transcript_ingestion_jobs"
     __table_args__ = (
         UniqueConstraint("transcript_id", "chunk_sequence_no", name="uq_transcript_ingestion_job_chunk_sequence"),
+        UniqueConstraint("transcript_id", "request_idempotency_key", name="uq_transcript_ingestion_jobs_request_idempotency"),
+        CheckConstraint("active_attempt_number >= 1", name="ck_transcript_ingestion_jobs_active_attempt_positive"),
+        CheckConstraint("automatic_retry_count >= 0", name="ck_transcript_ingestion_jobs_automatic_retry_nonnegative"),
         CheckConstraint(
             "(source_audio_blob IS NULL AND source_audio_vault_ref IS NULL) OR source_audio_expires_at IS NOT NULL",
             name="ck_transcript_ingestion_jobs_source_expiry",
@@ -1873,6 +1876,10 @@ class TranscriptIngestionJob(Base):
     job_kind: Mapped[TranscriptIngestionJobKind] = mapped_column(Enum(TranscriptIngestionJobKind), nullable=False)
     chunk_sequence_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    active_attempt_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    automatic_retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     stt_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     stt_provider_preset: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stt_adapter_kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -2848,7 +2855,7 @@ class TaskDispatchOutbox(Base):
             "(state = 'failed' AND published_at IS NULL AND cancelled_at IS NULL AND failed_at IS NOT NULL)",
             name="ck_task_dispatch_outbox_state_timestamps",
         ),
-        UniqueConstraint("dispatch_kind", "source_kind", "source_id", name="uq_task_dispatch_outbox_dispatch_source"),
+        UniqueConstraint("dispatch_kind", "source_kind", "source_id", "dispatch_sequence", name="uq_task_dispatch_outbox_dispatch_source"),
         Index("ix_task_dispatch_outbox_pending_retry", "state", "next_attempt_at"),
         Index("ix_task_dispatch_outbox_source", "source_kind", "source_id"),
     )
@@ -2858,6 +2865,7 @@ class TaskDispatchOutbox(Base):
     state: Mapped[TaskDispatchState] = mapped_column(Enum(TaskDispatchState), nullable=False)
     source_kind: Mapped[TaskDispatchSourceKind] = mapped_column(Enum(TaskDispatchSourceKind), nullable=False)
     source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    dispatch_sequence: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

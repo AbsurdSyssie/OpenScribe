@@ -13,7 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import httpx
-from openai import APIStatusError, AuthenticationError, OpenAI, PermissionDeniedError
+from openai import APIConnectionError, APIStatusError, APITimeoutError, AuthenticationError, OpenAI, PermissionDeniedError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
@@ -1629,6 +1629,15 @@ def _transcribe_via_openai_cloud(
         kwargs["response_format"] = response_format
     try:
         response = client.audio.transcriptions.create(**kwargs)
+    except APITimeoutError as exc:
+        raise AppError(504, "stt_timeout", "STT provider timed out", {"provider_error_code": "timeout"}) from exc
+    except APIConnectionError as exc:
+        raise AppError(502, "stt_unavailable", "Could not reach the STT provider", {"provider_error_code": "connection_error"}) from exc
+    except APIStatusError as exc:
+        raise AppError(
+            502, "stt_request_failed", "STT provider request failed",
+            {"provider_status_code": exc.status_code, "provider_error_code": "http_status_error"},
+        ) from exc
     except Exception as exc:  # pragma: no cover
         raise AppError(502, "stt_request_failed", "STT provider request failed") from exc
 

@@ -79,6 +79,8 @@ This supports:
 
 The sequence contract belongs to the transcript root. A chunk cannot be redirected to a new consultation merely because the UI selection changes later.
 
+Each pending chunk keeps one idempotency key for its automatic and user-triggered replays. An exact replay returns the accepted job; reuse with a different chunk sequence, ingestion kind, or byte length is rejected. This resolves a lost response without applying the chunk twice.
+
 ## Routes and backend lifecycle
 
 The browser uses owner-authorized routes including:
@@ -90,6 +92,8 @@ The browser uses owner-authorized routes including:
 - owner workspace polling/status routes.
 
 Each accepted chunk creates durable ingestion metadata and queued work. The provider worker resolves the snapshotted STT configuration/credential, processes audio, and applies encrypted result text in sequence.
+
+After an eligible provider failure, the initial attempt has two durable automatic retries, due after five then ten seconds. Eligible failures are provider timeout/connection failures and provider HTTP 429/5xx responses. Invalid audio, authorization/configuration/credential, quota, source-expiry, and other failures do not retry automatically. A failed chunk can be manually retried through the owner retry route while its retained source remains available; it reuses the original job and sequence number.
 
 Finalization moves the transcript out of active recording. It remains transcribing while queued/processing chunks exist and reconciles to ready when work completes. Already uploaded chunks can continue processing after the user opens another consultation.
 
@@ -132,14 +136,9 @@ Do not conflate whole-file microphone batch with `live_chunked`; they have diffe
 
 ## Failure handling
 
-On live upload failure:
+On live upload failure, the open tab retains the unaccepted chunk in JavaScript memory. Network failures, HTTP 429, and HTTP 5xx receive two browser retries, using `Retry-After` capped at ten seconds when provided or bounded two/four-second fallback delays. On exhaustion, and after a non-retryable upload response, the workspace offers a retry for that audio while the originating transcript is active. The same stable idempotency key is used throughout.
 
-- route-level `rate_limited` can be retried briefly with the same sequence number;
-- quota, authorization, mode, duplicate, validation, and other non-retryable failures stop automatic capture/retry and show a controlled error;
-- the transcript retains its durable backend state;
-- the user may restart capture after understanding/correcting the failure.
-
-Live mode does not currently persist a browser-side/per-chunk retry queue equivalent to whole-file source-audio retry. A failed, unaccepted local chunk can therefore require user restart and may create a gap. The UI must not imply guaranteed lossless capture.
+The pending chunk is not stored in Web Storage, IndexedDB, a URL, logs, or audit metadata. Refresh, sign-out, tab/browser closure, or a browser/process crash loses it and can leave a gap. Server-retained source for an accepted failed job is separate, lasts no longer than 24 hours from its original write, and enables owner manual retry only until that deadline. The UI must not imply guaranteed lossless capture.
 
 ## Privacy and security
 
@@ -159,13 +158,12 @@ Known tradeoffs:
 - forced 30-second boundaries can cut a sentence and introduce overlap duplication;
 - VAD accuracy depends on microphone/environment/model behavior;
 - background/unload finalization is best-effort;
-- no durable browser-side per-chunk retry queue exists.
+- pending unaccepted audio is limited to current-tab memory and does not survive refresh or browser loss.
 
 Potential follow-up work:
 
 - tune timing/overlap with controlled clinical-environment testing;
 - select lower-energy cut points near the forced boundary;
-- add durable bounded per-chunk retry/recovery semantics;
 - improve reconnect/multi-device session handling;
 - expose safer diagnostics for missing sequence/gap conditions without logging content.
 

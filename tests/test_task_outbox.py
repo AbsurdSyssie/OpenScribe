@@ -118,9 +118,22 @@ def test_default_publisher_maps_kwargs_and_uses_stored_deterministic_id(db_sessi
 
     assert calls == [
         ("generation", {"kwargs": {"document_id": str(generation.source_id)}, "task_id": str(generation.task_id)}),
-        ("ingestion", {"kwargs": {"job_id": str(ingestion.source_id)}, "task_id": str(ingestion.task_id)}),
+        ("ingestion", {"kwargs": {"job_id": str(ingestion.source_id), "dispatch_sequence": 1}, "task_id": str(ingestion.task_id)}),
         ("split", {"kwargs": {"execution_id": str(split.source_id)}, "task_id": str(split.task_id)}),
     ]
+
+
+def test_ingestion_dispatch_sequences_have_distinct_durable_task_ids(db_session):
+    source_id = uuid4()
+    first = add_pending_task_dispatch(
+        db_session, dispatch_kind=TaskDispatchKind.ingestion, source_id=source_id, dispatch_sequence=1,
+    )
+    retry = add_pending_task_dispatch(
+        db_session, dispatch_kind=TaskDispatchKind.ingestion, source_id=source_id, dispatch_sequence=2,
+    )
+
+    assert first.task_id != retry.task_id
+    assert (first.dispatch_sequence, retry.dispatch_sequence) == (1, 2)
 
 
 def test_publisher_marks_success(db_session):

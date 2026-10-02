@@ -44,11 +44,13 @@ The user selects an audio file. The backend:
 9. calls the provider and appends encrypted result text to the transcript draft;
 10. clears or durably queues cleanup for temporary source audio after successful terminal handling; a failed source remains retryable only until its fixed 24-hour deadline.
 
+The browser retains an unaccepted selected file in JavaScript memory for the open tab. It retries a recoverable upload failure twice and then offers an explicit upload retry while that tab remains open. The stable request idempotency key is reused for those attempts, so a replay after a lost response returns the originally accepted job rather than creating another one. The local audio is cleared after acceptance. It is not browser-persisted and is lost on refresh, sign-out, or tab/browser/process closure.
+
 ### Microphone batch
 
 The browser records locally and submits one or more whole-file parts. It rolls over before the local WAV approaches server upload/duration limits. Parts stay attached to the transcript UUID captured when recording began, so delayed uploads cannot drift to a newly selected consultation.
 
-Only one whole-file ingestion job is actively processed for a transcript at a time; capture restarts for the same transcript only after that part is accepted. If a rollover part cannot be accepted, capture stops instead of recording later audio and creating an undetectable transcript gap.
+Only one whole-file ingestion job is actively processed for a transcript at a time; capture restarts for the same transcript only after that part is accepted. If a rollover part cannot be accepted, its local audio stays available in the originating open tab for automatic or user-triggered re-upload; capture stops instead of recording later audio and creating an undetectable transcript gap.
 
 ### Live chunked
 
@@ -87,6 +89,8 @@ Transcript state is reconciled from durable ingestion work rather than trusted b
 - `transcribing` represents pending or processing ingestion after capture/upload.
 - `ready` represents a transcript with no active ingestion work after reconciliation.
 - terminal/failed job metadata remains distinct from transcript text and can be retried only while its bounded source-audio reference exists and the original 24-hour deadline has not passed;
+- provider timeouts, connection failures, HTTP 429, and HTTP 5xx receive two durable automatic retries after the initial attempt, due after five then ten seconds; other provider/configuration, credential, quota, invalid-audio, and expiry failures terminalise without automatic retry;
+- an owner can manually retry retained failed whole-file or live-chunk audio. A transcript-level retry selects the earliest retained live gap or a failed file; a job-level retry targets a retained failed job. Live retry reuses the original job and sequence so later chunks remain ordered;
 - retry transfers the original source reference and deadline; it cannot extend the source-audio lifetime;
 - queued, processing or failed work that reaches the deadline is terminalised safely, its dispatch/attempt state is reconciled, and Vault cleanup is durable and repeatable;
 - the API and workspace report expiry in safe terms and require a fresh upload.
@@ -172,6 +176,8 @@ Recording lifecycle events disable marked navigation controls and install an unl
 
 Workspace refresh and polling reconcile server state, refresh owner transcript/history data, and enable generation controls when meaningful source content becomes available.
 
+Pending selected-file, microphone-batch, rollover, and live-chunk audio exists only in JavaScript memory for its current tab. Recoverable upload failures (network failures, HTTP 429, and HTTP 5xx) are retried twice with bounded delay; after that, the workspace offers a retry for the pending audio while the originating transcript is active. It also retains the audio for an explicit retry after a non-retryable upload response. Switching away hides the action and switching back restores it. This is not durable recovery: refresh, sign-out, closing the tab/browser, or a browser/process crash loses the pending audio. The separate server-side retained source has the fixed 24-hour limit described below; expiry requires the user to supply audio again.
+
 At 1,200 transcript characters, an owner who has not explicitly disabled template suggestions may claim the transcript's one durable template-suggestion job. The setting is on by default. Disabled users do not create a job or send transcript content to redaction or an LLM. Turning the setting off cancels queued work, its pending dispatch, and its reserved quota; it cannot recall a provider request that has already been submitted. The server stores the first eligible excerpt as owner-encrypted transcript content and dispatches classification through the quota-backed task outbox. The browser submits the selected template ID when it queues the job; the server snapshots its available metadata with the job. The worker redacts the excerpt, including saved manual PII, before sending it to the selected LLM along with the current-template snapshot. The prompt allows a null result when the current template is already a good fit. The browser polls the owner-only job and may offer one accessible template. Dismissal and acceptance remain browser state; accepting uses the ordinary template picker and does not generate a note. See [template-suggestion-preference.md](template-suggestion-preference.md).
 
 ## Redaction and PII
@@ -193,7 +199,7 @@ The Transcript panel can copy its current redacted text through an owner-only PO
 - The transcript root owns versions, ingestion and template-suggestion jobs, generated documents, redaction/PII data, working notes, dictation, and related content.
 - Content services reject expired roots before the 10-second retention worker physically deletes them.
 - Transcript deletion is immediate from the user's perspective and uses relational cascades/service cleanup.
-- Temporary source audio and provider secrets use durable cleanup queues with retries and live-reference guards. Failed whole-file retry audio has an absolute maximum lifetime of 24 hours from its original Vault write.
+- Temporary source audio and provider secrets use durable cleanup queues with retries and live-reference guards. Failed whole-file and live-chunk retry audio has an absolute maximum lifetime of 24 hours from its original Vault write.
 - Queue/outbox rows are terminalized or removed consistently with their source objects.
 
 ## Remaining roadmap
@@ -204,7 +210,6 @@ The following are not implied merely by the existing capture foundation and shou
 - richer pause/resume/reconnect semantics across browser/device changes;
 - multi-device live session coordination;
 - external object-storage architecture for long-lived source audio (current temporary retry storage is Vault-backed and bounded);
-- user-facing retry/diagnostic improvements that preserve safe provider-error handling;
 - broader semantic quality controls for microphone-batch rollover and partial-provider results;
 - any content-sharing/export workflow, which requires a separate authorization/privacy design.
 

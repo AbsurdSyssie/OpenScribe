@@ -6814,7 +6814,7 @@ def test_transcribe_session_panel_uses_structural_lower_row_without_content_sign
     assert "llmRequestPayload" not in document_region
 
 
-def test_live_chunk_upload_retries_only_structured_rate_limit_errors():
+def test_audio_upload_retries_recoverable_failures_with_idempotency_and_pending_retry():
     root = Path(__file__).resolve().parents[1]
     app_js = (root / "app" / "static" / "js" / "transcribe" / "app.js").read_text(encoding="utf-8")
     media_js = (root / "app" / "static" / "js" / "transcribe" / "media.js").read_text(encoding="utf-8")
@@ -6824,10 +6824,13 @@ def test_live_chunk_upload_retries_only_structured_rate_limit_errors():
     assert "details: payload?.error?.details || null," in app_js
     assert "await parseErrorResponse(response, fallback)" in app_js
     assert "parseErrorResponse," in media_js
-    assert "const errorResponse = await parseErrorResponse(response" in media_js
-    assert "if (errorResponse.code !== 'rate_limited' || attempt === maxAttempts)" in media_js
-    assert "response.headers.get('Retry-After')" in media_js
-    assert "if (response.status !== 429 || attempt === maxAttempts)" not in media_js
+    assert "const maxAttempts = 3;" in media_js
+    assert "response.status === 429 || response.status >= 500" in media_js
+    assert "'Idempotency-Key': idempotencyKey" in media_js
+    assert "showPendingAudioRetry(message, retry" in media_js
+    assert "Audio is still available in this tab." in media_js
+    assert "response?.headers?.get?.('Retry-After')" in media_js
+    assert "Idempotency-Key': idempotencyKey" in (root / "app" / "static" / "js" / "transcribe" / "actions.js").read_text(encoding="utf-8")
 
 
 def test_generated_document_pii_no_reveal_mode_strips_cached_values():
@@ -7284,15 +7287,16 @@ def test_recorded_upload_microphone_rolls_over_before_whole_file_limits():
     assert "batchSpeechSegments = [];" in media_js
     assert "await restartMicrophoneBatchAfterRollover();" in media_js
     assert "batchCaptureGeneration !== restartGeneration" in media_js
-    assert "Previous recording part is still transcribing. Holding the next part locally, then retrying..." in media_js
+    assert "Microphone recording upload was interrupted." in media_js
+    assert "response.status === 429 || response.status >= 500" in media_js
     assert "const transcriptId = activeBatchTranscriptId();" in media_js
     assert "return true;" in media_js
     assert "return false;" in media_js
     assert "await queueMicrophoneBatchUpload(blob, { transcriptId });" in media_js
-    assert "await uploadBatchAudio(blob, { transcriptId: uploadTranscriptId });" in media_js
+    assert "await uploadBatchAudio(blob, { transcriptId: uploadTranscriptId, idempotencyKey });" in media_js
     assert "`/api/v1/transcripts/${uploadTranscriptId}/audio-file`" in media_js
     assert "if (typeof uploadBatchAudio === 'function') {" in media_js
-    assert "await uploadBatchAudio(blob, { transcriptId: uploadTranscriptId });" in media_js
+    assert "await uploadBatchAudio(blob, { transcriptId: uploadTranscriptId, idempotencyKey });" in media_js
     assert "isCaptureUiActive: () => (" in media_js
     assert "setMicButtons(isCaptureUiActive());" in app_js
     assert "captureController?.isCaptureUiActive?.()" in app_js

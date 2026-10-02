@@ -65,6 +65,85 @@ export function createAudioCaptureController({
   let silencePromptTimeoutId = null;
   let silencePromptDismissedForCurrentSilentInterval = false;
   let vadSpeechCurrentlyActive = false;
+  let pendingAudioRetry = null;
+  const pendingAudioRetryOwner = 'capture';
+  const sharedPendingAudioRetry = () => dom.pendingAudioRetryButton?._openscribePendingAudioRetry || null;
+
+  const newUploadIdempotencyKey = () => {
+    if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+    if (!window.crypto?.getRandomValues) return null;
+    const bytes = window.crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  };
+
+  const clearPendingAudioRetry = () => {
+    pendingAudioRetry = null;
+    if (sharedPendingAudioRetry()?.owner === pendingAudioRetryOwner) {
+      dom.pendingAudioRetryButton._openscribePendingAudioRetry = null;
+    }
+    if (dom.pendingAudioRetryRegion) dom.pendingAudioRetryRegion.hidden = true;
+    if (dom.pendingAudioRetryButton) dom.pendingAudioRetryButton.disabled = false;
+    if (dom.pendingAudioRetryMessage) dom.pendingAudioRetryMessage.textContent = '';
+  };
+
+  const showPendingAudioRetry = (message, retry, transcriptId = null) => {
+    pendingAudioRetry = { retry, transcriptId };
+    if (dom.pendingAudioRetryButton) {
+      dom.pendingAudioRetryButton._openscribePendingAudioRetry = {
+        owner: pendingAudioRetryOwner, retry, transcriptId,
+      };
+    }
+    if (dom.pendingAudioRetryMessage) {
+      dom.pendingAudioRetryMessage.textContent = `${message} Audio is still available in this tab.`;
+    }
+    if (dom.pendingAudioRetryRegion) dom.pendingAudioRetryRegion.hidden = false;
+    if (dom.pendingAudioRetryButton) dom.pendingAudioRetryButton.disabled = false;
+  };
+
+  const isRecoverableUploadResponse = (response) => response.status === 429 || response.status >= 500;
+
+  const uploadRetryDelayMs = (attempt, response = null) => {
+    const retryAfterSeconds = Number(response?.headers?.get?.('Retry-After'));
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+      return Math.min(retryAfterSeconds * 1000, 10000);
+    }
+    return Math.min(2000 * (2 ** Math.max(0, attempt - 1)), 10000);
+  };
+
+  const sleepForUploadRetry = (delayMs) => new Promise((resolve) => window.setTimeout(resolve, delayMs));
+
+  const submitAudioWithRecovery = async ({ send, fallbackMessage, progressMessage, canReplay = true, retryConflict = false, conflictRetryDelayMs = 0 }) => {
+    const maxAttempts = canReplay ? 3 : 1;
+    let lastError = new Error(fallbackMessage);
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      let response = null;
+      try {
+        response = await send();
+        if (response.ok) return true;
+        const errorResponse = typeof parseErrorResponse === 'function'
+          ? await parseErrorResponse(response, fallbackMessage)
+          : { message: await parseErrorMessage(response, fallbackMessage) };
+        lastError = new Error(errorResponse.message || fallbackMessage);
+        if (!isRecoverableUploadResponse(response) && !(retryConflict && response.status === 409)) throw lastError;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(fallbackMessage);
+        if (response && !isRecoverableUploadResponse(response) && !(retryConflict && response.status === 409)) throw lastError;
+      }
+      if (attempt === maxAttempts) break;
+      const waitingForPriorPart = retryConflict && response?.status === 409;
+      setSessionProgress(waitingForPriorPart
+        ? `Previous recording part is still transcribing. Retrying this audio part automatically (${attempt} of 2)...`
+        : `${progressMessage} Retrying automatically (${attempt} of 2)...`);
+      setMicStatus(waitingForPriorPart ? 'Waiting for the previous recording part to finish...' : 'Upload connection interrupted. Retrying...');
+      await sleepForUploadRetry(waitingForPriorPart
+        ? Math.max(0, Number(conflictRetryDelayMs || 0))
+        : uploadRetryDelayMs(attempt, response));
+    }
+    throw lastError;
+  };
 
   const readStoredDurations = () => {
     try {
@@ -570,41 +649,47 @@ export function createAudioCaptureController({
     setMicStatus(`Sending live audio part ${chunkSequenceNo}...`);
     setVisibleStatus('sending chunk');
     setSessionProgress(`Sending live audio part ${chunkSequenceNo}...`);
-    const formData = new FormData();
-    formData.append('audio', blob, `live-chunk-${chunkSequenceNo}.wav`);
-    formData.append('chunk_sequence_no', String(chunkSequenceNo));
-    formData.append('declared_duration_seconds', durationSeconds.toFixed(3));
-    const maxAttempts = 3;
-    let lastMessage = 'Could not send this live audio part.';
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const idempotencyKey = newUploadIdempotencyKey();
+    const submit = async () => {
+      const formData = new FormData();
+      formData.append('audio', blob, `live-chunk-${chunkSequenceNo}.wav`);
+      formData.append('chunk_sequence_no', String(chunkSequenceNo));
+      formData.append('declared_duration_seconds', durationSeconds.toFixed(3));
       await waitForLiveChunkUploadSlot();
       liveLastChunkUploadStartedAt = Date.now();
-      const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/audio-chunks`, {
+      return csrfFetch(`/api/v1/transcripts/${transcriptId}/audio-chunks`, {
         method: 'POST',
         body: formData,
         credentials: 'include',
+        headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
       });
-      if (response.ok) {
+    };
+    const retry = async () => {
+      if (dom.pendingAudioRetryButton) dom.pendingAudioRetryButton.disabled = true;
+      try {
+        await submitAudioWithRecovery({
+          send: submit,
+          fallbackMessage: 'Could not send this live audio part.',
+          progressMessage: 'Live audio upload was interrupted.',
+          canReplay: Boolean(idempotencyKey),
+        });
+        setNextLiveChunkSequenceNo(chunkSequenceNo + 1);
+        clearPendingAudioRetry();
         reflectBackendStatus('transcribing');
         scheduleWorkspaceRefreshBurst({ attempts: 90, minimumAttempts: 8 });
-        return;
-      }
-      const errorResponse = await parseErrorResponse(response, 'Could not send this live audio part.');
-      lastMessage = errorResponse.message;
-      if (errorResponse.code !== 'rate_limited' || attempt === maxAttempts) {
+      } catch (error) {
         setNextLiveChunkSequenceNo(chunkSequenceNo);
-        throw new Error(lastMessage);
+        const message = error instanceof Error ? error.message : 'Could not send this live audio part.';
+        showPendingAudioRetry(message, retry, transcriptId);
+        throw error;
       }
-      setSessionProgress('Live upload rate limit reached. Waiting briefly, then retrying the same audio part...');
-      setMicStatus('Live upload is catching up...');
-      const retryAfterSeconds = Number(response.headers.get('Retry-After'));
-      const retryDelayMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
-        ? retryAfterSeconds * 1000
-        : Number(config.liveChunkRateLimitRetryMs || 1200);
-      await sleep(retryDelayMs);
+    };
+    try {
+      await retry();
+    } catch (error) {
+      setNextLiveChunkSequenceNo(chunkSequenceNo);
+      throw error;
     }
-    setNextLiveChunkSequenceNo(chunkSequenceNo);
-    throw new Error(lastMessage);
   };
 
   const finalizeLiveCaptureIfNeeded = async ({ keepalive = false } = {}) => {
@@ -784,47 +869,59 @@ export function createAudioCaptureController({
     setVisibleStatus('uploading');
     setSessionProgress(`Uploading your ${uploadLabel}...`);
     setRetryAvailability(false);
-    try {
-      const uploadTranscriptId = transcriptId || getState().transcriptId;
-      if (!uploadTranscriptId) {
-        throw new Error('Open consultation before sending microphone audio.');
-      }
-      if (uploadTranscriptId === getState().transcriptId) {
-        await syncTranscriptTitleIfNeeded();
-      }
-      if (typeof uploadBatchAudio === 'function') {
-        await uploadBatchAudio(blob, { transcriptId: uploadTranscriptId });
-      } else {
-        const formData = new FormData();
-        formData.append('audio', blob, blob.type === 'audio/wav' ? 'microphone-batch.wav' : 'microphone-batch.webm');
-        let response = null;
-        let lastMessage = 'Could not send the microphone recording.';
-        for (;;) {
-          response = await csrfFetch(`/api/v1/transcripts/${uploadTranscriptId}/audio-file`, {
-            method: 'POST',
-            body: formData,
-            credentials: 'include',
-          });
-          if (response.ok) break;
-          lastMessage = await parseErrorMessage(response, 'Could not send the microphone recording.');
-          if (!rollover || response.status !== 409) {
-            throw new Error(lastMessage);
-          }
-          setSessionProgress('Previous recording part is still transcribing. Holding the next part locally, then retrying...');
-          setMicStatus('Waiting for the previous recording part to finish...');
-          await sleep(Number(config.batchRolloverConflictRetryMs || 5000));
+    const uploadTranscriptId = transcriptId || getState().transcriptId;
+    if (!uploadTranscriptId) {
+      const message = 'Open consultation before sending microphone audio.';
+      setMicStatus(message, 'error');
+      showPendingAudioRetry(message, () => uploadMicrophoneBatch(blob, { rollover, transcriptId }), transcriptId);
+      return false;
+    }
+    const idempotencyKey = newUploadIdempotencyKey();
+    const retry = async () => {
+      if (dom.pendingAudioRetryButton) dom.pendingAudioRetryButton.disabled = true;
+      try {
+        if (uploadTranscriptId === getState().transcriptId) {
+          await syncTranscriptTitleIfNeeded();
         }
-      }
+        if (typeof uploadBatchAudio === 'function') {
+          await uploadBatchAudio(blob, { transcriptId: uploadTranscriptId, idempotencyKey });
+        } else {
+          await submitAudioWithRecovery({
+            send: () => {
+              const formData = new FormData();
+              formData.append('audio', blob, blob.type === 'audio/wav' ? 'microphone-batch.wav' : 'microphone-batch.webm');
+              return csrfFetch(`/api/v1/transcripts/${uploadTranscriptId}/audio-file`, {
+                method: 'POST',
+                body: formData,
+                credentials: 'include',
+                headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+              });
+            },
+            fallbackMessage: 'Could not send the microphone recording.',
+            progressMessage: 'Microphone recording upload was interrupted.',
+            canReplay: Boolean(idempotencyKey),
+            retryConflict: rollover,
+            conflictRetryDelayMs: Number(config.batchRolloverConflictRetryMs || 5000),
+          });
+        }
+        clearPendingAudioRetry();
       showFlash(rollover ? 'Recording part sent. Capture continues.' : (config.batchUploadSuccessMessage || 'Recording sent to be turned into text.'), 'success');
       await fetchWorkspace();
       scheduleWorkspaceRefreshBurst();
       return true;
-    } catch (error) {
+      } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not send the microphone recording.';
       setMicStatus(message, 'error');
       showFlash(message, 'error');
       reflectBackendStatus('failed', message);
       setRetryAvailability(false);
+        showPendingAudioRetry(message, retry, uploadTranscriptId);
+      return false;
+      }
+    };
+    try {
+      return await retry();
+    } catch (_) {
       return false;
     }
   };
@@ -988,6 +1085,10 @@ export function createAudioCaptureController({
   };
 
   const beginLiveTranscription = async () => {
+    if (sharedPendingAudioRetry()) {
+      setMicStatus('Retry the pending audio upload before starting another recording.', 'error');
+      return;
+    }
     if (!canUseLiveInput()) {
       setMicStatus('Open a consultation in live capture mode before starting.', 'error');
       return;
@@ -1051,6 +1152,10 @@ export function createAudioCaptureController({
   };
 
   const beginMicrophoneBatch = async () => {
+    if (sharedPendingAudioRetry()) {
+      setMicStatus('Retry the pending audio upload before starting another recording.', 'error');
+      return;
+    }
     if (!canUseWholeFileInput()) {
       setMicStatus('Open a consultation in uploaded recording mode before using the microphone here.', 'error');
       return;
@@ -1184,6 +1289,20 @@ export function createAudioCaptureController({
         dom.uploadForm.requestSubmit();
       });
     }
+    dom.pendingAudioRetryButton?.addEventListener('click', () => {
+      const pending = sharedPendingAudioRetry();
+      if (pending?.owner !== pendingAudioRetryOwner) return;
+      const retry = pending.retry;
+      if (typeof retry !== 'function' || (pending.transcriptId && pending.transcriptId !== getState().transcriptId)) return;
+      dom.pendingAudioRetryButton.disabled = true;
+      void retry().catch(() => {});
+    });
+    document.addEventListener('transcribe:active-transcript-changed', () => {
+      const pending = sharedPendingAudioRetry();
+      if (pending?.owner !== pendingAudioRetryOwner) return;
+      const visible = !pending.transcriptId || pending.transcriptId === getState().transcriptId;
+      if (dom.pendingAudioRetryRegion) dom.pendingAudioRetryRegion.hidden = !visible;
+    });
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden || captureMode !== 'live' || !liveVadInstance || liveStopRequested) {
         return;

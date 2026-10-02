@@ -462,6 +462,8 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         files=_file("audio.wav"),
     ),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/retry-audio-file", AccessTier.full),
+    AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/retry-audio", AccessTier.full),
+    AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/ingestion-jobs/{PLACEHOLDER_UUID_2}/retry-audio", AccessTier.full),
     AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}", AccessTier.full),
     AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/post-consultation-dictation", AccessTier.full),
     AuditCase(

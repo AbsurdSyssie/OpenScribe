@@ -1,8 +1,8 @@
-import { attachTranscribeActions } from './actions.js?v=20260930-detected-pii-override';
+import { attachTranscribeActions } from './actions.js?v=20261001-audio-upload-recovery';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
 import { createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationLoadingHtml } from './documents.js?v=20260918-retired-note-workspace';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
-import { createAudioCaptureController } from './media.js?v=20260528-consult-boundary-guard';
+import { createAudioCaptureController } from './media.js?v=20261001-audio-upload-recovery';
 import { createStructuredEditor } from './structured.js?v=20260918-retired-note-workspace';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
@@ -195,7 +195,11 @@ import {
       const retryIngestionForm = document.querySelector('[data-retry-ingestion-form]');
       const retryIngestionTrigger = document.querySelector('[data-retry-ingestion-trigger]');
       const retryTranscriptIdInput = document.querySelector('[data-retry-transcript-id]');
+      const retryIngestionJobIdInput = document.querySelector('[data-retry-ingestion-job-id]');
       const retryIngestionExpired = document.querySelector('[data-retry-ingestion-expired]');
+      const pendingAudioRetryRegion = document.querySelector('[data-pending-audio-retry-region]');
+      const pendingAudioRetryMessage = document.querySelector('[data-pending-audio-retry-message]');
+      const pendingAudioRetryButton = document.querySelector('[data-pending-audio-retry]');
       const newSessionForm = document.querySelector('#new-session-form');
       const bulkDeleteForm = document.querySelector('#bulk-delete-sessions');
       const titleForm = document.querySelector('[data-transcript-title-form]');
@@ -2250,7 +2254,7 @@ let statusDetailsHideTimer = null;
         return true;
       };
 
-      const setRetryAvailability = (canRetry, retryExpired = false) => {
+      const setRetryAvailability = (canRetry, retryExpired = false, retryJobId = null) => {
         if (retryIngestionForm) {
           retryIngestionForm.hidden = !canRetry;
         }
@@ -2262,6 +2266,7 @@ let statusDetailsHideTimer = null;
         if (retryTranscriptIdInput) {
           retryTranscriptIdInput.value = transcriptId || '';
         }
+        if (retryIngestionJobIdInput) retryIngestionJobIdInput.value = retryJobId || '';
         if (retryIngestionExpired) {
           retryIngestionExpired.hidden = !retryExpired;
         }
@@ -2817,6 +2822,9 @@ let statusDetailsHideTimer = null;
           silencePrompt,
           silencePromptDismiss,
           uploadForm,
+          pendingAudioRetryRegion,
+          pendingAudioRetryMessage,
+          pendingAudioRetryButton,
         },
         config: {
           batchUploadSuccessMessage: 'Recording sent to be turned into text.',
@@ -3952,6 +3960,7 @@ let statusDetailsHideTimer = null;
           }
         }
         transcriptId = transcript?.id || null;
+        document.dispatchEvent(new CustomEvent('transcribe:active-transcript-changed'));
         consultationSplittingEnabled = Boolean(workspace.consultation_splitting_enabled);
         latestSplitAnalysis = workspace.consultation_split_analysis || null;
         latestSplitBatch = workspace.consultation_split_batch || null;
@@ -3979,16 +3988,18 @@ let statusDetailsHideTimer = null;
         dictationSttStatusMessage = workspace.dictation_stt_status_message || null;
         latestIngestionJobStatus = transcript?.latest_ingestion_job_status || null;
         latestIngestionErrorMessage = transcript?.latest_ingestion_error_message || null;
+        if (transcript?.latest_ingestion_next_retry_at) {
+          const retryCount = Number(transcript.latest_ingestion_automatic_retry_count || 0);
+          setSessionProgress(`Transcription will retry automatically (${retryCount} of 2 retries used).`);
+        }
         const retryAvailable = Boolean(
           transcript
           && transcript.latest_ingestion_retry_available
           && workspace.stt_selected
           && workspace.stt_available
-          && transcript.ingestion_mode === 'whole_file'
-          && transcript.status === 'failed'
         );
         setNewSessionAvailability(Boolean(workspace.can_create_new_session), workspace.new_session_block_message || '');
-        setRetryAvailability(retryAvailable, Boolean(transcript?.latest_ingestion_retry_expired));
+        setRetryAvailability(retryAvailable, Boolean(transcript?.latest_ingestion_retry_expired), transcript?.latest_ingestion_retry_job_id || null);
         const recentTranscriptsTopHasMore = Boolean(
           workspace.recent_transcripts_has_more && workspace.recent_transcripts_next_cursor
         );
@@ -4478,6 +4489,9 @@ let statusDetailsHideTimer = null;
           followupHistoryNoResults,
           recordingModeSelect,
           renameTitleInput,
+          retryIngestionForm,
+          retryIngestionTrigger,
+          retryIngestionJobIdInput,
           runQuickActionForm,
           runQuickActionSelect,
           runQuickActionTrigger,
@@ -4486,6 +4500,9 @@ let statusDetailsHideTimer = null;
           structuredCopyStatus,
           titleForm,
           uploadForm,
+          pendingAudioRetryRegion,
+          pendingAudioRetryMessage,
+          pendingAudioRetryButton,
         },
         routeBase,
         getTranscriptId: () => transcriptId,

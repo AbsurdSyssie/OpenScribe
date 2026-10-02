@@ -23,6 +23,7 @@ from ..models import (
     TeamRole,
     TemplateMode,
     Transcript,
+    TranscriptIngestionJob,
     TranscriptIngestionJobKind,
     TranscriptIngestionJobStatus,
     TranscriptIngestionMode,
@@ -100,6 +101,24 @@ from .templates import templates
 LOCALHOST_NAMES = {"localhost", "127.0.0.1", "::1", "testserver", "testclient"}
 TRANSCRIPT_HISTORY_DEFAULT_LIMIT = 12
 TRANSCRIPT_HISTORY_MAX_LIMIT = 24
+
+
+def _earliest_retryable_ingestion_job(db: Session, *, transcript: Transcript) -> TranscriptIngestionJob | None:
+    """Return the retained failed job that can be retried without skipping a live gap."""
+    statement = (
+        select(TranscriptIngestionJob)
+        .where(
+            TranscriptIngestionJob.transcript_id == transcript.id,
+            TranscriptIngestionJob.status == TranscriptIngestionJobStatus.failed,
+            TranscriptIngestionJob.source_audio_size_bytes.is_not(None),
+            or_(TranscriptIngestionJob.source_audio_blob.is_not(None), TranscriptIngestionJob.source_audio_vault_ref.is_not(None)),
+        )
+    )
+    if transcript.ingestion_mode is TranscriptIngestionMode.live_chunked:
+        statement = statement.order_by(TranscriptIngestionJob.chunk_sequence_no.asc(), TranscriptIngestionJob.created_at.asc())
+    else:
+        statement = statement.order_by(TranscriptIngestionJob.created_at.desc())
+    return db.scalar(statement.limit(1))
 
 
 def _missing_stt_selection_message(*, team_leader_email: str | None) -> str:
@@ -746,9 +765,14 @@ def resolve_transcribe_workspace(
         if active_transcript is not None
         else None
     )
+    active_transcript_retry_job = (
+        _earliest_retryable_ingestion_job(db, transcript=active_transcript)
+        if active_transcript is not None
+        else None
+    )
     active_transcript_retry_expired = bool(
-        active_transcript_latest_job is not None
-        and active_transcript_latest_job.job_kind is TranscriptIngestionJobKind.audio_file
+        active_transcript_retry_job is None
+        and active_transcript_latest_job is not None
         and active_transcript_latest_job.status is TranscriptIngestionJobStatus.failed
         and ingestion_retry_source_expired_service(active_transcript_latest_job)
     )
@@ -893,6 +917,7 @@ def resolve_transcribe_workspace(
         "recent_transcripts_has_more": recent_transcript_page["has_more"],
         "active_transcript": active_transcript,
         "active_transcript_latest_job": active_transcript_latest_job,
+        "active_transcript_retry_job": active_transcript_retry_job,
         "active_transcript_retry_expired": active_transcript_retry_expired,
         "active_transcript_next_live_chunk_sequence_no_upload": active_transcript_next_live_chunk_sequence_no_upload,
         "active_transcript_id": str(active_transcript.id) if active_transcript is not None else None,
@@ -994,6 +1019,7 @@ def resolve_transcribe_workspace(
 def transcript_detail_response(db: Session, transcript: Transcript) -> TranscriptDetail:
     transcript = reconcile_transcript_status_service(db, transcript=transcript)
     latest_job = latest_ingestion_job_for_transcript_service(db, transcript_id=transcript.id)
+    retry_job = _earliest_retryable_ingestion_job(db, transcript=transcript)
     payload = transcript_list_item_response(db, transcript).model_dump()
     payload["current_draft_text"] = transcript_draft_text_service(db, transcript=transcript)
     payload["structured_context_json"] = transcript_structured_context_service(db, transcript=transcript)
@@ -1006,18 +1032,17 @@ def transcript_detail_response(db: Session, transcript: Transcript) -> Transcrip
         payload["latest_ingestion_job_status"] = latest_job.status
         payload["latest_ingestion_error_code"] = latest_job.error_code
         payload["latest_ingestion_error_message"] = latest_job.error_message
+        payload["latest_ingestion_automatic_retry_count"] = latest_job.automatic_retry_count
+        payload["latest_ingestion_next_retry_at"] = latest_job.next_retry_at
         payload["latest_ingestion_retry_expired"] = bool(
-            latest_job.job_kind is TranscriptIngestionJobKind.audio_file
+            retry_job is None
             and latest_job.status is TranscriptIngestionJobStatus.failed
             and ingestion_retry_source_expired_service(latest_job)
         )
-        payload["latest_ingestion_retry_available"] = bool(
-            latest_job.job_kind is TranscriptIngestionJobKind.audio_file
-            and latest_job.status is TranscriptIngestionJobStatus.failed
-            and not payload["latest_ingestion_retry_expired"]
-            and (latest_job.source_audio_blob or latest_job.source_audio_vault_ref)
-            and latest_job.source_audio_size_bytes
-        )
+        payload["latest_ingestion_retry_available"] = retry_job is not None
+        payload["latest_ingestion_retry_job_id"] = str(retry_job.id) if retry_job is not None else None
+        payload["latest_ingestion_retry_automatic_count"] = retry_job.automatic_retry_count if retry_job is not None else None
+        payload["latest_ingestion_retry_next_at"] = retry_job.next_retry_at if retry_job is not None else None
     elif transcript.ingestion_mode is TranscriptIngestionMode.live_chunked:
         payload["next_live_chunk_sequence_no_upload"] = next_live_chunk_sequence_no_for_transcript_service(db, transcript_id=transcript.id)
     return TranscriptDetail.model_validate(payload)

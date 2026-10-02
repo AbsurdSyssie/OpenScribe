@@ -93,7 +93,14 @@ export function createAudioCaptureController({
     pendingAudioRetry = { retry, transcriptId };
     if (dom.pendingAudioRetryButton) {
       dom.pendingAudioRetryButton._openscribePendingAudioRetry = {
-        owner: pendingAudioRetryOwner, retry, transcriptId,
+        owner: pendingAudioRetryOwner,
+        retry,
+        transcriptId,
+        discard: () => {
+          clearPendingAudioRetry();
+          setMicStatus('Pending audio discarded.');
+          setSessionProgress('Pending audio discarded. You can choose or record replacement audio.');
+        },
       };
     }
     if (dom.pendingAudioRetryMessage) {
@@ -1296,6 +1303,12 @@ export function createAudioCaptureController({
       if (typeof retry !== 'function' || (pending.transcriptId && pending.transcriptId !== getState().transcriptId)) return;
       dom.pendingAudioRetryButton.disabled = true;
       void retry().catch(() => {});
+    });
+    dom.pendingAudioDiscardButton?.addEventListener('click', () => {
+      const pending = sharedPendingAudioRetry();
+      if (pending?.owner !== pendingAudioRetryOwner || typeof pending.discard !== 'function') return;
+      if (!window.confirm('Discard this pending audio? It cannot be recovered after you discard it.')) return;
+      pending.discard();
     });
     document.addEventListener('transcribe:active-transcript-changed', () => {
       const pending = sharedPendingAudioRetry();

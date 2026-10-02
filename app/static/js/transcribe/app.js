@@ -200,6 +200,7 @@ import {
       const pendingAudioRetryRegion = document.querySelector('[data-pending-audio-retry-region]');
       const pendingAudioRetryMessage = document.querySelector('[data-pending-audio-retry-message]');
       const pendingAudioRetryButton = document.querySelector('[data-pending-audio-retry]');
+      const pendingAudioDiscardButton = document.querySelector('[data-pending-audio-discard]');
       const newSessionForm = document.querySelector('#new-session-form');
       const bulkDeleteForm = document.querySelector('#bulk-delete-sessions');
       const titleForm = document.querySelector('[data-transcript-title-form]');
@@ -2825,6 +2826,7 @@ let statusDetailsHideTimer = null;
           pendingAudioRetryRegion,
           pendingAudioRetryMessage,
           pendingAudioRetryButton,
+          pendingAudioDiscardButton,
         },
         config: {
           batchUploadSuccessMessage: 'Recording sent to be turned into text.',
@@ -4503,6 +4505,7 @@ let statusDetailsHideTimer = null;
           pendingAudioRetryRegion,
           pendingAudioRetryMessage,
           pendingAudioRetryButton,
+          pendingAudioDiscardButton,
         },
         routeBase,
         getTranscriptId: () => transcriptId,

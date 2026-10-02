@@ -6824,7 +6824,7 @@ def test_audio_upload_retries_recoverable_failures_with_idempotency_and_pending_
     assert "details: payload?.error?.details || null," in app_js
     assert "await parseErrorResponse(response, fallback)" in app_js
     assert "parseErrorResponse," in media_js
-    assert "const maxAttempts = 3;" in media_js
+    assert "const maxAttempts = canReplay ? 3 : 1;" in media_js
     assert "response.status === 429 || response.status >= 500" in media_js
     assert "'Idempotency-Key': idempotencyKey" in media_js
     assert "showPendingAudioRetry(message, retry" in media_js

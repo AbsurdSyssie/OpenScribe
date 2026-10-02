@@ -23,7 +23,7 @@ import pyotp
 from fastapi import Request, UploadFile
 from fastapi.routing import APIRoute
 from sqlalchemy import event, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from scripts.seed_dev_accounts import ensure_dev_system_admin, repair_dev_user_content_key_if_needed
 from scripts.reset_unreadable_owner_content import reset_owner_content_for_user, reset_unreadable_owner_content
@@ -19708,6 +19708,83 @@ def test_audio_file_upload_idempotency_replays_accepted_job_after_response_loss(
     assert_error(incompatible, status_code=409, code="idempotency_conflict", message="Upload request conflicts with an existing audio job")
 
 
+def test_audio_file_upload_deadlock_before_job_can_retry_same_audio_and_idempotency_key(
+    client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
+):
+    """A rolled-back post-Vault upload leaves the browser's same bytes retryable."""
+    team = make_team(name="Upload deadlock recovery")
+    owner = make_user(email="upload-deadlock@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    admin = make_user(email="upload-deadlock-admin@example.com", password="password-2", is_system_admin=True)
+    config = make_stt_config(team=team, actor=admin)
+    make_stt_selection(config=config, actor=owner)
+    source_audio = make_test_wav_bytes(duration_seconds=1)
+    written_refs: list[str] = []
+    original_write = transcript_service.write_transcript_ingestion_source_audio
+
+    def capture_write(*, job_id, audio_bytes):
+        secret_ref = original_write(job_id=job_id, audio_bytes=audio_bytes)
+        written_refs.append(secret_ref)
+        return secret_ref
+
+    monkeypatch.setattr("app.services.transcripts.inspect_audio_duration_seconds", lambda **_: 1.0)
+    monkeypatch.setattr("app.services.transcripts.write_transcript_ingestion_source_audio", capture_write)
+    login(client, email="upload-deadlock@example.com", password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Deadlock recovery", "ingestion_mode": "whole_file"})
+    transcript_id = UUID(started.json()["id"])
+    url = f"/api/v1/transcripts/{transcript_id}/audio-file"
+    key = str(uuid4())
+
+    original_queue = transcript_service._queue_ingestion_attempt_and_dispatch
+    queue_calls = 0
+
+    def deadlock_once(*args, **kwargs):
+        nonlocal queue_calls
+        queue_calls += 1
+        if queue_calls == 1:
+            # This runs after the Vault write and before the job transaction
+            # commits, matching the observed transaction-deadlock boundary.
+            raise OperationalError("INSERT", {}, Exception("synthetic deadlock"))
+        return original_queue(*args, **kwargs)
+
+    monkeypatch.setattr("app.services.transcripts._queue_ingestion_attempt_and_dispatch", deadlock_once)
+    # The regular fixture re-raises unhandled server errors.  Temporarily make
+    # its transport behave like the browser so the observed pre-acceptance
+    # failure is a 500 response without replacing its test DB session.
+    original_raise_server_exceptions = client._transport.raise_server_exceptions
+    client._transport.raise_server_exceptions = False
+    try:
+        failed = client.post(
+            url,
+            files={"audio": ("recording.wav", source_audio, "audio/wav")},
+            headers={"Idempotency-Key": key},
+        )
+    finally:
+        client._transport.raise_server_exceptions = original_raise_server_exceptions
+
+    assert failed.status_code == 500
+    assert db_session.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.transcript_id == transcript_id)) is None
+    assert len(written_refs) == 1
+    assert db_session.scalar(select(TranscriptAudioCleanupJob).where(TranscriptAudioCleanupJob.secret_ref == written_refs[0])) is not None
+
+    # Retry rate limiting is independent from the idempotency and transaction
+    # contract being exercised here.
+    from tests.conftest import clear_test_rate_limit_storage, rate_limit_key_pattern, rate_limit_redis
+    clear_test_rate_limit_storage(rate_limit_redis, key_pattern=rate_limit_key_pattern())
+    retried = client.post(
+        url,
+        files={"audio": ("recording.wav", source_audio, "audio/wav")},
+        headers={"Idempotency-Key": key},
+    )
+
+    assert retried.status_code == 202, retried.text
+    jobs = db_session.scalars(select(TranscriptIngestionJob).where(TranscriptIngestionJob.transcript_id == transcript_id)).all()
+    assert len(jobs) == 1
+    accepted_job = jobs[0]
+    assert accepted_job.request_idempotency_key == key
+    assert accepted_job.source_audio_vault_ref == written_refs[1]
+    assert transcript_service.read_transcript_ingestion_source_audio(secret_ref=accepted_job.source_audio_vault_ref) == source_audio
+
+
 def test_retry_audio_file_route_requeues_failed_blob_for_owner(
     client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch
 ):
@@ -19835,6 +19912,54 @@ def test_targeted_live_chunk_retry_preserves_gap_and_applies_waiting_chunks(
     assert decrypt_transcript_draft(db_session, refreshed_transcript) == "draft\nfirst\nsecond"
     assert refreshed_transcript.next_live_chunk_sequence_no_applied == 3
     assert refreshed_waiting.status is TranscriptIngestionJobStatus.applied
+
+
+def test_targeted_live_chunk_retry_hides_retained_audio_from_non_owner(
+    client, db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Targeted live retry scope")
+    owner = make_user(email="targeted-live-owner@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    other = make_user(email="targeted-live-other@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Owner live retry",
+        ingestion_mode=TranscriptIngestionMode.live_chunked,
+        status=TranscriptStatus.failed,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    failed_job = make_ingestion_job_for_transcript(
+        transcript,
+        job_kind=TranscriptIngestionJobKind.live_chunk,
+        chunk_sequence_no=1,
+        source_filename="chunk.wav",
+        source_audio_vault_ref="secret:openscribe/transcript-ingestion/targeted-live-owner/source-audio",
+        source_audio_expires_at=utcnow() + timedelta(hours=24),
+        source_audio_size_bytes=16,
+        declared_duration_seconds=1.0,
+        status=TranscriptIngestionJobStatus.failed,
+    )
+    db_session.add(failed_job)
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.services.transcripts.read_transcript_ingestion_source_audio",
+        lambda **_: pytest.fail("non-owner retry must not read retained source audio"),
+    )
+    monkeypatch.setattr(
+        "app.services.transcripts.try_publish_task_dispatch_safely",
+        lambda *_: pytest.fail("non-owner retry must not publish a dispatch"),
+    )
+
+    login(client, email="targeted-live-other@example.com", password="password-2")
+    forbidden = client.post(f"/api/v1/transcripts/{transcript.id}/ingestion-jobs/{failed_job.id}/retry-audio")
+
+    assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
+    refreshed = db_session.get(TranscriptIngestionJob, failed_job.id)
+    assert refreshed is not None and refreshed.status is TranscriptIngestionJobStatus.failed
+    assert db_session.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_id == failed_job.id)) is None
 
 
 def test_generic_retry_skips_source_less_legacy_failure_for_retained_new_failure(

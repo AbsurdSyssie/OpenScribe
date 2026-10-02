@@ -69,7 +69,14 @@ export function attachTranscribeActions({
     pendingWholeFileUpload = { retry, transcriptId };
     if (dom.pendingAudioRetryButton) {
       dom.pendingAudioRetryButton._openscribePendingAudioRetry = {
-        owner: pendingAudioRetryOwner, retry, transcriptId,
+        owner: pendingAudioRetryOwner,
+        retry,
+        transcriptId,
+        discard: () => {
+          clearPendingWholeFileUpload();
+          if (dom.fileInput) dom.fileInput.value = '';
+          setSessionProgress('Pending audio discarded. Choose a replacement recording when ready.');
+        },
       };
     }
     if (dom.pendingAudioRetryMessage) dom.pendingAudioRetryMessage.textContent = `${message} Audio is still available in this tab.`;
@@ -825,6 +832,12 @@ export function attachTranscribeActions({
     if (typeof retry !== 'function' || pending.transcriptId !== getTranscriptId()) return;
     dom.pendingAudioRetryButton.disabled = true;
     void retry();
+  });
+  dom.pendingAudioDiscardButton?.addEventListener('click', () => {
+    const pending = sharedPendingAudioRetry();
+    if (pending?.owner !== pendingAudioRetryOwner || typeof pending.discard !== 'function') return;
+    if (!window.confirm('Discard this pending audio? It cannot be recovered after you discard it.')) return;
+    pending.discard();
   });
   document.addEventListener('transcribe:active-transcript-changed', () => {
     const pending = sharedPendingAudioRetry();

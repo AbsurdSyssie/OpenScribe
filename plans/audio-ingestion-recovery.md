@@ -1,6 +1,6 @@
 # Audio ingestion recovery
 
-Status: implementation in progress, 1 October 2026.
+Status: bounded recovery implemented on 2 October 2026; durable recovery during an unfinished browser capture awaits an architecture decision.
 
 ## Outcome
 

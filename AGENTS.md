@@ -322,6 +322,8 @@ Verification
 
 Run focused checks first using the project virtual environment.
 
+For pytest and the API authorization audit, set `APP_ENV=test`, `COOKIE_SECURE_MODE=auto`, and `HSTS_SOURCE=app`. If pytest fails while importing `tests/conftest.py` before collection with a local PostgreSQL or Redis connection error, check the configured test-service host/port without printing DSNs, credentials, or other secrets. A sandbox-restricted connection may look like an unavailable service; retry the same focused command through the supported `require_escalated` approval path when sandbox restriction is plausible. A successful elevated retry distinguishes that restriction from an actually unavailable service. Run pytest and the API audit sequentially because they share the test database and Redis; the standalone API audit currently does not acquire the pytest lock. Do not change database URLs, disable isolation guards, weaken tests, or install or restart services to bypass this failure.
+
 Follow:
 
 docs/testing.md for general, API, UI, security, provider, and lifecycle verification;

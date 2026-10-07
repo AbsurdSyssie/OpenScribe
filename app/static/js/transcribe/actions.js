@@ -18,6 +18,7 @@ export function attachTranscribeActions({
   scheduleWorkspaceRefreshBurst,
   syncTranscriptTitleIfNeeded,
   persistPendingEditorsBeforeWorkspaceSwitch,
+  waitForGenerationSubmission,
   enqueueTemplateGeneration,
   setVisibleStatus,
   setSessionProgress,
@@ -627,6 +628,7 @@ export function attachTranscribeActions({
       showFlash('Stop recording before switching consultations.', 'warning');
       return;
     }
+    if (waitForGenerationSubmission && !(await waitForGenerationSubmission())) return;
     if (persistPendingEditorsBeforeWorkspaceSwitch
       && !(await persistPendingEditorsBeforeWorkspaceSwitch())) return;
     const workspace = await fetchWorkspace(nextTranscriptId, { allowTranscriptSwitch: true });
@@ -648,6 +650,7 @@ export function attachTranscribeActions({
         return;
       }
       try {
+        if (waitForGenerationSubmission && !(await waitForGenerationSubmission())) return;
         if (persistPendingEditorsBeforeWorkspaceSwitch
           && !(await persistPendingEditorsBeforeWorkspaceSwitch())) return;
         const preferredMode = dom.newSessionForm.querySelector('input[name="ingestion_mode"]')?.value || 'whole_file';

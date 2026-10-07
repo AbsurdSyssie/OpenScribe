@@ -24,6 +24,8 @@ from app.models import (
     ConsultationSplitDraft,
     ConsultationSplitDraftStatus,
     ConsultationSplitDraftTopic,
+    ConsultationSplitIntent,
+    ConsultationSplitIntentStatus,
     ConsultationSplitTopicDisposition,
     PromptTemplate,
     PromptTemplateVersion,
@@ -50,7 +52,7 @@ from app.services.consultation_splits import (
     read_split_analysis_json,
     read_split_topic_title,
 )
-from app.services.preferences import consultation_splitting_enabled, consultation_splitting_feature_enabled
+from app.services.consultation_split_gates import analysis_split_enabled, consultation_splitting_available
 from app.services.transcripts import transcript_is_expired
 
 
@@ -69,9 +71,9 @@ def _normal_owner(actor: User) -> None:
 
 
 def _gated_owner(db: Session, actor: User) -> None:
-    if not consultation_splitting_feature_enabled() or not consultation_splitting_enabled(db, actor):
-        raise _disabled()
     _normal_owner(actor)
+    if not consultation_splitting_available(actor):
+        raise _disabled()
 
 
 def _locked_scope(db: Session, actor: User, *, transcript_id: UUID):
@@ -103,7 +105,10 @@ def _locked_ready_analyses(db: Session, *, owner: User, transcript: Transcript) 
             ConsultationSplitAnalysis.owner_user_id == owner.id,
             ConsultationSplitAnalysis.team_id == owner.team_id,
             ConsultationSplitAnalysis.transcript_id == transcript.id,
-            ConsultationSplitAnalysis.status == ConsultationSplitAnalysisStatus.ready,
+            ConsultationSplitAnalysis.status.in_([
+                ConsultationSplitAnalysisStatus.ready,
+                ConsultationSplitAnalysisStatus.not_required,
+            ]),
         )
         .order_by(ConsultationSplitAnalysis.updated_at.desc(), ConsultationSplitAnalysis.id.desc())
         .with_for_update()
@@ -157,9 +162,11 @@ def _projection(
     )
 
 
-def _validated_proposal(db: Session, owner: User, analysis: ConsultationSplitAnalysis) -> ValidatedSplitAnalysis:
-    if analysis.status is not ConsultationSplitAnalysisStatus.ready:
-        raise AppError(409, "consultation_split_analysis_unavailable", "A ready split analysis is required")
+def _validated_proposal(db: Session, owner: User, analysis: ConsultationSplitAnalysis, *, manual_review: bool) -> ValidatedSplitAnalysis:
+    if analysis.status not in {ConsultationSplitAnalysisStatus.ready, ConsultationSplitAnalysisStatus.not_required}:
+        raise AppError(409, "consultation_split_analysis_unavailable", "A current split analysis is required")
+    if analysis.status is ConsultationSplitAnalysisStatus.not_required and not manual_review:
+        raise AppError(409, "consultation_split_analysis_unavailable", "A manual split review request is required")
     try:
         proposal = read_split_analysis_json(db, owner, analysis=analysis, field="proposal_encrypted")
         if proposal is None:
@@ -169,12 +176,13 @@ def _validated_proposal(db: Session, owner: User, analysis: ConsultationSplitAna
         # review.  Reassert every review invariant here: persisted encrypted
         # provider output is untrusted at this boundary, and a corrupt READY
         # row must never seed a partial or ambiguous clinician draft.
-        if not 2 <= len(validated.topics) <= 6:
+        minimum_topics = 0 if manual_review and analysis.status is ConsultationSplitAnalysisStatus.not_required else 2
+        if not minimum_topics <= len(validated.topics) <= 6:
             raise ValueError("ready proposal has an invalid topic count")
         primaries = [topic for topic in validated.topics if topic.is_primary]
-        if len(primaries) != 1:
+        if validated.topics and len(primaries) != 1:
             raise ValueError("ready proposal must have exactly one primary")
-        if primaries[0].disposition != "separate_note":
+        if primaries and primaries[0].disposition != "separate_note":
             raise ValueError("ready proposal primary disposition is invalid")
         if len({topic.topic_uuid for topic in validated.topics}) != len(validated.topics):
             raise ValueError("ready proposal has duplicate topic UUIDs")
@@ -351,11 +359,30 @@ def initialize_or_reuse_split_draft(
     scope = _locked_scope(db, actor, transcript_id=transcript_id)
     owner, transcript = scope.owner, scope.transcript
     analysis = next(
-        (row for row in _locked_ready_analyses(db, owner=owner, transcript=transcript) if _source_matches(db, owner, transcript, row)),
+        (row for row in _locked_ready_analyses(db, owner=owner, transcript=transcript)
+         if _source_matches(db, owner, transcript, row) and analysis_split_enabled(db, owner, analysis_id=row.id)),
         None,
     )
     if analysis is None:
         raise AppError(409, "consultation_split_analysis_unavailable", "A current ready split analysis is required")
+    return _initialize_or_reuse_bound_split_draft(
+        db,
+        owner=owner,
+        transcript=transcript,
+        analysis=analysis,
+        manual_review=None,
+    )
+
+
+def _initialize_or_reuse_bound_split_draft(
+    db: Session,
+    *,
+    owner: User,
+    transcript: Transcript,
+    analysis: ConsultationSplitAnalysis,
+    manual_review: bool | None,
+) -> ConsultationSplitDraftDetail:
+    """Create or reuse the draft for one already-authorized exact analysis."""
     draft = db.scalar(
         select(ConsultationSplitDraft)
         .where(ConsultationSplitDraft.analysis_id == analysis.id)
@@ -386,7 +413,16 @@ def initialize_or_reuse_split_draft(
                 _advance_timestamp(draft)
                 db.commit()
         return _projection(db, owner, draft)
-    proposal = _validated_proposal(db, owner, analysis)
+    if manual_review is None:
+        manual_review = db.scalar(select(ConsultationSplitIntent.id).where(
+            ConsultationSplitIntent.analysis_id == analysis.id,
+            ConsultationSplitIntent.owner_user_id == owner.id,
+            ConsultationSplitIntent.team_id == owner.team_id,
+            ConsultationSplitIntent.transcript_id == transcript.id,
+            ConsultationSplitIntent.manual_review_requested.is_(True),
+            ConsultationSplitIntent.status.in_([ConsultationSplitIntentStatus.analysis_pending, ConsultationSplitIntentStatus.confirmed]),
+        ).limit(1)) is not None
+    proposal = _validated_proposal(db, owner, analysis, manual_review=manual_review)
     try:
         with db.begin_nested():
             draft = create_split_draft(db, owner, analysis=analysis)
@@ -415,6 +451,69 @@ def initialize_or_reuse_split_draft(
     return _projection(db, owner, draft)
 
 
+def initialize_or_reuse_split_draft_for_intent(
+    db: Session,
+    actor: User,
+    *,
+    intent_id: UUID,
+) -> ConsultationSplitDraftDetail:
+    """Initialize the exact draft bound to an accepted durable Create intent.
+
+    Submit-time authorization is authoritative for this server-owned
+    continuation, so this path intentionally does not reapply a later feature
+    preference. It still rechecks owner, retention, ancestry, terminal state,
+    and current source freshness before writing any draft rows.
+    """
+    _normal_owner(actor)
+    intent_identity = db.scalar(
+        select(ConsultationSplitIntent)
+        .where(
+            ConsultationSplitIntent.id == intent_id,
+            ConsultationSplitIntent.owner_user_id == actor.id,
+        )
+    )
+    if intent_identity is None:
+        raise AppError(404, "not_found", "Consultation split request not found")
+    scope = _locked_scope(db, actor, transcript_id=intent_identity.transcript_id)
+    owner, transcript = scope.owner, scope.transcript
+    intent = db.scalar(
+        select(ConsultationSplitIntent)
+        .where(
+            ConsultationSplitIntent.id == intent_id,
+            ConsultationSplitIntent.owner_user_id == actor.id,
+            ConsultationSplitIntent.transcript_id == transcript.id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if intent is None:
+        raise AppError(404, "not_found", "Consultation split request not found")
+    if intent.status is not ConsultationSplitIntentStatus.analysis_pending or intent.analysis_id is None:
+        raise AppError(409, "consultation_split_intent_unavailable", "This split request is unavailable")
+    analysis = db.scalar(
+        select(ConsultationSplitAnalysis)
+        .where(ConsultationSplitAnalysis.id == intent.analysis_id)
+        .with_for_update()
+    )
+    if analysis is None or (
+        analysis.owner_user_id != intent.owner_user_id
+        or analysis.team_id != intent.team_id
+        or analysis.transcript_id != intent.transcript_id
+        or analysis.retention_expires_at != intent.retention_expires_at
+        or transcript.retention_expires_at != intent.retention_expires_at
+    ):
+        raise AppError(500, "consultation_split_scope_invalid", "Consultation split content is unavailable")
+    if not _source_matches(db, owner, transcript, analysis):
+        raise AppError(409, "consultation_split_source_stale", "Consultation sources changed before draft initialization")
+    return _initialize_or_reuse_bound_split_draft(
+        db,
+        owner=owner,
+        transcript=transcript,
+        analysis=analysis,
+        manual_review=intent.manual_review_requested,
+    )
+
+
 def read_split_draft(
     db: Session, actor: User, *, transcript_id: UUID
 ) -> ConsultationSplitDraftDetail:
@@ -427,7 +526,7 @@ def read_split_draft(
         raise AppError(404, "not_found", "Consultation split draft not found", {"resource": "consultation_split_draft"})
     drafts_by_analysis = {draft.analysis_id: draft for draft in drafts}
     for analysis in _locked_ready_analyses(db, owner=owner, transcript=transcript):
-        if _source_matches(db, owner, transcript, analysis):
+        if _source_matches(db, owner, transcript, analysis) and analysis_split_enabled(db, owner, analysis_id=analysis.id):
             current = drafts_by_analysis.get(analysis.id)
             if current is not None:
                 return _projection(db, owner, current)
@@ -457,7 +556,8 @@ def replace_split_draft(
         raise AppError(404, "not_found", "Consultation split draft not found", {"resource": "consultation_split_draft"})
     drafts_by_analysis = {draft.analysis_id: draft for draft in drafts}
     analysis = next(
-        (row for row in _locked_ready_analyses(db, owner=owner, transcript=transcript) if _source_matches(db, owner, transcript, row)),
+        (row for row in _locked_ready_analyses(db, owner=owner, transcript=transcript)
+         if _source_matches(db, owner, transcript, row) and analysis_split_enabled(db, owner, analysis_id=row.id)),
         None,
     )
     if analysis is None:
@@ -477,7 +577,18 @@ def replace_split_draft(
         raise AppError(409, "consultation_split_draft_unavailable", "Consultation split draft is unavailable")
     if payload.expected_updated_at != draft.updated_at:
         raise AppError(409, "consultation_split_draft_conflict", "Consultation split draft changed in another tab")
-    proposal_topic_uuids = {topic.topic_uuid for topic in _validated_proposal(db, owner, analysis).topics}
+    manual_review = db.scalar(select(ConsultationSplitIntent.id).where(
+        ConsultationSplitIntent.analysis_id == analysis.id,
+        ConsultationSplitIntent.owner_user_id == owner.id,
+        ConsultationSplitIntent.team_id == owner.team_id,
+        ConsultationSplitIntent.transcript_id == transcript.id,
+        ConsultationSplitIntent.manual_review_requested.is_(True),
+        ConsultationSplitIntent.status.in_([ConsultationSplitIntentStatus.analysis_pending, ConsultationSplitIntentStatus.confirmed]),
+    ).limit(1)) is not None
+    proposal_topic_uuids = {
+        topic.topic_uuid
+        for topic in _validated_proposal(db, owner, analysis, manual_review=manual_review).topics
+    }
     replacement = _validate_replacement(
         db,
         owner,

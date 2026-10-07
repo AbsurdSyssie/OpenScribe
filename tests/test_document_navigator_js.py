@@ -465,10 +465,10 @@ def test_note_regeneration_controls_and_scroll_rail_contract():
 
     app = (root / "app/static/js/transcribe/app.js").read_text(encoding="utf-8")
     shell = (root / "app/templates/transcribe/_shell_extras.html").read_text(encoding="utf-8")
-    assert "actions.js?v=20260930-detected-pii-override" in app
+    assert "actions.js?v=20261006-durable-create" in app
     assert "documents.js?v=20260918-retired-note-workspace" in app
     assert "structured.js?v=20260918-retired-note-workspace" in app
-    assert "app.js?v=20260930-detected-pii-override" in shell
+    assert "app.js?v=20261006-durable-create" in shell
 
 
 def test_retired_note_workspace_compatibility_plumbing_is_absent():

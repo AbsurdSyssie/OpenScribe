@@ -23,13 +23,14 @@ def test_split_review_workspace_accessibility_hooks_and_cachebusters():
     assert 'data-split-review-problem-count' in workspace
     assert 'data-split-review-add' in workspace
     assert 'data-split-review-create' in workspace
-    assert 'splitReview.js?v=20261001-add-problem' in app_js
+    assert 'splitReview.js?v=20261006-durable-create' in app_js
     assert 'splitReviewController?.applyWorkspaceState' in app_js
-    assert 'app.js?v=20261001-dictation-generation-close' in shell
-    assert 'transcribe.css?v=20261001-add-problem' in head
+    assert 'app.js?v=20261006-durable-create' in shell
+    assert 'transcribe.css?v=20261005-multiple-problems' in head
     assert 'data-split-continue-one-note hidden' in workspace
     assert 'data-split-review-confirm' not in workspace
-    assert 'data-split-review-continue' not in workspace
+    assert 'data-split-review-continue' in workspace
+    assert 'data-multiple-problems-toggle' in workspace
     controller = (ROOT / "app/static/js/transcribe/splitReview.js").read_text()
     assert 'data-split-review-title' in controller
     assert 'data-split-review-primary' not in controller
@@ -37,6 +38,89 @@ def test_split_review_workspace_accessibility_hooks_and_cachebusters():
     assert 'data-split-retry-missing hidden' in workspace
     assert 'data-split-keep-available hidden' in workspace
     assert 'id="split-partial-status"' in workspace
+
+
+def test_multiple_problems_toggle_persists_per_consultation_and_manual_not_required_stays_in_review(tmp_path):
+    runner = tmp_path / "multiple-problems-runner.mjs"
+    module_uri = (ROOT / "app/static/js/transcribe/splitReview.js").as_uri()
+    runner.write_text(
+        f"""
+const {{ createMultipleProblemsController, createSplitGenerateController, dispatchTemplateGeneration, isConsultationSplitCreateEnabled }} = await import('{module_uri}');
+class Button {{
+  constructor() {{ this.hidden = false; this.disabled = false; this.attrs = new Map(); this.handlers = new Map(); this.classList = {{ toggle: () => {{}} }}; }}
+  setAttribute(key, value) {{ this.attrs.set(key, String(value)); }}
+  getAttribute(key) {{ return this.attrs.get(key); }}
+  addEventListener(type, handler) {{ this.handlers.set(type, handler); }}
+  click() {{ this.handlers.get('click')?.(); }}
+}}
+let activeTranscriptId = 'tx-one';
+let resolvePatch;
+const pendingPatch = new Promise((resolve) => {{ resolvePatch = resolve; }});
+const pending = [];
+const button = new Button();
+const toggle = createMultipleProblemsController({{
+  button,
+  getTranscriptId: () => activeTranscriptId,
+  onPendingChange: (value) => pending.push(value),
+  fetcher: async () => pendingPatch,
+}});
+toggle.applyWorkspaceState({{ capabilityAvailable: true, nextTranscriptId: 'tx-one', multipleProblems: false }});
+button.click();
+if (button.getAttribute('aria-pressed') !== 'true' || !button.disabled || pending.join() !== 'true') throw new Error('toggle was not optimistically pending');
+toggle.applyWorkspaceState({{ capabilityAvailable: true, nextTranscriptId: 'tx-one', multipleProblems: false }});
+if (button.getAttribute('aria-pressed') !== 'true') throw new Error('stale workspace payload replaced pending toggle');
+activeTranscriptId = 'tx-two';
+toggle.applyWorkspaceState({{ capabilityAvailable: true, nextTranscriptId: 'tx-two', multipleProblems: false }});
+resolvePatch({{ ok: true, json: async () => ({{ multiple_problems: true }}) }});
+await Promise.resolve(); await Promise.resolve();
+if (toggle.isMarked() || toggle.isPending() || button.getAttribute('aria-pressed') !== 'false') throw new Error('stale transcript response changed the new consultation');
+activeTranscriptId = 'tx-three';
+const committedButton = new Button();
+const committedToggle = createMultipleProblemsController({{
+  button: committedButton,
+  getTranscriptId: () => activeTranscriptId,
+  fetcher: async () => ({{ ok: true, json: async () => ({{ multiple_problems: true }}) }}),
+  onPersisted: async () => {{ throw new Error('workspace refresh unavailable'); }},
+}});
+committedToggle.applyWorkspaceState({{ capabilityAvailable: true, nextTranscriptId: activeTranscriptId, multipleProblems: false }});
+if (!await committedToggle.toggle() || !committedToggle.isMarked()) throw new Error('successful marker save was treated as a failed refresh');
+const createEnabled = isConsultationSplitCreateEnabled({{ workspaceEnabled: false, capabilityAvailable: true, multipleProblemsMarked: committedToggle.isMarked() }});
+let splitStarts = 0; let ordinaryStarts = 0;
+await dispatchTemplateGeneration({{
+  capabilityEnabled: createEnabled,
+  splitController: {{ start: async () => {{ splitStarts += 1; return true; }} }},
+  transcriptId: activeTranscriptId,
+  templateId: 'template-1',
+  ordinary: async () => {{ ordinaryStarts += 1; return true; }},
+}});
+if (!createEnabled || splitStarts !== 1 || ordinaryStarts !== 0) throw new Error('persisted marker fell back to ordinary generation after refresh failure');
+let operationTranscriptId = 'tx-manual';
+const calls = [];
+let opened = 0;
+const reviewController = {{
+  applyWorkspaceState: (state) => {{ if (!state.manualReview || state.draft.topics.length !== 1) throw new Error('manual review draft not passed to review controller'); }},
+  open: () => {{ opened += 1; }},
+}};
+const manualController = createSplitGenerateController({{
+  getCapabilityEnabled: () => true,
+  getTranscriptId: () => operationTranscriptId,
+  getTemplateId: () => 'template-1',
+  createKey: () => 'key-1',
+  reviewController,
+  fetcher: async (url) => {{
+    calls.push(url);
+    if (url.endsWith('/consultation-split-intents')) return {{ ok: true, json: async () => ({{ intent_id: 'intent-1', manual_review_requested: true, analysis: {{ analysis_id: 'analysis-1', status: 'not_required' }} }}) }};
+    if (url.endsWith('/consultation-split-draft')) return {{ ok: true, json: async () => ({{ draft_id: 'draft-1' }}) }};
+    throw new Error(`unexpected generation request: ${{url}}`);
+  }},
+  refreshWorkspace: async () => ({{ consultation_split_draft: {{ draft_id: 'draft-1', analysis_id: 'analysis-1', status: 'active', topics: [{{ topic_uuid: 'topic-1', title: 'Synthetic issue', is_primary: true, disposition: 'separate_note', template_id: 'template-1' }}] }}, available_templates: [] }}),
+}});
+await manualController.start();
+for (let index = 0; index < 8; index += 1) await Promise.resolve();
+if (!calls.some((url) => url.endsWith('/consultation-split-draft')) || calls.some((url) => url.endsWith('/continue-as-one-note')) || opened !== 1) throw new Error('manual not-required analysis did not open review safely');
+"""
+    )
+    subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
 
 
 def test_split_review_serialization_preserves_uuid_and_primary_rule(tmp_path):
@@ -259,21 +343,22 @@ def test_split_generate_controller_preserves_ordinary_flow_and_coordinates_brows
         f"""
 const {{ createSplitGenerateController }} = await import('{module_uri}');
 let enabled = false, transcriptId = 'tx-1', templateId = 'template-1';
-let saves = [], calls = [], statuses = [], busy = [], opens = 0, applies = 0, keyNo = 0;
+let saves = [], calls = [], statuses = [], busy = [], refreshes = [], opens = 0, applies = 0, keyNo = 0;
 let draftResponse = null, intentResponse = {{ status: 202, ok: true, json: async () => ({{ analysis: {{ analysis_id: 'analysis-1', status: 'queued' }} }}) }};
 const fetcher = async (url, options) => {{ calls.push([url, options?.method]); if (url.includes('intents')) return intentResponse; return draftResponse; }};
 const reviewController = {{ applyWorkspaceState: () => {{ applies += 1; }}, open: () => {{ opens += 1; }} }};
 const controller = createSplitGenerateController({{
   fetcher, getCapabilityEnabled: () => enabled, getTranscriptId: () => transcriptId, getTemplateId: () => templateId,
-  saveSources: async () => {{ saves.push('working'); saves.push('dictation'); }}, refreshWorkspace: async () => null,
+  saveSources: async ({{ transcriptId: sourceTranscriptId }} = {{}}) => {{ saves.push(`working:${{sourceTranscriptId}}`); saves.push(`dictation:${{sourceTranscriptId}}`); }}, refreshWorkspace: async (...args) => {{ refreshes.push(args); return null; }},
   reviewController, setBusy: (value) => busy.push(value), setStatus: (message) => statuses.push(message),
   createKey: () => `00000000-0000-0000-0000-${{String(++keyNo).padStart(12, '0')}}`,
 }});
 if (await controller.start()) throw new Error('disabled gate intercepted ordinary Generate');
 enabled = true;
 await controller.start();
-if (saves.join() !== 'working,dictation' || calls.length !== 1 || !calls[0][0].includes('/consultation-split-intents')) throw new Error('sources were not saved before intent');
+if (saves.join() !== 'working:tx-1,dictation:tx-1' || calls.length !== 1 || !calls[0][0].includes('/consultation-split-intents')) throw new Error('sources were not target-bound before intent');
 if (calls.some(([url]) => url.includes('/generate-output'))) throw new Error('split path called generate-output');
+if (refreshes.length !== 1 || refreshes[0][0] !== transcriptId || refreshes[0][1]?.guardTranscriptId !== transcriptId) throw new Error('accepted queued intent did not refresh the guarded workspace');
 await controller.start();
 if (calls.length !== 1 || keyNo !== 1) throw new Error('duplicate Create started a second operation');
 controller.applyWorkspaceState({{ capabilityEnabled: true, transcriptId, analysis: {{ analysis_id: 'analysis-1', status: 'processing' }} }});
@@ -282,7 +367,10 @@ draftResponse = {{ ok: true, json: async () => ({{ draft_id: 'draft-1' }}) }};
 controller.applyWorkspaceState({{ capabilityEnabled: true, transcriptId, analysis: {{ analysis_id: 'analysis-1', status: 'ready' }}, draft: null }});
 await Promise.resolve(); await Promise.resolve();
 if (calls.filter(([url]) => url.includes('consultation-split-draft')).length !== 1) throw new Error('ready draft was not initialized');
-const draft = {{ draft_id: 'draft-1', analysis_id: 'analysis-1', status: 'active', topics: [] }};
+const draft = {{ draft_id: 'draft-1', analysis_id: 'analysis-1', status: 'active', topics: [
+  {{ topic_uuid: 'topic-1', title: 'Synthetic primary', is_primary: true, disposition: 'separate_note', template_id: 'template-1' }},
+  {{ topic_uuid: 'topic-2', title: 'Synthetic secondary', is_primary: false, disposition: 'separate_note', template_id: 'template-1' }},
+] }};
 controller.applyWorkspaceState({{ capabilityEnabled: true, transcriptId, analysis: {{ analysis_id: 'analysis-1', status: 'ready' }}, draft }});
 controller.applyWorkspaceState({{ capabilityEnabled: true, transcriptId, analysis: {{ analysis_id: 'analysis-1', status: 'ready' }}, draft }});
 if (opens !== 1 || applies !== 1) throw new Error('current ready draft did not open exactly once');
@@ -301,6 +389,57 @@ if (opens !== 1) throw new Error('stale transcript completion opened a modal');
     )
     # The assertion body is intentionally a Node-only behavioral harness: no
     # browser implementation or timing API makes these branches nondeterministic.
+    subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
+
+
+def test_accepted_queued_intent_seeds_restoration_for_one_note_without_sse(tmp_path):
+    runner = tmp_path / "split-queued-restoration-runner.mjs"
+    module_uri = (ROOT / "app/static/js/transcribe/splitReview.js").as_uri()
+    runner.write_text(
+        f"""
+const {{ createSplitAnalysisRestorationPoller, createSplitGenerateController }} = await import('{module_uri}');
+let latestAnalysis = null, refreshes = 0, continueCalls = 0, controller, resolveContinued;
+const continued = new Promise((resolve) => {{ resolveContinued = resolve; }});
+const applyWorkspace = (analysis) => {{
+  latestAnalysis = analysis;
+  controller.applyWorkspaceState({{ capabilityEnabled: true, transcriptId: 'tx-1', analysis }});
+  poller.updateWorkspace();
+}};
+const poller = createSplitAnalysisRestorationPoller({{
+  getState: () => ({{ capabilityEnabled: true, transcriptId: 'tx-1', analysis: latestAnalysis }}),
+  backoffMs: [0],
+  refreshWorkspace: async () => {{
+    refreshes += 1;
+    if (refreshes === 1) {{
+      applyWorkspace({{ analysis_id: 'analysis-1', status: 'queued' }});
+      return {{ consultation_split_analysis: latestAnalysis }};
+    }}
+    applyWorkspace({{ analysis_id: 'analysis-1', status: 'not_required' }});
+    return {{ consultation_split_analysis: latestAnalysis }};
+  }},
+}});
+controller = createSplitGenerateController({{
+  getCapabilityEnabled: () => true, getTranscriptId: () => 'tx-1', getTemplateId: () => 'template-1',
+  createKey: () => 'key-1', saveSources: async () => {{}},
+  refreshWorkspace: () => poller.getState().scheduled || refreshes === 0
+    ? (refreshes += 1, applyWorkspace({{ analysis_id: 'analysis-1', status: 'queued' }}), Promise.resolve({{ consultation_split_analysis: latestAnalysis }}))
+    : Promise.resolve(null),
+  fetcher: async (url) => {{
+    if (url.endsWith('/consultation-split-intents')) return {{ ok: true, json: async () => ({{ intent_id: 'intent-1', analysis: {{ analysis_id: 'analysis-1', status: 'queued' }} }}) }};
+    continueCalls += 1;
+    resolveContinued();
+    return {{ ok: true, json: async () => ({{ document: {{ id: 'document-1' }} }}) }};
+  }},
+}});
+await controller.start();
+await Promise.race([
+  continued,
+  new Promise((_, reject) => setTimeout(() => reject(new Error('restoration did not continue one note')), 250)),
+]);
+if (!latestAnalysis || latestAnalysis.status !== 'not_required') throw new Error('queued analysis did not advance through restoration');
+if (continueCalls !== 1) throw new Error('one-note continuation did not start after restored analysis');
+"""
+    )
     subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
 
 
@@ -575,7 +714,10 @@ class Button {{
   addEventListener(type, callback) {{ this.listeners.set(type, callback); }}
   click() {{ this.listeners.get('click')?.(); }}
 }}
-const draft = {{ draft_id: 'draft-1', analysis_id: 'analysis-1', status: 'active', topics: [] }};
+const draft = {{ draft_id: 'draft-1', analysis_id: 'analysis-1', status: 'active', topics: [
+  {{ topic_uuid: 'topic-1', title: 'Synthetic primary', is_primary: true, disposition: 'separate_note', template_id: 'template-1' }},
+  {{ topic_uuid: 'topic-2', title: 'Synthetic secondary', is_primary: false, disposition: 'separate_note', template_id: 'template-1' }},
+] }};
 const passiveButton = new Button();
 let passiveConsumes = 0;
 const passiveReview = createSplitReviewController({{
@@ -606,10 +748,24 @@ currentReview = createSplitReviewController({{
 }});
 await controller.start();
 controller.applyWorkspaceState({{ capabilityEnabled: true, transcriptId, analysis: {{ analysis_id: 'analysis-1', status: 'ready' }}, draft }});
+currentReview.applyWorkspaceState({{ draft, nextTranscriptId: transcriptId }});
+currentReview.setContinueAvailable(true);
 if (currentButton.hidden || currentButton.disabled) throw new Error('current browser review did not expose one-note action');
 currentButton.click(); currentButton.click();
 if (consumeCalls !== 1) throw new Error('current review continue was not single-flight');
 resolveConsume(); await Promise.resolve(); await Promise.resolve();
+let restoredCalls = 0; let restoredDocuments = 0;
+const restoredController = createSplitGenerateController({{
+  getCapabilityEnabled: () => true, getTranscriptId: () => 'tx-restored',
+  fetcher: async (url) => {{
+    if (!url.endsWith('/tx-restored/consultation-split-intents/intent-restored/continue-as-one-note')) throw new Error('restored intent targeted the wrong consultation');
+    restoredCalls += 1;
+    return {{ ok: true, json: async () => ({{ document: {{ id: 'doc-restored' }}, idempotency_replayed: true }}) }};
+  }},
+  onGeneratedDocument: async () => {{ restoredDocuments += 1; }},
+}});
+if (!await restoredController.continueAsOneNote({{ transcriptId: 'tx-restored', intentId: 'intent-restored' }})) throw new Error('restored intent was not explicitly consumable');
+if (restoredCalls !== 1 || restoredDocuments !== 1) throw new Error('restored intent continuation was not single and visible');
 """
     )
     subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
@@ -666,6 +822,19 @@ overlapping.applyWorkspaceState({{ capabilityEnabled: true, transcriptId: 'tx-1'
 overlapping.applyWorkspaceState({{ capabilityEnabled: true, transcriptId: 'tx-1', analysis: {{ analysis_id: 'analysis-2', status: 'ready' }}, draft: null }});
 if (draftCalls !== 1) throw new Error('overlapping workspace updates started multiple draft POSTs');
 resolveDraft(); await flush();
+let resolveAcceptance, acceptedCount = 0;
+const awaitingAcceptance = createSplitGenerateController({{
+  getCapabilityEnabled: () => true, getTranscriptId: () => 'A', getTemplateId: () => 'template-1',
+  createKey: () => '00000000-0000-0000-0000-000000000004',
+  fetcher: async () => new Promise((resolve) => {{ resolveAcceptance = resolve; }}),
+}});
+const awaitingRequest = awaitingAcceptance.start({{ onAccepted: () => {{ acceptedCount += 1; }} }});
+await flush();
+awaitingAcceptance.applyWorkspaceState({{ capabilityEnabled: true, transcriptId: 'A', analysis: null }});
+if (!awaitingAcceptance.getOperation()?.pending) throw new Error('workspace read cleared pending acceptance');
+resolveAcceptance({{ ok: true, json: async () => ({{ intent_id: 'intent-A', analysis: {{ analysis_id: 'analysis-A', status: 'queued' }} }}) }});
+await awaitingRequest;
+if (acceptedCount !== 1) throw new Error('workspace read lost acceptance callback');
 let activeTranscript = 'A', resolveIntent, switchedBusy = [], switchedStatuses = [], switchedDraftCalls = 0;
 const switched = createSplitGenerateController({{
   getCapabilityEnabled: () => true, getTranscriptId: () => activeTranscript, getTemplateId: () => 'template-1',
@@ -710,6 +879,7 @@ class Form {{
   async submit() {{ let prevented = false; await this.listeners.get('submit')({{ preventDefault: () => {{ prevented = true; }} }}); if (!prevented) throw new Error('form submission was not intercepted'); }}
 }}
 globalThis.window = {{ addEventListener: () => {{}}, document: {{ addEventListener: () => {{}} }}, matchMedia: () => ({{ matches: false, addEventListener: () => {{}} }}), localStorage: {{ getItem: () => null, setItem: () => {{}} }} }};
+globalThis.document = globalThis.window.document;
 const form = new Form(); const selected = {{ value: 'template-1', addEventListener: () => {{}} }};
 let gate = false, ordinary = 0, split = 0, captured = null;
 attachTranscribeActions({{
@@ -732,6 +902,72 @@ await form.submit();
 if (ordinary !== 1 || split !== 0 || captured.transcriptId !== 'tx-1') throw new Error('gate-off submit did not reach ordinary generation');
 gate = true; await form.submit();
 if (ordinary !== 1 || split !== 1) throw new Error('gate-on submit did not use split dispatcher');
+"""
+    )
+    subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
+
+
+def test_consultation_history_switch_waits_for_create_submission_acceptance(tmp_path):
+    runner = tmp_path / "generation-navigation-barrier-runner.mjs"
+    actions_uri = (ROOT / "app/static/js/transcribe/actions.js").as_uri()
+    runner.write_text(
+        f"""
+class FakeElement {{
+  constructor() {{ this.dataset = {{}}; this.listeners = new Map(); this.closestMatches = {{}}; this.href = ''; }}
+  addEventListener(type, callback) {{ this.listeners.set(type, callback); }}
+  fire(type, event = {{}}) {{ this.listeners.get(type)?.({{ preventDefault() {{}}, target: this, ...event }}); }}
+  closest(selector) {{ return this.closestMatches[selector] || null; }}
+  contains() {{ return true; }}
+  querySelector() {{ return null; }}
+  querySelectorAll() {{ return []; }}
+}}
+globalThis.Element = FakeElement;
+globalThis.HTMLInputElement = class extends FakeElement {{}};
+globalThis.HTMLTextAreaElement = class extends FakeElement {{}};
+globalThis.document = {{ cookie: '', addEventListener() {{}}, querySelector() {{ return null; }} }};
+globalThis.window = {{
+  document: globalThis.document, addEventListener() {{}}, confirm: () => true,
+  matchMedia: () => ({{ matches: false, addEventListener() {{}} }}),
+  localStorage: {{ getItem: () => null, setItem() {{}} }},
+  location: {{ href: 'http://localhost/transcribe?transcript_id=A', origin: 'http://localhost', assign(url) {{ navigations.push(url); }} }},
+  history: {{ pushState() {{}} }},
+}};
+const {{ attachTranscribeActions }} = await import('{actions_uri}');
+const sessionList = new FakeElement();
+const newSessionForm = new FakeElement();
+const link = new FakeElement(); link.dataset.transcriptId = 'B'; link.href = '/transcribe?transcript_id=B'; link.closestMatches['[data-session-link]'] = link;
+let release; let accepted = true; let switches = 0; let starts = 0; const navigations = [];
+globalThis.fetch = async (url) => {{
+  if (url !== '/api/v1/transcripts/start') throw new Error(`unexpected fetch ${{url}}`);
+  starts += 1;
+  return {{ ok: true, json: async () => ({{ id: 'new-consultation' }}) }};
+}};
+const pending = () => new Promise((resolve) => {{ release = () => resolve(accepted); }});
+let barrier = pending();
+attachTranscribeActions({{
+  dom: {{ sessionList, newSessionForm }}, routeBase: '/transcribe', getTranscriptId: () => 'A',
+  getTranscriptText: () => '', getActiveIngestionMode: () => 'whole_file', getIsLiveCaptureUiActive: () => false,
+  getIsRecordingSwitchBlocked: () => false, showFlash() {{}}, showCopyToast() {{}}, parseErrorMessage: async (_response, fallback) => fallback,
+  fetchWorkspace: async (id, options) => {{ if (id === 'B' && options?.allowTranscriptSwitch) switches += 1; return {{ active_transcript: {{ id }} }}; }},
+  pollWorkspace() {{}}, scheduleWorkspaceRefreshBurst() {{}}, syncTranscriptTitleIfNeeded: async () => {{}},
+  persistPendingEditorsBeforeWorkspaceSwitch: async () => true, waitForGenerationSubmission: () => barrier,
+  enqueueTemplateGeneration: async () => true, setVisibleStatus() {{}}, setSessionProgress() {{}}, setRetryAvailability() {{}},
+  reflectBackendStatus() {{}}, syncGenerationAvailability() {{}}, persistUserAppPreferences: async () => {{}},
+  setMicButtons() {{}}, setTab() {{}}, structuredEditor: {{}}, saveWorkingNoteBeforeGeneration: async () => {{}}, saveDictationBeforeGeneration: async () => {{}},
+}});
+sessionList.fire('click', {{ target: link }});
+for (let tick = 0; tick < 4; tick += 1) await Promise.resolve();
+if (switches !== 0) throw new Error('history switched before Create reached durable acceptance');
+release(); for (let tick = 0; tick < 6; tick += 1) await Promise.resolve();
+if (switches !== 1) throw new Error('history did not switch after durable acceptance');
+accepted = false; barrier = pending(); sessionList.fire('click', {{ target: link }}); release();
+for (let tick = 0; tick < 6; tick += 1) await Promise.resolve();
+if (switches !== 1) throw new Error('history switched after Create submission failed');
+accepted = true; barrier = pending(); newSessionForm.fire('submit');
+for (let tick = 0; tick < 4; tick += 1) await Promise.resolve();
+if (starts !== 0) throw new Error('new consultation started before Create reached durable acceptance');
+release(); for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
+if (starts !== 1 || navigations.at(-1) !== '/transcribe?transcript_id=new-consultation') throw new Error('new consultation did not start after durable acceptance');
 """
     )
     subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
@@ -949,6 +1185,78 @@ await savedGuidanceController.save();
 if (savedGuidanceStatus.dataset.statusKind !== 'one-note-guidance') throw new Error('saved one-note draft lost its dedicated guidance state');
 savedGuidanceController.applyWorkspaceState({{ draft: {{ ...savedGuidanceDraft, topics: savedGuidanceDraft.topics.map((topic) => ({{ ...topic, disposition: 'separate_note' }})) }}, nextTranscriptId: 'tx-1' }});
 if (savedGuidanceStatus.textContent.includes('Add another separate note') || savedGuidanceStatus.textContent.includes('Continue as one note')) throw new Error('saved one-note guidance remained after restoring a second note');
+const manualRefreshDraft = {{ ...base, draft_id: 'manual-refresh', topics: [{{ ...base.topics[0] }}] }};
+savedGuidanceController.applyWorkspaceState({{ draft: manualRefreshDraft, nextTranscriptId: 'tx-1', manualReview: true }});
+if (!savedGuidanceStatus.textContent.includes('One problem was detected')) throw new Error('manual one-problem guidance was not shown');
+savedGuidanceController.applyWorkspaceState({{ draft: manualRefreshDraft, nextTranscriptId: 'tx-1' }});
+if (!savedGuidanceStatus.textContent.includes('One problem was detected')) throw new Error('same-draft workspace refresh erased manual guidance');
+const mergedTopicList = new FakeElement('div');
+const mergedModal = new FakeElement('div');
+const mergedSaveButton = new FakeElement('button');
+const mergedContinueButton = new FakeElement('button');
+let mergedIntent = 'intent-merged'; let mergedPutCalls = 0; let mergedContinues = 0; let resolveMergedSave;
+const mergedSaveResponse = new Promise((resolve) => {{ resolveMergedSave = resolve; }});
+const mergedDraft = {{ ...base, draft_id: 'all-merged', topics: base.topics.map((topic) => ({{ ...topic, disposition: 'separate_note' }})) }};
+const mergedController = createSplitReviewController({{
+  trigger: new FakeElement('button'), modal: mergedModal, topicList: mergedTopicList,
+  status: new FakeElement('p'), saveButton: mergedSaveButton, continueButton: mergedContinueButton, closeButtons: [], getTranscriptId: () => 'tx-1',
+  getConfirmIntentId: () => mergedIntent, continueAsOneNote: async () => {{ mergedContinues += 1; return true; }},
+  fetcher: async () => {{ mergedPutCalls += 1; return mergedSaveResponse; }},
+}});
+mergedController.applyWorkspaceState({{ draft: mergedDraft, nextTranscriptId: 'tx-1' }}); mergedController.setContinueAvailable(true); mergedController.open();
+mergedTopicList.querySelectorAll('fieldset')[1].querySelector('[data-split-review-merge]').click();
+if (mergedSaveButton.textContent !== 'Continue as one note' || mergedSaveButton.disabled || !mergedContinueButton.hidden) throw new Error('all-merged draft did not expose exactly one immediate one-note action');
+mergedSaveButton.click(); mergedSaveButton.click();
+if (mergedPutCalls !== 1 || !mergedSaveButton.disabled) throw new Error('all-merged action did not single-flight its save');
+resolveMergedSave({{ status: 200, ok: true, json: async () => ({{ ...mergedDraft, updated_at: 'merged-saved', topics: mergedDraft.topics.map((topic, index) => ({{ ...topic, disposition: index ? 'include_in_primary' : 'separate_note' }})) }}) }});
+for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+if (mergedContinues !== 1 || mergedController.isOpen()) throw new Error('all-merged draft did not continue immediately and close the review');
+const replacedIntentTopicList = new FakeElement('div'); const replacedIntentSaveButton = new FakeElement('button');
+let replacedIntent = 'intent-original'; let replacedContinues = 0; let resolveReplacedSave;
+const replacedSaveResponse = new Promise((resolve) => {{ resolveReplacedSave = resolve; }});
+const replacedController = createSplitReviewController({{
+  trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: replacedIntentTopicList,
+  status: new FakeElement('p'), saveButton: replacedIntentSaveButton, closeButtons: [], getTranscriptId: () => 'tx-1',
+  getConfirmIntentId: () => replacedIntent, continueAsOneNote: async () => {{ replacedContinues += 1; return true; }},
+  fetcher: async () => replacedSaveResponse,
+}});
+replacedController.applyWorkspaceState({{ draft: {{ ...mergedDraft, draft_id: 'intent-replaced' }}, nextTranscriptId: 'tx-1' }}); replacedController.setContinueAvailable(true); replacedController.open();
+replacedIntentTopicList.querySelectorAll('fieldset')[1].querySelector('[data-split-review-merge]').click(); replacedIntentSaveButton.click();
+replacedIntent = 'intent-replacement';
+resolveReplacedSave({{ status: 200, ok: true, json: async () => ({{ ...mergedDraft, draft_id: 'intent-replaced', updated_at: 'replacement-saved', topics: mergedDraft.topics.map((topic, index) => ({{ ...topic, disposition: index ? 'include_in_primary' : 'separate_note' }})) }}) }});
+for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+if (replacedContinues !== 0 || !replacedController.isOpen()) throw new Error('replaced intent was consumed after the all-merged save');
+const failedMergeTopicList = new FakeElement('div'); const failedMergeSaveButton = new FakeElement('button');
+let failedMergeCalls = 0; let failedMergeContinues = 0;
+const failedMergeController = createSplitReviewController({{
+  trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: failedMergeTopicList,
+  status: new FakeElement('p'), saveButton: failedMergeSaveButton, closeButtons: [], getTranscriptId: () => 'tx-1',
+  getConfirmIntentId: () => 'intent-failed-save', continueAsOneNote: async () => {{ failedMergeContinues += 1; return true; }},
+  fetcher: async () => {{ failedMergeCalls += 1; return {{ status: 500, ok: false, json: async () => ({{}}) }}; }},
+}});
+failedMergeController.applyWorkspaceState({{ draft: {{ ...mergedDraft, draft_id: 'failed-merge' }}, nextTranscriptId: 'tx-1' }}); failedMergeController.setContinueAvailable(true); failedMergeController.open();
+failedMergeTopicList.querySelectorAll('fieldset')[1].querySelector('[data-split-review-merge]').click(); failedMergeSaveButton.click();
+for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+if (failedMergeCalls !== 1 || failedMergeContinues !== 0 || !failedMergeController.isOpen() || failedMergeSaveButton.textContent !== 'Continue as one note') throw new Error('failed all-merged save consumed or lost its retry action');
+const retryTopicList = new FakeElement('div'); const retrySaveButton = new FakeElement('button');
+let retryContinues = 0;
+const retryController = createSplitReviewController({{
+  trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: retryTopicList,
+  status: new FakeElement('p'), saveButton: retrySaveButton, closeButtons: [], getTranscriptId: () => 'tx-1',
+  getConfirmIntentId: () => 'intent-retry', continueAsOneNote: async () => ++retryContinues > 1,
+}});
+const savedMergedDraft = {{ ...mergedDraft, draft_id: 'saved-merged', topics: mergedDraft.topics.map((topic, index) => ({{ ...topic, disposition: index ? 'include_in_primary' : 'separate_note' }})) }};
+retryController.applyWorkspaceState({{ draft: savedMergedDraft, nextTranscriptId: 'tx-1' }}); retryController.setContinueAvailable(true); retryController.open();
+if (retrySaveButton.textContent !== 'Continue as one note' || retrySaveButton.disabled) throw new Error('saved all-merged draft did not remain immediately continuable');
+retrySaveButton.click(); for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+if (retryContinues !== 1 || !retryController.isOpen()) throw new Error('failed continuation did not remain retryable');
+retryController.setContinueAvailable(false);
+if (retrySaveButton.textContent !== 'Save split' || !retrySaveButton.disabled) throw new Error('revoked continuation availability did not restore normal save behavior');
+retryController.setContinueAvailable(true);
+retryTopicList.querySelector('[data-split-review-undo]').click();
+if (retrySaveButton.textContent !== 'Save split') throw new Error('unmerged secondary problem retained the one-note action');
+retryTopicList.querySelectorAll('fieldset')[1].querySelector('[data-split-review-skip]').click();
+if (retrySaveButton.textContent !== 'Save split') throw new Error('excluded secondary problem exposed the one-note action');
 const addedTopicList = new FakeElement('div');
 const addedAddButton = new FakeElement('button');
 const addedSaveButton = new FakeElement('button');

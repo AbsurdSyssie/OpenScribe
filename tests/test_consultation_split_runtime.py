@@ -298,7 +298,7 @@ def test_runtime_preference_turnoff_after_provider_return_settles_known_usage_an
     calls = []
     monkeypatch.setattr("app.services.consultation_split_runtime.llm_runtime.invoke_llm", lambda **_kwargs: (calls.append(1) or _provider_success(json.dumps({"topics": []}))))
     gate = iter([True, True, False])
-    monkeypatch.setattr("app.services.consultation_split_runtime.consultation_splitting_enabled", lambda *_args: next(gate))
+    monkeypatch.setattr("app.services.consultation_split_runtime.analysis_split_enabled", lambda *_args, **_kwargs: next(gate))
 
     result = process_consultation_split_analysis_execution(db_session, execution_id=execution_id)
 

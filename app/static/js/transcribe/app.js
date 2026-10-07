@@ -1,5 +1,5 @@
-import { attachTranscribeActions } from './actions.js?v=20261001-audio-upload-recovery';
-import { readTranscribeBootstrap } from './bootstrap.js?v=20260421-pii-refresh';
+import { attachTranscribeActions } from './actions.js?v=20261006-durable-create';
+import { readTranscribeBootstrap } from './bootstrap.js?v=20261005-multiple-problems';
 import { createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationLoadingHtml } from './documents.js?v=20260918-retired-note-workspace';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
 import { createAudioCaptureController } from './media.js?v=20261001-audio-upload-recovery';
@@ -11,7 +11,7 @@ import { csrfFetch } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
 import { createTemplateSuggestionController } from './templateSuggestions.js?v=20260830-template-suggestion-preference';
- import { createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration } from './splitReview.js?v=20261001-add-problem';
+ import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled } from './splitReview.js?v=20261006-durable-create';
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,
@@ -67,6 +67,7 @@ import {
       let noteSaveQueued = false;
       let noteSaveConflictShown = false;
       let noteGenerationInFlight = null;
+      let generationSubmissionBarrier = null;
       let noteGenerationBusy = false;
       let noteGenerationCloseDictationAfterCurrentRequest = false;
       let followupEditorDirty = false;
@@ -206,6 +207,7 @@ import {
       const titleForm = document.querySelector('[data-transcript-title-form]');
       const renameTitleInput = document.querySelector('[data-transcript-title-input]');
         const generateOutputForm = document.querySelector('[data-generate-output-form]');
+        const multipleProblemsToggle = document.querySelector('[data-multiple-problems-toggle]');
         const splitContinueOneNoteButton = document.querySelector('[data-split-continue-one-note]');
         const splitReviewContinueOneNoteButton = document.querySelector('[data-split-review-continue]');
       const generateOutputTemplateSelect = document.querySelector('[data-template-select]');
@@ -338,10 +340,19 @@ let statusDetailsHideTimer = null;
        let splitPartialActionsController = null;
       let workspaceFetchCoordinator = null;
       let consultationSplittingEnabled = Boolean(bootstrap.consultationSplittingEnabled);
+      let consultationSplittingAvailable = Boolean(bootstrap.consultationSplittingAvailable);
+      let multipleProblemsSavePending = false;
+      let multipleProblemsController = null;
       let latestSplitAnalysis = null;
+      let latestSplitIntent = null;
       let latestSplitBatch = null;
       let splitPlaceholderState = null;
       let splitBatchFallbackState = null;
+      const splitCreateEnabled = () => isConsultationSplitCreateEnabled({
+        workspaceEnabled: consultationSplittingEnabled,
+        capabilityAvailable: consultationSplittingAvailable,
+        multipleProblemsMarked: multipleProblemsController?.isMarked?.(),
+      });
       const splitBatchInFlightStatuses = new Set(['generation_queued', 'generating', 'verifying']);
       const splitBatchTerminalStatuses = new Set(['ready', 'partially_ready', 'completed_partial', 'failed']);
       const protectedInitialDisabled = new Map(localBusyProtected.map((button) => [button, button.disabled]));
@@ -495,7 +506,7 @@ let statusDetailsHideTimer = null;
         return Boolean(currentDocumentId === targetDocumentId && document.activeElement?.closest?.('[data-latest-followup-output], [data-followup-output-title]'));
       };
 
-      const buildNoteSaveRequest = () => {
+      const buildNoteSaveRequest = ({ workingNoteTranscriptId = transcriptId } = {}) => {
         const targetId = currentRenderedNoteTargetId();
         if (isWorkingNoteTargetId(targetId)) {
           const mode = dirtyNoteMode || currentRenderedNoteMode();
@@ -506,7 +517,7 @@ let statusDetailsHideTimer = null;
           return {
             targetId,
             kind: 'working_note',
-            endpoint: `/api/v1/transcripts/${transcriptId}/working-note`,
+            endpoint: `/api/v1/transcripts/${workingNoteTranscriptId}/working-note`,
             payload: buildWorkingNotePayload(serializedEditor, expectedUpdatedAt),
           };
         }
@@ -659,17 +670,17 @@ let statusDetailsHideTimer = null;
         return userAppPreferences;
       };
 
-      const persistDictationExplicitly = async () => {
+      const persistDictationExplicitly = async ({ targetTranscriptId = transcriptId } = {}) => {
         if (dictationSaveInFlight) {
           return dictationSaveInFlight;
         }
-        if (!transcriptId || !dictationCombinedInput) {
+        if (!targetTranscriptId || !dictationCombinedInput) {
           return null;
         }
         const combinedText = dictationCombinedInput.value;
         dictationSaveInFlight = (async () => {
           try {
-            const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/post-consultation-dictation`, {
+            const response = await csrfFetch(`/api/v1/transcripts/${targetTranscriptId}/post-consultation-dictation`, {
               method: 'PATCH',
               credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
@@ -679,6 +690,7 @@ let statusDetailsHideTimer = null;
               throw new Error(await parseErrorMessage(response, 'Could not save dictation.'));
             }
             const savedDictation = await response.json();
+            if (transcriptId !== targetTranscriptId) return savedDictation;
             lastSavedDictationText = savedDictation.effective_text || '';
             dictationDirty = false;
             renderDictation(savedDictation);
@@ -693,7 +705,7 @@ let statusDetailsHideTimer = null;
         return dictationSaveInFlight;
       };
 
-      const persistNoteEditsSilently = async ({ keepalive = false } = {}) => {
+      const persistNoteEditsSilently = async ({ keepalive = false, targetTranscriptId = transcriptId } = {}) => {
         if (noteSaveInFlight) {
           noteSaveQueued = true;
           return noteSaveInFlight;
@@ -704,7 +716,7 @@ let statusDetailsHideTimer = null;
         if (discardEmptyWorkingNoteDraft()) {
           return { kind: 'working_note_empty_draft_discarded' };
         }
-        const saveRequest = buildNoteSaveRequest();
+        const saveRequest = buildNoteSaveRequest({ workingNoteTranscriptId: targetTranscriptId });
         if (!saveRequest) {
           return null;
         }
@@ -734,6 +746,7 @@ let statusDetailsHideTimer = null;
             }
             const savedDocument = await response.json();
             if (saveRequest.kind === 'working_note') {
+              if (transcriptId !== targetTranscriptId) return savedDocument;
               activeWorkingNote = savedDocument;
               noteSaveConflictShown = false;
               if (requestVersion === noteEditVersion) {
@@ -780,7 +793,7 @@ let statusDetailsHideTimer = null;
         return noteSaveInFlight;
       };
 
-      const persistNoteEditsUntilDrained = async ({ keepalive = false } = {}) => {
+      const persistNoteEditsUntilDrained = async ({ keepalive = false, targetTranscriptId = transcriptId } = {}) => {
         let savedDocument = null;
         while (true) {
           if (noteSaveTimer) {
@@ -796,7 +809,7 @@ let statusDetailsHideTimer = null;
           if (!noteEditorDirty) {
             return savedDocument;
           }
-          savedDocument = await persistNoteEditsSilently({ keepalive });
+          savedDocument = await persistNoteEditsSilently({ keepalive, targetTranscriptId });
           if (!savedDocument) return null;
         }
       };
@@ -1370,6 +1383,7 @@ let statusDetailsHideTimer = null;
       };
 
       const createDictationOnlySession = async () => {
+        if (!await waitForGenerationSubmission()) return null;
         const response = await csrfFetch('/api/v1/transcripts/start', {
           method: 'POST',
           credentials: 'include',
@@ -1593,7 +1607,7 @@ let statusDetailsHideTimer = null;
           dictationSaveButton.disabled = isBusy || isTranscribing || !transcriptId;
         }
         if (dictationSaveGenerateButton) {
-          dictationSaveGenerateButton.disabled = isBusy || isTranscribing || !transcriptId || !hasLlmSelection || !hasSelectableOptions(generateOutputTemplateSelect);
+          dictationSaveGenerateButton.disabled = isBusy || isTranscribing || multipleProblemsSavePending || !transcriptId || !hasLlmSelection || !hasSelectableOptions(generateOutputTemplateSelect);
         }
         if (dictationTemplateSelect) {
           dictationTemplateSelect.disabled = isBusy || isTranscribing || !hasLlmSelection || !hasSelectableOptions(dictationTemplateSelect);
@@ -1782,6 +1796,7 @@ let statusDetailsHideTimer = null;
 
       const saveDictationAndMaybeGenerate = async ({ generate = false } = {}) => {
         if (!transcriptId) return null;
+        const dictationTranscriptId = transcriptId;
         if (dictationPendingAudioBlob) {
           showFlash('Wait for dictation transcription before saving.', 'warning');
           return null;
@@ -1795,38 +1810,38 @@ let statusDetailsHideTimer = null;
           return null;
         }
         chooseTemplateFromDictationModal();
-        setDictationBusy(true, generate ? 'Queueing...' : 'Saving...');
-        const saved = await persistDictationExplicitly();
-        if (!saved) {
-          setDictationBusy(false);
+        const templateId = generateOutputTemplateSelect?.value || '';
+        if (generate && !templateId) {
+          showFlash('Choose a template before generating.', 'error');
           return null;
         }
-        if (!generate) {
-          showFlash('Dictation saved.', 'success');
-          await fetchWorkspace();
-          setDictationModalOpen(false);
-          setDictationBusy(false);
-          return saved;
-        }
-        const templateId = generateOutputTemplateSelect?.value || '';
-        if (!templateId) {
-          showFlash('Choose a template before generating.', 'error');
-          setDictationBusy(false);
-          return saved;
-        }
+        setDictationBusy(true, generate ? 'Queueing...' : 'Saving...');
         try {
-          const queued = await enqueueTemplateGeneration({ templateId, closeDictationModal: true });
-          if (!queued) return saved;
+          if (generate) {
+            return await enqueueTemplateGeneration({
+              transcriptId: dictationTranscriptId,
+              templateId,
+              closeDictationModal: true,
+            });
+          }
+          const saved = await persistDictationExplicitly({ targetTranscriptId: dictationTranscriptId });
+          if (!saved) return null;
+          if (transcriptId === dictationTranscriptId) {
+            showFlash('Dictation saved.', 'success');
+            await fetchWorkspace(dictationTranscriptId, { guardTranscriptId: dictationTranscriptId });
+            if (transcriptId === dictationTranscriptId) setDictationModalOpen(false);
+          }
+          return saved;
         } catch (error) {
-          showFlash(error instanceof Error ? error.message : 'Could not enqueue note generation.', 'error');
+          showFlash(error instanceof Error ? error.message : (generate ? 'Could not enqueue note generation.' : 'Could not save dictation.'), 'error');
+          return null;
         } finally {
           setDictationBusy(false);
         }
-        return saved;
       };
 
-      const saveDictationBeforeGeneration = async () => {
-        if (!transcriptId) {
+      const saveDictationBeforeGeneration = async (targetTranscriptId = transcriptId) => {
+        if (!targetTranscriptId || transcriptId !== targetTranscriptId) {
           throw new Error('Open a consultation before regenerating.');
         }
         if (dictationPendingAudioBlob || dictationRecordingState === 'stopped' || dictationRecordingState === 'transcribing') {
@@ -1840,7 +1855,7 @@ let statusDetailsHideTimer = null;
           if (!saved) throw new Error('Save dictation before regenerating.');
         }
         if (!dictationDirty) return;
-        const saved = await persistDictationExplicitly();
+        const saved = await persistDictationExplicitly({ targetTranscriptId });
         if (!saved) throw new Error('Save dictation before regenerating.');
       };
 
@@ -2607,7 +2622,7 @@ let statusDetailsHideTimer = null;
         if (generationBusy) closeTemplatePicker();
         const generateOutputButton = generateOutputForm?.querySelector('button[type="submit"]');
         if (generateOutputButton) {
-          generateOutputButton.disabled = generationBusy || splitBatchActive || !canGenerateNote;
+          generateOutputButton.disabled = generationBusy || splitBatchActive || multipleProblemsSavePending || !canGenerateNote;
           const hasGeneratedNotes = workspaceNoteDocuments.some((document) => (
             document?.kind !== 'working_note' && !document?.split_placeholder
           ));
@@ -2758,6 +2773,7 @@ let statusDetailsHideTimer = null;
       });
 
       const createNewConsultForRecording = async () => {
+        if (!await waitForGenerationSubmission()) return false;
         const mode = selectedRecordingMode();
         const response = await csrfFetch('/api/v1/transcripts/start', {
           method: 'POST',
@@ -3757,8 +3773,10 @@ let statusDetailsHideTimer = null;
         shouldPreserveFollowupEditorRender,
       });
 
-      const saveWorkingNoteBeforeGeneration = async () => {
-        if (!transcriptId) return null;
+      const saveWorkingNoteBeforeGeneration = async (targetTranscriptId = transcriptId) => {
+        if (!targetTranscriptId || transcriptId !== targetTranscriptId) {
+          throw new Error('Keep this consultation open until note creation starts.');
+        }
         if (!isWorkingNoteTargetId(currentRenderedNoteTargetId())) {
           return activeWorkingNote;
         }
@@ -3773,7 +3791,7 @@ let statusDetailsHideTimer = null;
           throw new Error('Clear the working note before generating.');
         }
         setWorkingNoteStatus('Saving working note...');
-        const saved = await persistNoteEditsUntilDrained({ keepalive: false });
+        const saved = await persistNoteEditsUntilDrained({ keepalive: false, targetTranscriptId });
         if (!saved) {
           setWorkingNoteStatus('Working note save failed');
           throw new Error('Save the working note before generating.');
@@ -3784,21 +3802,45 @@ let statusDetailsHideTimer = null;
        const enqueueTemplateGeneration = ({ templateId, transcriptId: requestedTranscriptId = transcriptId, closeDictationModal = false } = {}) => {
          const generationTranscriptId = requestedTranscriptId;
          if (!generationTranscriptId || !templateId) return Promise.resolve(false);
+         if (multipleProblemsSavePending) return Promise.resolve(false);
+         if (generationSubmissionBarrier?.task) return generationSubmissionBarrier.task;
          if (noteGenerationInFlight) {
            noteGenerationCloseDictationAfterCurrentRequest = noteGenerationCloseDictationAfterCurrentRequest || closeDictationModal;
            return noteGenerationInFlight;
          }
-         if (consultationSplittingEnabled && splitGenerateController) {
-           return dispatchTemplateGeneration({
-             capabilityEnabled: consultationSplittingEnabled,
+         let resolveSubmission;
+         const submissionAccepted = new Promise((resolve) => { resolveSubmission = resolve; });
+         const submissionBarrier = {
+           accepted: submissionAccepted,
+           settled: false,
+           task: null,
+           settle: (accepted) => {
+             if (submissionBarrier.settled) return;
+             submissionBarrier.settled = true;
+             resolveSubmission(Boolean(accepted));
+             if (generationSubmissionBarrier === submissionBarrier) generationSubmissionBarrier = null;
+           },
+         };
+         generationSubmissionBarrier = submissionBarrier;
+         if (splitCreateEnabled() && splitGenerateController) {
+           const splitRequest = dispatchTemplateGeneration({
+             capabilityEnabled: splitCreateEnabled(),
              splitController: splitGenerateController,
+             forceNewReview: Boolean(multipleProblemsController?.isMarked?.()),
              transcriptId: generationTranscriptId,
              templateId,
              confirmedBatchId: ['ready', 'completed_partial'].includes(latestSplitBatch?.status) ? latestSplitBatch.batch_id : null,
-             onAccepted: closeDictationModal ? () => {
-               if (transcriptId === generationTranscriptId) setDictationModalOpen(false);
-             } : null,
+             onAccepted: () => {
+               submissionBarrier.settle(true);
+               if (closeDictationModal && transcriptId === generationTranscriptId) setDictationModalOpen(false);
+             },
            });
+           submissionBarrier.task = splitRequest;
+           void Promise.resolve(splitRequest).then(
+             () => submissionBarrier.settle(false),
+             () => submissionBarrier.settle(false),
+           );
+           return splitRequest;
          }
          noteGenerationCloseDictationAfterCurrentRequest = closeDictationModal;
 
@@ -3807,7 +3849,8 @@ let statusDetailsHideTimer = null;
           syncGenerationAvailability(readActiveDraftText());
           syncDictationControls();
           try {
-            await saveWorkingNoteBeforeGeneration();
+            await saveWorkingNoteBeforeGeneration(generationTranscriptId);
+            await saveDictationBeforeGeneration(generationTranscriptId);
             const response = await csrfFetch(`/api/v1/transcripts/${generationTranscriptId}/generate-output`, {
               method: 'POST',
               credentials: 'include',
@@ -3817,16 +3860,21 @@ let statusDetailsHideTimer = null;
             if (!response.ok) {
               throw new Error(await parseErrorMessage(response, 'Could not enqueue note generation.'));
             }
+            await response.json();
+            submissionBarrier.settle(true);
+            if (transcriptId !== generationTranscriptId) return true;
             selectedNoteDocumentId = null;
             setTab('output');
             showFlash('Queued note generation.', 'success');
             if (noteGenerationCloseDictationAfterCurrentRequest && transcriptId === generationTranscriptId) {
               setDictationModalOpen(false);
             }
-            await fetchWorkspace();
-            scheduleWorkspaceRefreshBurst();
+            void fetchWorkspace(generationTranscriptId, { guardTranscriptId: generationTranscriptId }).then((workspace) => {
+              if (workspace && transcriptId === generationTranscriptId) scheduleWorkspaceRefreshBurst();
+            });
             return true;
           } finally {
+            submissionBarrier.settle(false);
             noteGenerationInFlight = null;
             noteGenerationBusy = false;
             noteGenerationCloseDictationAfterCurrentRequest = false;
@@ -3834,9 +3882,12 @@ let statusDetailsHideTimer = null;
             syncDictationControls();
           }
         })();
+        submissionBarrier.task = noteGenerationInFlight;
 
         return noteGenerationInFlight;
       };
+
+      const waitForGenerationSubmission = () => generationSubmissionBarrier?.accepted || Promise.resolve(true);
 
       const workspaceEndpointForTranscript = (nextTranscriptId) => {
         if (nextTranscriptId) {
@@ -3964,7 +4015,9 @@ let statusDetailsHideTimer = null;
         transcriptId = transcript?.id || null;
         document.dispatchEvent(new CustomEvent('transcribe:active-transcript-changed'));
         consultationSplittingEnabled = Boolean(workspace.consultation_splitting_enabled);
+        consultationSplittingAvailable = Boolean(workspace.consultation_splitting_available);
         latestSplitAnalysis = workspace.consultation_split_analysis || null;
+        latestSplitIntent = workspace.consultation_split_intent || null;
         latestSplitBatch = workspace.consultation_split_batch || null;
         if (activeTranscriptChanged) templateSuggestionController.onTranscriptChanged();
         workspaceTranscriptPiiEntities = uniquePiiEntities(workspace.active_transcript_pii_entities || []);
@@ -4138,14 +4191,30 @@ let statusDetailsHideTimer = null;
           draft: workspace.consultation_split_draft || null,
           availableTemplates: workspace.available_templates || [],
           batch: workspace.consultation_split_batch || null,
+           manualReview: Boolean(latestSplitIntent?.manual_review_requested),
            nextTranscriptId: transcriptId,
          });
           splitGenerateController?.applyWorkspaceState({
            capabilityEnabled: consultationSplittingEnabled,
+           capabilityAvailable: consultationSplittingAvailable,
            transcriptId,
            analysis: latestSplitAnalysis,
            draft: workspace.consultation_split_draft || null,
             availableTemplates: workspace.available_templates || [],
+          });
+          if (
+            latestSplitIntent?.status === 'analysis_pending'
+            && workspace.consultation_split_draft?.status === 'active'
+            && latestSplitIntent.analysis_id === workspace.consultation_split_draft.analysis_id
+          ) {
+            // Restored review remains closed until the clinician opens it, but
+            // its server-projected intent can be confirmed or continued.
+            splitReviewController?.setContinueAvailable?.(true);
+          }
+          multipleProblemsController?.applyWorkspaceState({
+            capabilityAvailable: consultationSplittingAvailable,
+            nextTranscriptId: transcriptId,
+            multipleProblems: transcript?.multiple_problems,
           });
           splitPartialActionsController?.applyWorkspaceState(workspace.consultation_split_batch || null, transcriptId);
           splitAnalysisRestorationPoller?.updateWorkspace();
@@ -4243,6 +4312,16 @@ let statusDetailsHideTimer = null;
         }
       }
 
+        const getConfirmSplitIntentId = () => {
+          const analysisId = splitReviewController?.getDraft?.()?.analysis_id;
+          if (!analysisId) return null;
+          const operation = splitGenerateController?.getOperation?.();
+          if (operation?.transcriptId === transcriptId && operation.analysisId === analysisId) {
+            return operation.intentId || null;
+          }
+          return latestSplitIntent?.status === 'analysis_pending' && latestSplitIntent.analysis_id === analysisId
+            ? latestSplitIntent.intent_id : null;
+        };
         const setContinueOneNoteAvailable = (available) => {
           const isAvailable = Boolean(available);
           if (splitContinueOneNoteButton) {
@@ -4255,7 +4334,10 @@ let statusDetailsHideTimer = null;
          getTranscriptId: () => transcriptId,
          refreshWorkspace: () => fetchWorkspace(),
          showMessage: showFlash,
-         continueAsOneNote: () => splitGenerateController?.continueAsOneNote?.() || false,
+         continueAsOneNote: () => splitGenerateController?.continueAsOneNote?.({
+           transcriptId,
+           intentId: getConfirmSplitIntentId(),
+         }) || false,
           beginEdit: async () => {
             const editTranscriptId = transcriptId;
             const templateId = generateOutputTemplateSelect?.value || '';
@@ -4265,18 +4347,18 @@ let statusDetailsHideTimer = null;
             }
             return splitGenerateController?.start?.({ transcriptId: editTranscriptId, templateId }) || false;
           },
-          getConfirmIntentId: () => splitGenerateController?.getOperation?.()?.intentId || null,
+          getConfirmIntentId: () => getConfirmSplitIntentId(),
           onSplitBatchStarted: ({ draft, batchId, phase, pendingBatchId = false } = {}) => {
             startSplitPlaceholderBatch({ draft, batchId, phase, pendingBatchId });
           },
        });
-        splitGenerateController = createSplitGenerateController({
-         getCapabilityEnabled: () => consultationSplittingEnabled,
+       splitGenerateController = createSplitGenerateController({
+         getCapabilityEnabled: () => splitCreateEnabled(),
          getTranscriptId: () => transcriptId,
          getTemplateId: () => generateOutputTemplateSelect?.value || '',
-         saveSources: async () => {
-           await saveWorkingNoteBeforeGeneration();
-           await saveDictationBeforeGeneration();
+         saveSources: async ({ transcriptId: sourceTranscriptId } = {}) => {
+           await saveWorkingNoteBeforeGeneration(sourceTranscriptId);
+           await saveDictationBeforeGeneration(sourceTranscriptId);
          },
          refreshWorkspace: (nextTranscriptId, options) => fetchWorkspace(nextTranscriptId, options),
          reviewController: splitReviewController,
@@ -4289,16 +4371,19 @@ let statusDetailsHideTimer = null;
            syncGenerationAvailability(readActiveDraftText());
            syncDictationControls();
          },
-          setStatus: () => {},
+          setStatus: (message, kind) => {
+            if (message && ['warning', 'error'].includes(kind)) showFlash(message, kind);
+          },
           setContinueAvailable: setContinueOneNoteAvailable,
-          onGeneratedDocument: async (_document, { replayed = false } = {}) => {
+          onGeneratedDocument: async (_document, { replayed = false, transcriptId: generatedTranscriptId } = {}) => {
+            if (generatedTranscriptId !== transcriptId) return;
             splitPlaceholderState = null;
             selectedNoteSlotKey = null;
             selectedNoteDocumentId = null;
             setTab('output');
             showFlash(replayed ? 'Opened existing one-note request.' : 'Queued note generation.', 'success');
-            await fetchWorkspace();
-            scheduleWorkspaceRefreshBurst();
+            await fetchWorkspace(generatedTranscriptId, { guardTranscriptId: generatedTranscriptId });
+            if (generatedTranscriptId === transcriptId) scheduleWorkspaceRefreshBurst();
           },
         });
        splitPartialActionsController = createSplitPartialActionsController({
@@ -4311,6 +4396,24 @@ let statusDetailsHideTimer = null;
            renderSelectedNote();
          },
        });
+       multipleProblemsController = createMultipleProblemsController({
+         button: multipleProblemsToggle,
+         getTranscriptId: () => transcriptId,
+         onPendingChange: (pending) => {
+           multipleProblemsSavePending = pending;
+           syncGenerationAvailability(readActiveDraftText());
+           syncDictationControls();
+         },
+         onPersisted: ({ transcriptId: savedTranscriptId }) => fetchWorkspace(savedTranscriptId, {
+           guardTranscriptId: savedTranscriptId,
+         }),
+         showMessage: showFlash,
+       });
+       multipleProblemsController.applyWorkspaceState({
+         capabilityAvailable: consultationSplittingAvailable,
+         nextTranscriptId: transcriptId,
+         multipleProblems: bootstrap.activeTranscriptMultipleProblems,
+       });
        splitContinueOneNoteButton?.addEventListener('click', () => { void splitGenerateController?.continueAsOneNote(); });
       workspaceFetchCoordinator = createWorkspaceFetchCoordinator({
         fetcher: (endpoint) => fetch(endpoint, { credentials: 'include' }),
@@ -4321,7 +4424,9 @@ let statusDetailsHideTimer = null;
       });
       splitAnalysisRestorationPoller = createSplitAnalysisRestorationPoller({
         getState: () => ({
-          capabilityEnabled: consultationSplittingEnabled,
+          capabilityEnabled: consultationSplittingEnabled || Boolean(
+            consultationSplittingAvailable && splitGenerateController?.getOperation?.()?.manualReviewRequested,
+          ),
           transcriptId,
           analysis: latestSplitAnalysis,
         }),
@@ -4522,6 +4627,7 @@ let statusDetailsHideTimer = null;
         scheduleWorkspaceRefreshBurst,
         syncTranscriptTitleIfNeeded,
         persistPendingEditorsBeforeWorkspaceSwitch,
+        waitForGenerationSubmission,
         enqueueTemplateGeneration,
         setVisibleStatus,
         setSessionProgress,

@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 
 from .dictation import PostConsultationDictationDetail
-from .consultation_split import ConsultationSplitAnalysisDetail, ConsultationSplitBatchDetail, ConsultationSplitDraftDetail
+from .consultation_split import ConsultationSplitAnalysisDetail, ConsultationSplitBatchDetail, ConsultationSplitDraftDetail, ConsultationSplitIntentWorkspaceDetail
 from .smart_phrases import SmartPhraseDetail
 from .templates import GeneratedDocumentDetail, PromptTemplateDetail, QuickActionDetail
 from .transcripts import TranscriptDetail, TranscriptListItem, TranscriptPiiEntityDetail, WorkingNoteDetail
@@ -38,6 +38,8 @@ class TranscribeWorkspaceDetail(BaseModel):
     switch_mode_block_message: str | None = None
     team_leader_email: str | None = None
     consultation_splitting_enabled: bool = False
+    consultation_splitting_available: bool = False
     consultation_split_analysis: ConsultationSplitAnalysisDetail | None = None
+    consultation_split_intent: ConsultationSplitIntentWorkspaceDetail | None = None
     consultation_split_draft: ConsultationSplitDraftDetail | None = None
     consultation_split_batch: ConsultationSplitBatchDetail | None = None

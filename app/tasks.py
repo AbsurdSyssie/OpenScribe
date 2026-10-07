@@ -8,6 +8,7 @@ from app.services.template_suggestions import process_template_suggestion
 from app.services.consultation_split_runtime import process_consultation_split_analysis_execution
 from app.services.consultation_split_generation_runtime import process_consultation_split_generation_execution
 from app.services.consultation_split_verification_runtime import process_consultation_split_verification_execution
+from app.services.consultation_split_intent_progress import progress_consultation_split_intent
 from app.services.templates import GeneratedDocumentWaitingForTranscript, process_generated_document
 from app.services.transcripts import delete_expired_transcripts, expire_ingestion_source_audio, process_transcript_audio_cleanup_jobs, process_transcript_ingestion_job
 from app.services.audit_retention import expire_security_audit_events
@@ -97,6 +98,36 @@ def process_consultation_split_execution_task(*, execution_id: str) -> None:
             # state and leave submitted/no-response work for conservative quota
             # lifecycle terminalization rather than retrying a provider call.
             db.rollback()
+
+
+@celery_app.task(
+    name="openscribe.process_consultation_split_intent",
+    bind=True,
+    max_retries=None,
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
+def process_consultation_split_intent_task(self, *, intent_id: str) -> None:
+    """Advance an accepted Create using UUID-only, idempotent persisted state."""
+    try:
+        parsed_intent_id = UUID(intent_id)
+    except (TypeError, ValueError, AttributeError):
+        return
+    retry_required = False
+    with SessionLocal() as db:
+        try:
+            result = progress_consultation_split_intent(db, intent_id=parsed_intent_id)
+        except Exception:
+            # Never let database/provider exception text reach Celery logs.
+            db.rollback()
+            retry_required = True
+            result = None
+    if retry_required or (result is not None and result.outcome == "waiting"):
+        # Each wait is bounded and backs off to one minute. The analysis
+        # lifecycle owns terminalization; the task keeps the accepted intent
+        # recoverable through queue congestion until analysis or root expiry.
+        countdown = min(2 * (2 ** min(self.request.retries, 5)), 60)
+        raise self.retry(countdown=countdown)
 
 
 @celery_app.task(name="openscribe.process_task_dispatch_outbox")

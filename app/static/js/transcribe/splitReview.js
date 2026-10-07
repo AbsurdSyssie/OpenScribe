@@ -258,6 +258,7 @@ export function createSplitPartialActionsController({
 // loading the workspace application shell.
 export async function dispatchTemplateGeneration({
   capabilityEnabled = false,
+  forceNewReview = false,
   splitController = null,
   transcriptId = null,
   templateId = null,
@@ -266,10 +267,102 @@ export async function dispatchTemplateGeneration({
   ordinary = async () => false,
 } = {}) {
   if (capabilityEnabled && splitController) {
-    if (confirmedBatchId) return splitController.regenerateConfirmedBatch({ transcriptId, batchId: confirmedBatchId, onAccepted });
+    if (confirmedBatchId && !forceNewReview) return splitController.regenerateConfirmedBatch({ transcriptId, batchId: confirmedBatchId, onAccepted });
     return splitController.start({ transcriptId, templateId, onAccepted });
   }
   return ordinary();
+}
+
+// The marker is usable only after its PATCH succeeds and only while the
+// server-derived deployment/owner capability remains available. The intent
+// endpoint still decides whether the request is accepted.
+export function isConsultationSplitCreateEnabled({
+  workspaceEnabled = false,
+  capabilityAvailable = false,
+  multipleProblemsMarked = false,
+} = {}) {
+  return Boolean(workspaceEnabled || (capabilityAvailable && multipleProblemsMarked));
+}
+
+// This is deliberately limited to the consultation marker. It cannot request
+// analysis or generation; Create remains the only operation that can do that.
+export function createMultipleProblemsController({
+  button = typeof document !== 'undefined' ? document.querySelector('[data-multiple-problems-toggle]') : null,
+  fetcher = csrfFetch,
+  getTranscriptId = () => null,
+  onPendingChange = () => {},
+  onPersisted = async () => {},
+  showMessage = () => {},
+} = {}) {
+  let available = false;
+  let transcriptId = null;
+  let marked = false;
+  let pending = false;
+  let requestGeneration = 0;
+  const render = () => {
+    if (!button) return;
+    button.hidden = !available || !transcriptId;
+    button.disabled = !available || !transcriptId || pending;
+    button.setAttribute('aria-pressed', String(marked));
+    button.setAttribute('aria-busy', String(pending));
+    button.classList.toggle('is-active', marked);
+  };
+  const applyWorkspaceState = ({ capabilityAvailable, nextTranscriptId, multipleProblems } = {}) => {
+    const changedTranscript = transcriptId !== (nextTranscriptId || null);
+    available = Boolean(capabilityAvailable);
+    transcriptId = nextTranscriptId || null;
+    if (changedTranscript && pending) {
+      requestGeneration += 1;
+      pending = false;
+      onPendingChange(false);
+    }
+    if (!pending) marked = Boolean(multipleProblems);
+    render();
+  };
+  const toggle = async () => {
+    if (!available || !transcriptId || pending || transcriptId !== getTranscriptId()) return false;
+    const targetTranscriptId = transcriptId;
+    const previous = marked;
+    const next = !previous;
+    const generation = ++requestGeneration;
+    marked = next;
+    pending = true;
+    onPendingChange(true);
+    render();
+    try {
+      const response = await fetcher(`/api/v1/transcripts/${targetTranscriptId}`, {
+        method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ multiple_problems: next }),
+      });
+      if (generation !== requestGeneration || transcriptId !== targetTranscriptId || getTranscriptId() !== targetTranscriptId) return false;
+      if (!response.ok) throw new Error('Could not save the consultation setting.');
+      const payload = await response.json();
+      if (generation !== requestGeneration || transcriptId !== targetTranscriptId || getTranscriptId() !== targetTranscriptId) return false;
+      marked = Boolean(payload?.multiple_problems ?? next);
+      try {
+        await onPersisted({ transcriptId: targetTranscriptId, multipleProblems: marked });
+      } catch (_) {
+        // The marker is already committed. A refresh is presentation-only and
+        // must not turn a successful PATCH into an apparent failed save.
+      }
+      return true;
+    } catch (_) {
+      if (generation === requestGeneration && transcriptId === targetTranscriptId && getTranscriptId() === targetTranscriptId) {
+        marked = previous;
+        showMessage('Could not save Multiple problems. Please try again.', 'error');
+      }
+      return false;
+    } finally {
+      if (generation === requestGeneration) {
+        pending = false;
+        onPendingChange(false);
+        render();
+      }
+    }
+  };
+  button?.addEventListener('click', () => { void toggle(); });
+  render();
+  return { applyWorkspaceState, toggle, isPending: () => pending, isMarked: () => marked };
 }
 
 // Own the small browser-side part of a deliberate Generate action.  The server
@@ -408,14 +501,27 @@ export function createSplitGenerateController({
     draftRequests.set(key, request);
     return request;
   };
-  const applyWorkspaceState = ({ capabilityEnabled, transcriptId, analysis, draft, availableTemplates = [] } = {}) => {
+  const applyWorkspaceState = ({
+    capabilityEnabled,
+    capabilityAvailable = capabilityEnabled,
+    transcriptId,
+    analysis,
+    draft,
+    availableTemplates = [],
+  } = {}) => {
     // Workspace callbacks can arrive while a session switch is in progress.
     // Never leave the old Generate operation owning the new workspace's busy UI.
     if (current(operation) && (!same(operation.transcriptId, transcriptId) || !same(getTranscriptId(), operation.transcriptId))) {
       abandonForTranscriptChange(operation);
       return;
     }
-    if (!capabilityEnabled || !canUseCurrentOperation(transcriptId, analysis)) {
+    // A read arriving before Create's response cannot establish this
+    // submission's analysis binding or clear its acceptance callback.
+    if (current(operation) && operation.pending && !operation.analysisId) return;
+    if (
+      (!capabilityEnabled && !(capabilityAvailable && operation?.manualReviewRequested))
+      || !canUseCurrentOperation(transcriptId, analysis)
+    ) {
       // Workspace state without the browser's matching operation is passive.
       // It must never retain an earlier actionable control.
       setContinueAvailable(false);
@@ -426,6 +532,29 @@ export function createSplitGenerateController({
     if (IN_FLIGHT_ANALYSIS_STATUSES.has(status)) {
       updateContinueAvailability(operation);
       setOperationStatus(analysisStatusMessage(status));
+      return;
+    }
+    if (status === 'not_required' && operation.manualReviewRequested && operation.intentId && !operation.consumed) {
+      if (!draft || !same(draft.analysis_id, analysis.analysis_id)) {
+        operation.pending = false;
+        operation.retryable = false;
+        updateContinueAvailability(operation);
+        setOperationStatus('Preparing note split review.');
+        void initializeDraft(operation, analysis);
+        return;
+      }
+      const draftKey = `${transcriptId}:${analysis.analysis_id}:${draft.draft_id || ''}`;
+      operation.draftState = 'complete';
+      operation.pending = false;
+      setBusy(false);
+      operation.continueEligible = draft.status === ACTIVE_STATUS;
+      updateContinueAvailability(operation);
+      setOperationStatus('Review the proposed note split.');
+      if (!openedDrafts.has(draftKey)) {
+        openedDrafts.add(draftKey);
+        reviewController?.applyWorkspaceState?.({ draft, availableTemplates, nextTranscriptId: transcriptId, manualReview: true });
+        reviewController?.open?.();
+      }
       return;
     }
     if (NO_NOTE_ANALYSIS_STATUSES.has(status) || !analysis?.analysis_id) {
@@ -489,7 +618,7 @@ export function createSplitGenerateController({
     updateContinueAvailability(operation);
     if (!openedDrafts.has(draftKey)) {
       openedDrafts.add(draftKey);
-      reviewController?.applyWorkspaceState?.({ draft, availableTemplates, nextTranscriptId: transcriptId });
+      reviewController?.applyWorkspaceState?.({ draft, availableTemplates, nextTranscriptId: transcriptId, manualReview: operation.manualReviewRequested });
       reviewController?.open?.();
     }
   };
@@ -547,6 +676,7 @@ export function createSplitGenerateController({
       consumePending: false,
       consumed: false,
       continueEligible: false,
+      manualReviewRequested: false,
     };
     if (!candidate.key) throw new Error('Could not start note split.');
     operation = candidate;
@@ -557,7 +687,7 @@ export function createSplitGenerateController({
     setBusy(true);
     setOperationStatus('Saving consultation notes before preparing a note split.');
     try {
-      await saveSources();
+      await saveSources({ transcriptId: candidate.transcriptId });
       if (!current(candidate)) return true;
       if (!same(getTranscriptId(), candidate.transcriptId)) {
         abandonForTranscriptChange(candidate);
@@ -590,9 +720,18 @@ export function createSplitGenerateController({
       }
       candidate.analysisId = payload?.analysis?.analysis_id || null;
       candidate.intentId = payload?.intent_id || null;
+      candidate.manualReviewRequested = Boolean(payload?.manual_review_requested);
       candidate.pending = false;
       notifyAccepted(candidate, onAccepted);
       applyWorkspaceState({ capabilityEnabled: true, transcriptId: candidate.transcriptId, analysis: payload?.analysis || null });
+      // An accepted intent commonly starts with queued analysis. The local
+      // response above is enough to keep this controller coherent, but the
+      // workspace-level restoration poller reads the server projection. Refresh
+      // it now so that a later ready/not-required transition is observed even
+      // when SSE is unavailable and the user has not pressed Create again.
+      if (IN_FLIGHT_ANALYSIS_STATUSES.has(payload?.analysis?.status || '')) {
+        await refreshWorkspace(candidate.transcriptId, { guardTranscriptId: candidate.transcriptId });
+      }
       return true;
     } catch (_) {
       if (current(candidate)) {
@@ -613,8 +752,29 @@ export function createSplitGenerateController({
       return true;
     }
   };
-  const continueAsOneNote = async () => {
-    const candidate = operation;
+  const continueAsOneNote = async ({
+    transcriptId: restoredTranscriptId = null,
+    intentId: restoredIntentId = null,
+  } = {}) => {
+    let candidate = operation;
+    if (!candidate && restoredTranscriptId && restoredIntentId && same(getTranscriptId(), restoredTranscriptId)) {
+      candidate = {
+        token: ++generation,
+        transcriptId: restoredTranscriptId,
+        intentId: restoredIntentId,
+        pending: false,
+        retryable: true,
+        consumePending: false,
+        consumed: false,
+        continueEligible: true,
+        restored: true,
+      };
+      operation = candidate;
+    }
+    if (
+      restoredTranscriptId
+      && (!same(candidate?.transcriptId, restoredTranscriptId) || !same(candidate?.intentId, restoredIntentId))
+    ) return false;
     if (!candidate?.intentId || candidate.consumed || candidate.consumePending || !current(candidate)) return false;
     if (!same(getTranscriptId(), candidate.transcriptId)) {
       abandonForTranscriptChange(candidate);
@@ -634,8 +794,13 @@ export function createSplitGenerateController({
         return false;
       }
       const payload = response.ok ? await response.json() : null;
+      if (!current(candidate) || !same(getTranscriptId(), candidate.transcriptId)) {
+        if (current(candidate)) abandonForTranscriptChange(candidate);
+        return false;
+      }
       if (!response.ok) {
         const error = await readSafeError(response);
+        if (!current(candidate) || !same(getTranscriptId(), candidate.transcriptId)) return false;
         setOperationStatus(
           error.code === 'not_found' || error.code === 'consultation_split_template_unavailable'
             ? 'The saved template is unavailable. Choose a currently available template and select Create to start a new request.'
@@ -656,7 +821,11 @@ export function createSplitGenerateController({
       }
       candidate.consumed = true;
       updateContinueAvailability(candidate);
-      await onGeneratedDocument(payload.document, { replayed: Boolean(payload.idempotency_replayed) });
+      await onGeneratedDocument(payload.document, {
+        replayed: Boolean(payload.idempotency_replayed),
+        transcriptId: candidate.transcriptId,
+      });
+      if (!current(candidate) || !same(getTranscriptId(), candidate.transcriptId)) return true;
       setOperationStatus(payload.idempotency_replayed ? 'Opened the existing one-note request.' : 'Queued one note.', 'success');
       reset();
       return true;
@@ -807,6 +976,15 @@ export function validateSplitDraftForConfirmation(draft) {
   return { valid: true, message: '' };
 }
 
+export function isAllMergedOneNoteDraft(draft) {
+  const topics = draft?.topics;
+  if (!Array.isArray(topics) || topics.length < 2) return false;
+  const primary = topics.filter((topic) => topic?.is_primary);
+  return primary.length === 1
+    && primary[0].disposition === 'separate_note'
+    && topics.every((topic) => topic?.is_primary || topic?.disposition === 'include_in_primary');
+}
+
 export function serializeSplitDraftTopics(topics) {
   return (Array.isArray(topics) ? topics : []).slice(0, 6).map((topic) => {
     const normalized = enforcePrimaryDisposition(topic || {});
@@ -914,6 +1092,7 @@ export function createSplitReviewController({
   let editPreparationKey = null;
   let editPreparation = null;
   let nextClientTopicKey = 0;
+  let manualReviewRequested = false;
   const createNotesButton = createButton || confirmButton;
 
   const setOpenState = (isOpen) => {
@@ -936,26 +1115,32 @@ export function createSplitReviewController({
 
   const updateControlState = () => {
     const readOnly = isReadOnly();
-    const controlsDisabled = readOnly || saving || confirming;
+    const controlsDisabled = readOnly || saving || continuing || confirming;
     setDisabled(topicList, controlsDisabled);
-    closeButtons.forEach((button) => { button.disabled = saving; });
-    if (modal) modal.setAttribute('aria-busy', String(saving));
+    closeButtons.forEach((button) => { button.disabled = saving || continuing; });
+    if (modal) modal.setAttribute('aria-busy', String(saving || continuing));
     const validation = readOnly ? { valid: false } : validateSplitDraft(localDraft);
     const confirmationValidation = readOnly ? { valid: false } : validateSplitDraftForConfirmation(localDraft);
-    if (saveButton) saveButton.disabled = controlsDisabled || !dirty || !validation.valid;
+    const shouldContinueAsOneNote = continueAvailable && isAllMergedOneNoteDraft(localDraft);
+    if (saveButton) {
+      saveButton.textContent = shouldContinueAsOneNote ? 'Continue as one note' : 'Save split';
+      saveButton.disabled = controlsDisabled
+        || !validation.valid
+        || (!dirty && !shouldContinueAsOneNote);
+    }
     if (addButton) {
       const atTopicLimit = (localDraft?.topics?.length || 0) >= 6;
       addButton.hidden = readOnly;
       addButton.disabled = controlsDisabled || atTopicLimit;
     }
     if (continueButton) {
-      continueButton.hidden = !continueAvailable;
-      continueButton.disabled = !continueAvailable || continuing;
+      continueButton.hidden = !continueAvailable || shouldContinueAsOneNote;
+      continueButton.disabled = !continueAvailable || shouldContinueAsOneNote || controlsDisabled;
     }
     if (createNotesButton) {
       const confirmable = !readOnly && !dirty && confirmationValidation.valid && Boolean(getConfirmIntentId());
       createNotesButton.hidden = !confirmable && !confirming;
-      createNotesButton.disabled = !confirmable || confirming;
+      createNotesButton.disabled = controlsDisabled || !confirmable || confirming;
     }
     if (!readOnly && !validation.valid && dirty) {
       setStatus(validation.message, 'warning');
@@ -1013,6 +1198,13 @@ export function createSplitReviewController({
       setStatus('This split is queued and locked until generation finishes.', 'warning');
     } else if (localDraft && (TERMINAL_STATUSES.has(localDraft.status) || localDraft.status === 'unavailable')) {
       setStatus('This split is no longer available for editing.', 'warning');
+    } else if (manualReviewRequested && topics.length < 2) {
+      setStatus(
+        topics.length === 0
+          ? 'No separate problems were detected. Add a problem or continue as one note.'
+          : 'One problem was detected. Add another problem or continue as one note.',
+        'one-note-guidance',
+      );
     } else if (!dirty) {
       setStatus('');
     }
@@ -1180,7 +1372,7 @@ export function createSplitReviewController({
   const findTopic = (key) => localDraft?.topics?.find((topic) => topicKey(topic) === asString(key));
 
   const addProblem = () => {
-    if (isReadOnly() || saving || confirming || (localDraft?.topics?.length || 0) >= 6) return false;
+    if (isReadOnly() || saving || continuing || confirming || (localDraft?.topics?.length || 0) >= 6) return false;
     const topics = localDraft.topics;
     const clientKey = `new-topic-${++nextClientTopicKey}`;
     topics.push(enforcePrimaryDisposition({
@@ -1199,14 +1391,14 @@ export function createSplitReviewController({
   };
 
   const markDirty = () => {
-    if (isReadOnly() || saving) return;
+    if (isReadOnly() || saving || continuing) return;
     dirty = true;
     updateControlState();
   };
 
   const close = ({ force = false } = {}) => {
     if (!opened) return true;
-    if (!force && saving) return false;
+    if (!force && (saving || continuing)) return false;
     if (!force && dirty && !confirmDiscard()) return false;
     if (force) {
       saveGeneration += 1;
@@ -1248,16 +1440,23 @@ export function createSplitReviewController({
     return true;
   };
 
-  const applyWorkspaceState = ({ draft, availableTemplates = [], nextTranscriptId = null, batch } = {}) => {
+  const applyWorkspaceState = ({ draft, availableTemplates = [], nextTranscriptId = null, batch, manualReview } = {}) => {
     const incoming = normalizeSplitDraft(draft);
+    const nextTranscriptIdValue = nextTranscriptId || null;
+    const sameDraft = Boolean(incoming && remoteDraft && incoming.draft_id === remoteDraft.draft_id);
+    const sameTranscript = transcriptId === nextTranscriptIdValue;
     templates = Array.isArray(availableTemplates) ? availableTemplates : [];
-    transcriptId = nextTranscriptId || null;
+    transcriptId = nextTranscriptIdValue;
+    if (typeof manualReview === 'boolean') {
+      manualReviewRequested = manualReview;
+    } else if (!sameDraft || !sameTranscript) {
+      manualReviewRequested = false;
+    }
     if (batch !== undefined) latestBatch = batch;
     if (incoming?.status === ACTIVE_STATUS) {
       editPreparationKey = null;
       editPreparation = null;
     }
-    const sameDraft = Boolean(incoming && remoteDraft && incoming.draft_id === remoteDraft.draft_id);
     remoteDraft = incoming;
     if (!dirty) {
       localDraft = incoming ? normalizeSplitDraft(incoming) : null;
@@ -1383,20 +1582,56 @@ export function createSplitReviewController({
     }
   };
 
-  const continueOneNote = async () => {
+  const consumeOneNote = async (expectedIntentId = null) => {
     if (!continueAvailable || continuing) return false;
+    if (expectedIntentId && getConfirmIntentId() !== expectedIntentId) return false;
     continuing = true;
     updateControlState();
     try {
-      return await continueAsOneNote();
+      if (expectedIntentId && getConfirmIntentId() !== expectedIntentId) return false;
+      const started = await continueAsOneNote();
+      if (started) close({ force: true });
+      return started;
     } finally {
       continuing = false;
       updateControlState();
     }
   };
 
+  const saveOrContinueOneNote = async () => {
+    if (continuing || confirming || saving) return false;
+    if (!continueAvailable || !isAllMergedOneNoteDraft(localDraft)) {
+      return save();
+    }
+    // An intent can be replaced by a later Create on the same transcript while
+    // this PUT is in flight. Only consume the one that was available when this
+    // all-merged action began.
+    const intentId = getConfirmIntentId();
+    if (!intentId) return false;
+    continuing = true;
+    updateControlState();
+    try {
+      if (dirty && !await save()) return false;
+      if (
+        isReadOnly()
+        || getConfirmIntentId() !== intentId
+        || !continueAvailable
+        || !isAllMergedOneNoteDraft(localDraft)
+      ) return false;
+      // save() releases its own lock, while this outer guard keeps edits and
+      // duplicate clicks disabled across the save-and-consume sequence.
+      continuing = false;
+      return await consumeOneNote(intentId);
+    } finally {
+      if (continuing) {
+        continuing = false;
+        updateControlState();
+      }
+    }
+  };
+
   const confirm = async () => {
-    if (confirming || saving || dirty || isReadOnly()) return false;
+    if (confirming || saving || continuing || dirty || isReadOnly()) return false;
     const activeTranscriptId = transcriptId || getTranscriptId();
     const intentId = getConfirmIntentId();
     const validation = validateSplitDraftForConfirmation(localDraft);
@@ -1474,7 +1709,7 @@ export function createSplitReviewController({
     if (event.target instanceof Element && event.target.hasAttribute('data-split-review-close')) close();
   });
   topicList?.addEventListener('click', (event) => {
-    if (saving) return;
+    if (saving || continuing) return;
     const target = event.target instanceof Element ? event.target : null;
     const fieldset = target?.closest('[data-topic-key]');
     if (!fieldset) return;
@@ -1511,7 +1746,7 @@ export function createSplitReviewController({
     }
   });
   const editTopic = (event) => {
-    if (saving) return;
+    if (saving || continuing) return;
     const input = event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement ? event.target : null;
     if (!input) return;
     const topic = findTopic(input.dataset.topicKey);
@@ -1527,8 +1762,8 @@ export function createSplitReviewController({
   topicList?.addEventListener('input', editTopic);
   topicList?.addEventListener('change', editTopic);
   addButton?.addEventListener('click', () => { addProblem(); });
-  saveButton?.addEventListener('click', () => { void save(); });
-  continueButton?.addEventListener('click', () => { void continueOneNote(); });
+  saveButton?.addEventListener('click', () => { void saveOrContinueOneNote(); });
+  continueButton?.addEventListener('click', () => { void consumeOneNote(); });
   createNotesButton?.addEventListener('click', () => { void confirm(); });
   modal?.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
@@ -1557,13 +1792,13 @@ export function createSplitReviewController({
     render,
     addProblem,
     save,
-    continueAsOneNote: continueOneNote,
+    continueAsOneNote: consumeOneNote,
     confirm,
     setContinueAvailable: (available) => {
       continueAvailable = Boolean(available);
       const validation = validateSplitDraft(localDraft);
       const confirmationValidation = validateSplitDraftForConfirmation(localDraft);
-      if (continueAvailable && validation.valid && !confirmationValidation.valid) {
+      if (continueAvailable && !manualReviewRequested && validation.valid && !confirmationValidation.valid) {
         setStatus('Choose at least two separate notes to create a note split. Continue as one note uses the template selected when you started Create.', 'one-note-guidance');
       }
       updateControlState();

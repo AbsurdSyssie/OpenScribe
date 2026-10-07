@@ -16,6 +16,7 @@ from app.models import (
     ConsultationSplitAnalysis,
     ConsultationSplitBatch,
     ConsultationSplitExecution,
+    ConsultationSplitIntent,
     Transcript,
     TranscriptAudioCleanupJob,
     TranscriptIngestionJob,
@@ -1518,6 +1519,7 @@ def update_transcript(
     title: str | None,
     ingestion_mode: TranscriptIngestionMode | None,
     structured_context_json: dict | None,
+    multiple_problems: bool | None = None,
     expected_updated_at: datetime | None = None,
 ) -> Transcript:
     transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
@@ -1549,6 +1551,11 @@ def update_transcript(
         transcript.working_note_updated_at = utcnow()
         set_freeform_working_note_text(db, transcript=transcript, plaintext=None)
         set_transcript_structured_context(db, transcript=transcript, plaintext=normalized_structured_context)
+    # The source-writer lock refreshes the transcript from the database with
+    # populate_existing=True. Apply this non-source marker after that refresh
+    # so a combined PATCH does not discard the marker before commit.
+    if multiple_problems is not None:
+        transcript.multiple_problems = multiple_problems
     db.add(transcript)
     db.commit()
     db.refresh(transcript)
@@ -1605,6 +1612,7 @@ def delete_transcripts(
         ingestion_job_ids=list(db.scalars(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id.in_(deleting_transcript_ids)))),
         template_suggestion_job_ids=list(db.scalars(select(TemplateSuggestionJob.id).where(TemplateSuggestionJob.transcript_id.in_(deleting_transcript_ids)))),
         consultation_split_execution_ids=list(db.scalars(select(ConsultationSplitExecution.id).where(ConsultationSplitExecution.transcript_id.in_(deleting_transcript_ids)))),
+        consultation_split_intent_ids=list(db.scalars(select(ConsultationSplitIntent.id).where(ConsultationSplitIntent.transcript_id.in_(deleting_transcript_ids)))),
     )
     deleted_count = len(transcripts)
     deleted_ids = [str(transcript.id) for transcript in transcripts]
@@ -1665,6 +1673,7 @@ def delete_expired_transcripts(
         ingestion_job_ids=list(db.scalars(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id.in_(transcript_ids)))),
         template_suggestion_job_ids=list(db.scalars(select(TemplateSuggestionJob.id).where(TemplateSuggestionJob.transcript_id.in_(transcript_ids)))),
         consultation_split_execution_ids=list(db.scalars(select(ConsultationSplitExecution.id).where(ConsultationSplitExecution.transcript_id.in_(transcript_ids)))),
+        consultation_split_intent_ids=list(db.scalars(select(ConsultationSplitIntent.id).where(ConsultationSplitIntent.transcript_id.in_(transcript_ids)))),
     )
     db.execute(
         update(ConsultationSplitAnalysis)
@@ -2289,6 +2298,7 @@ def _delete_expired_ingestion_transcript(db: Session, *, transcript: Transcript)
         ingestion_job_ids=list(db.scalars(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id == transcript.id))),
         template_suggestion_job_ids=list(db.scalars(select(TemplateSuggestionJob.id).where(TemplateSuggestionJob.transcript_id == transcript.id))),
         consultation_split_execution_ids=list(db.scalars(select(ConsultationSplitExecution.id).where(ConsultationSplitExecution.transcript_id == transcript.id))),
+        consultation_split_intent_ids=list(db.scalars(select(ConsultationSplitIntent.id).where(ConsultationSplitIntent.transcript_id == transcript.id))),
     )
     db.execute(
         update(ConsultationSplitAnalysis)

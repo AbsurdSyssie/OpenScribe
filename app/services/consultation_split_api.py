@@ -14,19 +14,21 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
-from app.models import (ConsultationSplitAnalysis, ConsultationSplitAnalysisStatus, ConsultationSplitBatch,
+from app.models import (ConsultationSplitAnalysis, ConsultationSplitAnalysisStatus, ConsultationSplitBatch, ConsultationSplitIntent, ConsultationSplitIntentStatus,
     ConsultationSplitBatchStatus, ConsultationSplitBatchTopic, ConsultationSplitExecution,
     ConsultationSplitExecutionKind, ConsultationSplitExecutionStatus, ConsultationSplitTopicDisposition,
     ConsultationSplitTopicOutcome, ConsultationSplitTopicOutcomeStatus, GeneratedDocument, Transcript, User)
 from app.schemas.consultation_split import ConsultationSplitAnalysisDetail, ConsultationSplitBatchDetail, ConsultationSplitTopicDetail
-from app.schemas.consultation_split import ConsultationSplitIntentStartResponse
+from app.schemas.consultation_split import ConsultationSplitIntentStartResponse, ConsultationSplitIntentWorkspaceDetail
 from app.services.consultation_split_analysis import ValidatedSplitAnalysis
 from app.services.consultation_split_intents import CreateOrReplayConsultationSplitIntentResult
+from app.services.consultation_split_intent_progress import safe_split_intent_error_code
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.consultation_split_queue import queue_or_reuse_split_analysis
 from app.services.consultation_split_sources import current_consultation_split_analysis_source_matches
 from app.services.consultation_splits import read_split_analysis_json
 from app.services.preferences import consultation_splitting_enabled, consultation_splitting_feature_enabled
+from app.services.consultation_split_gates import analysis_split_enabled
 from app.services.transcripts import get_active_owner_transcript, transcript_is_expired
 
 
@@ -98,12 +100,21 @@ def _projection(
             status = "incomplete"
             error_code = "consultation_split_proposal_unavailable"
 
+    manual_review_requested = db.scalar(select(ConsultationSplitIntent.id).where(
+        ConsultationSplitIntent.analysis_id == analysis.id,
+        ConsultationSplitIntent.owner_user_id == actor.id,
+        ConsultationSplitIntent.team_id == actor.team_id,
+        ConsultationSplitIntent.transcript_id == analysis.transcript_id,
+        ConsultationSplitIntent.manual_review_requested.is_(True),
+        ConsultationSplitIntent.status.in_([ConsultationSplitIntentStatus.analysis_pending, ConsultationSplitIntentStatus.confirmed]),
+    ).limit(1)) is not None
     return ConsultationSplitAnalysisDetail(
         analysis_id=analysis.id,
         status=status,  # type: ignore[arg-type]
         error_code=error_code,
         updated_at=analysis.updated_at,
         completed_at=analysis.completed_at,
+        manual_review_requested=manual_review_requested,
         topics=topics,
     )
 
@@ -190,8 +201,49 @@ def project_consultation_split_intent_start(
 
     return ConsultationSplitIntentStartResponse(
         intent_id=result.intent.id if result.intent is not None else None,
+        intent_status=result.intent.status.value if result.intent is not None else None,
+        intent_error_code=safe_split_intent_error_code(result.intent.error_code) if result.intent is not None else None,
         idempotency_replayed=result.intent is not None and not result.created_new_intent,
+        manual_review_requested=bool(result.intent and result.intent.manual_review_requested),
         analysis=analysis,
+    )
+
+
+def read_workspace_split_intent(
+    db: Session,
+    actor: User,
+    *,
+    transcript_id: UUID,
+    analysis_id: UUID | None,
+) -> ConsultationSplitIntentWorkspaceDetail | None:
+    """Read the newest active intent bound to the projected current analysis."""
+    if analysis_id is None:
+        return None
+    transcript = get_active_owner_transcript(db, actor, transcript_id=transcript_id)
+    intent = db.scalar(
+        select(ConsultationSplitIntent)
+        .where(
+            ConsultationSplitIntent.owner_user_id == actor.id,
+            ConsultationSplitIntent.team_id == actor.team_id,
+            ConsultationSplitIntent.transcript_id == transcript.id,
+            ConsultationSplitIntent.analysis_id == analysis_id,
+            ConsultationSplitIntent.status.in_([
+                ConsultationSplitIntentStatus.analysis_pending,
+                ConsultationSplitIntentStatus.failed,
+            ]),
+            ConsultationSplitIntent.retention_expires_at == transcript.retention_expires_at,
+        )
+        .order_by(ConsultationSplitIntent.created_at.desc(), ConsultationSplitIntent.id.desc())
+        .limit(1)
+    )
+    if intent is None:
+        return None
+    return ConsultationSplitIntentWorkspaceDetail(
+        intent_id=intent.id,
+        analysis_id=analysis_id,
+        status=intent.status.value,
+        manual_review_requested=intent.manual_review_requested,
+        error_code=safe_split_intent_error_code(intent.error_code),
     )
 
 
@@ -220,8 +272,6 @@ def read_workspace_split_analysis(
 ) -> ConsultationSplitAnalysisDetail | None:
     """Return current owner state without redaction, provider, retry, or writes."""
     try:
-        if not consultation_splitting_enabled(db, actor):
-            return None
         # Match the runtime's canonical owner -> transcript -> dictation lock
         # chain before recomputing the read-only current-source fingerprint.
         get_active_owner_transcript(db, actor, transcript_id=transcript_id)
@@ -244,6 +294,8 @@ def read_workspace_split_analysis(
 
     fallback: ConsultationSplitAnalysis | None = None
     for analysis in rows:
+        if not analysis_split_enabled(db, actor, analysis_id=analysis.id):
+            continue
         if analysis.status is ConsultationSplitAnalysisStatus.stale:
             fallback = fallback or analysis
             continue

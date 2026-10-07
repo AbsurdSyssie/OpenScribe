@@ -1,5 +1,6 @@
 const DEFAULT_BOOTSTRAP = {
   activeTranscriptId: null,
+  activeTranscriptMultipleProblems: false,
   activeIngestionMode: null,
   nextLiveChunkSequenceNo: 1,
   hasSttSelection: false,
@@ -20,6 +21,7 @@ const DEFAULT_BOOTSTRAP = {
   activeTranscriptRedactionStatus: { status: "not_run", entity_count: 0, error_code: null },
   activeTab: "output",
   viewerRole: "user",
+  consultationSplittingAvailable: false,
   smartPhrases: [],
 };
 
@@ -38,6 +40,8 @@ export function readTranscribeBootstrap() {
         ? parsed.nextLiveChunkSequenceNo
         : DEFAULT_BOOTSTRAP.nextLiveChunkSequenceNo,
       viewerRole: parsed?.viewerRole === "leader" ? "leader" : "user",
+      consultationSplittingAvailable: Boolean(parsed?.consultationSplittingAvailable),
+      activeTranscriptMultipleProblems: Boolean(parsed?.activeTranscriptMultipleProblems),
       emisSections: Array.isArray(parsed?.emisSections) ? parsed.emisSections : [],
       activeTranscriptPiiEntities: Array.isArray(parsed?.activeTranscriptPiiEntities) ? parsed.activeTranscriptPiiEntities : [],
       activeTranscriptRedactionStatus: parsed?.activeTranscriptRedactionStatus || DEFAULT_BOOTSTRAP.activeTranscriptRedactionStatus,

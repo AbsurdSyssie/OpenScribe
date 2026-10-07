@@ -55,6 +55,7 @@ class RecordingPublisher:
         (TaskDispatchKind.consultation_split_analysis, TaskDispatchSourceKind.consultation_split_execution),
         (TaskDispatchKind.consultation_split_generation, TaskDispatchSourceKind.consultation_split_execution),
         (TaskDispatchKind.consultation_split_verification, TaskDispatchSourceKind.consultation_split_execution),
+        (TaskDispatchKind.consultation_split_intent, TaskDispatchSourceKind.consultation_split_intent),
     ],
 )
 def test_add_pending_dispatch_is_idempotent_and_maps_source(db_session, dispatch_kind, source_kind):
@@ -96,6 +97,11 @@ def test_default_publisher_maps_kwargs_and_uses_stored_deterministic_id(db_sessi
         dispatch_kind=TaskDispatchKind.consultation_split_analysis,
         source_id=uuid4(),
     )
+    intent = add_pending_task_dispatch(
+        db_session,
+        dispatch_kind=TaskDispatchKind.consultation_split_intent,
+        source_id=uuid4(),
+    )
     db_session.commit()
     calls = []
 
@@ -108,18 +114,24 @@ def test_default_publisher_maps_kwargs_and_uses_stored_deterministic_id(db_sessi
     def record_split(**kwargs):
         calls.append(("split", kwargs))
 
+    def record_intent(**kwargs):
+        calls.append(("intent", kwargs))
+
     monkeypatch.setattr("app.tasks.process_generated_document_task.apply_async", record_generation)
     monkeypatch.setattr("app.tasks.process_transcript_ingestion_job_task.apply_async", record_ingestion)
     monkeypatch.setattr("app.tasks.process_consultation_split_execution_task.apply_async", record_split)
+    monkeypatch.setattr("app.tasks.process_consultation_split_intent_task.apply_async", record_intent)
     publisher = CeleryTaskDispatchPublisher()
     publisher.publish(generation)
     publisher.publish(ingestion)
     publisher.publish(split)
+    publisher.publish(intent)
 
     assert calls == [
         ("generation", {"kwargs": {"document_id": str(generation.source_id)}, "task_id": str(generation.task_id)}),
         ("ingestion", {"kwargs": {"job_id": str(ingestion.source_id), "dispatch_sequence": 1}, "task_id": str(ingestion.task_id)}),
         ("split", {"kwargs": {"execution_id": str(split.source_id)}, "task_id": str(split.task_id)}),
+        ("intent", {"kwargs": {"intent_id": str(intent.source_id)}, "task_id": str(intent.task_id)}),
     ]
 
 

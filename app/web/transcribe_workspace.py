@@ -57,6 +57,7 @@ from ..services.preferences import (
     effective_consultation_splitting_enabled,
     get_user_app_preferences as get_user_app_preferences_service,
 )
+from ..services.consultation_split_gates import consultation_splitting_available as consultation_splitting_available_service, transcript_split_enabled
 from ..services.dictations import dictation_detail_response, dictation_effective_text, get_post_consultation_dictation
 from ..services.stt import active_team_stt_selection as active_team_stt_selection_service
 from ..services.stt import check_selected_stt_health as check_selected_stt_health_service
@@ -92,7 +93,7 @@ from ..services.redaction import (
     redaction_source_offsets,
 )
 from ..services.clinical_nlp import clinical_entity_value as clinical_entity_value_service
-from ..services.consultation_split_api import read_workspace_split_analysis, read_workspace_split_batch
+from ..services.consultation_split_api import read_workspace_split_analysis, read_workspace_split_batch, read_workspace_split_intent
 from ..services.consultation_split_drafts import read_split_draft
 from .presentation import generated_document_response, quick_action_response, smart_phrase_response, template_response
 from .templates import templates
@@ -846,7 +847,12 @@ def resolve_transcribe_workspace(
         if current_user.team_id is not None and not current_user.is_system_admin
         else None
     )
-    consultation_splitting_enabled = effective_consultation_splitting_enabled(db, current_user)
+    consultation_splitting_available = consultation_splitting_available_service(current_user)
+    consultation_splitting_enabled = (
+        transcript_split_enabled(db, current_user, active_transcript)
+        if active_transcript is not None
+        else effective_consultation_splitting_enabled(db, current_user)
+    )
     user_app_preferences_json = user_app_preference.preferences_json if user_app_preference and isinstance(user_app_preference.preferences_json, dict) else {}
     can_create_new_session, new_session_block_message = can_create_new_session_service(db, current_user)
     can_switch_to_whole_file = False
@@ -941,6 +947,7 @@ def resolve_transcribe_workspace(
         "available_templates": available_templates,
         "user_app_preferences_json": user_app_preferences_json,
         "consultation_splitting_enabled": consultation_splitting_enabled,
+        "consultation_splitting_available": consultation_splitting_available,
         "available_quick_actions": available_quick_actions,
         "available_smart_phrases": available_smart_phrases,
         "generated_documents": generated_documents,
@@ -1021,6 +1028,7 @@ def transcript_detail_response(db: Session, transcript: Transcript) -> Transcrip
     latest_job = latest_ingestion_job_for_transcript_service(db, transcript_id=transcript.id)
     retry_job = _earliest_retryable_ingestion_job(db, transcript=transcript)
     payload = transcript_list_item_response(db, transcript).model_dump()
+    payload["multiple_problems"] = transcript.multiple_problems
     payload["current_draft_text"] = transcript_draft_text_service(db, transcript=transcript)
     payload["structured_context_json"] = transcript_structured_context_service(db, transcript=transcript)
     if latest_job is not None:
@@ -1057,19 +1065,25 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, 
     available_quick_actions = workspace.get("available_quick_actions") or []
     available_smart_phrases = workspace.get("available_smart_phrases") or []
     consultation_split_analysis = None
+    consultation_split_intent = None
     consultation_split_draft = None
     consultation_split_batch = None
     # Recompute the capability at the response boundary.  The workspace
     # mapping is an internal assembly object, not a source of authorization;
     # callers must not be able to smuggle an enabled value into REST/SSE.
-    consultation_splitting_enabled = effective_consultation_splitting_enabled(db, current_user)
+    consultation_splitting_available = consultation_splitting_available_service(current_user)
+    consultation_splitting_enabled = (
+        transcript_split_enabled(db, current_user, active_transcript)
+        if current_user is not None and isinstance(active_transcript, Transcript)
+        else effective_consultation_splitting_enabled(db, current_user)
+    )
     # Do not attempt split projections for a system administrator, missing
     # owner preference, or disabled deployment. Team leaders retain access to
     # roots they personally own; the projection services remain owner-scoped.
     # This keeps the browser-facing capability gate and the content boundary
     # on the same server-derived decision.
     if (
-        consultation_splitting_enabled
+        consultation_splitting_available
         and current_user is not None
         and isinstance(active_transcript, Transcript)
     ):
@@ -1078,6 +1092,13 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, 
             current_user,
             transcript_id=active_transcript.id,
         )
+        if consultation_split_analysis is not None and consultation_split_analysis.status not in {"stale", "incomplete"}:
+            consultation_split_intent = read_workspace_split_intent(
+                db,
+                current_user,
+                transcript_id=active_transcript.id,
+                analysis_id=consultation_split_analysis.analysis_id,
+            )
         # Draft read is intentionally best-effort for workspace restoration:
         # it is owner-only and never initializes or mutates draft state.
         try:
@@ -1127,7 +1148,9 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, 
         switch_mode_block_message=workspace.get("switch_mode_block_message"),
         team_leader_email=workspace.get("team_leader_email"),
         consultation_splitting_enabled=consultation_splitting_enabled,
+        consultation_splitting_available=consultation_splitting_available,
         consultation_split_analysis=consultation_split_analysis,
+        consultation_split_intent=consultation_split_intent,
         consultation_split_draft=consultation_split_draft,
         consultation_split_batch=consultation_split_batch,
     )

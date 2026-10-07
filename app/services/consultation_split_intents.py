@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.errors import AppError
 from app.models import (
     ConsultationSplitAnalysis,
+    ConsultationSplitAnalysisStatus,
     ConsultationSplitExecution,
     ConsultationSplitIntent,
     ConsultationSplitIntentStatus,
@@ -30,11 +31,13 @@ from app.models import (
     GeneratedDocumentStatus,
     PromptTemplate,
     PromptTemplateVersion,
+    TaskDispatchKind,
     TeamRole,
     TemplateMode,
     TranscriptWorkingNoteMode,
     TemplateScope,
     User,
+    utcnow,
 )
 from app.services.consultation_split_queue import (
     QueueOrReuseSplitAnalysisResult,
@@ -52,8 +55,8 @@ from app.services.consultation_split_locks import lock_consultation_split_source
 from app.services.consultation_splits import require_split_owner_transcript
 from app.services.transcripts import transcript_is_expired
 from app.services.content_crypto import decrypt_json_for_owner, encrypt_json_for_owner
-from app.services.preferences import effective_consultation_splitting_enabled
-from app.services.task_outbox import try_publish_task_dispatch_safely
+from app.services.consultation_split_gates import consultation_splitting_available, transcript_split_enabled
+from app.services.task_outbox import add_pending_task_dispatch, try_publish_task_dispatch_safely
 from app.services.templates import (
     NOTE_GENERATION_DETAIL_GUIDANCE,
     NOTE_GENERATION_OPTIONS_SNAPSHOT_KEY,
@@ -408,6 +411,7 @@ def _new_intent(
     retention_expires_at: datetime,
     analysis_id: UUID | None,
     snapshot: dict[str, Any],
+    manual_review_requested: bool,
     client_idempotency_key: UUID,
 ) -> ConsultationSplitIntent:
     """Build one unflushed intent from only server-derived source ancestry."""
@@ -424,6 +428,7 @@ def _new_intent(
         transcript_id=transcript_id,
         analysis_id=analysis_id,
         client_idempotency_key=client_idempotency_key,
+        manual_review_requested=manual_review_requested,
         status=ConsultationSplitIntentStatus.analysis_pending,
         retention_expires_at=retention_expires_at,
     )
@@ -448,6 +453,7 @@ def _insert_or_replay_intent(
     retention_expires_at: datetime,
     analysis_id: UUID | None,
     snapshot: dict[str, Any],
+    manual_review_requested: bool,
     client_idempotency_key: UUID,
 ) -> tuple[ConsultationSplitIntent | None, CreateOrReplayConsultationSplitIntentResult | None]:
     """Insert the idempotency root before queue work, or return its winner.
@@ -467,6 +473,7 @@ def _insert_or_replay_intent(
                 retention_expires_at=retention_expires_at,
                 analysis_id=analysis_id,
                 snapshot=snapshot,
+                manual_review_requested=manual_review_requested,
                 client_idempotency_key=client_idempotency_key,
             )
             db.add(intent)
@@ -545,9 +552,16 @@ def create_or_replay_consultation_split_intent(
         db.commit()
         return replay
 
-    if not effective_consultation_splitting_enabled(db, actor):
-        # This branch deliberately runs before the selected-template query,
-        # transcript access, source decryption/redaction, or LLM selection.
+    # Do not reach a transcript root or prepare redaction/provider work when
+    # the rollout is unavailable to this actor.
+    if not consultation_splitting_available(actor):
+        raise _disabled()
+    initial_scope = lock_consultation_split_source_scope(
+        db, owner_user_id=actor.id, transcript_id=transcript_id
+    )
+    if initial_scope is None:
+        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
+    if not transcript_split_enabled(db, actor, initial_scope.transcript):
         db.rollback()
         raise _disabled()
 
@@ -560,6 +574,13 @@ def create_or_replay_consultation_split_intent(
             actor,
             transcript_id=transcript_id,
         )
+        scope = lock_consultation_split_source_scope(
+            db, owner_user_id=actor.id, transcript_id=prepared.source_state.transcript_id
+        )
+        if scope is None or scope.transcript.id != prepared.source_state.transcript_id:
+            raise AppError(500, "consultation_split_scope_invalid", "Consultation split content is unavailable")
+        transcript = scope.transcript
+        manual_review_requested = bool(transcript.multiple_problems)
 
         # Preparation can release the source locks while required redaction
         # runs.  It reacquires the owner/root lock before returning, so repeat
@@ -567,7 +588,7 @@ def create_or_replay_consultation_split_intent(
         # committed during preparation must not be followed by a new intent,
         # reservation, or dispatch.  Existing-key replays returned above stay
         # stable by design.
-        if not effective_consultation_splitting_enabled(db, actor):
+        if not transcript_split_enabled(db, actor, transcript):
             db.rollback()
             raise _disabled()
 
@@ -594,13 +615,20 @@ def create_or_replay_consultation_split_intent(
                 retention_expires_at=cached.retention_expires_at,
                 analysis_id=cached.id,
                 snapshot=snapshot,
+                manual_review_requested=manual_review_requested,
                 client_idempotency_key=client_idempotency_key,
             )
             if replay is not None:
                 db.commit()
                 return replay
             assert intent is not None
+            progress_dispatch = add_pending_task_dispatch(
+                db,
+                dispatch_kind=TaskDispatchKind.consultation_split_intent,
+                source_id=intent.id,
+            )
             db.commit()
+            try_publish_task_dispatch_safely(progress_dispatch.task_id)
             return _new_intent_result(intent=intent, queue_result=cached_result)
 
         snapshot = _selected_template_generation_snapshot(
@@ -622,6 +650,7 @@ def create_or_replay_consultation_split_intent(
             retention_expires_at=prepared.retention_expires_at,
             analysis_id=None,
             snapshot=snapshot,
+            manual_review_requested=manual_review_requested,
             client_idempotency_key=client_idempotency_key,
         )
         if replay is not None:
@@ -648,6 +677,11 @@ def create_or_replay_consultation_split_intent(
             raise AppError(500, "consultation_split_scope_invalid", "Consultation split content is unavailable")
         intent.analysis_id = analysis.id
         db.add(intent)
+        progress_dispatch = add_pending_task_dispatch(
+            db,
+            dispatch_kind=TaskDispatchKind.consultation_split_intent,
+            source_id=intent.id,
+        )
         db.commit()
     except Exception:
         # Source preparation commits only its established redaction boundary.
@@ -658,6 +692,7 @@ def create_or_replay_consultation_split_intent(
 
     if decision.dispatch_task_id is not None:
         try_publish_task_dispatch_safely(decision.dispatch_task_id)
+    try_publish_task_dispatch_safely(progress_dispatch.task_id)
     return _new_intent_result(intent=intent, queue_result=queue_result)
 
 
@@ -847,6 +882,8 @@ def continue_consultation_split_intent_as_one_note(
             config=config,
         )
         intent.status = ConsultationSplitIntentStatus.bypassed
+        intent.error_code = None
+        intent.completed_at = utcnow()
         intent.generated_document_id = document.id
         db.add(intent)
         db.commit()

@@ -70,6 +70,7 @@ class CeleryTaskDispatchPublisher:
         # Import lazily: app.tasks registers this worker and imports this module.
         from app.tasks import (
             process_consultation_split_execution_task,
+            process_consultation_split_intent_task,
             process_generated_document_task,
             process_template_suggestion_task,
             process_transcript_ingestion_job_task,
@@ -105,6 +106,12 @@ class CeleryTaskDispatchPublisher:
                 task_id=task_id,
             )
             return
+        if dispatch.dispatch_kind is TaskDispatchKind.consultation_split_intent:
+            process_consultation_split_intent_task.apply_async(
+                kwargs={"intent_id": source_id},
+                task_id=task_id,
+            )
+            return
         raise ValueError("unsupported task dispatch kind")
 
 
@@ -121,6 +128,8 @@ def _expected_source_kind(dispatch_kind: TaskDispatchKind) -> TaskDispatchSource
         TaskDispatchKind.consultation_split_verification,
     }:
         return TaskDispatchSourceKind.consultation_split_execution
+    if dispatch_kind is TaskDispatchKind.consultation_split_intent:
+        return TaskDispatchSourceKind.consultation_split_intent
     raise ValueError("unsupported task dispatch kind")
 
 

@@ -32,6 +32,7 @@ from app.services.consultation_splits import (
 from app.services.content_crypto import encrypt_json_for_owner
 from app.services.task_outbox import try_publish_task_dispatch_safely
 from app.services.transcripts import transcript_is_expired
+from app.services.consultation_split_gates import batch_split_enabled, consultation_splitting_available
 
 
 _TABLE_INTENT = "consultation_split_intents"
@@ -75,6 +76,8 @@ def regenerate_confirmed_split_batch(
     are copied from the earlier immutable batch.
     """
     _require_owner(db, actor)
+    if not consultation_splitting_available(actor):
+        raise AppError(403, "consultation_split_disabled", "Consultation splitting is not enabled")
     scope = lock_consultation_split_source_scope(db, owner_user_id=actor.id, transcript_id=transcript_id)
     if scope is None or scope.transcript.team_id != actor.team_id or transcript_is_expired(scope.transcript):
         raise _unavailable()
@@ -114,12 +117,17 @@ def regenerate_confirmed_split_batch(
     )
     if source is None or source.status not in _TERMINAL_BATCH_STATUSES:
         raise _unavailable()
+    if not batch_split_enabled(db, actor, batch=source):
+        raise AppError(403, "consultation_split_disabled", "Consultation splitting is not enabled")
 
     # A distinct intent gives the existing unique owner/key boundary durable
     # replay semantics without altering the earlier batch or its documents.
     intent = ConsultationSplitIntent(
         id=uuid4(), owner_user_id=actor.id, team_id=actor.team_id,
         transcript_id=transcript_id, analysis_id=source.analysis_id,
+        # Legacy batches may predate durable intent binding.  They retain the
+        # automatic gate and never gain the explicit-manual exception.
+        manual_review_requested=bool(source.intent and source.intent.manual_review_requested),
         client_idempotency_key=client_idempotency_key,
         status=ConsultationSplitIntentStatus.confirmed,
         retention_expires_at=scope.transcript.retention_expires_at,

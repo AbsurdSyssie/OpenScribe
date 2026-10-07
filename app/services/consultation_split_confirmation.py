@@ -47,7 +47,7 @@ from app.services.consultation_splits import (
     read_split_analysis_json,
     read_split_topic_title,
 )
-from app.services.preferences import consultation_splitting_enabled, consultation_splitting_feature_enabled
+from app.services.consultation_split_gates import consultation_splitting_available, intent_split_enabled
 from app.services.templates import (
     _note_generation_options_for_user,
     _structured_section_definitions_snapshot,
@@ -67,7 +67,7 @@ class _TemplateSnapshot:
 
 
 def _require_owner(db: Session, actor: User) -> None:
-    if not consultation_splitting_feature_enabled() or not consultation_splitting_enabled(db, actor):
+    if not consultation_splitting_available(actor):
         raise AppError(403, "consultation_split_disabled", "Consultation splitting is not enabled")
     if (
         actor.is_system_admin
@@ -176,6 +176,8 @@ def confirm_split_draft(
         raise _not_found(transcript_id)
     owner, transcript = scope.owner, scope.transcript
     intent = _locked_intent(db, actor=owner, transcript_id=transcript.id, intent_id=payload.intent_id)
+    if not intent_split_enabled(db, owner, intent=intent):
+        raise AppError(403, "consultation_split_disabled", "Consultation splitting is not enabled")
     if intent.retention_expires_at != transcript.retention_expires_at:
         raise AppError(500, "consultation_split_scope_invalid", "Consultation split content is unavailable")
 
@@ -203,7 +205,10 @@ def confirm_split_draft(
         or analysis.team_id != owner.team_id
         or analysis.transcript_id != transcript.id
         or analysis.retention_expires_at != transcript.retention_expires_at
-        or analysis.status is not ConsultationSplitAnalysisStatus.ready
+        or (
+            analysis.status is not ConsultationSplitAnalysisStatus.ready
+            and not (intent.manual_review_requested and analysis.status is ConsultationSplitAnalysisStatus.not_required)
+        )
     ):
         raise AppError(409, "consultation_split_analysis_unavailable", "A ready split analysis is required")
     # The draft parent serializes replacement.  Read its template references

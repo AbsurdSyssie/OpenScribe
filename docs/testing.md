@@ -2,7 +2,7 @@
 
 This document covers test execution, non-database test boundaries, and focused verification workflows. Database lifecycle and safety are in [dbtesting.md](dbtesting.md).
 
-Consultation-split verification tests must cover the no-selection and mixed/freeform fail-open paths, the structured exact-patch success and all-or-none rejection paths, durable submitted-before-call and duplicate-delivery behavior, quota settlement, and transcript deletion/retention. Assertions may inspect safe lifecycle metadata and encrypted-envelope presence, but must not print clinical source, provider output, patches, or verifier reasoning.
+Consultation-split tests must cover durable accepted-intent dispatch and duplicate delivery, queued-analysis waiting, one-note consumption, exact intent-bound review-draft initialization without document creation, safe terminalization for stale/deleted/expired roots, and sanitized retries for unexpected task failures. Verification tests must cover the no-selection and mixed/freeform fail-open paths, the structured exact-patch success and all-or-none rejection paths, durable submitted-before-call and duplicate-delivery behavior, quota settlement, and transcript deletion/retention. Assertions may inspect safe lifecycle metadata and encrypted-envelope presence, but must not print clinical source, provider output, patches, or verifier reasoning.
 
 ## Install test dependencies
 
@@ -131,6 +131,14 @@ pytest -q tests/test_csrf_browser.py
 ```
 
 Missing Playwright/browser binaries cause this optional test to skip rather than fail the normal suite.
+
+## Consultation-split intent progression
+
+The server-owned Create continuation cases are in `tests/test_consultation_split_intent_progress.py`. Run this focused database-backed file sequentially:
+
+```bash
+pytest -q tests/test_consultation_split_intent_progress.py
+```
 
 ## Consultation-split browser regression
 

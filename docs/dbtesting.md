@@ -166,10 +166,12 @@ Database tests should cover the transaction and concurrency boundaries for:
 
 - deterministic task-dispatch IDs and payload mismatch rejection;
 - source row + outbox atomic creation;
+- accepted consultation split intent + progress outbox atomic creation, duplicate task delivery, pending-analysis retries, exact bound-draft initialization, and stale/root-lifecycle terminal behavior;
 - immediate publish plus one-second Beat fallback;
 - `FOR UPDATE SKIP LOCKED` publication without duplicate broker sends;
 - retry/backoff and terminal failure after `TASK_OUTBOX_MAX_ATTEMPTS`;
 - quota reservation, expansion, submission, settlement, cancellation, and stale deadlines;
+- failed split-dispatch reconciliation flushes a reserved-attempt cancellation before verification fail-open reacquires lifecycle rows, so a populated refresh cannot restore reserved quota;
 - retention cleanup every 10 seconds;
 - transcript-audio and provider-secret cleanup jobs, live-reference guards, and rollback compensation;
 - deletion helpers that terminalize attempts/remove dispatch rows before source deletion.

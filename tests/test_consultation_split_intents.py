@@ -22,6 +22,8 @@ from app.models import (
     PromptTemplateVersion,
     RedactionRunStatus,
     ProviderAttempt,
+    TaskDispatchKind,
+    TaskDispatchSourceKind,
     TaskDispatchOutbox,
     TemplateMode,
     Transcript,
@@ -932,7 +934,13 @@ def test_intent_creates_one_atomic_analysis_execution_outbox_and_encrypted_snaps
     assert len(db_session.scalars(select(ConsultationSplitExecution)).all()) == 1
     assert len(db_session.scalars(select(ProviderAttempt)).all()) == 1
     dispatch = db_session.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_id == result.execution.id))
-    assert dispatch is not None and published == [dispatch.task_id]
+    progress_dispatch = db_session.scalar(select(TaskDispatchOutbox).where(
+        TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_intent,
+        TaskDispatchOutbox.source_id == result.intent.id,
+    ))
+    assert dispatch is not None and progress_dispatch is not None
+    assert progress_dispatch.dispatch_kind is TaskDispatchKind.consultation_split_intent
+    assert published == [dispatch.task_id, progress_dispatch.task_id]
 
 
 @pytest.mark.parametrize("status", [
@@ -979,7 +987,10 @@ def test_intent_binds_reusable_terminal_analysis_without_new_provider_work(
     assert result.created_new_analysis_work is False
     assert db_session.scalars(select(ConsultationSplitExecution)).all() == []
     assert db_session.scalars(select(ProviderAttempt)).all() == []
-    assert db_session.scalars(select(TaskDispatchOutbox)).all() == []
+    dispatches = db_session.scalars(select(TaskDispatchOutbox)).all()
+    assert len(dispatches) == 1
+    assert dispatches[0].dispatch_kind is TaskDispatchKind.consultation_split_intent
+    assert dispatches[0].source_id == result.intent.id
 
 
 def test_intent_rejects_incomplete_analysis_without_persisting_request(
@@ -1208,7 +1219,13 @@ def test_concurrent_same_key_calls_create_one_intent_and_one_analysis_dispatch_c
     assert len(db_session.scalars(select(ConsultationSplitAnalysis)).all()) == 1
     assert len(db_session.scalars(select(ConsultationSplitExecution)).all()) == 1
     assert len(db_session.scalars(select(ProviderAttempt)).all()) == 1
-    assert len(db_session.scalars(select(TaskDispatchOutbox)).all()) == 1
+    assert len(db_session.scalars(select(TaskDispatchOutbox)).all()) == 2
+    assert len(db_session.scalars(select(TaskDispatchOutbox).where(
+        TaskDispatchOutbox.dispatch_kind == TaskDispatchKind.consultation_split_analysis,
+    )).all()) == 1
+    assert len(db_session.scalars(select(TaskDispatchOutbox).where(
+        TaskDispatchOutbox.dispatch_kind == TaskDispatchKind.consultation_split_intent,
+    )).all()) == 1
 
 
 @pytest.mark.real_db_connections
@@ -1370,7 +1387,13 @@ def test_concurrent_different_keys_create_two_intents_and_share_one_analysis_dis
     assert len(db_session.scalars(select(ConsultationSplitAnalysis)).all()) == 1
     assert len(db_session.scalars(select(ConsultationSplitExecution)).all()) == 1
     assert len(db_session.scalars(select(ProviderAttempt)).all()) == 1
-    assert len(db_session.scalars(select(TaskDispatchOutbox)).all()) == 1
+    assert len(db_session.scalars(select(TaskDispatchOutbox)).all()) == 3
+    assert len(db_session.scalars(select(TaskDispatchOutbox).where(
+        TaskDispatchOutbox.dispatch_kind == TaskDispatchKind.consultation_split_analysis,
+    )).all()) == 1
+    assert len(db_session.scalars(select(TaskDispatchOutbox).where(
+        TaskDispatchOutbox.dispatch_kind == TaskDispatchKind.consultation_split_intent,
+    )).all()) == 2
 
 
 def test_intent_rolls_back_provisional_request_and_new_work_on_queue_failure(

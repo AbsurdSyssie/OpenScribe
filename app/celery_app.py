@@ -39,6 +39,7 @@ celery_app.conf.update(
         "openscribe.process_generated_document": {"queue": "generation"},
         "openscribe.process_template_suggestion": {"queue": "generation"},
         "openscribe.process_consultation_split_execution": {"queue": "generation"},
+        "openscribe.process_consultation_split_intent": {"queue": "generation"},
         "openscribe.process_transcript_ingestion_job": {"queue": "ingestion"},
     },
     beat_schedule={

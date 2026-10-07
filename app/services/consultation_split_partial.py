@@ -25,7 +25,8 @@ from app.services.consultation_split_materialization import (
     materialize_split_document,
     require_batch_materialization_version,
 )
-from app.services.preferences import consultation_splitting_enabled, consultation_splitting_feature_enabled
+from app.services.consultation_split_gates import batch_split_enabled, consultation_splitting_available
+from app.services.preferences import consultation_splitting_enabled
 from app.services.transcripts import transcript_is_expired
 
 
@@ -42,17 +43,23 @@ def keep_available_split_notes(db: Session, actor: User, *, transcript_id: UUID,
         raise AppError(403, "forbidden", "Consultation split content is restricted to the owning user")
     # Keep is a new clinician-directed content action. Reject an inactive
     # effective gate before discovering whether the supplied transcript exists.
-    if not consultation_splitting_feature_enabled() or not consultation_splitting_enabled(db, actor):
+    if not consultation_splitting_available(actor):
         raise AppError(403, "consultation_split_disabled", "Consultation splitting is not enabled")
     # The source-scope lock remains owner-specific, including for leaders.
     scope = lock_consultation_split_source_scope(db, owner_user_id=actor.id, transcript_id=transcript_id)
-    if scope is None or scope.owner.id != actor.id or transcript_is_expired(scope.transcript):
+    if scope is None:
+        if consultation_splitting_enabled(db, actor):
+            raise AppError(404, "consultation_split_batch_unavailable", "Split batch is unavailable")
+        raise AppError(403, "consultation_split_disabled", "Consultation splitting is not enabled")
+    if scope.owner.id != actor.id or transcript_is_expired(scope.transcript):
         raise AppError(404, "consultation_split_batch_unavailable", "Split batch is unavailable")
     batch = db.scalar(select(ConsultationSplitBatch).where(
         ConsultationSplitBatch.id == batch_id, ConsultationSplitBatch.owner_user_id == actor.id,
         ConsultationSplitBatch.transcript_id == transcript_id).with_for_update())
     if batch is None:
         raise AppError(404, "consultation_split_batch_unavailable", "Split batch is unavailable")
+    if not batch_split_enabled(db, actor, batch=batch):
+        raise AppError(403, "consultation_split_disabled", "Consultation splitting is not enabled")
     topics = db.scalars(select(ConsultationSplitBatchTopic).where(
         ConsultationSplitBatchTopic.batch_id == batch.id).order_by(
         ConsultationSplitBatchTopic.topic_order).with_for_update()).all()

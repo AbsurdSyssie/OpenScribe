@@ -4192,7 +4192,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' not in page.text
     assert 'aria-label="Workspace navigation"' in page.text
     assert "My Library" in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20260930-detected-pii-override"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20261006-durable-create"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -4627,7 +4627,7 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
 
     assert page.status_code == 200
     assert "/static/css/tokens.css?v=20260902-control-height" in page.text
-    assert "/static/css/transcribe.css?v=20260930-detected-pii-override" in page.text
+    assert "/static/css/transcribe.css?v=20261005-multiple-problems" in page.text
     assert "/static/css/transcribe-mobile.css" in page.text
     assert "/static/js/workspace/app.js" in page.text
     assert page.text.count("/static/js/transcribe/mobile.js?v=20260823-mobile-toast") == 1
@@ -5051,7 +5051,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20260930-detected-pii-override" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261006-durable-create" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -6558,7 +6558,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "runQuickActionTrigger.disabled = !canUsePrimaryFollowupAction;" in app_js
     assert "if (!dom.quickActionContextInput?.value?.trim()) {" in actions_js
     assert "showFlash('Choose a quick action or add context.', 'warning');" in actions_js
-    assert "./actions.js?v=20260930-detected-pii-override" in app_js
+    assert "./actions.js?v=20261006-durable-create" in app_js
     assert "const isDiscardableEmptyWorkingNoteDraft = () => (" in app_js
     assert "return { kind: 'working_note_empty_draft_discarded' };" in app_js
     assert "Empty working-note draft ignored." in app_js
@@ -6585,15 +6585,15 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "One or more selected consultations have transcript text. Delete them permanently?" in actions_js
     assert "checkbox.dataset.hasTranscriptContent" in app_js
     assert "Could not delete the note." in actions_js
-    assert "const buildNoteSaveRequest = () => {" in app_js
-    assert "endpoint: `/api/v1/transcripts/${transcriptId}/working-note`" in app_js
+    assert "const buildNoteSaveRequest = ({ workingNoteTranscriptId = transcriptId } = {}) => {" in app_js
+    assert "endpoint: `/api/v1/transcripts/${workingNoteTranscriptId}/working-note`" in app_js
     assert "serializeCurrentNoteEditor" in structured_js
     assert "saveWorkingNoteBeforeGeneration" in app_js
     assert "await saveWorkingNoteBeforeGeneration?.();" in actions_js
     assert "Clear the working note before generating." in app_js
-    assert "const persistNoteEditsUntilDrained = async ({ keepalive = false } = {}) => {" in app_js
+    assert "const persistNoteEditsUntilDrained = async ({ keepalive = false, targetTranscriptId = transcriptId } = {}) => {" in app_js
     assert "noteSaveQueued = true;\n            savedDocument = await noteSaveInFlight;" in app_js
-    assert "const saved = await persistNoteEditsUntilDrained({ keepalive: false });" in app_js
+    assert "const saved = await persistNoteEditsUntilDrained({ keepalive: false, targetTranscriptId });" in app_js
     assert "includeUncheckedStructuredLines: false" not in app_js
     assert "let noteGenerationInFlight = null;" in app_js
     assert "let noteGenerationBusy = false;" in app_js
@@ -6608,14 +6608,14 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const generationTranscriptId = requestedTranscriptId;" in app_js
     assert "if (!generationTranscriptId || !templateId) return Promise.resolve(false);" in app_js
     assert "noteGenerationCloseDictationAfterCurrentRequest = noteGenerationCloseDictationAfterCurrentRequest || closeDictationModal;" in app_js
-    assert "if (noteGenerationCloseDictationAfterCurrentRequest) {" in app_js
+    assert "if (noteGenerationCloseDictationAfterCurrentRequest && transcriptId === generationTranscriptId) {" in app_js
     assert "const response = await csrfFetch(`/api/v1/transcripts/${generationTranscriptId}/generate-output`, {" in app_js
     assert "handleTemplateGenerationQueued" not in app_js
-    assert "const queued = await enqueueTemplateGeneration({ templateId, closeDictationModal: true });" in app_js
+    assert "return await enqueueTemplateGeneration({\n              transcriptId: dictationTranscriptId,\n              templateId,\n              closeDictationModal: true,\n            });" in app_js
     assert "onNoteGenerationQueued" not in actions_js
     assert "silent: true" not in app_js
     assert "silent = false" not in app_js
-    assert "generateOutputButton.disabled = generationBusy || splitBatchActive || !canGenerateNote;" in app_js
+    assert "generateOutputButton.disabled = generationBusy || splitBatchActive || multipleProblemsSavePending || !canGenerateNote;" in app_js
     assert "generateOutputTemplateSelect.disabled = generationBusy || splitBatchActive || !canChooseTemplate;" in app_js
     assert "templatePickerButton.disabled = generationBusy || splitBatchActive || !canChooseTemplate;" in app_js
     assert "button.disabled = generationBusy || splitBatchActive || !canChooseTemplate;" in app_js
@@ -6852,7 +6852,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20260930-detected-pii-override" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261006-durable-create" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

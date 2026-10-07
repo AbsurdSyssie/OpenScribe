@@ -42,6 +42,7 @@ class TranscriptUpdate(BaseModel):
     title: str | None = Field(default=None, max_length=255)
     ingestion_mode: TranscriptIngestionMode | None = None
     structured_context_json: dict | None = None
+    multiple_problems: bool | None = None
     expected_updated_at: datetime | None = None
 
 
@@ -70,6 +71,7 @@ class TranscriptListPage(BaseModel):
 
 
 class TranscriptDetail(TranscriptListItem):
+    multiple_problems: bool = False
     current_draft_text: str | None = None
     structured_context_json: dict | None = None
     next_live_chunk_sequence_no_upload: int | None = None

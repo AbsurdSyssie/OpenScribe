@@ -121,6 +121,8 @@ Use the dedicated `CIS2_OIDC_*` settings, not the custom `OIDC_*` provider worka
 
 Celery Beat publishes pending task-dispatch outbox rows every second. Transcript-root retention, 24-hour failed-ingestion source expiry, transcript-audio cleanup, six-month security-audit expiry, legal-document retention, provider-secret cleanup, and quota lifecycle processing run every 10 seconds. These schedules are code constants, not environment settings.
 
+Accepted consultation split Create intents use the existing task outbox to start `openscribe.process_consultation_split_intent`. Its worker retries with bounded backoff while analysis is queued or processing; it has no separate Beat schedule. A later preference or deployment-gate change affects new split actions, while already accepted intent progress remains subject to owner, source-freshness, and transcript-retention checks. Existing gates continue to control workspace visibility and explicit review/confirmation.
+
 Redis append-only persistence protects queued work, result data, and rate-limit state across normal restarts. PostgreSQL remains authoritative and Redis is not a substitute for database backups.
 
 ## Vault and application cryptography

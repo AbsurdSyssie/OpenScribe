@@ -14,6 +14,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from app.services.consultation_split_locks import lock_consultation_split_source_scope
 
 from app.models import (
     AttemptOutcome,
@@ -29,6 +30,8 @@ from app.models import (
     ConsultationSplitExecution,
     ConsultationSplitExecutionKind,
     ConsultationSplitExecutionStatus,
+    ConsultationSplitIntent,
+    ConsultationSplitIntentStatus,
     ConsultationSplitTopicOutcome,
     ConsultationSplitTopicOutcomeStatus,
     ProviderAttempt,
@@ -188,13 +191,15 @@ def delete_dispatches_for_sources(
     ingestion_job_ids: tuple[UUID, ...] | list[UUID] = (),
     template_suggestion_job_ids: tuple[UUID, ...] | list[UUID] = (),
     consultation_split_execution_ids: tuple[UUID, ...] | list[UUID] = (),
+    consultation_split_intent_ids: tuple[UUID, ...] | list[UUID] = (),
 ) -> int:
     """Delete polymorphic dispatch metadata before its source is hard-deleted."""
     document_ids = tuple(set(generated_document_ids))
     job_ids = tuple(set(ingestion_job_ids))
     suggestion_ids = tuple(set(template_suggestion_job_ids))
     execution_ids = tuple(set(consultation_split_execution_ids))
-    if not document_ids and not job_ids and not suggestion_ids and not execution_ids:
+    intent_ids = tuple(set(consultation_split_intent_ids))
+    if not document_ids and not job_ids and not suggestion_ids and not execution_ids and not intent_ids:
         return 0
     clauses = []
     if document_ids:
@@ -216,6 +221,11 @@ def delete_dispatches_for_sources(
         clauses.append(
             (TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_execution)
             & TaskDispatchOutbox.source_id.in_(execution_ids)
+        )
+    if intent_ids:
+        clauses.append(
+            (TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_intent)
+            & TaskDispatchOutbox.source_id.in_(intent_ids)
         )
     from sqlalchemy import or_
 
@@ -490,6 +500,53 @@ def process_quota_lifecycle(db: Session, batch_size: int = 100, now: datetime | 
             .order_by(TaskDispatchOutbox.failed_at, TaskDispatchOutbox.task_id)
             .limit(remaining)
         ).all()
+        remaining -= len(failed_split_executions)
+        failed_split_intents = [] if not remaining else db.scalars(
+            select(TaskDispatchOutbox)
+            .join(
+                ConsultationSplitIntent,
+                (TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_intent)
+                & (TaskDispatchOutbox.source_id == ConsultationSplitIntent.id),
+            )
+            .join(Transcript, Transcript.id == ConsultationSplitIntent.transcript_id)
+            .where(
+                TaskDispatchOutbox.state == TaskDispatchState.failed,
+                ConsultationSplitIntent.status == ConsultationSplitIntentStatus.analysis_pending,
+                Transcript.retention_expires_at > now,
+            )
+            .order_by(TaskDispatchOutbox.failed_at, TaskDispatchOutbox.task_id)
+            .limit(remaining)
+        ).all()
+        for dispatch in failed_split_intents:
+            identity = db.get(ConsultationSplitIntent, dispatch.source_id)
+            if identity is None:
+                continue
+            scope = lock_consultation_split_source_scope(
+                db, owner_user_id=identity.owner_user_id, transcript_id=identity.transcript_id,
+            )
+            if scope is None or scope.transcript.retention_expires_at <= now:
+                continue
+            intent = db.scalar(select(ConsultationSplitIntent).where(
+                ConsultationSplitIntent.id == identity.id,
+                ConsultationSplitIntent.status == ConsultationSplitIntentStatus.analysis_pending,
+            ).with_for_update().execution_options(populate_existing=True))
+            if intent is None:
+                continue
+            dispatch = db.scalar(select(TaskDispatchOutbox).where(
+                TaskDispatchOutbox.task_id == dispatch.task_id,
+                TaskDispatchOutbox.state == TaskDispatchState.failed,
+            ).with_for_update(skip_locked=True).execution_options(populate_existing=True))
+            if dispatch is None:
+                continue
+            # Publication failure must not strand an accepted Create. Reset
+            # only this metadata-only intent dispatch; the normal publisher's
+            # bounded backoff and failure threshold still apply per cycle.
+            dispatch.state = TaskDispatchState.pending
+            dispatch.attempt_count = 0
+            dispatch.last_error_code = None
+            dispatch.next_attempt_at = now
+            dispatch.failed_at = None
+            changed += 1
         failed = [*failed_documents, *failed_ingestion, *failed_split_executions]
         for dispatch in failed:
             if dispatch.source_kind is TaskDispatchSourceKind.generated_document:
@@ -531,6 +588,11 @@ def process_quota_lifecycle(db: Session, batch_size: int = 100, now: datetime | 
                             & (ProviderAttempt.status == AttemptStatus.reserved),
                         )
                         changed += _terminalize_locked_attempts(attempts, now).cancelled
+                        # Verification fail-open reacquires this attempt with
+                        # populate_existing=True. Persist cancellation first so
+                        # that refresh cannot restore the reserved database
+                        # value over the lifecycle transition.
+                        db.flush()
                         changed += _fail_split_execution(db, source.id, TASK_DISPATCH_FAILED, now)
     db.flush()
     db.commit()

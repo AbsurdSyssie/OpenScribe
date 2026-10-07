@@ -293,6 +293,9 @@ class="btn-primary btn-primary--compact"
 <span data-generate-output-label>{{ 'Regenerate' if latest_generated_document else 'Create' }}</span>
 </button>
 </form>
+<button type="button" class="btn-secondary btn-secondary--compact" data-multiple-problems-toggle aria-pressed="false" hidden>
+Multiple problems
+</button>
 <button type="button" class="btn-secondary btn-secondary--compact" data-split-continue-one-note hidden>
 Continue as one note
 </button>
@@ -1071,6 +1074,9 @@ class="btn-primary-sm"
 data-split-review-create
 >
 Create notes
+</button>
+<button type="button" class="btn-secondary-sm" data-split-review-continue hidden>
+Continue as one note
 </button>
 </footer>
 </section>

@@ -62,7 +62,7 @@ from app.services.consultation_split_sources import current_consultation_split_a
 from app.services.consultation_splits import read_split_analysis_json, read_split_execution_json
 from app.services.content_crypto import encrypt_json_for_existing_owner
 from app.services.llm_adapters import runtime as llm_runtime
-from app.services.preferences import consultation_splitting_enabled
+from app.services.consultation_split_gates import analysis_split_enabled
 from app.services.provider_errors import safe_provider_error_code
 from app.services.quotas import (
     cancel_provider_attempt,
@@ -268,7 +268,7 @@ def _cancel_queued_when_preference_disabled(
     if work is None:
         db.rollback()
         return None
-    if consultation_splitting_enabled(db, work.owner):
+    if analysis_split_enabled(db, work.owner, analysis_id=work.analysis.id):
         db.rollback()
         return None
     return _cancel_queued_locked(
@@ -292,7 +292,7 @@ def _terminalize_processing_when_preference_disabled(
     if work is None:
         db.rollback()
         return None
-    if consultation_splitting_enabled(db, work.owner):
+    if analysis_split_enabled(db, work.owner, analysis_id=work.analysis.id):
         db.rollback()
         return None
     if work.analysis.status is not ConsultationSplitAnalysisStatus.processing or work.attempt.status is not AttemptStatus.submitted:
@@ -344,7 +344,7 @@ def _submit_prepared(
     # A prepared credential/request is not authority to submit after the
     # clinician turns splitting off in another tab.  This runs under the final
     # owner/transcript/execution locks, immediately before submission.
-    if not consultation_splitting_enabled(db, work.owner):
+    if not analysis_split_enabled(db, work.owner, analysis_id=work.analysis.id):
         return _cancel_queued_locked(
             db,
             work=work,
@@ -561,7 +561,7 @@ def _persist_recoverable_response(
     # The provider has already been invoked.  If the clinician disables this
     # feature before its response reaches PostgreSQL, settle the known call but
     # do not create a reviewable proposal.
-    if not consultation_splitting_enabled(db, work.owner):
+    if not analysis_split_enabled(db, work.owner, analysis_id=work.analysis.id):
         db.rollback()
         return False, _terminalize_submitted_failure(
             db,
@@ -674,7 +674,7 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
         return _terminalize_submitted_failure(
             db, execution_id=execution_id, code="consultation_split_analysis_invalid_output"
         )
-    if not consultation_splitting_enabled(db, work.owner):
+    if not analysis_split_enabled(db, work.owner, analysis_id=work.analysis.id):
         db.rollback()
         return _terminalize_submitted_failure(
             db,
@@ -732,7 +732,7 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
     try:
         # Recheck just before terminal persistence.  Parsing is bounded but can
         # still take time relative to a short retention deadline.
-        if not consultation_splitting_enabled(db, work.owner):
+        if not analysis_split_enabled(db, work.owner, analysis_id=work.analysis.id):
             db.rollback()
             return _terminalize_submitted_failure(
                 db,

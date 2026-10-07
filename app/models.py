@@ -262,6 +262,9 @@ class ConsultationSplitIntentStatus(str, enum.Enum):
     # Confirmation creates the immutable, provider-free split batch.  It is
     # distinct from generation completion, which is a later workflow stage.
     confirmed = "confirmed"
+    # Server-owned continuation reached a safe terminal failure before either
+    # one-note consumption or clinician confirmation.
+    failed = "failed"
 
 
 class ConsultationSplitDraftStatus(str, enum.Enum):
@@ -397,6 +400,7 @@ class TaskDispatchKind(str, enum.Enum):
     consultation_split_analysis = "consultation_split_analysis"
     consultation_split_generation = "consultation_split_generation"
     consultation_split_verification = "consultation_split_verification"
+    consultation_split_intent = "consultation_split_intent"
 
 
 class TaskDispatchState(str, enum.Enum):
@@ -411,6 +415,7 @@ class TaskDispatchSourceKind(str, enum.Enum):
     transcript_ingestion_job = "transcript_ingestion_job"
     template_suggestion_job = "template_suggestion_job"
     consultation_split_execution = "consultation_split_execution"
+    consultation_split_intent = "consultation_split_intent"
 
 
 class AuthEmailTokenPurpose(str, enum.Enum):
@@ -1520,6 +1525,7 @@ class Transcript(Base):
     owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    multiple_problems: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     current_draft_text_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     structured_context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     working_note_mode: Mapped[TranscriptWorkingNoteMode | None] = mapped_column(Enum(TranscriptWorkingNoteMode), nullable=True)
@@ -2070,12 +2076,15 @@ class ConsultationSplitIntent(Base):
         unique=True,
     )
     client_idempotency_key: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    manual_review_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     generation_snapshot_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[ConsultationSplitIntentStatus] = mapped_column(
         Enum(ConsultationSplitIntentStatus, name="consultationsplitintentstatus"),
         default=ConsultationSplitIntentStatus.analysis_pending,
         nullable=False,
     )
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)

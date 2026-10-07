@@ -25,7 +25,8 @@ from app.services.consultation_splits import (
 )
 from app.services.llm import resolve_user_llm
 from app.services.llm_adapters.runtime import build_provider_snapshot
-from app.services.preferences import consultation_splitting_enabled, consultation_splitting_feature_enabled
+from app.services.consultation_split_gates import batch_split_enabled, consultation_splitting_available
+from app.services.preferences import consultation_splitting_enabled
 from app.services.task_outbox import try_publish_task_dispatch_safely
 from app.services.transcripts import transcript_is_expired
 
@@ -75,20 +76,25 @@ def _queue_recovery(
     # deployment and owner gate before any transcript-root lookup. Automatic
     # recovery finishes already durable work and must remain able to do so if a
     # rollout gate changes after the initial submission.
-    if automatic_from_execution is None and (
-        not consultation_splitting_feature_enabled()
-        or not consultation_splitting_enabled(db, actor)
-    ):
+    if automatic_from_execution is None and not consultation_splitting_available(actor):
         raise AppError(403, "consultation_split_disabled", "Consultation splitting is not enabled")
     scope = lock_consultation_split_source_scope(db, owner_user_id=actor.id, transcript_id=transcript_id)
-    if scope is None or scope.owner.is_system_admin or transcript_is_expired(scope.transcript):
+    if scope is None:
+        if consultation_splitting_enabled(db, actor):
+            raise AppError(404, "consultation_split_batch_unavailable", "Split batch is unavailable")
+        raise AppError(403, "consultation_split_disabled", "Consultation splitting is not enabled")
+    if scope.owner.is_system_admin or transcript_is_expired(scope.transcript):
         raise AppError(404, "consultation_split_batch_unavailable", "Split batch is unavailable")
     batch = db.scalar(select(ConsultationSplitBatch).where(
         ConsultationSplitBatch.id == batch_id,
         ConsultationSplitBatch.owner_user_id == actor.id,
         ConsultationSplitBatch.transcript_id == transcript_id,
     ).with_for_update())
-    if batch is None or batch.status is not ConsultationSplitBatchStatus.partially_ready:
+    if batch is None:
+        raise AppError(409, "consultation_split_batch_unavailable", "Split batch is unavailable")
+    if automatic_from_execution is None and not batch_split_enabled(db, actor, batch=batch):
+        raise AppError(403, "consultation_split_disabled", "Consultation splitting is not enabled")
+    if batch.status is not ConsultationSplitBatchStatus.partially_ready:
         raise AppError(409, "consultation_split_batch_unavailable", "Split batch is unavailable")
     topics = db.scalars(select(ConsultationSplitBatchTopic).where(
         ConsultationSplitBatchTopic.batch_id == batch.id,

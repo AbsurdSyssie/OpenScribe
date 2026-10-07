@@ -641,7 +641,7 @@ def test_owner_post_returns_accepted_safe_projection(client, db_session, make_us
 
     assert response.status_code == 202
     assert response.json()["status"] == "queued"
-    assert set(response.json()) == {"analysis_id", "status", "error_code", "updated_at", "completed_at", "topics"}
+    assert set(response.json()) == {"analysis_id", "status", "error_code", "updated_at", "completed_at", "manual_review_requested", "topics"}
 
 
 @pytest.mark.parametrize("persisted_status", ["queued", "processing"])
@@ -706,7 +706,7 @@ def test_projection_has_exact_safe_topic_fields_and_no_snapshots(db_session, mak
 
     payload = queue_split_analysis_api(db_session, owner, transcript_id=transcript.id).model_dump(mode="json")
 
-    assert set(payload) == {"analysis_id", "status", "error_code", "updated_at", "completed_at", "topics"}
+    assert set(payload) == {"analysis_id", "status", "error_code", "updated_at", "completed_at", "manual_review_requested", "topics"}
     assert set(payload["topics"][0]) == {"topic_uuid", "title", "is_primary", "disposition", "template_id"}
     assert not any(secret in str(payload) for secret in ("source_snapshot", "provider", "fingerprint", "execution", "recoverable"))
 
@@ -1707,6 +1707,7 @@ def test_workspace_effective_consultation_splitting_capability_is_owner_and_gate
         response = client.get("/api/v1/transcribe/workspace")
         assert response.status_code == 200
         assert response.json()["consultation_splitting_enabled"] is expected
+        assert response.json()["consultation_splitting_available"] is (actor is not admin)
 
     client.post("/api/v1/auth/logout")
     assert client.post(
@@ -1714,7 +1715,9 @@ def test_workspace_effective_consultation_splitting_capability_is_owner_and_gate
         json={"email": owner.email, "password": "password-1"},
     ).status_code == 200
     monkeypatch.delenv("CONSULTATION_SPLITTING_ENABLED", raising=False)
-    assert client.get("/api/v1/transcribe/workspace").json()["consultation_splitting_enabled"] is False
+    disabled = client.get("/api/v1/transcribe/workspace").json()
+    assert disabled["consultation_splitting_enabled"] is False
+    assert disabled["consultation_splitting_available"] is False
 
 
 def test_workspace_split_projection_remains_empty_for_cross_owner_leader(
@@ -1743,7 +1746,7 @@ def test_workspace_split_projection_remains_empty_for_cross_owner_leader(
         current_user=leader,
     )
 
-    assert response.consultation_splitting_enabled is True
+    assert response.consultation_splitting_enabled is False
     assert response.consultation_split_analysis is None
     assert response.consultation_split_draft is None
 
@@ -2004,15 +2007,17 @@ def test_intent_start_route_creates_and_replays_only_one_durable_chain(
 
     assert created.status_code == 202
     assert created.headers["cache-control"] == "no-store"
-    assert set(created.json()) == {"intent_id", "idempotency_replayed", "analysis"}
+    assert set(created.json()) == {"intent_id", "intent_status", "intent_error_code", "idempotency_replayed", "manual_review_requested", "analysis"}
     assert created.json()["intent_id"]
+    assert created.json()["intent_status"] == "analysis_pending"
+    assert created.json()["intent_error_code"] is None
     assert created.json()["idempotency_replayed"] is False
     assert created.json()["analysis"]["status"] == "queued"
     assert db_session.query(ConsultationSplitIntent).count() == 1
     assert db_session.query(ConsultationSplitAnalysis).count() == 1
     assert db_session.query(ConsultationSplitExecution).count() == 1
     assert db_session.query(ProviderAttempt).count() == 1
-    assert db_session.query(TaskDispatchOutbox).count() == 1
+    assert db_session.query(TaskDispatchOutbox).count() == 2
 
     # FastAPI validates the complete request before it can reach service replay.
     malformed_known_key = client.post(
@@ -2033,7 +2038,7 @@ def test_intent_start_route_creates_and_replays_only_one_durable_chain(
     assert db_session.query(ConsultationSplitAnalysis).count() == 1
     assert db_session.query(ConsultationSplitExecution).count() == 1
     assert db_session.query(ProviderAttempt).count() == 1
-    assert db_session.query(TaskDispatchOutbox).count() == 1
+    assert db_session.query(TaskDispatchOutbox).count() == 2
 
     # A retry deliberately ignores both changed request fields and later opt-out.
     monkeypatch.setenv("CONSULTATION_SPLITTING_ENABLED", "false")
@@ -2049,7 +2054,7 @@ def test_intent_start_route_creates_and_replays_only_one_durable_chain(
     assert db_session.query(ConsultationSplitAnalysis).count() == 1
     assert db_session.query(ConsultationSplitExecution).count() == 1
     assert db_session.query(ProviderAttempt).count() == 1
-    assert db_session.query(TaskDispatchOutbox).count() == 1
+    assert db_session.query(TaskDispatchOutbox).count() == 2
 
 
     monkeypatch.setenv("CONSULTATION_SPLITTING_ENABLED", "true")
@@ -2064,7 +2069,7 @@ def test_intent_start_route_creates_and_replays_only_one_durable_chain(
     assert db_session.query(ConsultationSplitAnalysis).count() == 1
     assert db_session.query(ConsultationSplitExecution).count() == 1
     assert db_session.query(ProviderAttempt).count() == 1
-    assert db_session.query(TaskDispatchOutbox).count() == 1
+    assert db_session.query(TaskDispatchOutbox).count() == 3
 
 
 def test_continue_as_one_note_route_consumes_replays_and_never_recreates_deleted_child(
@@ -2201,6 +2206,7 @@ def test_intent_start_route_maps_bounded_analysis_results_without_leaking_metada
         "error_code",
         "updated_at",
         "completed_at",
+        "manual_review_requested",
         "topics",
     }
     assert not any(value in response.text for value in ("snapshot", "provider", "execution", "fingerprint", "quota", "outbox"))

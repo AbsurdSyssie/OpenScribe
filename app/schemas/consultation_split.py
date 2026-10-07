@@ -42,6 +42,7 @@ class ConsultationSplitAnalysisDetail(BaseModel):
     error_code: str | None = None
     updated_at: datetime | None = None
     completed_at: datetime | None = None
+    manual_review_requested: bool = False
     topics: list[ConsultationSplitTopicDetail] = Field(default_factory=list, max_length=6)
 
 
@@ -60,8 +61,23 @@ class ConsultationSplitIntentStartResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     intent_id: UUID | None = None
+    intent_status: Literal["analysis_pending", "bypassed", "confirmed", "failed"] | None = None
+    intent_error_code: str | None = None
     idempotency_replayed: bool
+    manual_review_requested: bool = False
     analysis: ConsultationSplitAnalysisDetail
+
+
+class ConsultationSplitIntentWorkspaceDetail(BaseModel):
+    """Owner-safe active intent metadata used to restore split review."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    intent_id: UUID
+    analysis_id: UUID
+    status: Literal["analysis_pending", "failed"]
+    manual_review_requested: bool = False
+    error_code: str | None = None
 
 
 class ConsultationSplitIntentContinueAsOneNoteResponse(BaseModel):

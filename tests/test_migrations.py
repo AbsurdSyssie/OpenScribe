@@ -38,6 +38,35 @@ def current_tables() -> set[str]:
 
 
 @pytest.mark.migration
+def test_split_intent_dispatch_migration_round_trips_metadata_and_preserves_enum_labels():
+    reset_public_schema()
+    config = alembic_config()
+    command.upgrade(config, "a8b9c0d1e2f4")
+    columns = {column["name"] for column in inspect(engine).get_columns("consultation_split_intents")}
+    assert {"error_code", "completed_at"} <= columns
+    checks = {check["name"] for check in inspect(engine).get_check_constraints("consultation_split_intents")}
+    assert "ck_consultation_split_intents_error_code_length" in checks
+    with engine.connect() as connection:
+        for enum_name, label in (
+            ("taskdispatchkind", "consultation_split_intent"),
+            ("taskdispatchsourcekind", "consultation_split_intent"),
+            ("consultationsplitintentstatus", "failed"),
+        ):
+            labels = connection.execute(text(
+                "SELECT enumlabel FROM pg_enum JOIN pg_type ON pg_enum.enumtypid = pg_type.oid "
+                "WHERE pg_type.typname = :enum_name"
+            ), {"enum_name": enum_name}).scalars().all()
+            assert label in labels
+    command.downgrade(config, "z7c8d9e0f1a2")
+    columns = {column["name"] for column in inspect(engine).get_columns("consultation_split_intents")}
+    assert not {"error_code", "completed_at"} & columns
+    # Append-only enum labels survive downgrade; re-upgrade must tolerate them.
+    command.upgrade(config, "a8b9c0d1e2f4")
+    columns = {column["name"] for column in inspect(engine).get_columns("consultation_split_intents")}
+    assert {"error_code", "completed_at"} <= columns
+
+
+@pytest.mark.migration
 def test_alembic_upgrade_keeps_application_loggers_enabled():
     reset_public_schema()
     stt_logger = logging.getLogger("openscribe.stt")
@@ -2680,7 +2709,7 @@ def test_alembic_head_supports_simplified_transcript_ingestion_mode():
                 """
                 INSERT INTO transcripts (
                     id, owner_user_id, team_id, title, current_draft_text_encrypted, ingestion_mode, status,
-                    next_live_chunk_sequence_no_applied, retention_days_applied, retention_expires_at, created_at
+                    next_live_chunk_sequence_no_applied, retention_days_applied, retention_expires_at, created_at, multiple_problems
                 )
                 VALUES (
                     '00000000-0000-0000-0000-000000000032',
@@ -2693,7 +2722,8 @@ def test_alembic_head_supports_simplified_transcript_ingestion_mode():
                     1,
                     30,
                     NOW(),
-                    NOW()
+                    NOW(),
+                    false
                 )
                 """
             )
@@ -2869,9 +2899,9 @@ def test_quota_accounting_foundation_schema_has_metadata_only_constraints_and_fk
         "attemptstatus": ["reserved", "submitted", "settled", "cancelled"],
         "attemptoutcome": ["succeeded", "failed", "unknown", "cancelled"],
         "providersettlementbasis": ["reported", "measured", "conservative_unknown"],
-        "taskdispatchkind": ["generation", "ingestion", "template_suggestion", "consultation_split_analysis", "consultation_split_generation", "consultation_split_verification"],
+        "taskdispatchkind": ["generation", "ingestion", "template_suggestion", "consultation_split_analysis", "consultation_split_generation", "consultation_split_verification", "consultation_split_intent"],
         "taskdispatchstate": ["pending", "published", "cancelled", "failed"],
-        "taskdispatchsourcekind": ["generated_document", "transcript_ingestion_job", "template_suggestion_job", "consultation_split_execution"],
+        "taskdispatchsourcekind": ["generated_document", "transcript_ingestion_job", "template_suggestion_job", "consultation_split_execution", "consultation_split_intent"],
         "providerfeaturetype": ["llm_generation", "consultation_split_analysis", "consultation_split_generation", "consultation_split_verification"],
         "hallucinationcheckstatus": [
             "not_applicable", "skipped_not_configured", "skipped_config_invalid", "failed_provider",
@@ -3094,9 +3124,9 @@ def test_consultation_split_passive_schema_has_encrypted_content_and_reversible_
             "source_fingerprint", "source_snapshot_encrypted", "candidate_template_snapshot_encrypted",
             "provider_snapshot_encrypted", "proposal_encrypted", "status", "retention_expires_at",
         },
-            "consultation_split_intents": {
+        "consultation_split_intents": {
             "owner_user_id", "team_id", "transcript_id", "analysis_id", "generated_document_id", "client_idempotency_key",
-            "generation_snapshot_encrypted", "status", "retention_expires_at", "updated_at",
+            "manual_review_requested", "generation_snapshot_encrypted", "status", "retention_expires_at", "updated_at",
         },
         "consultation_split_drafts": {
             "analysis_id", "owner_user_id", "team_id", "transcript_id", "source_fingerprint", "status",
@@ -3134,6 +3164,9 @@ def test_consultation_split_passive_schema_has_encrypted_content_and_reversible_
         for encrypted_column in (name for name in columns if name.endswith("_encrypted")):
             assert actual_columns[encrypted_column]["type"].__class__.__name__ == "TEXT"
     intent_columns = {column["name"]: column for column in inspector.get_columns("consultation_split_intents")}
+    transcript_columns = {column["name"]: column for column in inspector.get_columns("transcripts")}
+    assert transcript_columns["multiple_problems"]["nullable"] is False
+    assert intent_columns["manual_review_requested"]["nullable"] is False
     assert intent_columns["client_idempotency_key"]["type"].__class__.__name__ == "UUID"
     with engine.connect() as connection:
         intent_status_labels = connection.execute(
@@ -3142,7 +3175,7 @@ def test_consultation_split_passive_schema_has_encrypted_content_and_reversible_
                 "WHERE pg_type.typname = 'consultationsplitintentstatus' ORDER BY enumsortorder"
             )
         ).scalars().all()
-    assert intent_status_labels == ["analysis_pending", "bypassed", "confirmed"]
+    assert intent_status_labels == ["analysis_pending", "bypassed", "confirmed", "failed"]
 
     analysis_indexes = {item["name"]: item for item in inspector.get_indexes("consultation_split_analyses")}
     assert analysis_indexes["ix_consultation_split_analyses_transcript_status"]["column_names"] == ["transcript_id", "status"]
@@ -3282,11 +3315,11 @@ def test_consultation_split_passive_schema_has_encrypted_content_and_reversible_
                 """
                 INSERT INTO transcripts (
                     id, owner_user_id, team_id, title, ingestion_mode, status, next_live_chunk_sequence_no_applied,
-                    retention_days_applied, retention_expires_at, created_at
+                    retention_days_applied, retention_expires_at, created_at, multiple_problems
                 ) VALUES (
                     '00000000-0000-0000-0000-000000009003', '00000000-0000-0000-0000-000000009002',
                     '00000000-0000-0000-0000-000000009001', 'Split migration transcript', 'whole_file', 'ready', 1,
-                    30, NOW() + INTERVAL '30 days', NOW()
+                    30, NOW() + INTERVAL '30 days', NOW(), false
                 )
                 """
             )
@@ -3467,11 +3500,11 @@ def test_consultation_split_passive_schema_has_encrypted_content_and_reversible_
         ],
         "taskdispatchkind": [
             "generation", "ingestion", "template_suggestion", "consultation_split_analysis",
-            "consultation_split_generation", "consultation_split_verification",
+            "consultation_split_generation", "consultation_split_verification", "consultation_split_intent",
         ],
         "taskdispatchsourcekind": [
             "generated_document", "transcript_ingestion_job", "template_suggestion_job",
-            "consultation_split_execution",
+            "consultation_split_execution", "consultation_split_intent",
         ],
         "providerfeaturetype": [
             "llm_generation", "consultation_split_analysis", "consultation_split_generation",

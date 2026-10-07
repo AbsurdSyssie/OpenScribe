@@ -436,7 +436,7 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
     AuditCase("POST", "/api/v1/transcripts/start", AccessTier.full, json_body=_json(title="Audit Transcript")),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/commit", AccessTier.full, json_body=_json(text_encrypted="ciphertext")),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/finalize-live-capture", AccessTier.full),
-    AuditCase("PATCH", f"/api/v1/transcripts/{PLACEHOLDER_UUID}", AccessTier.full, json_body=_json(title="Updated Transcript")),
+    AuditCase("PATCH", f"/api/v1/transcripts/{PLACEHOLDER_UUID}", AccessTier.full, json_body=_json(multiple_problems=True)),
     AuditCase("DELETE", f"/api/v1/transcripts/{PLACEHOLDER_UUID}", AccessTier.full),
     AuditCase(
         "POST",
@@ -490,10 +490,12 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         AccessTier.full,
         files=_file("context.wav"),
     ),
+    # REST/SSE include owner-only durable split-intent metadata; projection is read-only.
     AuditCase("GET", "/api/v1/transcribe/workspace", AccessTier.full),
     AuditCase("POST", "/api/v1/transcribe/stt-health/recheck", AccessTier.full),
     AuditCase("GET", "/api/v1/transcribe/workspace/stream", AccessTier.full),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-analysis", AccessTier.full),
+    # Create commits analysis and intent-progress dispatches atomically under the same owner gate.
     AuditCase(
         "POST",
         f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-intents",

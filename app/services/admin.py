@@ -24,6 +24,7 @@ from app.models import (
     DeidentificationProvider,
     GeneratedDocument,
     ConsultationSplitExecution,
+    ConsultationSplitIntent,
     ConsultationSplitAnalysis,
     ConsultationSplitBatch,
     PromptTemplate,
@@ -1633,6 +1634,9 @@ def _delete_user_rows(db: Session, actor: User, *, user: User) -> list[UUID]:
             ),
             consultation_split_execution_ids=list(
                 db.scalars(select(ConsultationSplitExecution.id).where(ConsultationSplitExecution.transcript_id.in_(transcript_ids)))
+            ),
+            consultation_split_intent_ids=list(
+                db.scalars(select(ConsultationSplitIntent.id).where(ConsultationSplitIntent.transcript_id.in_(transcript_ids)))
             ),
         )
     for transcript in transcript_rows:

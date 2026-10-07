@@ -19,9 +19,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tests.db_utils import (
+    TestInfrastructureBusy,
+    acquire_test_infrastructure_lock,
     ensure_database_exists,
     ensure_safe_test_database_url,
     ensure_safe_test_rate_limit_storage_url,
+    release_test_infrastructure_lock,
 )
 
 
@@ -39,7 +42,6 @@ from app.services.admin import hash_password
 from app.services.auth import create_session
 
 
-ensure_database_exists(TEST_DATABASE_URL)
 engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 rate_limit_redis = Redis.from_url(TEST_RATE_LIMIT_STORAGE_URL)
@@ -174,33 +176,56 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", dest="as_json", help="Emit JSON output.")
     args = parser.parse_args()
 
-    missing = missing_route_specs()
-    if missing:
-        for method, path in sorted(missing):
-            print(f"Missing audit spec for {method} {path}")
+    try:
+        lock_handle = acquire_test_infrastructure_lock()
+    except TestInfrastructureBusy:
+        print(
+            "Another pytest run or API authorization audit is already using the shared "
+            "OpenScribe test infrastructure. Wait for it to finish before starting this audit.",
+            file=sys.stderr,
+        )
         return 2
 
-    reset_public_schema()
-    rate_limit_redis.flushdb()
-    Base.metadata.create_all(bind=engine)
-    with SessionLocal() as db:
-        session_tokens = seed_users(db)
-
-    client = build_client()
+    client: TestClient | None = None
+    infrastructure_started = False
     try:
+        missing = missing_route_specs()
+        if missing:
+            for method, path in sorted(missing):
+                print(f"Missing audit spec for {method} {path}")
+            return 2
+
+        ensure_database_exists(TEST_DATABASE_URL)
+        infrastructure_started = True
+        reset_public_schema()
+        rate_limit_redis.flushdb()
+        Base.metadata.create_all(bind=engine)
+        with SessionLocal() as db:
+            session_tokens = seed_users(db)
+
+        client = build_client()
         scenarios = build_scenarios(session_tokens)
         results = run_negative_audit(client, scenarios)
+
+        if args.as_json:
+            print(json.dumps([asdict(result) for result in results], indent=2, default=str))
+        else:
+            print_report(results)
+
+        return 0 if all(result.ok for result in results) else 1
     finally:
-        client.close()
-        app.dependency_overrides.clear()
-        rate_limit_redis.flushdb()
-
-    if args.as_json:
-        print(json.dumps([asdict(result) for result in results], indent=2, default=str))
-    else:
-        print_report(results)
-
-    return 0 if all(result.ok for result in results) else 1
+        try:
+            try:
+                if client is not None:
+                    client.close()
+            finally:
+                app.dependency_overrides.clear()
+        finally:
+            try:
+                if infrastructure_started:
+                    rate_limit_redis.flushdb()
+            finally:
+                release_test_infrastructure_lock(lock_handle)
 
 
 if __name__ == "__main__":

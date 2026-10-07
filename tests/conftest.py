@@ -1,5 +1,4 @@
 import os
-import fcntl
 import secrets
 from collections.abc import Generator
 from typing import Callable
@@ -66,12 +65,15 @@ from app.services.content_crypto import decrypt_text_for_owner, encrypt_text_for
 from tests.db_utils import (
     DEFAULT_RATE_LIMIT_STORAGE_URL,
     ORIGINAL_RATE_LIMIT_STORAGE_URL_ENV,
+    TestInfrastructureBusy,
+    acquire_test_infrastructure_lock,
     ensure_database_exists,
     ensure_safe_test_database_url,
     ensure_safe_test_rate_limit_storage_url,
     PYTEST_XDIST_WORKER_ID,
     rate_limit_key_pattern,
     rate_limit_key_prefix,
+    release_test_infrastructure_lock,
 )
 
 from app.db import Base, get_db
@@ -93,11 +95,14 @@ from app.main import CSRF_COOKIE_NAME, app
 
 
 TEST_DATABASE_URL = ensure_safe_test_database_url()
-ensure_database_exists(TEST_DATABASE_URL)
+# Xdist workers are created only after their controller has acquired the shared
+# lock. The sequential runner/controller defers database creation until that
+# lock is held in pytest_configure().
+if PYTEST_XDIST_WORKER_ID is not None:
+    ensure_database_exists(TEST_DATABASE_URL)
 test_engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
 TestingSessionLocal = sessionmaker(bind=test_engine, autoflush=False, autocommit=False, future=True)
 rate_limit_redis = Redis.from_url(TEST_RATE_LIMIT_STORAGE_URL)
-TEST_RUN_LOCK_PATH = "/tmp/openscribe_pytest.lock"
 canonical_schema_ready = False
 
 
@@ -159,25 +164,28 @@ def pytest_configure(config: pytest.Config) -> None:
     if PYTEST_XDIST_WORKER_ID is not None:
         return
 
-    lock_handle = open(TEST_RUN_LOCK_PATH, "w")
     try:
-        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        lock_handle.close()
+        lock_handle = acquire_test_infrastructure_lock()
+    except TestInfrastructureBusy:
         pytest.exit(
             "Another pytest run is already using the shared OpenScribe test infrastructure. "
             "Wait for it to finish before starting another test run.",
             returncode=2,
         )
     config._openscribe_test_run_lock = lock_handle
+    try:
+        ensure_database_exists(TEST_DATABASE_URL)
+    except BaseException:
+        release_test_infrastructure_lock(lock_handle)
+        del config._openscribe_test_run_lock
+        raise
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
     lock_handle = getattr(config, "_openscribe_test_run_lock", None)
     if lock_handle is None:
         return
-    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-    lock_handle.close()
+    release_test_infrastructure_lock(lock_handle)
 
 
 @pytest.fixture(autouse=True)

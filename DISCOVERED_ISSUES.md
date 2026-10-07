@@ -9,6 +9,7 @@
 - Likely impact: running the audit beside an active pytest process can reset that process's shared test infrastructure. Static tracing established the gap; no concurrent destructive run was attempted.
 - Not fixed during the Multiple problems toggle because changing audit infrastructure is separate work. Audit verification remains pending while the shared lock is occupied.
 - Follow-up: share the existing test-run lock with the audit before any infrastructure initialization or reset, then add an isolated contention regression.
+- Resolved 2026-10-07: pytest and the API audit share the nonblocking lock helpers in `tests/db_utils.py`. Both acquire the lock before database creation; the audit holds it through final Redis cleanup and exits with code `2` when busy. An isolated subprocess regression verifies that contention causes no database initialization, schema reset, or Redis flush.
 
 ## SPLIT-GENERATION-STATUS-HIDDEN — 2026-10-05
 
@@ -30,6 +31,7 @@
 - Likely impact: this browser regression cannot verify preference persistence; the styled label may still respond to ordinary user clicks.
 - Not fixed during the note-split confirmation change because the preference control and its test are outside the affected flow.
 - Follow-up: test the accessible switch through its visible label or adjust the control's hit target, then rerun this browser regression.
+- Resolved 2026-10-07: inspection at `fd599225` confirms the browser regression now clicks the visible preference label instead of calling `.check()` on the hidden checkbox. Browser execution is recorded separately from this code verification.
 
 ## Stale Scribe stylesheet cache key assertion — 2026-09-24 (resolved 2026-09-29)
 
@@ -58,6 +60,7 @@
 - Likely impact: a ready draft created by durable server progress can be hidden/unreviewable after opt-out while the deployment gate remains available. This is an existing gate boundary, separate from Create navigation durability.
 - Not changed during durable Create continuation because this task preserves current preference/deployment authorization for workspace and clinician review actions; broadening accepted-work authorization needs an explicit product/security decision.
 - Follow-up: decide whether an exact accepted intent should retain workspace visibility and clinician confirmation authority after preference opt-out, then update the gate helpers and focused authorization/workspace tests together.
+- Resolved 2026-10-07 under the supplied plan: preference opt-out blocks new unmarked automatic intents but preserves the exact accepted intent through analysis, draft review, confirmation, and batch access. Deployment availability, owner/team scope, source freshness, and retention still apply. A real-runtime regression reproduces the old rejection and verifies the accepted-work flow after opt-out; focused progress, runtime, and Multiple problems tests pass.
 
 ## TRANSCRIPT-COMBINED-PATCH-DROPS-EARLY-FIELDS — 2026-10-07
 
@@ -68,3 +71,4 @@
 - Likely impact: the request can succeed while silently dropping its title or ingestion-mode update. The Multiple problems marker had the same reload ordering risk, but this change now assigns that new marker after the reload and covers the combined marker/structured-context case.
 - Not fixed during the Multiple problems toggle because title and ingestion-mode update ordering is older, unrelated behavior and broadening the patch would expand scope beyond the new marker contract.
 - Follow-up: preserve validated title and ingestion-mode changes across the source-writer reload, then add focused combined-PATCH regressions for each field.
+- Resolved 2026-10-07: `update_transcript` acquires the source-writer lock before applying metadata for structured-context requests. Independent title and ingestion-mode PATCH regressions reproduce the dropped fields on the old ordering and pass with the fix; metadata-only requests retain the lighter owner lookup.

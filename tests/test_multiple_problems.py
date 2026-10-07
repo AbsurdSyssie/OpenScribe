@@ -144,7 +144,7 @@ def test_manual_snapshot_enables_only_its_accepted_analysis_and_batch_after_unma
     assert analysis_split_enabled(db_session, owner, analysis_id=unrelated.id) is False
 
 
-def test_manual_exception_is_exact_intent_and_bypassed_intents_stop_granting_it(
+def test_accepted_intents_are_exact_and_bypassed_intents_stop_granting_access(
     db_session, make_user, monkeypatch
 ):
     monkeypatch.setenv("CONSULTATION_SPLITTING_ENABLED", "true")
@@ -174,9 +174,11 @@ def test_manual_exception_is_exact_intent_and_bypassed_intents_stop_granting_it(
 
     assert analysis_split_enabled(db_session, owner, analysis_id=analysis.id) is True
     assert intent_split_enabled(db_session, owner, intent=manual) is True
-    assert intent_split_enabled(db_session, owner, intent=automatic) is False
+    assert intent_split_enabled(db_session, owner, intent=automatic) is True
 
     manual.status = ConsultationSplitIntentStatus.bypassed
+    automatic.status = ConsultationSplitIntentStatus.bypassed
     db_session.commit()
     assert analysis_split_enabled(db_session, owner, analysis_id=analysis.id) is False
     assert intent_split_enabled(db_session, owner, intent=manual) is False
+    assert intent_split_enabled(db_session, owner, intent=automatic) is False

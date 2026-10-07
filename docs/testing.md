@@ -34,7 +34,7 @@ Four workers has been a useful local full-suite setting, but worker count remain
 
 ## Shared-infrastructure lock
 
-The sequential pytest process or xdist controller acquires `/tmp/openscribe_pytest.lock`. A second concurrent test invocation exits instead of sharing/resetting the same PostgreSQL and Redis test infrastructure.
+The sequential pytest process or xdist controller, and the standalone API authorization audit, acquire `/tmp/openscribe_pytest.lock` before creating or resetting test infrastructure. A concurrent pytest invocation or audit exits with status `2` instead of sharing/resetting the same PostgreSQL and Redis test infrastructure.
 
 Xdist workers run under the controller lock. Each worker derives a separate PostgreSQL database from `TEST_DATABASE_URL` and receives an isolated SlowAPI key prefix. See [dbtesting.md](dbtesting.md).
 

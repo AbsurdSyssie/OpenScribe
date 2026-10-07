@@ -27,7 +27,7 @@ Before any destructive test setup, the helper resolves both application and test
 
 The test helper may create missing test databases and reset their `public` schemas. It must never drop or recreate the application database.
 
-A global `/tmp/openscribe_pytest.lock` prevents a sequential run and an xdist controller from sharing/resetting the same local PostgreSQL or Redis infrastructure concurrently. Xdist workers inherit the controller's protected run.
+A global `/tmp/openscribe_pytest.lock` prevents a sequential run, an xdist controller, or the standalone API authorization audit from sharing/resetting the same local PostgreSQL or Redis infrastructure concurrently. The audit acquires it before ensuring the test database exists and holds it through final Redis cleanup. Xdist workers inherit the controller's protected run.
 
 ## Ordinary database tests
 

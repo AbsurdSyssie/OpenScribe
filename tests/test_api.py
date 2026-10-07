@@ -17854,6 +17854,55 @@ def test_transcript_title_update_is_owner_only(client, db_session, make_team, ma
     assert_error(forbidden, status_code=403, code="forbidden", message="Transcript access is restricted to the owning user")
 
 
+@pytest.mark.parametrize(
+    ("metadata_patch", "expected_title", "expected_ingestion_mode"),
+    [
+        ({"title": "Renamed consultation"}, "Renamed consultation", "whole_file"),
+        ({"ingestion_mode": "live_chunked"}, "Original title", "live_chunked"),
+    ],
+    ids=("title", "ingestion-mode"),
+)
+def test_transcript_patch_preserves_metadata_with_structured_working_note(
+    client, db_session, make_team, make_user, metadata_patch, expected_title, expected_ingestion_mode,
+):
+    team = make_team(name="Structured transcript metadata patch")
+    owner = make_user(
+        email="structured-transcript-metadata@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.user,
+    )
+    login(client, email="structured-transcript-metadata@example.com", password="password-1")
+    started = client.post(
+        "/api/v1/transcripts/start",
+        json={"title": "Original title", "ingestion_mode": "whole_file"},
+    )
+    assert started.status_code == 201
+    transcript_id = UUID(started.json()["id"])
+
+    title_and_note = client.patch(
+        f"/api/v1/transcripts/{transcript_id}",
+        json={
+            **metadata_patch,
+            "structured_context_json": {"profile": "emis", "sections": {"problem": ["Synthetic problem"]}},
+        },
+    )
+    assert title_and_note.status_code == 200
+    assert title_and_note.json()["title"] == expected_title
+    assert title_and_note.json()["ingestion_mode"] == expected_ingestion_mode
+    assert title_and_note.json()["structured_context_json"] == {
+        "profile": "emis", "sections": {"problem": ["Synthetic problem"]},
+    }
+    db_session.expire_all()
+    persisted = db_session.get(Transcript, transcript_id)
+    assert persisted is not None
+    assert persisted.title == expected_title
+    assert persisted.ingestion_mode.value == expected_ingestion_mode
+    assert decrypt_transcript_structured_context(db_session, persisted) == {
+        "profile": "emis", "sections": {"problem": ["Synthetic problem"]},
+    }
+
+
 def test_start_transcript_ignores_client_retention_override(client, db_session, make_team, make_user):
     team = make_team(name="Retention API Team", default_retention_days=14)
     owner = make_user(email="retention-start@example.com", password="password-1", team=team, team_role=TeamRole.user)

@@ -154,6 +154,7 @@ Working note is clinician-authored source content separate from transcript and g
 - Generation snapshots the exact working-note input used.
 - Working-note text is redacted before an LLM request; generation fails closed if redaction fails.
 - Editing a generated note never writes back into the working note.
+- A combined owner transcript update retains its title or permitted ingestion-mode change while saving a structured Working note.
 
 ## Post-consultation dictation
 

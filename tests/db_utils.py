@@ -1,3 +1,4 @@
+import fcntl
 import os
 import re
 from urllib.parse import urlsplit, urlunsplit
@@ -13,6 +14,30 @@ DEFAULT_TEST_RATE_LIMIT_STORAGE_URL = "redis://localhost:6379/15"
 ORIGINAL_RATE_LIMIT_STORAGE_URL_ENV = "OPENSCRIBE_TEST_ORIGINAL_RATE_LIMIT_STORAGE_URL"
 POSTGRES_IDENTIFIER_MAX_BYTES = 63
 _XDIST_WORKER_RE = re.compile(r"gw[0-9]+$")
+TEST_INFRASTRUCTURE_LOCK_PATH = "/tmp/openscribe_pytest.lock"
+
+
+class TestInfrastructureBusy(RuntimeError):
+    """Raised when another process owns the destructive test-infrastructure lock."""
+
+
+def acquire_test_infrastructure_lock():
+    """Acquire the shared PostgreSQL/Redis test lock without waiting."""
+    handle = open(TEST_INFRASTRUCTURE_LOCK_PATH, "w")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        handle.close()
+        raise TestInfrastructureBusy from error
+    return handle
+
+
+def release_test_infrastructure_lock(handle) -> None:
+    """Release a lock previously returned by acquire_test_infrastructure_lock."""
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 def validate_xdist_worker_id(worker_id: str | None) -> str | None:

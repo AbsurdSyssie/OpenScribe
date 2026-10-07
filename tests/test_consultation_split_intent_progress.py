@@ -1,6 +1,7 @@
 """Durable server-side continuation tests for accepted split Create intents."""
 
 from contextlib import nullcontext
+import json
 from datetime import timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -8,23 +9,41 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
+from app.errors import AppError
 from app.models import (
     ConsultationSplitAnalysis,
     ConsultationSplitAnalysisStatus,
+    ConsultationSplitBatch,
     ConsultationSplitDraft,
     ConsultationSplitDraftTopic,
+    ConsultationSplitExecution,
     ConsultationSplitIntentStatus,
     GeneratedDocument,
+    PromptTemplateVersion,
     TaskDispatchOutbox,
     TaskDispatchSourceKind,
     TaskDispatchState,
     Transcript,
     TranscriptWorkingNoteMode,
+    UserAppPreference,
     utcnow,
 )
+from app.schemas.consultation_split import ConsultationSplitDraftConfirmRequest
+from app.services.consultation_split_api import (
+    read_workspace_split_analysis,
+    read_workspace_split_batch,
+    read_workspace_split_intent,
+)
+from app.services.consultation_split_confirmation import confirm_split_draft
+from app.services.consultation_split_drafts import read_split_draft
+from app.services.consultation_split_gates import (
+    analysis_split_enabled,
+    batch_split_enabled,
+    intent_split_enabled,
+)
 from app.services.consultation_split_intent_progress import progress_consultation_split_intent
-from app.services.consultation_split_api import read_workspace_split_intent
 from app.services.consultation_split_intents import create_or_replay_consultation_split_intent
+from app.services.consultation_split_runtime import process_consultation_split_analysis_execution
 from app.services.content_crypto import encrypt_json_for_owner
 from app.services.quota_lifecycle import process_quota_lifecycle
 from app.services.transcripts import delete_transcripts, set_freeform_working_note_text
@@ -249,6 +268,121 @@ def test_review_progress_restores_one_exact_bound_draft_without_generating_docum
     assert db_session.get(type(intent), intent.id).status is ConsultationSplitIntentStatus.analysis_pending
     assert len(draft_topics) == len(proposal_topics)
     assert db_session.scalars(select(GeneratedDocument)).all() == []
+
+
+def test_accepted_automatic_intent_survives_preference_opt_out_through_confirmation(
+    db_session, make_user, make_template, make_llm_config, make_llm_selection,
+    make_user_app_preference, monkeypatch,
+):
+    """Opt-out rejects new work but cannot revoke this accepted owner intent."""
+    owner = make_user(email=f"intent-progress-opt-out-{uuid4()}@example.com")
+    transcript, _ = _enabled_source(
+        db_session, owner, make_llm_config, make_llm_selection, make_user_app_preference, monkeypatch
+    )
+    template = make_template(owner=owner, actor=owner)
+    intent, analysis = _accepted_intent(db_session, owner, transcript, template, monkeypatch)
+    assert intent.manual_review_requested is False
+    transcript_id = transcript.id
+    template_id = template.id
+    intent_id = intent.id
+    analysis_id = analysis.id
+    execution = db_session.scalar(
+        select(ConsultationSplitExecution).where(ConsultationSplitExecution.analysis_id == analysis_id)
+    )
+    assert execution is not None
+    execution_id = execution.id
+
+    preference = db_session.scalar(select(UserAppPreference).where(UserAppPreference.user_id == owner.id))
+    assert preference is not None
+    preference.preferences_json = {"split_consultations_into_separate_notes": False}
+    db_session.commit()
+
+    with pytest.raises(AppError) as new_work:
+        create_or_replay_consultation_split_intent(
+            db_session,
+            owner,
+            transcript_id=transcript_id,
+            client_idempotency_key=uuid4(),
+            selected_template_id=template_id,
+        )
+    assert new_work.value.code == "consultation_split_disabled"
+    db_session.rollback()
+
+    topics = [
+        {
+            "title": "Synthetic primary topic",
+            "is_primary": True,
+            "disposition": "separate_note",
+            "template_id": None,
+        },
+        {
+            "title": "Synthetic secondary topic",
+            "is_primary": False,
+            "disposition": "separate_note",
+            "template_id": None,
+        },
+    ]
+    monkeypatch.setattr(
+        "app.services.consultation_split_pre_submit.resolve_generation_credential",
+        lambda _config: "synthetic-token",
+    )
+    monkeypatch.setattr(
+        "app.services.consultation_split_runtime.llm_runtime.invoke_llm",
+        lambda **_kwargs: (json.dumps({"topics": topics}), {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}),
+    )
+    analysis_result = process_consultation_split_analysis_execution(db_session, execution_id=execution_id)
+    assert (analysis_result.outcome, analysis_result.error_code) == ("ready", None)
+    assert progress_consultation_split_intent(db_session, intent_id=intent_id).outcome == "review_ready"
+
+    workspace = read_workspace_split_analysis(db_session, owner, transcript_id=transcript_id)
+    assert workspace is not None and workspace.analysis_id == analysis_id
+    assert read_workspace_split_intent(
+        db_session, owner, transcript_id=transcript_id, analysis_id=analysis_id,
+    ).intent_id == intent_id
+    draft = db_session.scalar(select(ConsultationSplitDraft).where(ConsultationSplitDraft.analysis_id == analysis_id))
+    assert draft is not None
+    visible_draft = read_split_draft(db_session, owner, transcript_id=transcript_id)
+    assert visible_draft.draft_id == draft.id
+    assert visible_draft.status == "active"
+    version = db_session.scalar(select(PromptTemplateVersion).where(PromptTemplateVersion.template_id == template_id))
+    assert version is not None
+    for topic in db_session.scalars(select(ConsultationSplitDraftTopic).where(ConsultationSplitDraftTopic.draft_id == draft.id)):
+        topic.template_id = template_id
+        topic.template_version_id = version.id
+    db_session.commit()
+    db_session.refresh(draft)
+
+    other = make_user(email=f"intent-progress-opt-out-other-{uuid4()}@example.com", team=owner.team)
+    assert read_workspace_split_analysis(db_session, other, transcript_id=transcript_id) is None
+    with pytest.raises(AppError) as foreign_confirmation:
+        confirm_split_draft(
+            db_session,
+            other,
+            transcript_id=transcript_id,
+            payload=ConsultationSplitDraftConfirmRequest(intent_id=intent_id, expected_updated_at=draft.updated_at),
+        )
+    assert foreign_confirmation.value.code == "not_found"
+
+    confirmed = confirm_split_draft(
+        db_session,
+        owner,
+        transcript_id=transcript_id,
+        payload=ConsultationSplitDraftConfirmRequest(intent_id=intent_id, expected_updated_at=draft.updated_at),
+    )
+    batch = db_session.get(ConsultationSplitBatch, confirmed.batch_id)
+    assert batch is not None
+    assert intent_split_enabled(db_session, owner, intent=db_session.get(type(intent), intent_id)) is True
+    assert batch_split_enabled(db_session, owner, batch=batch) is True
+    assert read_workspace_split_batch(db_session, owner, transcript_id=transcript_id).batch_id == batch.id
+
+    assert analysis_split_enabled(db_session, other, analysis_id=analysis_id) is False
+    assert intent_split_enabled(db_session, other, intent=db_session.get(type(intent), intent_id)) is False
+    assert batch_split_enabled(db_session, other, batch=batch) is False
+
+    monkeypatch.setenv("CONSULTATION_SPLITTING_ENABLED", "false")
+    assert analysis_split_enabled(db_session, owner, analysis_id=analysis_id) is False
+    assert intent_split_enabled(db_session, owner, intent=db_session.get(type(intent), intent_id)) is False
+    assert batch_split_enabled(db_session, owner, batch=batch) is False
 
 
 def test_stale_source_fails_intent_without_document_or_generation_dispatch(

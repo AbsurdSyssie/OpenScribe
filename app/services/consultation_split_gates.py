@@ -34,10 +34,10 @@ def transcript_split_enabled(db: Session, actor: User, transcript: Transcript) -
 
 
 def analysis_split_enabled(db: Session, actor: User, *, analysis_id) -> bool:
-    """Permit durable accepted manual work after a later transcript unmark.
+    """Permit an exact accepted intent after the owner later opts out.
 
-    The intent flag is immutable and server-derived while the transcript root is
-    locked during creation.  It never bypasses the deployment or owner gate.
+    The durable analysis/intent binding is server-derived while the transcript
+    root is locked during creation. It never bypasses the deployment or owner gate.
     """
     if not consultation_splitting_available(actor):
         return False
@@ -51,7 +51,6 @@ def analysis_split_enabled(db: Session, actor: User, *, analysis_id) -> bool:
             ConsultationSplitIntent.analysis_id == analysis_id,
             ConsultationSplitIntent.owner_user_id == actor.id,
             ConsultationSplitIntent.team_id == actor.team_id,
-            ConsultationSplitIntent.manual_review_requested.is_(True),
             ConsultationSplitIntent.status.in_([ConsultationSplitIntentStatus.analysis_pending, ConsultationSplitIntentStatus.confirmed]),
             ConsultationSplitAnalysis.owner_user_id == actor.id,
             ConsultationSplitAnalysis.team_id == actor.team_id,
@@ -68,10 +67,7 @@ def intent_split_enabled(db: Session, actor: User, *, intent: ConsultationSplitI
         return False
     if consultation_splitting_enabled(db, actor):
         return True
-    return (
-        intent.manual_review_requested
-        and intent.status in {ConsultationSplitIntentStatus.analysis_pending, ConsultationSplitIntentStatus.confirmed}
-    )
+    return intent.status in {ConsultationSplitIntentStatus.analysis_pending, ConsultationSplitIntentStatus.confirmed}
 
 
 def batch_split_enabled(db: Session, actor: User, *, batch: ConsultationSplitBatch) -> bool:
@@ -87,7 +83,6 @@ def batch_split_enabled(db: Session, actor: User, *, batch: ConsultationSplitBat
             ConsultationSplitIntent.team_id == actor.team_id,
             ConsultationSplitIntent.transcript_id == batch.transcript_id,
             ConsultationSplitIntent.analysis_id == batch.analysis_id,
-            ConsultationSplitIntent.manual_review_requested.is_(True),
             ConsultationSplitIntent.status == ConsultationSplitIntentStatus.confirmed,
         )
     ) is not None

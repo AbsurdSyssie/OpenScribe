@@ -1522,7 +1522,11 @@ def update_transcript(
     multiple_problems: bool | None = None,
     expected_updated_at: datetime | None = None,
 ) -> Transcript:
-    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    transcript = (
+        _lock_split_source_writer_transcript(db, owner, transcript_id=transcript_id)
+        if structured_context_json is not None
+        else _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    )
     if title is not None:
         transcript.title = (title or "").strip() or None
     if ingestion_mode is not None and ingestion_mode is not transcript.ingestion_mode:
@@ -1536,7 +1540,6 @@ def update_transcript(
             raise AppError(409, "business_rule_violation", message or "Cannot switch transcript input mode")
         transcript.ingestion_mode = ingestion_mode
     if structured_context_json is not None:
-        transcript = _lock_split_source_writer_transcript(db, owner, transcript_id=transcript_id)
         normalized_structured_context = normalize_structured_working_note(structured_context_json)
         if normalized_structured_context is None:
             raise AppError(

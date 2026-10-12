@@ -72,6 +72,33 @@ For a browser-started operation, queued and processing analysis use the existing
 
 `not_required` means analysis found fewer than two `separate_note` topics; `include_in_primary` and `exclude_from_notes` topics do not require a split review. For an unmarked accepted intent, the server progress task immediately consumes it through the dedicated one-note service and queues generation with the template frozen when Create was pressed; it does not ask for another click. For that intent's manual-review snapshot, the task initializes a draft and waits for explicit clinician review and confirmation or one-note continuation. `failed`, `stale`, and `incomplete` remain non-generating error states. The browser never calls `/generate-output` or sends template, configuration, source content, or patient content in the consume request. If the submitted template is no longer live, the intent fails safely and the clinician must choose a current template and start a new Create. A consumed intent whose child was deleted reports that it will not recreate the note.
 
+## Failure messages and support correlation
+
+For a reused analysis provider failure or unavailable model, the workspace
+starts with **“No note generated.”** and explains that the AI provider could
+not complete the note-split analysis, that Create reuses the failed analysis
+while the consultation is unchanged, and, when available, to select
+**Continue as one note**. A newly reported provider failure instead says the
+analysis could not be prepared and asks the clinician to select Create again.
+It appends only a controlled error code and a valid analysis UUID. A stale
+analysis asks the clinician to save the current consultation and select Create
+again. Draft-opening failures and stale draft state have separate controlled
+messages; continuation reports either that the saved template is unavailable
+or that the saved request was not consumed. Split-note regeneration reports
+that it could not be started.
+
+The browser never renders raw provider, server, exception, source, or response
+text. Unknown/malformed codes and IDs are omitted. Repeating Create against an
+unchanged consultation still reuses the failed analysis; the message does not
+claim an automatic retry.
+
+For support correlation, a full system administrator can use the Usage page's
+bounded **Recent split failures** metadata projection documented in
+[usage_tab.md](usage_tab.md). Analysis rows carry the analysis operation UUID;
+generation rows carry the batch operation UUID, alongside the execution UUID.
+The page contains no transcript-derived content, topic titles, owner identity,
+provider response, or exception detail.
+
 Provider quota remains the business limiter. The intent-start route retains its existing transport limits. The database-only review-draft `POST` and `PUT` do not call an LLM and therefore have no dedicated LLM rate limiter.
 
 After **Confirm split**, the Output note selector immediately shows one client-only placeholder pill per confirmed separate-note topic. The primary topic is selected first, and the existing note-generation loading screen reports queued, generating, or checking status. The placeholders create no database rows, cannot be edited or deleted, and do not add a second LLM call. SSE workspace snapshots replace each stable slot with the owner-projected generated document as it becomes ready; the existing bounded polling fallback is used only when SSE is unavailable. A terminal partial result keeps successful slots, marks failed slots unavailable, and leaves the existing Retry missing notes and Keep available notes actions in control. A full failure leaves the topic slots unavailable and re-enables **Create**. Regeneration keeps prior revisions in note history while replacing the current topic slots in place. Switching transcripts discards the browser-only slots.

@@ -17,6 +17,12 @@ from app.models import (
     AccountRequest,
     ClinicalEntity,
     ClinicalEntityRun,
+    ConsultationSplitAnalysis,
+    ConsultationSplitAnalysisStatus,
+    ConsultationSplitBatch,
+    ConsultationSplitExecution,
+    ConsultationSplitExecutionKind,
+    ConsultationSplitExecutionStatus,
     DeidentificationAdapterKind,
     DeidentificationProvider,
     DefaultPromptTemplate,
@@ -9813,6 +9819,228 @@ def test_new_admin_team_usage_tab_scopes_charts_and_user_table(client, db_sessio
     assert page.text.count('class="usage-echart"') == 4
     assert "Scoped confidential title" not in page.text
     assert "Other confidential title" not in page.text
+
+
+def test_admin_usage_split_failure_diagnostics_are_bounded_scoped_and_content_free(
+    client, db_session, make_team, make_user
+):
+    team = make_team(name="Split diagnostics clinic")
+    other_team = make_team(name="Other split diagnostics clinic")
+    admin = make_user(email="admin-split-diagnostics@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="split-diagnostics-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    other_owner = make_user(email="other-split-diagnostics-owner@example.com", password="password-3", team=other_team, team_role=TeamRole.user)
+
+    def transcript_for(user, user_team, title):
+        transcript = Transcript(
+            owner_user_id=user.id,
+            team_id=user_team.id,
+            title=title,
+            retention_days_applied=user_team.default_retention_days,
+            retention_expires_at=utcnow() + timedelta(days=user_team.default_retention_days),
+        )
+        db_session.add(transcript)
+        db_session.flush()
+        return transcript
+
+    transcript = transcript_for(owner, team, "Private split diagnostic transcript")
+    other_transcript = transcript_for(other_owner, other_team, "Other private split diagnostic transcript")
+
+    def failed_analysis_execution(user, user_team, source_transcript, index, *, created_at=None, unsafe=False):
+        analysis = ConsultationSplitAnalysis(
+            owner_user_id=user.id,
+            team_id=user_team.id,
+            transcript_id=source_transcript.id,
+            source_fingerprint=f"{index:064x}",
+            status=ConsultationSplitAnalysisStatus.failed,
+            error_code="consultation_split_provider_failed",
+            retention_expires_at=source_transcript.retention_expires_at,
+        )
+        db_session.add(analysis)
+        db_session.flush()
+        execution = ConsultationSplitExecution(
+            analysis_id=analysis.id,
+            owner_user_id=user.id,
+            team_id=user_team.id,
+            transcript_id=source_transcript.id,
+            kind=ConsultationSplitExecutionKind.analysis,
+            attempt_no=1,
+            status=ConsultationSplitExecutionStatus.failed,
+            error_code="unsafe exception body" if unsafe else "consultation_split_provider_failed",
+            provider_error_code="unsafe provider response" if unsafe else "rate_limit_exceeded",
+            provider_http_status=429,
+            retention_expires_at=source_transcript.retention_expires_at,
+            created_at=created_at or utcnow(),
+        )
+        db_session.add(execution)
+        return execution
+
+    visible = [
+        failed_analysis_execution(
+            owner, team, transcript, index, created_at=utcnow() - timedelta(seconds=index), unsafe=index == 0
+        )
+        for index in range(26)
+    ]
+    generation_batch = ConsultationSplitBatch(
+        analysis_id=visible[0].analysis_id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        source_fingerprint="f" * 64,
+        confirmed_plan_encrypted="synthetic",
+        clinical_snapshot_encrypted="synthetic",
+        source_snapshot_encrypted="synthetic",
+        template_snapshot_encrypted="synthetic",
+        pii_snapshot_encrypted="synthetic",
+        provider_snapshot_encrypted="synthetic",
+        note_options_snapshot_encrypted="synthetic",
+        retention_expires_at=transcript.retention_expires_at,
+    )
+    db_session.add(generation_batch)
+    db_session.flush()
+    generation_execution = ConsultationSplitExecution(
+        batch_id=generation_batch.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        kind=ConsultationSplitExecutionKind.generation,
+        attempt_no=1,
+        status=ConsultationSplitExecutionStatus.failed,
+        error_code="consultation_split_provider_failed",
+        provider_error_code="rate_limit_exceeded",
+        provider_http_status=429,
+        retention_expires_at=transcript.retention_expires_at,
+        created_at=utcnow() - timedelta(milliseconds=500),
+    )
+    db_session.add(generation_execution)
+    old = failed_analysis_execution(owner, team, transcript, 99, created_at=utcnow() - timedelta(days=31))
+    other = failed_analysis_execution(other_owner, other_team, other_transcript, 100)
+    db_session.add_all(
+        [
+            ProviderUsageEvent(
+                team_id=team.id,
+                owner_user_id=owner.id,
+                consultation_split_execution_id=visible[1].id,
+                transcript_id=transcript.id,
+                feature_type=ProviderFeatureType.consultation_split_analysis,
+                event_type=ProviderUsageEventType.failed,
+                error_code="consultation_split_provider_failed",
+                provider_error_code="rate_limit_exceeded",
+                provider_http_status=429,
+            ),
+            ProviderUsageEvent(
+                team_id=team.id,
+                owner_user_id=owner.id,
+                transcript_id=transcript.id,
+                feature_type=ProviderFeatureType.consultation_split_generation,
+                event_type=ProviderUsageEventType.failed,
+                error_code="consultation_split_provider_failed",
+                provider_error_code="rate_limit_exceeded",
+                provider_http_status=429,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+    page = client.get(f"/admin?team_id={team.id}&team_tab=usage&range=30d")
+
+    assert page.status_code == 200
+    assert "Recent split failures" in page.text
+    assert "<td>Analysis</td>" in page.text
+    assert "<td>Generation</td>" in page.text
+    assert "rate_limit_exceeded" in page.text
+    assert "HTTP 429" in page.text
+    assert page.text.count("consultation_split_provider_failed") == 24
+    assert page.text.count("other_split_failure") == 1
+    assert str(visible[0].id) in page.text
+    assert str(generation_execution.id) in page.text
+    assert str(generation_batch.id) in page.text
+    assert str(old.id) not in page.text
+    assert str(other.id) not in page.text
+    assert "other_split_failure" in page.text
+    assert "unsafe exception body" not in page.text
+    assert "unsafe provider response" not in page.text
+    assert "Private split diagnostic transcript" not in page.text
+    assert "Other private split diagnostic transcript" not in page.text
+
+    global_page = client.get("/admin?tab=usage&range=30d")
+    assert global_page.status_code == 200
+    assert "Split analysis" in global_page.text
+    assert "Split generation" in global_page.text
+    assert "consultation_split_provider_failed · provider rate_limit_exceeded · HTTP 429" in global_page.text
+    assert str(generation_execution.id) in global_page.text
+    assert str(generation_batch.id) in global_page.text
+
+    overview = admin_usage_overview(db_session, team_id=team.id, range_key="30d")
+    rows = overview["usage_recent_split_failure_rows"]
+    assert len(rows) == 25
+    assert {row.stage for row in rows} == {"Analysis", "Generation"}
+    assert all(row.provider_http_status == 429 for row in rows)
+
+
+def test_admin_usage_all_range_includes_split_failure_without_usage_event(db_session, make_team, make_user):
+    team = make_team(name="Historical split failure clinic")
+    owner = make_user(email="historical-split-owner@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Private historical split transcript",
+        retention_days_applied=team.default_retention_days,
+        retention_expires_at=utcnow() + timedelta(days=team.default_retention_days),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    analysis = ConsultationSplitAnalysis(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        source_fingerprint="a" * 64,
+        status=ConsultationSplitAnalysisStatus.failed,
+        error_code="consultation_split_provider_failed",
+        retention_expires_at=transcript.retention_expires_at,
+    )
+    db_session.add(analysis)
+    db_session.flush()
+    execution = ConsultationSplitExecution(
+        analysis_id=analysis.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        kind=ConsultationSplitExecutionKind.analysis,
+        attempt_no=1,
+        status=ConsultationSplitExecutionStatus.failed,
+        error_code="consultation_split_provider_failed",
+        retention_expires_at=transcript.retention_expires_at,
+        created_at=utcnow() - timedelta(days=45),
+        completed_at=utcnow() - timedelta(days=45),
+    )
+    db_session.add(execution)
+    db_session.commit()
+
+    overview = admin_usage_overview(db_session, team_id=team.id, range_key="all")
+
+    assert overview["usage_range_label"] == "All available data"
+    assert [row.execution_id for row in overview["usage_recent_split_failure_rows"]] == [execution.id]
+
+
+@pytest.mark.parametrize("team_role", (TeamRole.user, TeamRole.leader))
+def test_admin_usage_diagnostics_require_full_system_admin_session(client, make_team, make_user, team_role):
+    team = make_team(name=f"Usage diagnostics {team_role.value}")
+    user = make_user(
+        email=f"usage-diagnostics-{team_role.value}@example.com",
+        password="password-1",
+        team=team,
+        team_role=team_role,
+    )
+
+    client.post("/login", data={"email": user.email, "password": "password-1"}, follow_redirects=False)
+    global_usage = client.get("/admin?tab=usage", follow_redirects=False)
+    team_usage = client.get(f"/admin?team_id={team.id}&team_tab=usage", follow_redirects=False)
+
+    assert global_usage.status_code == 403
+    assert team_usage.status_code == 403
+    assert "Recent split failures" not in global_usage.text
+    assert "Recent split failures" not in team_usage.text
 
 
 def test_admin_page_usage_tab_compacts_empty_daily_activity(client, make_user):

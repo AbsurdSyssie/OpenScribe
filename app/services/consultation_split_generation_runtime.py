@@ -50,6 +50,11 @@ from app.services.redaction import reidentify_text
 
 SPLIT_GENERATION_PROVIDER_DEADLINE_SECONDS = 600
 RECOVERABLE_GENERATION_RESPONSE_MAX_CHARS = 2_097_152
+_CONTROLLED_PROVIDER_ERROR_BY_APP_CODE = {
+    # Gemini's timeout adapter intentionally omits provider details. This is a
+    # finite, provider-bound application classification, not copied text.
+    "llm_provider_timeout": "timeout",
+}
 
 
 GenerationOutcome = Literal["ready", "failed", "in_flight", "noop"]
@@ -81,6 +86,24 @@ def _usage(value: object) -> dict[str, int | None]:
     ):
         result["total_tokens"] = None
     return result
+
+
+def _safe_http_status(value: object) -> int | None:
+    """Accept only a real HTTP status for durable provider metadata."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599 else None
+
+
+def _safe_provider_error(exc: AppError) -> tuple[str | None, int | None]:
+    """Extract controlled provider metadata without retaining provider text."""
+    details = exc.details if isinstance(exc.details, dict) else {}
+    http_status = _safe_http_status(details.get("provider_http_status"))
+    raw_code = details.get("provider_error_code")
+    # AppError codes describe our application boundary, rather than provider
+    # metadata, and may not be copied into provider_error_code.
+    if raw_code is not None or http_status is not None:
+        return safe_provider_error_code(raw_code, status_code=http_status), http_status
+    return _CONTROLLED_PROVIDER_ERROR_BY_APP_CODE.get(exc.code), None
+
 
 def _credential_ok(config: TeamLlmConfig, credential: object | None) -> bool:
     mode = config.auth_mode.value
@@ -155,19 +178,27 @@ def _has_valid_materialization_binding(db: Session, work: _Work) -> bool:
     )
 
 def _terminal(db: Session, work: _Work, code: str, *, submitted: bool, usage: dict[str, int | None] | None = None,
+              provider_error_code: str | None = None, provider_http_status: int | None = None,
               retain_partial_for_recovery: bool = False) -> SplitGenerationRuntimeResult:
     now = utcnow()
     if submitted:
         if usage and usage["total_tokens"] is not None:
-            settle_provider_attempt_tokens(db, attempt_id=work.attempt.id, reported_total_tokens=usage["total_tokens"], reported_input_tokens=usage["input_tokens"], reported_output_tokens=usage["output_tokens"], outcome=AttemptOutcome.failed)
-        else: settle_provider_attempt_unknown_tokens(db, attempt_id=work.attempt.id)
+            settled_attempt = settle_provider_attempt_tokens(db, attempt_id=work.attempt.id, reported_total_tokens=usage["total_tokens"], reported_input_tokens=usage["input_tokens"], reported_output_tokens=usage["output_tokens"], outcome=AttemptOutcome.failed)
+        else:
+            settled_attempt = settle_provider_attempt_unknown_tokens(db, attempt_id=work.attempt.id)
+        settled_attempt.error_code = code
+        settled_attempt.provider_error_code = provider_error_code
+        settled_attempt.provider_http_status = provider_http_status
         event_type = ProviderUsageEventType.failed
     else:
         cancel_provider_attempt(db, attempt_id=work.attempt.id, now=now)
         if work.dispatch.state is TaskDispatchState.pending: cancel_pending_task_dispatch(db, task_id=work.dispatch.task_id)
         event_type = None
     work.execution.status = ConsultationSplitExecutionStatus.failed
-    work.execution.error_code = code; work.execution.completed_at = now
+    work.execution.error_code = code
+    work.execution.provider_error_code = provider_error_code
+    work.execution.provider_http_status = provider_http_status
+    work.execution.completed_at = now
     recovery = retain_partial_for_recovery or (work.execution.attempt_no > 1 and work.batch.status in {
         ConsultationSplitBatchStatus.partially_ready, ConsultationSplitBatchStatus.generating,
     })
@@ -182,6 +213,7 @@ def _terminal(db: Session, work: _Work, code: str, *, submitted: bool, usage: di
             consultation_split_execution_id=work.execution.id, llm_config_id=work.execution.llm_config_id,
             feature_type=ProviderFeatureType.consultation_split_generation, event_type=event_type, status="failed",
             provider_adapter=work.execution.provider_adapter, model_name=work.execution.provider_model, error_code=code,
+            provider_error_code=provider_error_code, provider_http_status=provider_http_status,
             prompt_tokens=usage["input_tokens"] if usage else None, completion_tokens=usage["output_tokens"] if usage else None,
             total_tokens=usage["total_tokens"] if usage else None))
     db.commit()
@@ -274,7 +306,12 @@ def _submit(db: Session, work: _Work) -> bool:
     allowed_batch_statuses = {ConsultationSplitBatchStatus.generation_queued, ConsultationSplitBatchStatus.partially_ready}
     if work.batch.status not in allowed_batch_statuses or work.attempt.status is not AttemptStatus.reserved: db.rollback(); return False
     mark_provider_attempt_submitted(db, attempt_id=work.attempt.id, now=now, deadline_at=now + timedelta(seconds=SPLIT_GENERATION_PROVIDER_DEADLINE_SECONDS))
-    work.execution.status = ConsultationSplitExecutionStatus.processing; work.execution.started_at = now; work.batch.status = ConsultationSplitBatchStatus.generating
+    work.execution.status = ConsultationSplitExecutionStatus.processing
+    work.execution.started_at = now
+    work.execution.error_code = None
+    work.execution.provider_error_code = None
+    work.execution.provider_http_status = None
+    work.batch.status = ConsultationSplitBatchStatus.generating
     db.commit(); return True
 
 def _topics_from_plan(plan: dict[str, object]) -> list[SplitGenerationTopic]:
@@ -517,8 +554,13 @@ def process_consultation_split_generation_execution(db: Session, *, execution_id
     if not _submit(db, work): return SplitGenerationRuntimeResult("noop", execution_id)
     try: text, raw_usage=llm_runtime.invoke_llm(snapshot=provider, credential=credential, request_body=request)
     except AppError as exc:
+        provider_error_code, provider_http_status = _safe_provider_error(exc)
         work=_lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
-        return _terminal(db, work, "consultation_split_provider_failed", submitted=True) if work else SplitGenerationRuntimeResult("in_flight", execution_id)
+        return _terminal(
+            db, work, "consultation_split_provider_failed", submitted=True,
+            provider_error_code=provider_error_code,
+            provider_http_status=provider_http_status,
+        ) if work else SplitGenerationRuntimeResult("in_flight", execution_id)
     except Exception:
         work=_lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
         return _terminal(db, work, "consultation_split_provider_failed", submitted=True) if work else SplitGenerationRuntimeResult("in_flight", execution_id)

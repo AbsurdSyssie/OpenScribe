@@ -11,7 +11,7 @@ import { csrfFetch } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
 import { createTemplateSuggestionController } from './templateSuggestions.js?v=20260830-template-suggestion-preference';
- import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled } from './splitReview.js?v=20261006-durable-create';
+ import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261008-split-diagnostics';
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,
@@ -2456,9 +2456,14 @@ let statusDetailsHideTimer = null;
 
       const splitPlaceholderId = (topic) => `split-placeholder:${transcriptId}:${topic.topicUuid}`;
       const splitSlotKey = (topic) => `split-slot:${transcriptId}:${topic.topicUuid}`;
-      const splitPlaceholderStatus = (phase) => {
+      const splitPlaceholderStatus = (phase, batchId = null) => {
         if (phase === 'generation_queued') return { status: 'queued', label: 'Queued' };
-        if (phase === 'failed' || splitBatchTerminalStatuses.has(phase)) return { status: 'failed', label: 'Unavailable' };
+        if (phase === 'failed' || splitBatchTerminalStatuses.has(phase)) {
+          return {
+            status: 'failed',
+            label: splitDiagnosticMessage({ stage: 'generation', operationId: batchId }),
+          };
+        }
         return { status: 'processing', label: phase === 'verifying' ? 'Checking' : 'Processing' };
       };
 
@@ -2479,7 +2484,7 @@ let statusDetailsHideTimer = null;
           if (candidate?.status === 'ready') {
             return { ...candidate, split_slot_key: splitSlotKey(topic), split_topic_uuid: topic.topicUuid };
           }
-          const placeholderState = splitPlaceholderStatus(phase);
+          const placeholderState = splitPlaceholderStatus(phase, latestSplitBatch?.batch_id || splitPlaceholderState.batchId);
           return {
             id: splitPlaceholderId(topic),
             kind: 'split_placeholder',
@@ -2580,7 +2585,9 @@ let statusDetailsHideTimer = null;
         if (!splitBatchFallbackState || !latestGeneratedOutput) return;
         const phase = splitBatchFallbackState.phase || 'generation_queued';
         if (phase === 'failed') {
-          latestGeneratedOutput.innerHTML = '<span class="text-slate">The split notes could not be displayed. Select Create to try again.</span>';
+          latestGeneratedOutput.textContent = splitDiagnosticMessage({
+            stage: 'generation', operationId: latestSplitBatch?.batch_id || splitBatchFallbackState.batchId,
+          });
           return;
         }
         const message = phase === 'generation_queued'

@@ -1000,6 +1000,7 @@ def render_admin(
         "usage_generator_rows": [],
         "usage_ingestion_rows": [],
         "usage_failure_rows": [],
+        "usage_recent_split_failure_rows": [],
     }
     if resolved_admin_tab in {"usage", "failures"} or workspace_team_tab == "usage":
         usage_context = admin_usage_overview_service(

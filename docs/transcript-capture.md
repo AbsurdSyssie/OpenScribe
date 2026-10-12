@@ -168,6 +168,7 @@ Post-consultation dictation is a separate transcript-owned clinician source, not
 - Dictation is redacted before provider dispatch.
 - Preview transcription does not create durable dictation rows until the user explicitly saves.
 - Dictation-only sessions still use a transcript root and can support generation when consultation transcript text is empty.
+- A saved non-blank dictation, or retained dictation segment, keeps a session non-empty for the New session guard. An explicitly cleared combined value still suppresses generation input, but does not make retained segments disposable.
 
 ## Browser workspace behavior
 

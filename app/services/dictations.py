@@ -52,6 +52,17 @@ def dictation_effective_text(db: Session, *, dictation: PostConsultationDictatio
     return "\n\n".join(text for text in segment_texts if text)
 
 
+def dictation_has_retained_content(db: Session, *, dictation: PostConsultationDictation) -> bool:
+    """Whether a saved dictation keeps its transcript root meaningfully in use.
+
+    A clinician's explicit empty combined value suppresses dictation for
+    generation, but it must not make saved source segments look disposable.
+    """
+    if dictation_effective_text(db, dictation=dictation).strip():
+        return True
+    return bool(dictation.segments)
+
+
 def dictation_detail_response(db: Session, *, dictation: PostConsultationDictation) -> PostConsultationDictationDetail:
     return PostConsultationDictationDetail(
         id=dictation.id,

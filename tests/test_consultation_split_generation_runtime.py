@@ -982,8 +982,47 @@ def test_generation_persistence_failure_rolls_back_children_and_provider_errors_
     assert "Synthetic freeform" not in caplog.text and "synthetic persistence failure" not in caplog.text
 
 
-@pytest.mark.parametrize("failure", [AppError(504, "provider_timeout", "Synthetic provider body"), RuntimeError("Synthetic provider body")])
-def test_generation_provider_failures_terminalize_without_logging_provider_content(db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch, caplog, failure):
+@pytest.mark.parametrize(
+    ("failure", "expected_provider_code", "expected_http_status"),
+    [
+        # Capacity errors must remain distinguishable from a generic generation
+        # failure without storing the provider's response text.
+        (
+            AppError(
+                429, "provider_failed", "Synthetic provider body",
+                {"provider_error_code": "resource_exhausted", "provider_http_status": 429},
+            ),
+            "rate_limit_exceeded", 429,
+        ),
+        (
+            AppError(
+                504, "llm_provider_timeout", "Synthetic provider body",
+            ),
+            "timeout", None,
+        ),
+        # An unknown provider code maps to the controlled fallback.
+        (
+            AppError(
+                502, "provider_failed", "Synthetic provider body",
+                {"provider_error_code": "unrecognized_provider_failure"},
+            ),
+            "http_status_error", None,
+        ),
+        # Unsafe detail text must never reach durable diagnostic metadata.
+        (
+            AppError(
+                503, "provider_failed", "Synthetic provider body",
+                {"provider_error_code": "patient=Jane Example; secret=synthetic", "provider_http_status": 503},
+            ),
+            "provider_server_error", 503,
+        ),
+        (RuntimeError("Synthetic provider body"), None, None),
+    ],
+)
+def test_generation_provider_failures_persist_controlled_diagnostics_without_content(
+    db_session, make_user, make_llm_config, make_llm_selection, make_template,
+    monkeypatch, caplog, failure, expected_provider_code, expected_http_status,
+):
     owner = make_user(email=f"generation-provider-{uuid4()}@example.com")
     _transcript, execution_id = _queue(db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch)
     monkeypatch.setattr("app.services.consultation_split_generation_runtime.resolve_generation_credential", lambda _config: "token")
@@ -993,10 +1032,31 @@ def test_generation_provider_failures_terminalize_without_logging_provider_conte
     assert result.error_code == "consultation_split_provider_failed"
     assert execution.status is ConsultationSplitExecutionStatus.failed and batch.status is ConsultationSplitBatchStatus.failed
     assert attempt.status is AttemptStatus.settled and all(item.status is ConsultationSplitTopicOutcomeStatus.failed for item in outcomes)
+    assert (
+        attempt.error_code, attempt.provider_error_code, attempt.provider_http_status
+    ) == (
+        "consultation_split_provider_failed", expected_provider_code, expected_http_status,
+    )
+    assert (
+        execution.provider_error_code, execution.provider_http_status
+    ) == (expected_provider_code, expected_http_status)
+    events = db_session.scalars(select(ProviderUsageEvent).where(
+        ProviderUsageEvent.consultation_split_execution_id == execution_id
+    )).all()
+    assert len(events) == 1
+    assert (
+        events[0].error_code, events[0].provider_error_code,
+        events[0].provider_http_status,
+    ) == (
+        "consultation_split_provider_failed", expected_provider_code,
+        expected_http_status,
+    )
     assert db_session.scalars(select(ConsultationSplitExecution).where(
         ConsultationSplitExecution.batch_id == batch.id
     )).all() == [execution]
     assert "Synthetic provider body" not in caplog.text
+    assert "patient=Jane Example" not in caplog.text
+    assert "patient=Jane Example" not in str(events[0].provider_error_code)
 
 
 def test_generation_topic_titles_are_encrypted_owner_only_and_document_deletion_preserves_batch_provenance(db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch):

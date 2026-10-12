@@ -72,3 +72,25 @@
 - Not fixed during the Multiple problems toggle because title and ingestion-mode update ordering is older, unrelated behavior and broadening the patch would expand scope beyond the new marker contract.
 - Follow-up: preserve validated title and ingestion-mode changes across the source-writer reload, then add focused combined-PATCH regressions for each field.
 - Resolved 2026-10-07: `update_transcript` acquires the source-writer lock before applying metadata for structured-context requests. Independent title and ingestion-mode PATCH regressions reproduce the dropped fields on the old ordering and pass with the fix; metadata-only requests retain the lighter owner lookup.
+
+## SPLIT-VERIFIER-PREFERENCE-RECOVERY-EXPECTATION — 2026-10-08
+
+- Discovery commit: `23fa441591064d7d2b4d47c8acfd51d86992a4cf`.
+- Location: `tests/test_consultation_split_generation_runtime.py`, preference cases in `test_submitted_verifier_finishes_after_gate_flip_without_reopening_manual_actions`, `test_submitted_verifier_fail_open_materializes_originals_after_gate_flip`, and `test_verifier_deadline_wins_over_late_provider_response_without_a_second_call_or_settlement`; `app/services/consultation_split_gates.py`, `batch_split_enabled`.
+- Exact expectation: `assert raised.value.code == "consultation_split_disabled"` (or matching the disabled message).
+- Observed problem: four preference-opt-out cases expect disabled recovery actions. The accepted confirmed intent keeps its exact batch eligible after preference opt-out; completed/actively verifying batches instead reject recovery with `consultation_split_batch_unavailable`. Deployment-off cases still reject as disabled.
+- Evidence: runtime file run reported 57 passed and these four failures during diagnostics work. A separate isolated pytest run loaded the unchanged commit's generation-runtime source without modifying the checkout or test isolation, reproducing the same four failures; all four corresponding deployment cases passed.
+- Likely impact: focused runtime verification reports failures unrelated to provider diagnostics; the tests appear stale against the accepted-intent opt-out contract implemented on 7 October.
+- Not fixed during split diagnostics because changing recovery authorization or its test contract would expand scope beyond messages and safe operational metadata.
+- Follow-up: reconcile these assertions with the maintained accepted-intent/batch opt-out contract, retaining deployment-off, owner, retention, and exact-binding protection tests.
+
+## SPLIT-CREATE-PENDING-TRANSCRIPTION — 2026-10-08
+
+- Discovery commit: unavailable (consultation-flow review of current working tree).
+- Location: `app/services/consultation_split_intents.py`, `create_or_replay_consultation_split_intent`; `app/services/consultation_split_sources.py`, `prepare_source_bound_consultation_split_analysis`; contrast `app/services/templates.py`, `_ensure_generation_can_be_queued` and transcript-wait handling.
+- Exact call: `prepared: PreparedConsultationSplitAnalysis = prepare_source_bound_consultation_split_analysis(db, actor, transcript_id=transcript_id)`.
+- Observed problem: ordinary generation records pending ingestion and waits before resolving its transcript input. Split Create prepares a source snapshot immediately without an equivalent pending-ingestion wait. The browser permits Create while transcript text is queued/processing, so splitting can analyse an incomplete draft or only currently saved Working note/dictation.
+- Likely impact: later transcript arrivals can invalidate analysis/continuation as stale and consume unnecessary analysis work. A clinician can see a split failure after a normal stop-and-Create action. Exact output/timing consequences require a synthetic regression; static inspection alone does not prove that every ordering rejects incomplete input.
+- Evidence: read-only service/UI trace; no timing reproduction, provider calls, or live clinical data used.
+- Not fixed during consultation-flow analysis because the task requests assessment of current versus ideal behavior. Binding an accepted split intent to pending ingestion and changing when its source snapshot is created needs a coherent lifecycle design and focused tests.
+- Follow-up: define a shared server-owned readiness contract for ordinary and split Create, show a persistent waiting-for-transcription stage, and test pending/failing/final live chunks, whole-file ingestion, Working-note/dictation-only sources, duplicate delivery, source freshness, and one-click continuation.

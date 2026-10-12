@@ -11,9 +11,93 @@ const EDITABLE_BATCH_STATUSES = new Set(['ready', 'completed_partial', 'failed']
 const IN_FLIGHT_ANALYSIS_STATUSES = new Set(['queued', 'processing']);
 const RESTORATION_BACKOFF_MS = Object.freeze([1500, 3000, 6000, 12000, 15000]);
 const NO_NOTE_ANALYSIS_STATUSES = new Set(['not_required', 'failed', 'stale', 'incomplete']);
+const SAFE_SPLIT_ERROR_CODES = new Set([
+  'consultation_split_analysis_candidates_invalid',
+  'consultation_split_analysis_input_invalid',
+  'consultation_split_analysis_input_too_large',
+  'consultation_split_analysis_invalid',
+  'consultation_split_analysis_invalid_output',
+  'consultation_split_analysis_provider_invalid',
+  'consultation_split_analysis_request_invalid',
+  'consultation_split_analysis_unavailable',
+  'consultation_split_credential_unavailable',
+  'consultation_split_proposal_unavailable',
+  'consultation_split_provider_failed',
+  'consultation_split_provider_binding_invalid',
+  'consultation_split_provider_config_invalid',
+  'consultation_split_reservation_expired',
+  'consultation_split_source_expired',
+  'consultation_split_source_stale',
+  'consultation_split_template_unavailable',
+  'consultation_split_generation_unavailable',
+  'consultation_split_draft_unavailable',
+  'consultation_split_draft_invalid',
+  'consultation_split_intent_unavailable',
+  'consultation_split_batch_unavailable',
+  'consultation_split_llm_model_unavailable',
+  'not_found',
+]);
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const asString = (value) => (value === null || value === undefined ? '' : String(value));
 const normalizeTitle = (value) => asString(value).trim().replace(/\s+/g, ' ');
+const safeSplitErrorCode = (value) => (typeof value === 'string' && SAFE_SPLIT_ERROR_CODES.has(value) ? value : null);
+const safeOperationReference = (value) => (typeof value === 'string' && UUID_PATTERN.test(value) ? value : null);
+
+// Error text is deliberately selected here, rather than copied from an API
+// response. Split work can involve clinical/provider data, which is never safe
+// to interpolate into the owner UI.
+export function splitDiagnosticMessage({ stage, errorCode = null, operationId = null, reusedAnalysis = false, analysisStatus = null, canContinue = false } = {}) {
+  const code = safeSplitErrorCode(errorCode);
+  const reference = safeOperationReference(operationId);
+  let message;
+  if (stage === 'analysis') {
+    if (code === 'consultation_split_source_stale' || analysisStatus === 'stale') {
+      message = 'No note generated. The consultation changed before the note split was prepared. Save the current consultation and select Create again.';
+    } else if (code === 'consultation_split_source_expired') {
+      message = 'No note generated. This consultation is no longer available for note generation.';
+    } else if (code === 'consultation_split_analysis_invalid_output') {
+      message = reusedAnalysis && canContinue
+        ? 'No note generated. The saved note-split analysis could not be validated. Create reuses this failure while the consultation is unchanged. Select Continue as one note to generate one note.'
+        : 'No note generated. The proposed note split could not be validated. Select Create again.';
+    } else if (code === 'consultation_split_provider_failed' || code === 'consultation_split_llm_model_unavailable') {
+      message = reusedAnalysis
+        ? (canContinue
+          ? 'No note generated. The note-split analysis failed because the AI provider could not complete the request. Create reuses this failed analysis while the consultation is unchanged. Select Continue as one note to generate one note.'
+          : 'No note generated. The note-split analysis failed because the AI provider could not complete the request. Create reuses this failed analysis while the consultation is unchanged.')
+        : 'No note generated. The note-split analysis could not be prepared. Select Create again.';
+    } else {
+      message = canContinue
+        ? 'No note generated. The note split could not be prepared. Select Continue as one note to generate one note, or select Create again.'
+        : 'No note generated. The note split could not be prepared. Select Create again.';
+    }
+  } else if (stage === 'draft') {
+    message = code === 'consultation_split_source_stale'
+      ? 'No note generated. The consultation changed before the note split could be reviewed. Save the current consultation and select Create again.'
+      : 'No note generated. The note split could not be opened for review. Select Create to retry opening the review.';
+  } else if (stage === 'confirmation') {
+    if (code === 'consultation_split_source_stale') message = 'The consultation changed before the note split was confirmed. Save the current consultation and select Create again.';
+    else if (code === 'consultation_split_template_unavailable') message = 'A selected template is no longer available. Choose an available template and select Create again.';
+    else message = 'The note split could not be confirmed. No notes were generated. Review the split and try again.';
+  } else if (stage === 'continuation') {
+    message = code === 'not_found' || code === 'consultation_split_template_unavailable'
+      ? 'The saved template is unavailable. Choose an available template and select Create to start a new request.'
+      : 'One note could not be started. Your saved split request was not consumed.';
+  } else if (stage === 'regeneration') {
+    message = code === 'consultation_split_template_unavailable'
+      ? 'A template for these split notes is unavailable. Choose an available template and select Create again.'
+      : 'Split-note regeneration could not be started. Please try again.';
+  } else if (stage === 'generation') {
+    message = 'The split notes could not be generated. Select Create to start a new request.';
+  } else if (stage === 'submission') {
+    message = 'The note split could not be started. Review the consultation and select Create again.';
+  } else {
+    message = 'The note split could not be started. Review the consultation and select Create again.';
+  }
+  if (code) message += ` Code: ${code}.`;
+  if (reference) message += ` Reference: ${reference}.`;
+  return message;
+}
 
 // This is deliberately conservative rather than a full Unicode case-fold.
 // The server remains authoritative for the final title uniqueness check.
@@ -415,19 +499,29 @@ export function createSplitGenerateController({
     setOperationStatus('');
     setContinueAvailable(false);
   };
-  const failDraftInitialization = (candidate) => {
+  const failDraftInitialization = (candidate, errorCode = null) => {
     if (!current(candidate)) return;
     candidate.draftState = 'failed';
     candidate.pending = false;
     setBusy(false);
     candidate.continueEligible = false;
     updateContinueAvailability(candidate);
-    setOperationStatus('No note generated. Review the consultation and select Create to retry the note split.', 'warning');
+    setOperationStatus(splitDiagnosticMessage({
+      stage: 'draft', errorCode, operationId: candidate.analysisId,
+    }), 'warning');
   };
-  const analysisStatusMessage = (status) => {
+  const analysisStatusMessage = (analysis = {}) => {
+    const status = analysis?.status || '';
     if (status === 'queued') return 'Preparing your note split. This may take a moment.';
     if (status === 'processing') return 'Preparing your note split.';
-    return 'No note generated. Review the consultation and select Create again if needed.';
+    return splitDiagnosticMessage({
+      stage: 'analysis',
+      errorCode: analysis?.error_code,
+      operationId: analysis?.analysis_id,
+      reusedAnalysis: status === 'failed',
+      analysisStatus: status,
+      canContinue: Boolean(operation?.intentId && !operation?.consumed),
+    });
   };
   const canUseCurrentOperation = (transcriptId, analysis) => (
     current(operation)
@@ -450,7 +544,12 @@ export function createSplitGenerateController({
           return null;
         }
         if (!response.ok) {
-          failDraftInitialization(candidate);
+          const error = await readSafeError(response);
+          if (!current(candidate) || !same(getTranscriptId(), candidate.transcriptId)) {
+            if (current(candidate)) abandonForTranscriptChange(candidate);
+            return null;
+          }
+          failDraftInitialization(candidate, error.code);
           return null;
         }
         const draft = await response.json();
@@ -531,7 +630,7 @@ export function createSplitGenerateController({
     operation.continueEligible = false;
     if (IN_FLIGHT_ANALYSIS_STATUSES.has(status)) {
       updateContinueAvailability(operation);
-      setOperationStatus(analysisStatusMessage(status));
+      setOperationStatus(analysisStatusMessage(analysis));
       return;
     }
     if (status === 'not_required' && operation.manualReviewRequested && operation.intentId && !operation.consumed) {
@@ -570,7 +669,7 @@ export function createSplitGenerateController({
         void continueAsOneNote();
         return;
       }
-      setOperationStatus(analysisStatusMessage(status), 'warning');
+      setOperationStatus(analysisStatusMessage(analysis), 'warning');
       // Keep this browser-owned durable intent available for the explicit
       // one-note action. It remains retryable so a clinician can instead
       // start a new Generate with a currently available template.
@@ -704,11 +803,14 @@ export function createSplitGenerateController({
         return true;
       }
       if (!response.ok) {
+        const error = await readSafeError(response);
+        if (!current(candidate) || !same(getTranscriptId(), candidate.transcriptId)) {
+          if (current(candidate)) abandonForTranscriptChange(candidate);
+          return true;
+        }
         candidate.retryable = response.status >= 500;
         candidate.pending = false;
-        setOperationStatus(candidate.retryable
-          ? 'Could not confirm the note split. Select Create to retry safely.'
-          : 'No note generated. Review the consultation and select Create again if needed.', 'warning');
+        setOperationStatus(splitDiagnosticMessage({ stage: 'submission', errorCode: error.code }), 'warning');
         if (!candidate.retryable) reset(); else setBusy(false);
         return true;
       }
@@ -743,9 +845,9 @@ export function createSplitGenerateController({
         candidate.retryable = Boolean(candidate.requestStarted);
         if (candidate.retryable) {
           setBusy(false);
-          setOperationStatus('Could not confirm the note split. Select Create to retry safely.', 'warning');
+          setOperationStatus(splitDiagnosticMessage({ stage: 'submission' }), 'warning');
         } else {
-          setOperationStatus('No note generated. Review the consultation and select Create again if needed.', 'warning');
+          setOperationStatus(splitDiagnosticMessage({ stage: 'submission' }), 'warning');
           reset();
         }
       }
@@ -802,9 +904,9 @@ export function createSplitGenerateController({
         const error = await readSafeError(response);
         if (!current(candidate) || !same(getTranscriptId(), candidate.transcriptId)) return false;
         setOperationStatus(
-          error.code === 'not_found' || error.code === 'consultation_split_template_unavailable'
-            ? 'The saved template is unavailable. Choose a currently available template and select Create to start a new request.'
-            : 'Could not start one note. Your saved request was not consumed.',
+          splitDiagnosticMessage({
+            stage: 'continuation', errorCode: error.code, operationId: candidate.intentId,
+          }),
           'warning',
         );
         return false;
@@ -831,7 +933,9 @@ export function createSplitGenerateController({
       return true;
     } catch (_) {
       if (current(candidate) && same(getTranscriptId(), candidate.transcriptId)) {
-        setOperationStatus('Could not start one note. Your saved request was not consumed.', 'warning');
+        setOperationStatus(splitDiagnosticMessage({
+          stage: 'continuation', operationId: candidate.intentId,
+        }), 'warning');
       }
       return false;
     } finally {
@@ -869,8 +973,15 @@ export function createSplitGenerateController({
       });
       if (!current(candidate) || !same(getTranscriptId(), transcriptId)) return false;
       if (!response.ok) {
+        const error = await readSafeError(response);
+        if (!current(candidate) || !same(getTranscriptId(), transcriptId)) {
+          if (current(candidate)) abandonForTranscriptChange(candidate);
+          return false;
+        }
         onSplitBatchStarted({ draft: getConfirmedDraft(), batchId, phase: 'failed' });
-        setOperationStatus('Could not regenerate split notes. Please try again.', 'warning');
+        setOperationStatus(splitDiagnosticMessage({
+          stage: 'regeneration', errorCode: error.code, operationId: batchId,
+        }), 'warning');
         return false;
       }
       const result = await response.json();
@@ -888,7 +999,9 @@ export function createSplitGenerateController({
       if (current(candidate) && same(getTranscriptId(), transcriptId)) {
         onSplitBatchStarted({ draft: getConfirmedDraft(), batchId, phase: 'failed' });
       }
-      if (current(candidate) && same(getTranscriptId(), transcriptId)) setOperationStatus('Could not regenerate split notes. Please try again.', 'warning');
+      if (current(candidate) && same(getTranscriptId(), transcriptId)) {
+        setOperationStatus(splitDiagnosticMessage({ stage: 'regeneration', operationId: batchId }), 'warning');
+      }
       return false;
     } finally {
       if (current(candidate)) reset();
@@ -1044,10 +1157,9 @@ async function readSafeError(response) {
     const payload = await response.json();
     return {
       code: payload?.error?.code || payload?.code || null,
-      message: payload?.error?.message || payload?.message || null,
     };
   } catch (_) {
-    return { code: null, message: null };
+    return { code: null };
   }
 }
 
@@ -1648,13 +1760,17 @@ export function createSplitReviewController({
       if (transcriptId !== confirmationTranscriptId || getTranscriptId() !== confirmationTranscriptId || localDraft?.draft_id !== draftId) return false;
       if (!response.ok) {
         const error = await readSafeError(response);
+        if (transcriptId !== confirmationTranscriptId || getTranscriptId() !== confirmationTranscriptId || localDraft?.draft_id !== draftId) return false;
         if (response.status === 409) {
           localDraft = { ...localDraft, status: error.code === 'consultation_split_source_stale' ? 'stale' : 'unavailable' };
           remoteDraft = localDraft;
           render();
         }
-        setStatus('Could not confirm this note split. No notes were generated.', 'error');
-        showMessage('Could not confirm this note split. No notes were generated.', 'error');
+        const message = splitDiagnosticMessage({
+          stage: 'confirmation', errorCode: error.code, operationId: intentId,
+        });
+        setStatus(message, 'error');
+        showMessage(message, 'error');
         return false;
       }
       const result = await response.json();
@@ -1673,7 +1789,7 @@ export function createSplitReviewController({
       return true;
     } catch (_) {
       if (transcriptId === confirmationTranscriptId && getTranscriptId() === confirmationTranscriptId) {
-        setStatus('Could not confirm this note split. No notes were generated.', 'error');
+        setStatus(splitDiagnosticMessage({ stage: 'confirmation', operationId: intentId }), 'error');
       }
       return false;
     } finally {

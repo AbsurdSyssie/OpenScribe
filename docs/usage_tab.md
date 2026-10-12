@@ -58,6 +58,22 @@ The reporting service aggregates metadata from current persistence models, inclu
 - bounded provider error metadata;
 - created, started, and completed timestamps.
 
+### Consultation-split executions
+
+Failure hotspots distinguish **Split analysis** from **Split generation**. For
+those stages, a hotspot retains the controlled application failure code and,
+when available, the controlled provider code and HTTP status.
+
+The Usage page also has a **Recent split failures** table. It is a bounded
+projection of at most 25 retained terminal failed executions within the
+selected reporting range and scope. Its range and ordering use the terminal
+timestamp, falling back to execution creation time for older rows. Each row
+contains only that timestamp, stage, execution UUID, parent operation UUID
+(analysis for analysis; batch for generation), controlled application code,
+controlled provider code, and HTTP status. It does not serialize an ORM object
+or event row to the browser. The all-available range includes retained failed
+split executions even when no provider usage event was recorded.
+
 ### Transcript ingestion jobs
 
 - team and owner identifiers;
@@ -70,7 +86,9 @@ The reporting service aggregates metadata from current persistence models, inclu
 - bounded error code/message;
 - created, started, completed, and applied timestamps.
 
-The reporting service returns aggregates to the browser. It does not send raw event rows to chart code.
+The reporting service returns aggregates to chart code. The recent split
+failure table is the sole exception: it receives the explicit bounded
+metadata-only projection described above, never raw event rows.
 
 ## Reporting ranges
 
@@ -97,6 +115,8 @@ The canonical admin workspace renders:
 - team comparison rows in global scope;
 - provider/model, generator-type, ingestion-type, and failure aggregates;
 - selected-team user aggregate rows.
+- a bounded recent split-failure metadata projection in global and selected-team
+  Usage views.
 
 Charts use the locally vendored Apache ECharts runtime and server-rendered aggregate data. No usage data or runtime code is loaded from a public CDN.
 
@@ -110,6 +130,8 @@ Global Usage does not expose per-user rows. A selected-team Usage view constrain
 - Display sparse/missing telemetry honestly rather than synthesizing values.
 - Estimated cost can remain zero/blank where pricing data is unavailable.
 - Provider HTTP status and STT model metadata can be incomplete for older or adapter-specific records.
+- Older split-generation records can lack provider code/HTTP metadata because
+  those fields were not persisted before the split diagnostics change.
 - Keep usage and security reporting separate: frequent client IPs and security events belong in Audit/Security, not Usage.
 
 ## Privacy and lifecycle constraints
@@ -119,6 +141,11 @@ Global Usage does not expose per-user rows. A selected-team Usage view constrain
 - Deletion/retention follows the current model/service cleanup rules; this view does not create a parallel content store.
 - Charts/tables must not make content-derived classifications unless an explicit privacy-reviewed metadata field is persisted for that purpose.
 - Free-text administrative reasons or user-supplied content must not be copied into usage events.
+- The split diagnostic projection maps application/provider fields through
+  controlled allowlists. Unknown or malformed values become a generic
+  `other_split_failure` application code or are omitted; arbitrary persisted
+  strings, exception text, provider responses, topic labels, transcript IDs,
+  and owner identifiers never render.
 
 ## Remaining roadmap
 

@@ -2485,6 +2485,20 @@
                   </section>
                 </div>
               </section>
+              <section class="usage-panel">
+                <header><h2>Recent split failures</h2><p>Up to 25 retained, failed split executions in {{ usage_range_label|lower }}. These are safe operational metadata for support correlation; they contain no source or provider response content.</p></header>
+                {% if usage_recent_split_failure_rows %}
+                <div class="usage-table-wrap">
+                  <table class="usage-table">
+                    <thead><tr><th>Time (UTC)</th><th>Stage</th><th>Execution UUID</th><th>Operation UUID</th><th>Application code</th><th>Provider code / HTTP</th></tr></thead>
+                    <tbody>{% for row in usage_recent_split_failure_rows %}<tr>
+                      <td>{{ row.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td><td>{{ row.stage }}</td><td><code>{{ row.execution_id }}</code></td><td><code>{{ row.operation_id }}</code></td>
+                      <td>{{ row.error_code }}</td><td>{% if row.provider_error_code %}{{ row.provider_error_code }}{% else %}—{% endif %}{% if row.provider_http_status %}<br><small>HTTP {{ row.provider_http_status }}</small>{% endif %}</td>
+                    </tr>{% endfor %}</tbody>
+                  </table>
+                </div>
+                {% else %}<div class="usage-empty">No retained split failures in this range.</div>{% endif %}
+              </section>
             </div>
             {% elif active_admin_tab == 'legal' %}
             {% include "_admin_legal_content_panel.html" %}
@@ -4113,6 +4127,20 @@
                       </table>
                     </div>
                     {% else %}<div class="usage-empty">No user usage recorded for this range.</div>{% endif %}
+                  </section>
+                  <section class="usage-panel">
+                    <header><h2>Recent split failures</h2><p>Up to 25 retained, failed split executions for this team in {{ usage_range_label|lower }}. These are safe operational metadata for support correlation; they contain no source or provider response content.</p></header>
+                    {% if usage_recent_split_failure_rows %}
+                    <div class="usage-table-wrap">
+                      <table class="usage-table">
+                        <thead><tr><th>Time (UTC)</th><th>Stage</th><th>Execution UUID</th><th>Operation UUID</th><th>Application code</th><th>Provider code / HTTP</th></tr></thead>
+                        <tbody>{% for row in usage_recent_split_failure_rows %}<tr>
+                          <td>{{ row.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td><td>{{ row.stage }}</td><td><code>{{ row.execution_id }}</code></td><td><code>{{ row.operation_id }}</code></td>
+                          <td>{{ row.error_code }}</td><td>{% if row.provider_error_code %}{{ row.provider_error_code }}{% else %}—{% endif %}{% if row.provider_http_status %}<br><small>HTTP {{ row.provider_http_status }}</small>{% endif %}</td>
+                        </tr>{% endfor %}</tbody>
+                      </table>
+                    </div>
+                    {% else %}<div class="usage-empty">No retained split failures in this range.</div>{% endif %}
                   </section>
                 </div>
               </section>

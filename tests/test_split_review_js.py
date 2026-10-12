@@ -23,9 +23,9 @@ def test_split_review_workspace_accessibility_hooks_and_cachebusters():
     assert 'data-split-review-problem-count' in workspace
     assert 'data-split-review-add' in workspace
     assert 'data-split-review-create' in workspace
-    assert 'splitReview.js?v=20261006-durable-create' in app_js
+    assert 'splitReview.js?v=20261008-split-diagnostics' in app_js
     assert 'splitReviewController?.applyWorkspaceState' in app_js
-    assert 'app.js?v=20261006-durable-create' in shell
+    assert 'app.js?v=20261008-split-diagnostics' in shell
     assert 'transcribe.css?v=20261005-multiple-problems' in head
     assert 'data-split-continue-one-note hidden' in workspace
     assert 'data-split-review-confirm' not in workspace
@@ -38,6 +38,44 @@ def test_split_review_workspace_accessibility_hooks_and_cachebusters():
     assert 'data-split-retry-missing hidden' in workspace
     assert 'data-split-keep-available hidden' in workspace
     assert 'id="split-partial-status"' in workspace
+
+
+def test_split_diagnostic_messages_are_stage_specific_and_never_render_untrusted_values(tmp_path):
+    runner = tmp_path / "split-diagnostic-messages-runner.mjs"
+    module_uri = (ROOT / "app/static/js/transcribe/splitReview.js").as_uri()
+    runner.write_text(
+        f"""
+const {{ splitDiagnosticMessage }} = await import('{module_uri}');
+const analysisRef = '11111111-1111-4111-8111-111111111111';
+const continuationRef = '22222222-2222-4222-8222-222222222222';
+const analysis = splitDiagnosticMessage({{
+  stage: 'analysis', errorCode: 'consultation_split_provider_failed', operationId: analysisRef, reusedAnalysis: true, canContinue: true,
+}});
+if (!analysis.includes('reuses this failed analysis') || !analysis.includes('Continue as one note') || !analysis.includes(analysisRef) || !analysis.includes('consultation_split_provider_failed')) throw new Error('failed analysis guidance was incomplete');
+const draft = splitDiagnosticMessage({{ stage: 'draft', errorCode: 'consultation_split_source_stale', operationId: analysisRef }});
+if (!draft.includes('consultation changed') || !draft.includes(analysisRef)) throw new Error('draft stale guidance was incomplete');
+const confirmation = splitDiagnosticMessage({{ stage: 'confirmation', errorCode: 'consultation_split_template_unavailable', operationId: continuationRef }});
+if (!confirmation.includes('template is no longer available') || !confirmation.includes(continuationRef)) throw new Error('confirmation guidance was incomplete');
+const continuation = splitDiagnosticMessage({{ stage: 'continuation', errorCode: 'consultation_split_template_unavailable', operationId: continuationRef }});
+if (!continuation.includes('saved template is unavailable') || !continuation.includes(continuationRef)) throw new Error('continuation guidance was incomplete');
+const regeneration = splitDiagnosticMessage({{ stage: 'regeneration', errorCode: 'consultation_split_batch_unavailable', operationId: continuationRef }});
+if (!regeneration.includes('regeneration could not be started') || !regeneration.includes('consultation_split_batch_unavailable')) throw new Error('regeneration guidance was incomplete');
+const submission = splitDiagnosticMessage({{ stage: 'submission', errorCode: 'consultation_split_provider_failed' }});
+if (!submission.includes('could not be started') || submission.includes('Continue as one note')) throw new Error('submission guidance suggested an unavailable recovery');
+const unavailable = splitDiagnosticMessage({{ stage: 'analysis', errorCode: 'consultation_split_analysis_unavailable' }});
+if (unavailable.includes('Continue as one note')) throw new Error('unavailable analysis suggested a missing continuation');
+const generation = splitDiagnosticMessage({{ stage: 'generation', operationId: continuationRef }});
+if (!generation.includes('could not be generated') || !generation.includes(continuationRef)) throw new Error('terminal generation guidance was incomplete');
+const staleWithoutCode = splitDiagnosticMessage({{ stage: 'analysis', analysisStatus: 'stale' }});
+if (!staleWithoutCode.includes('consultation changed')) throw new Error('stale analysis status lost its controlled explanation');
+const malicious = splitDiagnosticMessage({{
+  stage: 'analysis', errorCode: '<img src=x onerror=alert(1)>', operationId: 'not-a-uuid', reusedAnalysis: true,
+}});
+if (malicious.includes('<img') || malicious.includes('not-a-uuid') || malicious.includes('Code:') || malicious.includes('Reference:')) throw new Error('untrusted diagnostic values were rendered');
+""",
+    )
+    result = subprocess.run(["node", str(runner)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr or result.stdout
 
 
 def test_multiple_problems_toggle_persists_per_consultation_and_manual_not_required_stays_in_review(tmp_path):

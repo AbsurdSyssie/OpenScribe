@@ -1100,6 +1100,14 @@ def _transcript_has_meaningful_content(db: Session, transcript: Transcript) -> b
         return True
     if transcript_has_working_note(db, transcript=transcript):
         return True
+    # Import locally because dictation ownership lookup intentionally reuses
+    # transcript services.  Dictation is distinct from transcript text for UI
+    # presentation, but saved dictation keeps this retention root in use.
+    from app.services.dictations import dictation_has_retained_content
+
+    dictation = transcript.post_consultation_dictation
+    if dictation is not None and dictation_has_retained_content(db, dictation=dictation):
+        return True
     if db.scalar(select(TranscriptVersion.id).where(TranscriptVersion.transcript_id == transcript.id).limit(1)) is not None:
         return True
     if db.scalar(select(TranscriptIngestionJob.id).where(TranscriptIngestionJob.transcript_id == transcript.id).limit(1)) is not None:

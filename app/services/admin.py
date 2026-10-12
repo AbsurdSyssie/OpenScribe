@@ -24,6 +24,8 @@ from app.models import (
     DeidentificationProvider,
     GeneratedDocument,
     ConsultationSplitExecution,
+    ConsultationSplitExecutionKind,
+    ConsultationSplitExecutionStatus,
     ConsultationSplitIntent,
     ConsultationSplitAnalysis,
     ConsultationSplitBatch,
@@ -31,6 +33,7 @@ from app.models import (
     PromptTemplateVersion,
     ProviderUsageEvent,
     ProviderUsageEventType,
+    ProviderFeatureType,
     QuickAction,
     QuickActionVersion,
     SecurityAuditEventHold,
@@ -372,6 +375,69 @@ class AdminUsageFailureRow:
     source: str
     code: str
     count: int
+
+
+@dataclass(slots=True)
+class AdminUsageSplitFailureRow:
+    """A deliberately narrow, content-free split failure projection."""
+
+    timestamp: datetime
+    stage: str
+    execution_id: UUID
+    operation_id: UUID
+    error_code: str
+    provider_error_code: str | None
+    provider_http_status: int | None
+
+
+_SAFE_SPLIT_APPLICATION_ERROR_CODES = frozenset(
+    {
+        "consultation_split_analysis_invalid_output",
+        "consultation_split_credential_unavailable",
+        "consultation_split_generation_invalid_output",
+        "consultation_split_materialization_binding_invalid",
+        "consultation_split_preference_disabled",
+        "consultation_split_provider_binding_invalid",
+        "consultation_split_provider_config_invalid",
+        "consultation_split_provider_failed",
+        "consultation_split_reservation_expired",
+        "consultation_split_retention_binding_invalid",
+        "consultation_split_source_expired",
+        "consultation_split_source_stale",
+    }
+)
+_SAFE_SPLIT_PROVIDER_ERROR_CODES = frozenset(
+    {
+        "authentication_error",
+        "bad_request",
+        "connection_error",
+        "http_status_error",
+        "invalid_api_key",
+        "invalid_request",
+        "invalid_request_error",
+        "model_not_found",
+        "not_found",
+        "permission_denied",
+        "provider_conflict",
+        "provider_server_error",
+        "quota_exceeded",
+        "rate_limit_exceeded",
+        "timeout",
+    }
+)
+RECENT_SPLIT_FAILURE_LIMIT = 25
+
+
+def _safe_split_application_error_code(value: object) -> str:
+    return value if isinstance(value, str) and value in _SAFE_SPLIT_APPLICATION_ERROR_CODES else "other_split_failure"
+
+
+def _safe_split_provider_error_code(value: object) -> str | None:
+    return value if isinstance(value, str) and value in _SAFE_SPLIT_PROVIDER_ERROR_CODES else None
+
+
+def _safe_split_provider_http_status(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599 else None
 
 
 def _failure_event_clause():
@@ -970,14 +1036,34 @@ def _failure_rows(db: Session, *, since, team_id: UUID | None) -> list[AdminUsag
     rows_by_key: dict[tuple[str, str], int] = {}
 
     provider_stmt = select(
-        func.coalesce(ProviderUsageEvent.error_code, ProviderUsageEvent.provider_error_code, "unknown").label("code"),
+        ProviderUsageEvent.feature_type.label("feature_type"),
+        ProviderUsageEvent.error_code.label("error_code"),
+        ProviderUsageEvent.provider_error_code.label("provider_error_code"),
+        ProviderUsageEvent.provider_http_status.label("provider_http_status"),
         func.count(ProviderUsageEvent.id).label("count"),
     ).where(ProviderUsageEvent.created_at >= since, _failure_event_clause())
     if team_id is not None:
         provider_stmt = provider_stmt.where(ProviderUsageEvent.team_id == team_id)
-    provider_stmt = provider_stmt.group_by("code")
+    provider_stmt = provider_stmt.group_by("feature_type", "error_code", "provider_error_code", "provider_http_status")
     for row in db.execute(provider_stmt):
-        rows_by_key[("LLM generation", row.code)] = int(row.count or 0)
+        split_source = {
+            ProviderFeatureType.consultation_split_analysis: "Split analysis",
+            ProviderFeatureType.consultation_split_generation: "Split generation",
+        }.get(row.feature_type)
+        if split_source is not None:
+            code = _safe_split_application_error_code(row.error_code)
+            provider_code = _safe_split_provider_error_code(row.provider_error_code)
+            provider_http_status = _safe_split_provider_http_status(row.provider_http_status)
+            if provider_code is not None:
+                code = f"{code} · provider {provider_code}"
+            if provider_http_status is not None:
+                code = f"{code} · HTTP {provider_http_status}"
+            source = split_source
+        else:
+            source = "LLM generation"
+            code = row.error_code or row.provider_error_code or "unknown"
+        key = (source, code)
+        rows_by_key[key] = rows_by_key.get(key, 0) + int(row.count or 0)
 
     ingestion_stmt = select(
         func.coalesce(TranscriptIngestionJob.error_code, "unknown").label("code"),
@@ -1000,6 +1086,84 @@ def _failure_rows(db: Session, *, since, team_id: UUID | None) -> list[AdminUsag
     return failure_rows[:8]
 
 
+def _recent_split_failure_rows(
+    db: Session, *, since: datetime, until: datetime, team_id: UUID | None
+) -> list[AdminUsageSplitFailureRow]:
+    """Return only support-correlation metadata for recent failed split executions.
+
+    This deliberately queries selected scalar columns rather than ORM objects:
+    encrypted payloads, topic metadata, transcript references, and user identity
+    cannot enter the usage presentation by accident.
+    """
+    failure_timestamp = func.coalesce(
+        ConsultationSplitExecution.completed_at, ConsultationSplitExecution.created_at
+    )
+    stmt = (
+        select(
+            failure_timestamp.label("timestamp"),
+            ConsultationSplitExecution.kind,
+            ConsultationSplitExecution.id,
+            ConsultationSplitExecution.analysis_id,
+            ConsultationSplitExecution.batch_id,
+            ConsultationSplitExecution.error_code,
+            ConsultationSplitExecution.provider_error_code,
+            ConsultationSplitExecution.provider_http_status,
+        )
+        .where(
+            failure_timestamp >= since,
+            failure_timestamp < until,
+            ConsultationSplitExecution.status == ConsultationSplitExecutionStatus.failed,
+            ConsultationSplitExecution.kind.in_(
+                (ConsultationSplitExecutionKind.analysis, ConsultationSplitExecutionKind.generation)
+            ),
+        )
+        .order_by(
+            failure_timestamp.desc(),
+            ConsultationSplitExecution.id.desc(),
+        )
+        .limit(RECENT_SPLIT_FAILURE_LIMIT)
+    )
+    if team_id is not None:
+        stmt = stmt.where(ConsultationSplitExecution.team_id == team_id)
+
+    rows: list[AdminUsageSplitFailureRow] = []
+    for row in db.execute(stmt):
+        is_analysis = row.kind is ConsultationSplitExecutionKind.analysis
+        operation_id = row.analysis_id if is_analysis else row.batch_id
+        # The model constraint makes these parents non-null for the selected
+        # kinds. Retaining this guard keeps an inconsistent legacy row out of
+        # the browser instead of exposing a malformed projection.
+        if operation_id is None:
+            continue
+        rows.append(
+            AdminUsageSplitFailureRow(
+                timestamp=row.timestamp,
+                stage="Analysis" if is_analysis else "Generation",
+                execution_id=row.id,
+                operation_id=operation_id,
+                error_code=_safe_split_application_error_code(row.error_code),
+                provider_error_code=_safe_split_provider_error_code(row.provider_error_code),
+                provider_http_status=_safe_split_provider_http_status(row.provider_http_status),
+            )
+        )
+    return rows
+
+
+def _earliest_split_failure_timestamp(db: Session) -> datetime | None:
+    return db.scalar(
+        select(
+            func.min(
+                func.coalesce(ConsultationSplitExecution.completed_at, ConsultationSplitExecution.created_at)
+            )
+        ).where(
+            ConsultationSplitExecution.status == ConsultationSplitExecutionStatus.failed,
+            ConsultationSplitExecution.kind.in_(
+                (ConsultationSplitExecutionKind.analysis, ConsultationSplitExecutionKind.generation)
+            ),
+        )
+    )
+
+
 def admin_usage_overview(db: Session, *, team_id: UUID | None = None, range_key: str = "30d") -> dict[str, object]:
     now = utcnow()
     range_definitions = {
@@ -1011,7 +1175,10 @@ def admin_usage_overview(db: Session, *, team_id: UUID | None = None, range_key:
     if resolved_range_key == "all":
         provider_since = db.scalar(select(func.min(ProviderUsageEvent.created_at)))
         ingestion_since = db.scalar(select(func.min(TranscriptIngestionJob.created_at)))
-        available_starts = [value for value in (provider_since, ingestion_since) if value is not None]
+        split_failure_since = _earliest_split_failure_timestamp(db)
+        available_starts = [
+            value for value in (provider_since, ingestion_since, split_failure_since) if value is not None
+        ]
         range_since = min(available_starts) if available_starts else now - timedelta(days=29)
         range_label = "All available data"
         range_bucket = "month"
@@ -1108,6 +1275,9 @@ def admin_usage_overview(db: Session, *, team_id: UUID | None = None, range_key:
         "usage_generator_rows": _generator_usage_rows(db, since=range_since, team_id=team_id),
         "usage_ingestion_rows": _ingestion_usage_rows(db, since=range_since, team_id=team_id),
         "usage_failure_rows": _failure_rows(db, since=range_since, team_id=team_id),
+        "usage_recent_split_failure_rows": _recent_split_failure_rows(
+            db, since=range_since, until=now, team_id=team_id
+        ),
         "usage_scope_team": selected_team,
     }
 

@@ -16824,6 +16824,118 @@ def test_working_note_only_session_allows_new_session(
     assert next_session.status_code == 201
 
 
+def test_dictation_only_session_allows_new_session(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Dictation New Session Team")
+    owner = make_user(email="owner-dictation-new-session@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    login(client, email=owner.email, password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Dictation only", "ingestion_mode": "whole_file"})
+    assert started.status_code == 201
+    transcript_id = UUID(started.json()["id"])
+    update_post_consultation_dictation(
+        db_session,
+        owner,
+        transcript_id=transcript_id,
+        combined_text="Clinician-dictated follow-up plan.",
+    )
+
+    workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript_id}")
+    assert workspace.status_code == 200
+    assert workspace.json()["can_create_new_session"] is True
+
+    next_session = client.post("/api/v1/transcripts/start", json={"title": "Next session", "ingestion_mode": "whole_file"})
+    assert next_session.status_code == 201
+
+
+def test_retained_dictation_segment_keeps_session_non_empty_after_combined_text_is_cleared(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Retained Dictation Segment Team")
+    owner = make_user(email="owner-retained-dictation@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    login(client, email=owner.email, password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Retained dictation", "ingestion_mode": "whole_file"})
+    assert started.status_code == 201
+    transcript_id = UUID(started.json()["id"])
+    dictation_id = uuid4()
+    dictation = PostConsultationDictation(
+        id=dictation_id,
+        transcript_id=transcript_id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        combined_edited_text_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="post_consultation_dictations",
+            field="combined_edited_text_encrypted",
+            record_id=dictation_id,
+            plaintext="",
+        ),
+        is_combined_text_user_edited=True,
+    )
+    segment_id = uuid4()
+    segment = PostConsultationDictationSegment(
+        id=segment_id,
+        post_consultation_dictation_id=dictation_id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        sequence_no=1,
+        asr_text_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="post_consultation_dictation_segments",
+            field="asr_text_encrypted",
+            record_id=segment_id,
+            plaintext="Saved source segment.",
+        ) or "",
+    )
+    db_session.add_all([dictation, segment])
+    db_session.commit()
+
+    workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript_id}")
+    assert workspace.status_code == 200
+    assert workspace.json()["can_create_new_session"] is True
+
+    next_session = client.post("/api/v1/transcripts/start", json={"title": "Next session", "ingestion_mode": "whole_file"})
+    assert next_session.status_code == 201
+
+
+def test_empty_dictation_row_does_not_make_session_non_empty(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Empty Dictation New Session Team")
+    owner = make_user(email="owner-empty-dictation@example.com", password="password-1", team=team, team_role=TeamRole.user)
+
+    login(client, email=owner.email, password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Empty dictation", "ingestion_mode": "whole_file"})
+    assert started.status_code == 201
+    transcript_id = UUID(started.json()["id"])
+    update_post_consultation_dictation(db_session, owner, transcript_id=transcript_id, combined_text="")
+
+    workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript_id}")
+    assert workspace.status_code == 200
+    assert workspace.json()["can_create_new_session"] is False
+
+    blocked = client.post("/api/v1/transcripts/start", json={"title": "Next session", "ingestion_mode": "whole_file"})
+    assert_error(
+        blocked,
+        status_code=409,
+        code="business_rule_violation",
+        message="Finish or delete the current empty session before creating a new one",
+    )
+
+
 def test_transcribe_workspace_endpoint_returns_owner_pii_entities(
     client,
     db_session,

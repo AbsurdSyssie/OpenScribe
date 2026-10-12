@@ -656,6 +656,11 @@ export function createSplitGenerateController({
       }
       return;
     }
+    // The document callback refreshes workspace state before this successful
+    // continuation publishes its final status. That projection still reports
+    // the same `not_required` analysis, but the browser-owned intent is
+    // already consumed, so it cannot mean that no note was generated.
+    if (status === 'not_required' && operation.consumed) return;
     if (NO_NOTE_ANALYSIS_STATUSES.has(status) || !analysis?.analysis_id) {
       if (status === 'not_required' && operation.intentId && !operation.consumed) {
         // The analysis has established that this consultation needs one note.

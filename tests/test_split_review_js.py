@@ -23,9 +23,9 @@ def test_split_review_workspace_accessibility_hooks_and_cachebusters():
     assert 'data-split-review-problem-count' in workspace
     assert 'data-split-review-add' in workspace
     assert 'data-split-review-create' in workspace
-    assert 'splitReview.js?v=20261008-split-diagnostics' in app_js
+    assert 'splitReview.js?v=20261012-one-note-refresh' in app_js
     assert 'splitReviewController?.applyWorkspaceState' in app_js
-    assert 'app.js?v=20261008-split-diagnostics' in shell
+    assert 'app.js?v=20261012-one-note-refresh' in shell
     assert 'transcribe.css?v=20261005-multiple-problems' in head
     assert 'data-split-continue-one-note hidden' in workspace
     assert 'data-split-review-confirm' not in workspace
@@ -518,6 +518,56 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 if (continued.join() !== 'doc-1') throw new Error('successful continuation did not feed generated-document flow');
 transcriptId = 'tx-2';
 if (await controller.continueAsOneNote()) throw new Error('stale transcript continued an old intent');
+"""
+    )
+    subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
+
+
+def test_single_issue_workspace_refresh_during_continuation_never_warns_no_note_generated(tmp_path):
+    runner = tmp_path / "split-one-note-refresh-race-runner.mjs"
+    module_uri = (ROOT / "app/static/js/transcribe/splitReview.js").as_uri()
+    runner.write_text(
+        f"""
+const {{ createSplitGenerateController }} = await import('{module_uri}');
+const statuses = [];
+let controller;
+const controllerOptions = {{
+  getCapabilityEnabled: () => true,
+  getTranscriptId: () => 'tx-1',
+  getTemplateId: () => 'template-1',
+  createKey: () => '00000000-0000-0000-0000-000000000001',
+  saveSources: async () => {{}},
+  setStatus: (message) => statuses.push(message),
+  fetcher: async (url) => {{
+    if (url.endsWith('/consultation-split-intents')) {{
+      return {{ ok: true, json: async () => ({{
+        intent_id: 'intent-1',
+        analysis: {{ analysis_id: 'analysis-1', status: 'not_required' }},
+      }}) }};
+    }}
+    if (url.endsWith('/continue-as-one-note')) {{
+      return {{ ok: true, json: async () => ({{ document: {{ id: 'doc-1' }} }}) }};
+    }}
+    throw new Error(`unexpected request: ${{url}}`);
+  }},
+  onGeneratedDocument: async () => {{
+    // The application refreshes workspace/document state here. That refresh
+    // can arrive after the intent is marked consumed but before success is
+    // reported, which previously emitted a contradictory warning toast.
+    controller.applyWorkspaceState({{
+      capabilityEnabled: true,
+      transcriptId: 'tx-1',
+      analysis: {{ analysis_id: 'analysis-1', status: 'not_required' }},
+    }});
+  }},
+}};
+controller = createSplitGenerateController(controllerOptions);
+await controller.start();
+for (let turn = 0; turn < 8 && controller.getOperation(); turn += 1) await Promise.resolve();
+if (statuses.some((message) => message.includes('No note generated'))) {{
+  throw new Error('workspace refresh during a successful one-note continuation showed a failure warning');
+}}
+if (!statuses.at(-1)?.includes('Queued one note.')) throw new Error('successful one-note continuation did not settle with success');
 """
     )
     subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})

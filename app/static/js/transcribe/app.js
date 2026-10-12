@@ -11,7 +11,7 @@ import { csrfFetch } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
 import { createTemplateSuggestionController } from './templateSuggestions.js?v=20260830-template-suggestion-preference';
- import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261008-split-diagnostics';
+ import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261012-one-note-refresh';
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,

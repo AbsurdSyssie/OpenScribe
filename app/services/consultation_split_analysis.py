@@ -618,10 +618,15 @@ def prepare_split_analysis_request(
         working_note_text = None
     elif working_mode == "structured":
         # The mode is part of the prompt input so structured semantics cannot
-        # be mistaken for freeform prose.  This is canonical and bounded by
-        # _safe_source() in the existing prompt builder.
+        # be mistaken for freeform prose. Normalize again here because the
+        # encrypted source slot serializes JSON with sorted keys. That storage
+        # round trip must not change the immutable provider request used by
+        # the queue and pre-submit binding checks.
+        canonical_structured = normalize_structured_working_note(working_note_value)
+        if canonical_structured is None:
+            raise _prepared_input_error("Structured Working note value is invalid")
         working_note_text = json.dumps(
-            {"mode": working_mode, "value": working_note_value},
+            {"mode": working_mode, "value": canonical_structured},
             ensure_ascii=False,
             separators=(",", ":"),
         )

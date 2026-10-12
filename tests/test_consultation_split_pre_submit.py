@@ -4,6 +4,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
+from google.auth.credentials import AnonymousCredentials
 from sqlalchemy import select
 
 from app.errors import AppError
@@ -14,6 +15,8 @@ from app.models import (
     ConsultationSplitAnalysisStatus,
     ConsultationSplitExecution,
     ConsultationSplitExecutionStatus,
+    LlmAdapterKind,
+    LlmAuthMode,
     PostConsultationDictation,
     ProviderAttempt,
     ProviderUsageEvent,
@@ -30,7 +33,11 @@ from app.services.consultation_split_pre_submit import prepare_queued_split_anal
 from app.services.consultation_split_queue import queue_or_reuse_split_analysis
 from app.services.consultation_splits import read_split_execution_json
 from app.services.content_crypto import encrypt_json_for_owner, encrypt_text_for_owner
-from app.services.transcripts import create_manual_pii_entity, set_freeform_working_note_text
+from app.services.transcripts import (
+    create_manual_pii_entity,
+    set_freeform_working_note_text,
+    set_transcript_structured_context,
+)
 
 
 def _queued_work(
@@ -141,6 +148,87 @@ def test_pre_submit_success_returns_only_memory_values_and_keeps_final_locks_act
     assert opaque_secret not in execution.request_payload_encrypted
     assert opaque_secret not in execution.provider_snapshot_encrypted
     assert opaque_secret not in caplog.text
+    db_session.rollback()
+
+
+def test_pre_submit_rebuilds_gemini_request_after_structured_note_json_round_trip(
+    db_session,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_user_app_preference,
+    monkeypatch,
+):
+    """The encrypted source round trip must not alter a frozen Gemini request."""
+    owner = make_user(email=f"split-submit-gemini-{uuid4()}@example.com")
+    monkeypatch.setenv("CONSULTATION_SPLITTING_ENABLED", "true")
+    make_user_app_preference(
+        user=owner,
+        preferences_json={"split_consultations_into_separate_notes": True},
+    )
+    model = "publishers/google/models/gemini-2.5-flash"
+    config = make_llm_config(
+        team=owner.team,
+        actor=owner,
+        provider_preset="gemini_enterprise",
+        adapter_kind=LlmAdapterKind.gemini_enterprise,
+        base_url="https://europe-west2-aiplatform.googleapis.com",
+        model_name=model,
+        available_models_json=[model],
+    )
+    config.auth_mode = LlmAuthMode.google_service_account
+    config.provider_config_json = {
+        "project_id": "synthetic-project",
+        "location": "europe-west2",
+        "api_version": "v1",
+        "capacity_mode": "shared",
+    }
+    db_session.commit()
+    make_llm_selection(config=config, actor=owner, allowed_models_json=[model])
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=owner.team_id,
+        title="Synthetic structured consultation",
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        status=TranscriptStatus.ready,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    set_transcript_structured_context(
+        db_session,
+        transcript=transcript,
+        plaintext={
+            "profile": "emis",
+            # These values are synthetic. The source normalizer intentionally
+            # puts the resulting non-empty sections in EMIS, not alphabetic,
+            # order before encrypted JSON persistence.
+            "sections": {
+                "problem": ["Synthetic problem"],
+                "history": ["Synthetic history"],
+                "examination": ["Synthetic examination"],
+            },
+        },
+    )
+    transcript.working_note_mode = TranscriptWorkingNoteMode.structured
+    db_session.commit()
+    transcript_id = transcript.id
+    monkeypatch.setattr("app.services.consultation_split_queue.try_publish_task_dispatch_safely", lambda *_: None)
+    queued = queue_or_reuse_split_analysis(db_session, owner, transcript_id=transcript_id)
+    assert queued.execution is not None
+    execution_id = queued.execution.id
+    db_session.rollback()
+    monkeypatch.setattr(
+        "app.services.consultation_split_pre_submit.resolve_generation_credential",
+        lambda _config: AnonymousCredentials(),
+    )
+
+    result = prepare_queued_split_analysis_for_submission(db_session, execution_id=execution_id)
+
+    assert result.outcome == "prepared"
+    assert result.prepared is not None
+    assert result.prepared.provider_snapshot.adapter_kind == LlmAdapterKind.gemini_enterprise.value
     db_session.rollback()
 
 

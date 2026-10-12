@@ -1,5 +1,15 @@
 # Discovered issues
 
+## OPENSCRIBE-CONTAINER-UNHEALTHY — 2026-10-12
+
+- Discovery commit: `2d7bfcb`.
+- Location: deployed `openscribe-openscribe-1` container healthcheck.
+- Exact observation: `openscribe-openscribe-1` was `Up 2h (unhealthy)` while PostgreSQL, Redis, and Vault were healthy.
+- Observed problem: the deployed application container is reporting an unhealthy healthcheck state.
+- Likely impact: orchestration or operational monitoring may treat the application as unavailable even while supporting services remain healthy.
+- Not fixed during the consultation-split provider-binding repair because this is unrelated to the deterministic pre-submit request mismatch. No healthcheck logs, environment, or container state beyond the reported status were inspected.
+- Follow-up: inspect the healthcheck command, recent healthcheck output, and relevant safe operational logs; then reproduce and repair the specific healthcheck failure without exposing sensitive configuration or content.
+
 ## API-AUDIT-SHARED-INFRASTRUCTURE-LOCK — 2026-10-05
 
 - Discovery commit: unavailable (working tree investigation).

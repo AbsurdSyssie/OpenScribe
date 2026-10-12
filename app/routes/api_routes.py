@@ -2134,6 +2134,8 @@ def create_consultation_split_intent(
         transcript_id=transcript_id,
         client_idempotency_key=payload.client_idempotency_key,
         selected_template_id=payload.selected_template_id,
+        manual_review_requested=payload.manual_review_requested,
+        retry_failed_analysis=payload.retry_failed_analysis,
     )
     response = project_consultation_split_intent_start(db, context.user, result=result)
     return JSONResponse(

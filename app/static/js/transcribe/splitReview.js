@@ -9,6 +9,7 @@ const ACTIVE_STATUS = 'active';
 const TERMINAL_STATUSES = new Set(['confirmed', 'bypassed']);
 const EDITABLE_BATCH_STATUSES = new Set(['ready', 'completed_partial', 'failed']);
 const IN_FLIGHT_ANALYSIS_STATUSES = new Set(['queued', 'processing']);
+const IN_FLIGHT_BATCH_STATUSES = new Set(['generation_queued', 'generating', 'verifying']);
 const RESTORATION_BACKOFF_MS = Object.freeze([1500, 3000, 6000, 12000, 15000]);
 const NO_NOTE_ANALYSIS_STATUSES = new Set(['not_required', 'failed', 'stale', 'incomplete']);
 const SAFE_SPLIT_ERROR_CODES = new Set([
@@ -369,7 +370,7 @@ export function isConsultationSplitCreateEnabled({
 }
 
 // This is deliberately limited to the consultation marker. It cannot request
-// analysis or generation; Create remains the only operation that can do that.
+// work itself; Review problems and Create own their explicit request paths.
 export function createMultipleProblemsController({
   button = typeof document !== 'undefined' ? document.querySelector('[data-multiple-problems-toggle]') : null,
   fetcher = csrfFetch,
@@ -454,6 +455,7 @@ export function createMultipleProblemsController({
 export function createSplitGenerateController({
   fetcher = csrfFetch,
   getCapabilityEnabled = () => false,
+  getCapabilityAvailable = getCapabilityEnabled,
   getTranscriptId = () => null,
   getTemplateId = () => null,
   saveSources = async () => {},
@@ -739,8 +741,11 @@ export function createSplitGenerateController({
     transcriptId: requestedTranscriptId = getTranscriptId(),
     templateId: requestedTemplateId = getTemplateId(),
     onAccepted = null,
+    manualReviewRequested = false,
+    retryFailedAnalysis = false,
+    forceNewReview = false,
   } = {}) => {
-    if (!getCapabilityEnabled()) {
+    if (!(manualReviewRequested ? getCapabilityAvailable() : getCapabilityEnabled())) {
       setContinueAvailable(false);
       return false;
     }
@@ -761,11 +766,34 @@ export function createSplitGenerateController({
       operation = null;
       generation += 1;
     }
-    if (operation && !operation.retryable) return true;
-    const retry = operation
+    const requestedManualReview = Boolean(manualReviewRequested);
+    const requestedFailedAnalysisRetry = Boolean(retryFailedAnalysis);
+    const hasAmbiguousSubmission = operation
       && operation.retryable
+      && !operation.submissionAccepted
       && same(operation.transcriptId, transcriptId)
       && same(operation.templateId, templateId);
+    const reuseAmbiguousSubmission = hasAmbiguousSubmission
+      && operation.manualReviewRequested === requestedManualReview
+      && operation.retryFailedAnalysis === requestedFailedAnalysisRetry;
+    if (hasAmbiguousSubmission && !reuseAmbiguousSubmission) {
+      // The server may have accepted the previous request. It must be replayed
+      // with its original meaning before any different action can begin.
+      setBusy(false);
+      setOperationStatus('The previous request has not been confirmed. Retry the original action before starting a new review.', 'warning');
+      return false;
+    }
+    if (operation && !operation.retryable && !retryFailedAnalysis && !forceNewReview) return true;
+    if ((retryFailedAnalysis || forceNewReview) && !reuseAmbiguousSubmission) {
+      // Retrying a terminal analysis is an explicit fresh action. Reusing the
+      // old browser key would replay its terminal response rather than queue
+      // the server-authorized retry attempt.
+      operation = null;
+      generation += 1;
+    }
+    // A transport failure leaves the server outcome unknown. Keep the exact
+    // candidate for a same-source retry, including an explicit analysis retry.
+    const retry = reuseAmbiguousSubmission;
     const candidate = retry ? operation : {
       token: ++generation,
       transcriptId,
@@ -774,13 +802,15 @@ export function createSplitGenerateController({
       pending: true,
       retryable: false,
       requestStarted: false,
+      submissionAccepted: false,
       draftState: 'idle',
       analysisId: null,
       intentId: null,
       consumePending: false,
       consumed: false,
       continueEligible: false,
-      manualReviewRequested: false,
+      manualReviewRequested: Boolean(manualReviewRequested),
+      retryFailedAnalysis: Boolean(retryFailedAnalysis),
     };
     if (!candidate.key) throw new Error('Could not start note split.');
     operation = candidate;
@@ -800,7 +830,12 @@ export function createSplitGenerateController({
       candidate.requestStarted = true;
       const response = await fetcher(`/api/v1/transcripts/${candidate.transcriptId}/consultation-split-intents`, {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ client_idempotency_key: candidate.key, selected_template_id: candidate.templateId }),
+        body: JSON.stringify({
+          client_idempotency_key: candidate.key,
+          selected_template_id: candidate.templateId,
+          ...(candidate.manualReviewRequested ? { manual_review_requested: true } : {}),
+          ...(candidate.retryFailedAnalysis ? { retry_failed_analysis: true } : {}),
+        }),
       });
       if (!current(candidate)) return true;
       if (!same(getTranscriptId(), candidate.transcriptId)) {
@@ -825,9 +860,13 @@ export function createSplitGenerateController({
         abandonForTranscriptChange(candidate);
         return true;
       }
+      // A valid response establishes a server-known operation. A later
+      // terminal analysis retry needs a fresh key; only an ambiguous transport
+      // failure is safe to replay with this key.
+      candidate.submissionAccepted = true;
       candidate.analysisId = payload?.analysis?.analysis_id || null;
       candidate.intentId = payload?.intent_id || null;
-      candidate.manualReviewRequested = Boolean(payload?.manual_review_requested);
+      candidate.manualReviewRequested = Boolean(payload?.manual_review_requested ?? candidate.manualReviewRequested);
       candidate.pending = false;
       notifyAccepted(candidate, onAccepted);
       applyWorkspaceState({ capabilityEnabled: true, transcriptId: candidate.transcriptId, analysis: payload?.analysis || null });
@@ -1177,6 +1216,7 @@ export function createSplitReviewController({
   saveButton = modal?.querySelector('[data-split-review-save]'),
   createButton = modal?.querySelector('[data-split-review-create]'),
   addButton = modal?.querySelector('[data-split-review-add]'),
+  suggestButton = modal?.querySelector('[data-split-review-suggest]'),
   continueButton = modal?.querySelector('[data-split-review-continue]'),
   confirmButton = modal?.querySelector('[data-split-review-confirm]'),
   closeButtons = modal ? [...modal.querySelectorAll('[data-split-review-close]')] : [],
@@ -1186,6 +1226,7 @@ export function createSplitReviewController({
   showMessage = () => {},
   continueAsOneNote = async () => false,
   beginEdit = async () => false,
+  suggestProblems = async () => false,
   getConfirmIntentId = () => null,
   onSplitBatchStarted = () => {},
   confirmDiscard = () => (typeof window !== 'undefined' && typeof window.confirm === 'function'
@@ -1210,6 +1251,14 @@ export function createSplitReviewController({
   let editPreparation = null;
   let nextClientTopicKey = 0;
   let manualReviewRequested = false;
+  let capabilityAvailable = false;
+  let capabilityKnown = false;
+  let latestAnalysis = null;
+  let latestIntent = null;
+  let sourceReady = false;
+  let sourceReadinessMessage = '';
+  let suggesting = false;
+  let suggestGeneration = 0;
   const createNotesButton = createButton || confirmButton;
 
   const setOpenState = (isOpen) => {
@@ -1228,6 +1277,28 @@ export function createSplitReviewController({
     if (!status) return;
     status.textContent = message || '';
     status.dataset.statusKind = kind;
+  };
+
+  const analysisStatus = () => latestAnalysis?.status
+    || (latestIntent?.status === 'analysis_pending' ? 'queued' : '');
+  const needsFreshManualIntent = () => Boolean(localDraft && !getConfirmIntentId());
+  const batchGenerationActive = () => IN_FLIGHT_BATCH_STATUSES.has(latestBatch?.status);
+  const suggestionAction = () => {
+    if (analysisStatus() === 'failed') return { label: 'Retry analysis', retry: true };
+    if (analysisStatus() === 'stale' || localDraft?.status === 'stale') return { label: 'Update suggestions', retry: false };
+    if (needsFreshManualIntent()) return { label: 'Use these problems', retry: false };
+    if (localDraft?.status === 'confirmed') return { label: 'Suggest problems', retry: false };
+    return { label: 'Suggest problems', retry: false };
+  };
+  const suggestionUnavailableMessage = () => {
+    if (!transcriptId) return 'Open a consultation before reviewing problems.';
+    if (!sourceReady) return sourceReadinessMessage || 'Save consultation content before suggesting problems.';
+    if (IN_FLIGHT_ANALYSIS_STATUSES.has(analysisStatus()) || suggesting) return 'Preparing suggested problems. This may take a moment.';
+    if (analysisStatus() === 'failed') return splitDiagnosticMessage({
+      stage: 'analysis', errorCode: latestAnalysis?.error_code, operationId: latestAnalysis?.analysis_id, reusedAnalysis: true,
+    });
+    if (analysisStatus() === 'stale' || localDraft?.status === 'stale') return 'The consultation changed after these suggestions. Update suggestions to use the current consultation.';
+    return 'Reviewing problems does not generate notes. Suggest problems saves the current consultation and prepares an editable review.';
   };
 
   const updateControlState = () => {
@@ -1253,6 +1324,22 @@ export function createSplitReviewController({
     if (continueButton) {
       continueButton.hidden = !continueAvailable || shouldContinueAsOneNote;
       continueButton.disabled = !continueAvailable || shouldContinueAsOneNote || controlsDisabled;
+    }
+    if (suggestButton) {
+      const action = suggestionAction();
+      const analysisPending = IN_FLIGHT_ANALYSIS_STATUSES.has(analysisStatus());
+      const canSuggest = capabilityAvailable
+        && Boolean(transcriptId)
+        && !saving
+        && !continuing
+        && !confirming
+        && !batchGenerationActive()
+        && !analysisPending
+        && !suggesting
+        && (!localDraft || readOnly || needsFreshManualIntent());
+      suggestButton.hidden = !capabilityAvailable || (!readOnly && Boolean(localDraft) && !needsFreshManualIntent());
+      suggestButton.textContent = action.label;
+      suggestButton.disabled = !canSuggest || !sourceReady;
     }
     if (createNotesButton) {
       const confirmable = !readOnly && !dirty && confirmationValidation.valid && Boolean(getConfirmIntentId());
@@ -1307,10 +1394,12 @@ export function createSplitReviewController({
     topicList.replaceChildren();
     const readOnly = isReadOnly();
     const topics = localDraft?.topics || [];
-    if (localDraft?.status === 'stale') {
+    if (!localDraft) {
+      setStatus(suggestionUnavailableMessage(), IN_FLIGHT_ANALYSIS_STATUSES.has(analysisStatus()) || suggesting ? 'progress' : 'warning');
+    } else if (localDraft?.status === 'stale') {
       setStatus('This split is stale and read-only because the consultation changed.', 'warning');
     } else if (localDraft?.status === 'confirmed' && EDITABLE_BATCH_STATUSES.has(latestBatch?.status)) {
-      setStatus('Preparing an editable split review.', 'progress');
+      setStatus('This completed split is read-only. Select Suggest problems to prepare a new review.', 'warning');
     } else if (localDraft?.status === 'confirmed') {
       setStatus('This split is queued and locked until generation finishes.', 'warning');
     } else if (localDraft && (TERMINAL_STATUSES.has(localDraft.status) || localDraft.status === 'unavailable')) {
@@ -1322,13 +1411,17 @@ export function createSplitReviewController({
           : 'One problem was detected. Add another problem or continue as one note.',
         'one-note-guidance',
       );
+    } else if (needsFreshManualIntent() && !dirty) {
+      setStatus('These saved problems are read-only until you select Use these problems.', 'warning');
     } else if (!dirty) {
       setStatus('');
     }
     if (!topics.length) {
       const empty = document.createElement('p');
       empty.className = 'split-review-modal__empty';
-      empty.textContent = readOnly ? 'No reviewable note topics are available.' : 'No topics were proposed.';
+      empty.textContent = localDraft
+        ? (readOnly ? 'No reviewable note topics are available.' : 'No topics were proposed.')
+        : 'Suggestions appear here after you explicitly request them.';
       topicList.append(empty);
     }
     topics.forEach((topic) => {
@@ -1545,7 +1638,7 @@ export function createSplitReviewController({
   };
 
   const open = () => {
-    if (!localDraft) return false;
+    if (!transcriptId || (!capabilityAvailable && capabilityKnown)) return false;
     opener = document.activeElement;
     opened = true;
     setOpenState(true);
@@ -1557,13 +1650,36 @@ export function createSplitReviewController({
     return true;
   };
 
-  const applyWorkspaceState = ({ draft, availableTemplates = [], nextTranscriptId = null, batch, manualReview } = {}) => {
+  const applyWorkspaceState = ({
+    draft,
+    availableTemplates = [],
+    nextTranscriptId = undefined,
+    batch,
+    manualReview,
+    analysis,
+    intent,
+    nextCapabilityAvailable,
+    nextSourceReady,
+    nextSourceReadinessMessage,
+  } = {}) => {
     const incoming = normalizeSplitDraft(draft);
-    const nextTranscriptIdValue = nextTranscriptId || null;
+    const nextTranscriptIdValue = nextTranscriptId === undefined ? transcriptId : (nextTranscriptId || null);
     const sameDraft = Boolean(incoming && remoteDraft && incoming.draft_id === remoteDraft.draft_id);
     const sameTranscript = transcriptId === nextTranscriptIdValue;
     templates = Array.isArray(availableTemplates) ? availableTemplates : [];
     transcriptId = nextTranscriptIdValue;
+    if (typeof nextCapabilityAvailable === 'boolean') {
+      capabilityAvailable = nextCapabilityAvailable;
+      capabilityKnown = true;
+    }
+    if (analysis !== undefined) latestAnalysis = analysis || null;
+    if (intent !== undefined) latestIntent = intent || null;
+    if (typeof nextSourceReady === 'boolean') sourceReady = nextSourceReady;
+    if (typeof nextSourceReadinessMessage === 'string') sourceReadinessMessage = nextSourceReadinessMessage;
+    if (!sameTranscript) {
+      suggesting = false;
+      suggestGeneration += 1;
+    }
     if (typeof manualReview === 'boolean') {
       manualReviewRequested = manualReview;
     } else if (!sameDraft || !sameTranscript) {
@@ -1591,16 +1707,60 @@ export function createSplitReviewController({
       localDraft = localDraft ? { ...localDraft, status: 'unavailable' } : null;
       if (opened) render();
     }
-    const reviewAvailable = Boolean(
-      incoming
-      && (incoming.status === ACTIVE_STATUS
-        || (incoming.status === 'confirmed' && EDITABLE_BATCH_STATUSES.has(latestBatch?.status))),
-    );
-    if (trigger) trigger.hidden = !reviewAvailable;
-    if (!incoming && opened) close({ force: true });
-    if (!incoming) setOpenState(false);
+    const reviewAvailable = Boolean(transcriptId && (capabilityAvailable || (!capabilityKnown && incoming)));
+    if (trigger) {
+      trigger.hidden = !reviewAvailable;
+      trigger.disabled = !reviewAvailable;
+    }
+    if (!sameTranscript && opened) close({ force: true });
     updateControlState();
     return incoming;
+  };
+
+  const requestSuggestions = async () => {
+    if (
+      suggesting
+      || saving
+      || continuing
+      || confirming
+      || !capabilityAvailable
+      || !transcriptId
+      || !sourceReady
+      || batchGenerationActive()
+      || IN_FLIGHT_ANALYSIS_STATUSES.has(analysisStatus())
+      || (!isReadOnly() && Boolean(localDraft) && !needsFreshManualIntent())
+    ) return false;
+    if (!isReadOnly() && dirty) {
+      if (!confirmDiscard()) return false;
+      dirty = false;
+      localDraft = remoteDraft ? normalizeSplitDraft(remoteDraft) : null;
+      if (opened) render();
+    }
+    const action = suggestionAction();
+    const targetTranscriptId = transcriptId;
+    const generation = ++suggestGeneration;
+    suggesting = true;
+    if (opened) render();
+    try {
+      const started = await suggestProblems({
+        transcriptId: targetTranscriptId,
+        retryFailedAnalysis: action.retry,
+        forceNewReview: true,
+      });
+      if (generation !== suggestGeneration || transcriptId !== targetTranscriptId) return false;
+      if (!started) setStatus('Could not start suggested-problem review. Please try again.', 'error');
+      return Boolean(started);
+    } catch (_) {
+      if (generation === suggestGeneration && transcriptId === targetTranscriptId) {
+        setStatus('Could not start suggested-problem review. Please try again.', 'error');
+      }
+      return false;
+    } finally {
+      if (generation === suggestGeneration && transcriptId === targetTranscriptId) {
+        suggesting = false;
+        if (opened) render(); else updateControlState();
+      }
+    }
   };
 
   const save = async () => {
@@ -1803,28 +1963,7 @@ export function createSplitReviewController({
     }
   };
 
-  trigger?.addEventListener('click', async () => {
-    if (remoteDraft?.status === 'confirmed' && EDITABLE_BATCH_STATUSES.has(latestBatch?.status)) {
-      const key = `${remoteDraft.draft_id || ''}:${latestBatch?.batch_id || ''}:${latestBatch?.status || ''}`;
-      if (editPreparationKey === key || editPreparation) return;
-      editPreparationKey = key;
-      editPreparation = Promise.resolve(beginEdit({
-        transcriptId,
-        batchId: latestBatch?.batch_id || null,
-      })).then((started) => {
-        if (!started) setStatus('Could not prepare an editable split review.', 'error');
-        return Boolean(started);
-      }).catch(() => {
-        setStatus('Could not prepare an editable split review.', 'error');
-        return false;
-      }).finally(() => {
-        editPreparation = null;
-        updateControlState();
-      });
-      return;
-    }
-    open();
-  });
+  trigger?.addEventListener('click', () => { open(); });
   closeButtons.forEach((button) => button.addEventListener('click', () => close()));
   modal?.addEventListener('click', (event) => {
     if (event.target instanceof Element && event.target.hasAttribute('data-split-review-close')) close();
@@ -1883,6 +2022,7 @@ export function createSplitReviewController({
   topicList?.addEventListener('input', editTopic);
   topicList?.addEventListener('change', editTopic);
   addButton?.addEventListener('click', () => { addProblem(); });
+  suggestButton?.addEventListener('click', () => { void requestSuggestions(); });
   saveButton?.addEventListener('click', () => { void saveOrContinueOneNote(); });
   continueButton?.addEventListener('click', () => { void consumeOneNote(); });
   createNotesButton?.addEventListener('click', () => { void confirm(); });
@@ -1908,10 +2048,24 @@ export function createSplitReviewController({
 
   return {
     applyWorkspaceState,
+    updateSuggestionReadiness: ({
+      nextCapabilityAvailable,
+      nextSourceReady,
+      nextSourceReadinessMessage,
+    } = {}) => {
+      if (typeof nextCapabilityAvailable === 'boolean') {
+        capabilityAvailable = nextCapabilityAvailable;
+        capabilityKnown = true;
+      }
+      if (typeof nextSourceReady === 'boolean') sourceReady = nextSourceReady;
+      if (typeof nextSourceReadinessMessage === 'string') sourceReadinessMessage = nextSourceReadinessMessage;
+      if (opened) render(); else updateControlState();
+    },
     close,
     open,
     render,
     addProblem,
+    requestSuggestions,
     save,
     continueAsOneNote: consumeOneNote,
     confirm,

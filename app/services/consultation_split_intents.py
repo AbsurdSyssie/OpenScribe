@@ -35,6 +35,7 @@ from app.models import (
     TeamRole,
     TemplateMode,
     TranscriptWorkingNoteMode,
+    TranscriptStatus,
     TemplateScope,
     User,
     utcnow,
@@ -53,7 +54,7 @@ from app.services.consultation_split_sources import (
 )
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.consultation_splits import require_split_owner_transcript
-from app.services.transcripts import transcript_is_expired
+from app.services.transcripts import _has_pending_ingestion_jobs, _resolved_transcript_status, transcript_is_expired
 from app.services.content_crypto import decrypt_json_for_owner, encrypt_json_for_owner
 from app.services.consultation_split_gates import consultation_splitting_available, transcript_split_enabled
 from app.services.task_outbox import add_pending_task_dispatch, try_publish_task_dispatch_safely
@@ -105,6 +106,18 @@ class ContinueConsultationSplitIntentAsOneNoteResult:
 
 def _disabled() -> AppError:
     return AppError(403, "consultation_split_disabled", "Consultation splitting is not enabled")
+
+
+def _require_source_ready_for_analysis(db: Session, *, transcript) -> None:
+    status = _resolved_transcript_status(db, transcript=transcript)
+    if transcript.status is TranscriptStatus.recording or status is TranscriptStatus.recording:
+        raise AppError(409, "transcript_still_recording", "Stop recording before suggesting problems")
+    if (
+        transcript.status is TranscriptStatus.transcribing
+        or status is TranscriptStatus.transcribing
+        or _has_pending_ingestion_jobs(db, transcript_id=transcript.id)
+    ):
+        raise AppError(409, "transcript_not_ready", "Wait for transcription before suggesting problems")
 
 
 def _require_normal_owner(actor: User) -> None:
@@ -531,6 +544,8 @@ def create_or_replay_consultation_split_intent(
     transcript_id: UUID,
     client_idempotency_key: UUID,
     selected_template_id: UUID,
+    manual_review_requested: bool = False,
+    retry_failed_analysis: bool = False,
 ) -> CreateOrReplayConsultationSplitIntentResult:
     """Atomically bind one durable Generate intent to canonical analysis work.
 
@@ -552,6 +567,9 @@ def create_or_replay_consultation_split_intent(
         db.commit()
         return replay
 
+    if retry_failed_analysis and not manual_review_requested:
+        raise AppError(422, "validation_error", "Retry analysis requires explicit problem review")
+
     # Do not reach a transcript root or prepare redaction/provider work when
     # the rollout is unavailable to this actor.
     if not consultation_splitting_available(actor):
@@ -561,9 +579,10 @@ def create_or_replay_consultation_split_intent(
     )
     if initial_scope is None:
         raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
-    if not transcript_split_enabled(db, actor, initial_scope.transcript):
+    if not (manual_review_requested or retry_failed_analysis or transcript_split_enabled(db, actor, initial_scope.transcript)):
         db.rollback()
         raise _disabled()
+    _require_source_ready_for_analysis(db, transcript=initial_scope.transcript)
 
     try:
         # Fail inexpensive invalid template selections before source work, then
@@ -580,7 +599,7 @@ def create_or_replay_consultation_split_intent(
         if scope is None or scope.transcript.id != prepared.source_state.transcript_id:
             raise AppError(500, "consultation_split_scope_invalid", "Consultation split content is unavailable")
         transcript = scope.transcript
-        manual_review_requested = bool(transcript.multiple_problems)
+        manual_review_requested = bool(manual_review_requested or retry_failed_analysis or transcript.multiple_problems)
 
         # Preparation can release the source locks while required redaction
         # runs.  It reacquires the owner/root lock before returning, so repeat
@@ -588,15 +607,18 @@ def create_or_replay_consultation_split_intent(
         # committed during preparation must not be followed by a new intent,
         # reservation, or dispatch.  Existing-key replays returned above stay
         # stable by design.
-        if not transcript_split_enabled(db, actor, transcript):
+        if not (manual_review_requested or transcript_split_enabled(db, actor, transcript)):
             db.rollback()
             raise _disabled()
+        _require_source_ready_for_analysis(db, transcript=transcript)
 
         # Avoid creating a durable Generate request for passive/damaged cache
         # rows.  The full core repeats this check later to close the race with
         # another request that commits while this one snapshots its template.
         cached = find_cached_prepared_consultation_split_analysis(db, actor, prepared=prepared)
-        if cached is not None:
+        if retry_failed_analysis and cached is None:
+            raise AppError(409, "consultation_split_source_stale", "Consultation sources changed before retry")
+        if cached is not None and not (retry_failed_analysis and cached.status is ConsultationSplitAnalysisStatus.failed):
             cached_result = _reuse_result(db, actor=actor, analysis=cached)
             if cached_result.outcome in {"incomplete", "stale_conflict"}:
                 db.commit()
@@ -658,7 +680,9 @@ def create_or_replay_consultation_split_intent(
             return replay
         assert intent is not None
 
-        decision = _queue_or_reuse_prepared_split_analysis(db, actor, prepared=prepared)
+        decision = _queue_or_reuse_prepared_split_analysis(
+            db, actor, prepared=prepared, retry_failed_analysis=retry_failed_analysis
+        )
         queue_result = decision.result
         if queue_result.analysis is None or queue_result.outcome in {"incomplete", "stale_conflict"}:
             # The intent insert and any new nested queue work share this outer

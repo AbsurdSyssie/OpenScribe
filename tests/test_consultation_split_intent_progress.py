@@ -51,7 +51,7 @@ from app.services.transcripts import delete_transcripts, set_freeform_working_no
 from tests.test_consultation_split_intents import _enabled_source
 
 
-def _accepted_intent(db, owner, transcript, template, monkeypatch):
+def _accepted_intent(db, owner, transcript, template, monkeypatch, *, manual_review_requested=False):
     monkeypatch.setenv("CONSULTATION_SPLITTING_ENABLED", "true")
     # Dispatch is asserted as persisted state; these tests never execute a worker.
     monkeypatch.setattr(
@@ -64,6 +64,7 @@ def _accepted_intent(db, owner, transcript, template, monkeypatch):
         transcript_id=transcript.id,
         client_idempotency_key=uuid4(),
         selected_template_id=template.id,
+        manual_review_requested=manual_review_requested,
     )
     assert result.intent is not None and result.analysis is not None
     return result.intent, result.analysis
@@ -230,15 +231,16 @@ def test_not_required_progress_consumes_one_saved_intent_once_even_on_duplicate_
 
 
 @pytest.mark.parametrize(
-    ("analysis_status", "multiple_problems", "topics"),
+    ("analysis_status", "multiple_problems", "explicit_manual", "topics"),
     [
-        (ConsultationSplitAnalysisStatus.ready, False, "ready"),
-        (ConsultationSplitAnalysisStatus.not_required, True, "manual"),
+        (ConsultationSplitAnalysisStatus.ready, False, False, "ready"),
+        (ConsultationSplitAnalysisStatus.not_required, True, False, "manual"),
+        (ConsultationSplitAnalysisStatus.not_required, False, True, "manual"),
     ],
 )
 def test_review_progress_restores_one_exact_bound_draft_without_generating_documents(
     db_session, make_user, make_template, make_llm_config, make_llm_selection,
-    make_user_app_preference, monkeypatch, analysis_status, multiple_problems, topics,
+    make_user_app_preference, monkeypatch, analysis_status, multiple_problems, explicit_manual, topics,
 ):
     owner = make_user(email=f"intent-progress-review-{uuid4()}@example.com")
     transcript, _ = _enabled_source(
@@ -248,8 +250,11 @@ def test_review_progress_restores_one_exact_bound_draft_without_generating_docum
         transcript.multiple_problems = True
         db_session.commit()
     template = make_template(owner=owner, actor=owner)
-    intent, analysis = _accepted_intent(db_session, owner, transcript, template, monkeypatch)
-    assert intent.manual_review_requested is multiple_problems
+    intent, analysis = _accepted_intent(
+        db_session, owner, transcript, template, monkeypatch,
+        manual_review_requested=explicit_manual,
+    )
+    assert intent.manual_review_requested is (multiple_problems or explicit_manual)
     proposal_topics = _two_topics(template.id) if topics == "ready" else []
     _finish_analysis(db_session, owner, analysis, status=analysis_status, topics=proposal_topics)
 

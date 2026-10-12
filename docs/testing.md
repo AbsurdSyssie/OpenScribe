@@ -145,7 +145,9 @@ pytest -q tests/test_consultation_split_intent_progress.py
 `tests/test_consultation_split_browser.py` uses the same disposable local
 Uvicorn and Chromium setup. It drives the rendered **Create**, review, save,
 confirm, generation, partial **Keep available notes**, and transcript-switch
-paths. The harness uses synthetic transcript text and a fake provider response
+paths. It also checks passive **Review problems** opening and explicit
+**Suggest problems** with automatic splitting off, including single-problem
+review without document generation. The harness uses synthetic transcript text and a fake provider response
 derived from the confirmed template mode and section keys; it does not use a
 live provider or log note content.
 

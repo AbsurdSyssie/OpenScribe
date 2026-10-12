@@ -12,9 +12,11 @@ from app.errors import AppError
 from app.models import (
     ClinicalEntity,
     ClinicalEntityRun,
+    AttemptStatus,
     ConsultationSplitAnalysis,
     ConsultationSplitAnalysisStatus,
     ConsultationSplitExecution,
+    ConsultationSplitExecutionStatus,
     ConsultationSplitIntent,
     ConsultationSplitIntentStatus,
     GeneratedDocument,
@@ -28,6 +30,9 @@ from app.models import (
     TemplateMode,
     Transcript,
     TranscriptIngestionMode,
+    TranscriptIngestionJob,
+    TranscriptIngestionJobKind,
+    TranscriptIngestionJobStatus,
     TranscriptStatus,
     TranscriptWorkingNoteMode,
     User,
@@ -38,10 +43,14 @@ from app.services.consultation_split_intents import (
     continue_consultation_split_intent_as_one_note,
     create_or_replay_consultation_split_intent,
 )
+from app.services.consultation_split_intent_progress import progress_consultation_split_intent
+from app.services.consultation_split_runtime import process_consultation_split_analysis_execution
 from app.services import consultation_split_intents as intent_service
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.consultation_split_sources import prepare_source_bound_consultation_split_analysis
 from app.services.consultation_splits import create_split_analysis
+from app.services.consultation_splits import read_split_execution_json
+from app.services.quotas import cancel_provider_attempt
 from app.services.content_crypto import decrypt_json_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
 from app.schemas.preferences import UserAppPreferencesUpsert
 from app.schemas.templates import GeneratedDocumentSectionUpdate, GeneratedDocumentUpdateRequest
@@ -941,6 +950,211 @@ def test_intent_creates_one_atomic_analysis_execution_outbox_and_encrypted_snaps
     assert dispatch is not None and progress_dispatch is not None
     assert progress_dispatch.dispatch_kind is TaskDispatchKind.consultation_split_intent
     assert published == [dispatch.task_id, progress_dispatch.task_id]
+
+
+def test_manual_retry_uses_frozen_analysis_and_terminalizes_old_pending_create(
+    db_session, make_user, make_template, make_llm_config, make_llm_selection, make_user_app_preference, monkeypatch,
+):
+    owner = make_user(email=f"intent-retry-{uuid4()}@example.com")
+    transcript, _config = _enabled_source(
+        db_session, owner, make_llm_config, make_llm_selection, make_user_app_preference, monkeypatch
+    )
+    template = make_template(owner=owner, actor=owner)
+    first = create_or_replay_consultation_split_intent(
+        db_session, owner, transcript_id=transcript.id,
+        client_idempotency_key=uuid4(), selected_template_id=template.id,
+    )
+    assert first.intent is not None and first.execution is not None and first.analysis is not None
+    old_execution_id = first.execution.id
+    first.execution.status = ConsultationSplitExecutionStatus.failed
+    first.execution.error_code = "consultation_split_provider_failed"
+    first.execution.completed_at = utcnow()
+    first.analysis.status = ConsultationSplitAnalysisStatus.failed
+    first.analysis.error_code = "consultation_split_provider_failed"
+    first.analysis.completed_at = first.execution.completed_at
+    attempt = db_session.scalar(select(ProviderAttempt).where(
+        ProviderAttempt.consultation_split_execution_id == first.execution.id
+    ))
+    assert attempt is not None
+    cancel_provider_attempt(db_session, attempt_id=attempt.id)
+    db_session.commit()
+    set_user_app_preferences(
+        db_session, owner,
+        UserAppPreferencesUpsert(split_consultations_into_separate_notes=False),
+    )
+    monkeypatch.setattr(
+        "app.services.consultation_split_queue.resolve_user_llm",
+        lambda *_args, **_kwargs: pytest.fail("retry selected a new provider"),
+    )
+
+    from app.services import consultation_split_queue as queue_service
+    original_queue = queue_service.queue_split_execution
+    monkeypatch.setattr(queue_service, "queue_split_execution", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("retry queue failed")))
+    with pytest.raises(RuntimeError, match="retry queue failed"):
+        create_or_replay_consultation_split_intent(
+            db_session, owner, transcript_id=transcript.id,
+            client_idempotency_key=uuid4(), selected_template_id=template.id,
+            manual_review_requested=True, retry_failed_analysis=True,
+        )
+    db_session.rollback()
+    assert db_session.get(ConsultationSplitAnalysis, first.analysis.id).status is ConsultationSplitAnalysisStatus.failed
+    assert len(db_session.scalars(select(ConsultationSplitExecution).where(
+        ConsultationSplitExecution.analysis_id == first.analysis.id
+    )).all()) == 1
+    assert len(db_session.scalars(select(ConsultationSplitIntent).where(
+        ConsultationSplitIntent.analysis_id == first.analysis.id
+    )).all()) == 1
+    monkeypatch.setattr(queue_service, "queue_split_execution", original_queue)
+
+    key = uuid4()
+    retry = create_or_replay_consultation_split_intent(
+        db_session, owner, transcript_id=transcript.id,
+        client_idempotency_key=key, selected_template_id=template.id,
+        manual_review_requested=True, retry_failed_analysis=True,
+    )
+    assert retry.intent is not None and retry.analysis is not None and retry.execution is not None
+    assert retry.analysis.id == first.analysis.id
+    assert retry.intent.manual_review_requested is True
+    assert retry.execution.attempt_no == 2
+    assert retry.execution.llm_config_id == first.execution.llm_config_id
+    assert retry.execution.provider_model == first.execution.provider_model
+    assert retry.analysis.status is ConsultationSplitAnalysisStatus.queued
+    assert db_session.get(ConsultationSplitIntent, first.intent.id).status is ConsultationSplitIntentStatus.failed
+    assert read_split_execution_json(
+        db_session, owner, execution=retry.execution, field="provider_snapshot_encrypted"
+    ) == read_split_execution_json(
+        db_session, owner, execution=first.execution, field="provider_snapshot_encrypted"
+    )
+    assert len(db_session.scalars(select(ProviderAttempt).where(
+        ProviderAttempt.consultation_split_execution_id.in_([old_execution_id, retry.execution.id])
+    )).all()) == 2
+    assert db_session.scalar(select(ProviderAttempt).where(
+        ProviderAttempt.consultation_split_execution_id == retry.execution.id
+    )).status is AttemptStatus.reserved
+    assert len(db_session.scalars(select(TaskDispatchOutbox).where(
+        TaskDispatchOutbox.source_id == retry.execution.id
+    )).all()) == 1
+    replay = create_or_replay_consultation_split_intent(
+        db_session, owner, transcript_id=transcript.id,
+        client_idempotency_key=key, selected_template_id=template.id,
+    )
+    assert replay.intent is not None and replay.intent.id == retry.intent.id
+    assert replay.created_new_analysis_work is False
+    assert len(db_session.scalars(select(ConsultationSplitExecution).where(
+        ConsultationSplitExecution.analysis_id == retry.analysis.id
+    )).all()) == 2
+    db_session.rollback()
+    assert process_consultation_split_analysis_execution(db_session, execution_id=old_execution_id).outcome == "failed"
+    assert db_session.get(ConsultationSplitAnalysis, retry.analysis.id).status is ConsultationSplitAnalysisStatus.queued
+    db_session.rollback()
+    assert progress_consultation_split_intent(db_session, intent_id=first.intent.id).outcome == "terminal"
+    assert db_session.scalars(select(GeneratedDocument).where(
+        GeneratedDocument.transcript_id == transcript.id
+    )).all() == []
+
+
+def test_manual_suggestion_accepts_unmarked_owner_with_automatic_preference_off(
+    db_session, make_user, make_template, make_llm_config, make_llm_selection, make_user_app_preference,
+    monkeypatch,
+):
+    owner = make_user(email=f"intent-manual-{uuid4()}@example.com")
+    transcript, _config = _enabled_source(
+        db_session, owner, make_llm_config, make_llm_selection, make_user_app_preference, monkeypatch
+    )
+    template = make_template(owner=owner, actor=owner)
+    set_user_app_preferences(
+        db_session, owner,
+        UserAppPreferencesUpsert(split_consultations_into_separate_notes=False),
+    )
+    assert transcript.multiple_problems is False
+    result = create_or_replay_consultation_split_intent(
+        db_session, owner, transcript_id=transcript.id,
+        client_idempotency_key=uuid4(), selected_template_id=template.id,
+        manual_review_requested=True,
+    )
+    assert result.intent is not None and result.intent.manual_review_requested is True
+    assert result.analysis_outcome == "queued"
+    assert transcript.multiple_problems is False
+
+
+@pytest.mark.parametrize("status", [
+    TranscriptStatus.recording,
+    TranscriptStatus.transcribing,
+    TranscriptStatus.failed,
+])
+def test_manual_suggestion_waits_for_audio_source_readiness(
+    db_session, make_user, make_template, make_llm_config, make_llm_selection, make_user_app_preference,
+    monkeypatch, status,
+):
+    owner = make_user(email=f"intent-readiness-{uuid4()}@example.com")
+    transcript, _config = _enabled_source(
+        db_session, owner, make_llm_config, make_llm_selection, make_user_app_preference, monkeypatch
+    )
+    template = make_template(owner=owner, actor=owner)
+    transcript.status = status
+    if status in {TranscriptStatus.transcribing, TranscriptStatus.failed}:
+        db_session.add(TranscriptIngestionJob(
+            transcript_id=transcript.id,
+            owner_user_id=owner.id,
+            team_id=owner.team_id,
+            job_kind=TranscriptIngestionJobKind.audio_file,
+            source_filename="synthetic-audio.wav",
+            status=TranscriptIngestionJobStatus.queued,
+        ))
+    db_session.commit()
+    with pytest.raises(AppError) as raised:
+        create_or_replay_consultation_split_intent(
+            db_session, owner, transcript_id=transcript.id,
+            client_idempotency_key=uuid4(), selected_template_id=template.id,
+            manual_review_requested=True,
+        )
+    assert raised.value.code in {"transcript_still_recording", "transcript_not_ready"}
+    db_session.rollback()
+    assert db_session.scalars(select(ConsultationSplitIntent).where(
+        ConsultationSplitIntent.transcript_id == transcript.id
+    )).all() == []
+
+
+def test_retry_flag_does_not_create_new_analysis_when_sources_change(
+    db_session, make_user, make_template, make_llm_config, make_llm_selection, make_user_app_preference,
+    monkeypatch,
+):
+    owner = make_user(email=f"intent-retry-stale-{uuid4()}@example.com")
+    transcript, _config = _enabled_source(
+        db_session, owner, make_llm_config, make_llm_selection, make_user_app_preference, monkeypatch
+    )
+    template = make_template(owner=owner, actor=owner)
+    first = create_or_replay_consultation_split_intent(
+        db_session, owner, transcript_id=transcript.id,
+        client_idempotency_key=uuid4(), selected_template_id=template.id,
+    )
+    assert first.analysis is not None and first.execution is not None
+    first.analysis.status = ConsultationSplitAnalysisStatus.failed
+    first.analysis.error_code = "consultation_split_provider_failed"
+    first.execution.status = ConsultationSplitExecutionStatus.failed
+    first.execution.error_code = "consultation_split_provider_failed"
+    attempt = db_session.scalar(select(ProviderAttempt).where(
+        ProviderAttempt.consultation_split_execution_id == first.execution.id
+    ))
+    assert attempt is not None
+    cancel_provider_attempt(db_session, attempt_id=attempt.id)
+    db_session.commit()
+    set_freeform_working_note_text(db_session, transcript=transcript, plaintext="A changed synthetic source")
+    db_session.commit()
+    with pytest.raises(AppError) as raised:
+        create_or_replay_consultation_split_intent(
+            db_session, owner, transcript_id=transcript.id,
+            client_idempotency_key=uuid4(), selected_template_id=template.id,
+            manual_review_requested=True, retry_failed_analysis=True,
+        )
+    assert raised.value.code == "consultation_split_source_stale"
+    db_session.rollback()
+    assert len(db_session.scalars(select(ConsultationSplitAnalysis).where(
+        ConsultationSplitAnalysis.transcript_id == transcript.id
+    )).all()) == 1
+    assert len(db_session.scalars(select(ConsultationSplitExecution).where(
+        ConsultationSplitExecution.analysis_id == first.analysis.id
+    )).all()) == 1
 
 
 @pytest.mark.parametrize("status", [

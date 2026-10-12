@@ -495,12 +495,17 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
     AuditCase("POST", "/api/v1/transcribe/stt-health/recheck", AccessTier.full),
     AuditCase("GET", "/api/v1/transcribe/workspace/stream", AccessTier.full),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-analysis", AccessTier.full),
-    # Create commits analysis and intent-progress dispatches atomically under the same owner gate.
+    # Create and explicit manual suggestion/retry use the same full-session owner gate.
     AuditCase(
         "POST",
         f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-intents",
         AccessTier.full,
-        json_body=_json(client_idempotency_key=PLACEHOLDER_UUID, selected_template_id=PLACEHOLDER_UUID_2),
+        json_body=_json(
+            client_idempotency_key=PLACEHOLDER_UUID,
+            selected_template_id=PLACEHOLDER_UUID_2,
+            manual_review_requested=True,
+            retry_failed_analysis=True,
+        ),
     ),
     AuditCase(
         "POST",

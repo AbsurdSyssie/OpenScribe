@@ -23,10 +23,10 @@ def test_split_review_workspace_accessibility_hooks_and_cachebusters():
     assert 'data-split-review-problem-count' in workspace
     assert 'data-split-review-add' in workspace
     assert 'data-split-review-create' in workspace
-    assert 'splitReview.js?v=20261012-one-note-refresh' in app_js
+    assert 'splitReview.js?v=20261012-review-problems' in app_js
     assert 'splitReviewController?.applyWorkspaceState' in app_js
-    assert 'app.js?v=20261012-one-note-refresh' in shell
-    assert 'transcribe.css?v=20261005-multiple-problems' in head
+    assert 'app.js?v=20261012-review-problems' in shell
+    assert 'transcribe.css?v=20261012-review-problems-layout' in head
     assert 'data-split-continue-one-note hidden' in workspace
     assert 'data-split-review-confirm' not in workspace
     assert 'data-split-review-continue' in workspace
@@ -573,6 +573,202 @@ if (!statuses.at(-1)?.includes('Queued one note.')) throw new Error('successful 
     subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
 
 
+def test_suggested_problem_requests_are_manual_and_never_auto_continue_one_note(tmp_path):
+    runner = tmp_path / "split-suggested-problems-runner.mjs"
+    module_uri = (ROOT / "app/static/js/transcribe/splitReview.js").as_uri()
+    runner.write_text(
+        f"""
+const {{ createSplitGenerateController }} = await import('{module_uri}');
+const requestBodies = [];
+let continueCalls = 0;
+const controller = createSplitGenerateController({{
+  getCapabilityEnabled: () => false,
+  getCapabilityAvailable: () => true,
+  getTranscriptId: () => 'tx-1',
+  getTemplateId: () => 'template-1',
+  createKey: () => `00000000-0000-0000-0000-${{String(requestBodies.length + 1).padStart(12, '0')}}`,
+  saveSources: async () => {{}},
+  fetcher: async (url, options = {{}}) => {{
+    if (url.endsWith('/consultation-split-intents')) {{
+      requestBodies.push(JSON.parse(options.body));
+      return {{ ok: true, json: async () => ({{
+        intent_id: `intent-${{requestBodies.length}}`,
+        manual_review_requested: true,
+        analysis: {{ analysis_id: `analysis-${{requestBodies.length}}`, status: 'not_required' }},
+      }}) }};
+    }}
+    if (url.endsWith('/consultation-split-draft')) {{
+      return {{ ok: true, json: async () => ({{ draft_id: 'draft-1', analysis_id: 'analysis-1', status: 'active', topics: [] }}) }};
+    }}
+    if (url.includes('/continue-as-one-note')) {{ continueCalls += 1; throw new Error('manual review auto-continued one note'); }}
+    throw new Error(`unexpected request: ${{url}}`);
+  }},
+  refreshWorkspace: async () => ({{ consultation_split_draft: {{ draft_id: 'draft-1', analysis_id: 'analysis-1', status: 'active', topics: [] }} }}),
+}});
+await controller.start({{ manualReviewRequested: true }});
+for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+if (requestBodies.length !== 1 || requestBodies[0].manual_review_requested !== true || 'retry_failed_analysis' in requestBodies[0]) {{
+  throw new Error('Suggest problems did not send its strict manual-review request');
+}}
+if (continueCalls !== 0) throw new Error('single-problem suggestion automatically generated a note');
+await controller.start({{ manualReviewRequested: true, retryFailedAnalysis: true }});
+if (requestBodies.length !== 2 || requestBodies[1].manual_review_requested !== true || requestBodies[1].retry_failed_analysis !== true) {{
+  throw new Error('Retry analysis did not send one fresh strict retry request');
+}}
+"""
+    )
+    subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
+
+
+def test_ambiguous_suggest_and_retry_analysis_transport_failures_reuse_their_keys(tmp_path):
+    runner = tmp_path / "split-suggestion-transport-retry-runner.mjs"
+    module_uri = (ROOT / "app/static/js/transcribe/splitReview.js").as_uri()
+    runner.write_text(
+        f"""
+const {{ createSplitGenerateController }} = await import('{module_uri}');
+for (const retryFailedAnalysis of [false, true]) {{
+  const bodies = [];
+  let calls = 0;
+  let keyNumber = 0;
+  const controller = createSplitGenerateController({{
+    getCapabilityEnabled: () => false,
+    getCapabilityAvailable: () => true,
+    getTranscriptId: () => 'tx-1',
+    getTemplateId: () => 'template-1',
+    createKey: () => `00000000-0000-0000-0000-${{String(++keyNumber).padStart(12, '0')}}`,
+    saveSources: async () => {{}},
+    fetcher: async (_url, options) => {{
+      bodies.push(JSON.parse(options.body));
+      calls += 1;
+      if (calls === 1) throw new Error('ambiguous transport failure');
+      return {{ ok: true, json: async () => ({{
+        intent_id: 'intent-1', manual_review_requested: true,
+        analysis: {{ analysis_id: 'analysis-1', status: 'queued' }},
+      }}) }};
+    }},
+    refreshWorkspace: async () => null,
+  }});
+  await controller.start({{ manualReviewRequested: true, retryFailedAnalysis, forceNewReview: true }});
+  await controller.start({{ manualReviewRequested: true, retryFailedAnalysis, forceNewReview: true }});
+  if (bodies.length !== 2 || bodies[0].client_idempotency_key !== bodies[1].client_idempotency_key) {{
+    throw new Error('ambiguous manual request retried with a different idempotency key');
+  }}
+  if (keyNumber !== 1) throw new Error('ambiguous manual retry created a fresh candidate');
+  if (bodies.some((body) => body.manual_review_requested !== true || Boolean(body.retry_failed_analysis) !== retryFailedAnalysis)) {{
+    throw new Error('manual retry did not preserve its strict request flags');
+  }}
+}}
+"""
+    )
+    subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
+
+
+def test_ambiguous_ordinary_create_cannot_be_retargeted_as_manual_review(tmp_path):
+    runner = tmp_path / "split-ambiguous-semantics-runner.mjs"
+    module_uri = (ROOT / "app/static/js/transcribe/splitReview.js").as_uri()
+    runner.write_text(
+        f"""
+const {{ createSplitGenerateController }} = await import('{module_uri}');
+const bodies = []; let keyNumber = 0; const statuses = [];
+const controller = createSplitGenerateController({{
+  getCapabilityEnabled: () => true, getCapabilityAvailable: () => true,
+  getTranscriptId: () => 'tx-1', getTemplateId: () => 'template-1',
+  createKey: () => `00000000-0000-0000-0000-${{String(++keyNumber).padStart(12, '0')}}`,
+  saveSources: async () => {{}}, setStatus: (message) => statuses.push(message),
+  fetcher: async (_url, options) => {{ bodies.push(JSON.parse(options.body)); throw new Error('ambiguous transport failure'); }},
+}});
+await controller.start();
+if (bodies.length !== 1 || bodies[0].manual_review_requested || keyNumber !== 1) throw new Error('ordinary Create setup did not issue one ordinary request');
+if (await controller.start({{ manualReviewRequested: true, forceNewReview: true }})) throw new Error('ambiguous ordinary Create was retargeted as a manual request');
+if (bodies.length !== 1 || keyNumber !== 1 || !statuses.at(-1).includes('Retry the original action')) {{
+  throw new Error('manual action dispatched while an ordinary request was unknown');
+}}
+await controller.start();
+if (bodies.length !== 2 || bodies[1].client_idempotency_key !== bodies[0].client_idempotency_key || bodies[1].manual_review_requested) {{
+  throw new Error('same-semantic ordinary retry did not preserve its original request');
+}}
+"""
+    )
+    subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
+
+
+def test_review_problems_modal_opens_without_writes_and_only_suggests_on_explicit_action(tmp_path):
+    runner = tmp_path / "review-problems-modal-entry-runner.mjs"
+    module_uri = (ROOT / "app/static/js/transcribe/splitReview.js").as_uri()
+    runner.write_text(
+        f"""
+class FakeElement {{
+  constructor() {{ this.hidden = false; this.disabled = false; this.textContent = ''; this.dataset = {{}}; this.attrs = new Map(); this.listeners = new Map(); }}
+  setAttribute(name, value) {{ this.attrs.set(name, String(value)); }}
+  getAttribute(name) {{ return this.attrs.get(name) || null; }}
+  addEventListener(type, callback) {{ this.listeners.set(type, callback); }}
+  click() {{ this.listeners.get('click')?.({{ target: this, preventDefault() {{}} }}); }}
+  querySelectorAll() {{ return []; }}
+  replaceChildren() {{}}
+  append() {{}}
+  closest() {{ return null; }}
+  focus() {{}}
+}}
+globalThis.document = {{ activeElement: null, body: {{ classList: {{ add() {{}}, remove() {{}} }} }}, createElement: () => new FakeElement(), querySelector: () => null }};
+globalThis.window = {{ requestAnimationFrame: (callback) => callback(), confirm: () => true }};
+const {{ createSplitReviewController }} = await import('{module_uri}');
+const trigger = new FakeElement(); const modal = new FakeElement(); const topicList = new FakeElement(); const status = new FakeElement(); const suggest = new FakeElement();
+modal.querySelector = () => null;
+let writes = 0; let suggestions = [];
+const controller = createSplitReviewController({{
+  trigger, modal, topicList, status, suggestButton: suggest,
+  getTranscriptId: () => 'tx-1',
+  fetcher: async () => {{ writes += 1; throw new Error('opening performed a write'); }},
+  suggestProblems: async (options) => {{ suggestions.push(options); return true; }},
+}});
+controller.applyWorkspaceState({{
+  nextTranscriptId: 'tx-1', nextCapabilityAvailable: true, nextSourceReady: true,
+  analysis: null, intent: null,
+}});
+trigger.click();
+if (modal.hidden || writes !== 0 || !status.textContent.includes('does not generate notes')) {{
+  throw new Error('opening Review problems did not remain an explanatory read-only action');
+}}
+suggest.click(); await Promise.resolve();
+if (writes !== 0 || suggestions.length !== 1 || suggestions[0].retryFailedAnalysis || !suggestions[0].forceNewReview) {{
+  throw new Error('Suggest problems was not the sole explicit work-start action');
+}}
+controller.applyWorkspaceState({{
+  nextTranscriptId: 'tx-1', nextCapabilityAvailable: true, nextSourceReady: true,
+  analysis: {{ analysis_id: 'analysis-1', status: 'failed' }},
+}});
+suggest.click(); await Promise.resolve();
+if (suggestions.length !== 2 || suggestions[1].retryFailedAnalysis !== true || !suggestions[1].forceNewReview) {{
+  throw new Error('Retry analysis did not carry its explicit retry flag');
+}}
+controller.applyWorkspaceState({{
+  nextTranscriptId: 'tx-1', nextCapabilityAvailable: true, nextSourceReady: true,
+  analysis: {{ analysis_id: 'analysis-2', status: 'ready' }},
+  draft: {{ draft_id: 'draft-2', analysis_id: 'analysis-2', status: 'active', topics: [] }},
+}});
+suggest.click(); await Promise.resolve();
+if (suggestions.length !== 3 || suggestions[2].retryFailedAnalysis || !suggestions[2].forceNewReview) {{
+  throw new Error('a passive saved draft without a current intent could not explicitly prepare a new review');
+}}
+controller.applyWorkspaceState({{
+  nextTranscriptId: 'tx-1', nextCapabilityAvailable: true, nextSourceReady: true,
+  batch: {{ status: 'generation_queued' }},
+  draft: {{ draft_id: 'draft-3', analysis_id: 'analysis-2', status: 'confirmed', topics: [] }},
+}});
+suggest.click(); await Promise.resolve();
+if (suggestions.length !== 3 || !suggest.disabled) {{
+  throw new Error('an active split batch allowed a competing suggested-problem request');
+}}
+controller.applyWorkspaceState({{
+  nextTranscriptId: 'tx-2', nextCapabilityAvailable: true, nextSourceReady: true,
+  analysis: {{ analysis_id: 'analysis-old', status: 'failed' }},
+}});
+if (!modal.hidden) throw new Error('consultation switch left the old review modal open');
+"""
+    )
+    subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})
+
+
 def test_confirmed_split_operation_is_retired_so_regenerate_starts_a_new_intent(tmp_path):
     runner = tmp_path / "split-repeat-regeneration-runner.mjs"
     module_uri = (ROOT / "app/static/js/transcribe/splitReview.js").as_uri()
@@ -623,6 +819,8 @@ def test_terminal_confirmed_split_starts_editable_review_only_after_explicit_act
     runner.write_text(
         f"""
 const {{ createSplitReviewController }} = await import('{module_uri}');
+globalThis.document = {{ activeElement: null, body: {{ classList: {{ add() {{}}, remove() {{}} }} }}, querySelector: () => null }};
+globalThis.window = {{ requestAnimationFrame: (callback) => callback(), confirm: () => true }};
 let editCalls = 0;
 let triggerHandler = null;
 let controller;
@@ -633,6 +831,7 @@ controller = createSplitReviewController({{
     addEventListener: (_, handler) => {{ triggerHandler = handler; }},
     setAttribute: () => {{}},
   }},
+  modal: {{ hidden: true, querySelector: () => null, querySelectorAll: () => [], setAttribute: () => {{}}, addEventListener: () => {{}} }},
   getTranscriptId: () => 'tx-1',
   beginEdit: async () => {{
     editCalls += 1;
@@ -656,9 +855,9 @@ controller.applyWorkspaceState({{
 }});
 await Promise.resolve(); await Promise.resolve();
 if (editCalls !== 0 || controller.getDraft().status !== 'confirmed') throw new Error('terminal state started review without an explicit action');
-await triggerHandler();
+triggerHandler();
 await Promise.resolve(); await Promise.resolve();
-if (editCalls !== 1 || controller.getDraft().status !== 'active') throw new Error('explicit review action did not become editable');
+if (editCalls !== 0 || controller.getDraft().status !== 'confirmed') throw new Error('opening a confirmed review started a hidden edit intent');
 """
     )
     subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})

@@ -24,7 +24,10 @@ from app.models import (
     ConsultationSplitExecution,
     ConsultationSplitExecutionKind,
     ConsultationSplitExecutionStatus,
+    ConsultationSplitIntent,
+    ConsultationSplitIntentStatus,
     AttemptStatus,
+    ProviderAttempt,
     User,
     utcnow,
 )
@@ -37,10 +40,13 @@ from app.services.consultation_split_sources import (
 from app.services.consultation_splits import (
     create_split_analysis,
     queue_split_execution,
+    read_split_analysis_json,
+    read_split_execution_json,
     _validate_split_execution_for_reuse,
 )
 from app.services.llm import resolve_user_llm
 from app.services.llm_adapters.runtime import build_provider_snapshot
+from app.services.llm_adapters.types import LlmProviderSnapshot
 from app.services.preferences import consultation_splitting_enabled
 from app.services.task_outbox import try_publish_task_dispatch_safely
 
@@ -121,15 +127,24 @@ def _existing_execution_is_complete_work(
     analysis: ConsultationSplitAnalysis,
     executions: list[ConsultationSplitExecution],
 ) -> ConsultationSplitExecution | None:
-    """Return a queue-safe initial execution, never repairing passive rows.
+    """Return the queue-safe latest execution, never repairing passive rows.
 
     Passive incomplete rows are deliberately fail-closed.  Attaching work to
     one could pair a reservation with unknown historical encrypted metadata.
     A later explicit repair/migration can make that decision with evidence.
     """
-    if len(executions) != 1:
+    if not executions:
         return None
-    execution = executions[0]
+    execution = executions[-1]
+    if any(
+        earlier.status not in {
+            ConsultationSplitExecutionStatus.completed,
+            ConsultationSplitExecutionStatus.failed,
+            ConsultationSplitExecutionStatus.cancelled,
+        }
+        for earlier in executions[:-1]
+    ):
+        return None
     if analysis.status is ConsultationSplitAnalysisStatus.queued:
         expected_execution_status = ConsultationSplitExecutionStatus.queued
         expected_attempt_status = AttemptStatus.reserved
@@ -146,6 +161,92 @@ def _existing_execution_is_complete_work(
     ):
         return None
     return execution
+
+
+def _retry_failed_prepared_split_analysis(
+    db: Session,
+    actor: User,
+    *,
+    analysis: ConsultationSplitAnalysis,
+) -> _PreparedSplitAnalysisQueueDecision:
+    """Queue a clinician-requested next attempt using the exact frozen input."""
+    locked_analysis, executions = _locked_analysis_executions(db, analysis_id=analysis.id)
+    if locked_analysis is None or locked_analysis.status is not ConsultationSplitAnalysisStatus.failed:
+        return _PreparedSplitAnalysisQueueDecision(_reuse_result(db, actor=actor, analysis=analysis))
+    if not executions or any(
+        execution.status not in {
+            ConsultationSplitExecutionStatus.completed,
+            ConsultationSplitExecutionStatus.failed,
+            ConsultationSplitExecutionStatus.cancelled,
+        }
+        for execution in executions
+    ):
+        return _PreparedSplitAnalysisQueueDecision(QueueOrReuseSplitAnalysisResult("incomplete", analysis=locked_analysis))
+    for prior in executions:
+        attempt = db.scalar(select(ProviderAttempt).where(
+            ProviderAttempt.consultation_split_execution_id == prior.id,
+        ).with_for_update())
+        if attempt is None or attempt.status not in {AttemptStatus.cancelled, AttemptStatus.settled}:
+            return _PreparedSplitAnalysisQueueDecision(QueueOrReuseSplitAnalysisResult("incomplete", analysis=locked_analysis))
+    latest = executions[-1]
+    if latest.status is ConsultationSplitExecutionStatus.completed or latest.llm_config_id is None:
+        return _PreparedSplitAnalysisQueueDecision(QueueOrReuseSplitAnalysisResult("incomplete", analysis=locked_analysis))
+    source = read_split_analysis_json(db, actor, analysis=locked_analysis, field="source_snapshot_encrypted")
+    candidates = read_split_analysis_json(db, actor, analysis=locked_analysis, field="candidate_template_snapshot_encrypted")
+    provider = read_split_analysis_json(db, actor, analysis=locked_analysis, field="provider_snapshot_encrypted")
+    if not isinstance(source, dict) or not isinstance(candidates, dict) or not isinstance(provider, dict):
+        return _PreparedSplitAnalysisQueueDecision(QueueOrReuseSplitAnalysisResult("incomplete", analysis=locked_analysis))
+    try:
+        frozen_provider = LlmProviderSnapshot(**provider)
+        frozen_config_id = UUID(frozen_provider.llm_config_id)
+        request = prepare_split_analysis_request(
+            owner_user_id=actor.id,
+            provider_snapshot=frozen_provider,
+            source_snapshot=source,
+            candidate_template_snapshot=candidates,
+        )
+        latest_provider = read_split_execution_json(
+            db, actor, execution=latest, field="provider_snapshot_encrypted"
+        )
+    except (AppError, TypeError, ValueError):
+        return _PreparedSplitAnalysisQueueDecision(QueueOrReuseSplitAnalysisResult("incomplete", analysis=locked_analysis))
+    if (
+        latest.llm_config_id != frozen_config_id
+        or latest.provider_adapter != frozen_provider.adapter_kind
+        or latest.provider_base_url != frozen_provider.base_url
+        or latest.provider_model != frozen_provider.model
+        or latest_provider != provider
+    ):
+        return _PreparedSplitAnalysisQueueDecision(QueueOrReuseSplitAnalysisResult("incomplete", analysis=locked_analysis))
+    execution, _attempt, dispatch = queue_split_execution(
+        db,
+        actor,
+        kind=ConsultationSplitExecutionKind.analysis,
+        reserved_units=request.reservation_units,
+        reservation_valid_until=utcnow() + timedelta(seconds=SPLIT_ANALYSIS_RESERVATION_SECONDS),
+        analysis=locked_analysis,
+        llm_config_id=latest.llm_config_id,
+        provider_snapshot=provider,
+        request_payload=request.request_body,
+        expected_model=frozen_provider.model,
+    )
+    # A prior Create intent may still be waiting for its progress task. It
+    # belongs to the failed attempt and must never consume this new result.
+    prior_intents = db.scalars(select(ConsultationSplitIntent).where(
+        ConsultationSplitIntent.analysis_id == locked_analysis.id,
+        ConsultationSplitIntent.status == ConsultationSplitIntentStatus.analysis_pending,
+    ).order_by(ConsultationSplitIntent.id).with_for_update()).all()
+    for prior_intent in prior_intents:
+        prior_intent.status = ConsultationSplitIntentStatus.failed
+        prior_intent.error_code = "consultation_split_analysis_unavailable"
+        prior_intent.completed_at = utcnow()
+    locked_analysis.status = ConsultationSplitAnalysisStatus.queued
+    locked_analysis.error_code = None
+    locked_analysis.completed_at = None
+    return _PreparedSplitAnalysisQueueDecision(
+        QueueOrReuseSplitAnalysisResult("queued", analysis=locked_analysis, execution=execution, created_new_work=True),
+        dispatch_task_id=dispatch.task_id,
+    )
 
 
 def _reuse_result(
@@ -207,6 +308,7 @@ def _queue_or_reuse_prepared_split_analysis(
     actor: User,
     *,
     prepared: PreparedConsultationSplitAnalysis,
+    retry_failed_analysis: bool = False,
 ) -> _PreparedSplitAnalysisQueueDecision:
     """Return an uncommitted cache/queue decision for a prepared source.
 
@@ -218,6 +320,8 @@ def _queue_or_reuse_prepared_split_analysis(
     """
     cached = find_cached_prepared_consultation_split_analysis(db, actor, prepared=prepared)
     if cached is not None:
+        if retry_failed_analysis and cached.status is ConsultationSplitAnalysisStatus.failed:
+            return _retry_failed_prepared_split_analysis(db, actor, analysis=cached)
         return _PreparedSplitAnalysisQueueDecision(_reuse_result(db, actor=actor, analysis=cached))
 
     _selection, config, resolved_model, _preference = resolve_user_llm(db, actor)

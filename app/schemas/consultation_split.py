@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from .templates import GeneratedDocumentDetail
 
@@ -53,6 +53,8 @@ class ConsultationSplitIntentStartRequest(BaseModel):
 
     client_idempotency_key: UUID
     selected_template_id: UUID
+    manual_review_requested: StrictBool = False
+    retry_failed_analysis: StrictBool = False
 
 
 class ConsultationSplitIntentStartResponse(BaseModel):

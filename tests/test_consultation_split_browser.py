@@ -363,6 +363,90 @@ def test_browser_split_happy_path_creates_bundled_drafts_and_ignores_a_switched_
         context.close()
 
 
+def test_browser_review_problems_is_passive_until_explicit_manual_suggestion(
+    split_browser,
+    db_session,
+    make_team,
+    make_user,
+    make_llm_config,
+    make_llm_selection,
+    make_template,
+    monkeypatch,
+):
+    """A preference-off owner can inspect, then explicitly request one-problem review."""
+    monkeypatch.setenv("CONSULTATION_SPLITTING_ENABLED", "true")
+    context, sessions = split_browser
+    team = make_team(name="Synthetic review-problems browser clinic")
+    owner = make_user(
+        email="review-problems-browser@example.com",
+        password="password-1",
+        team=team,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+    config = make_llm_config(team=team, actor=owner, available_models_json=["gpt-4o-mini"])
+    make_llm_selection(config=config, actor=owner, allowed_models_json=["gpt-4o-mini"])
+    template = make_template(owner=owner, actor=owner, name="Synthetic review-problems template")
+    db_session.add(UserAppPreference(user_id=owner.id, preferences_json={}))
+    db_session.commit()
+    transcript_id = _create_consultation(db_session, owner, title="Review problems consultation")
+    _install_local_adapters(
+        monkeypatch,
+        analysis_response=json.dumps({"topics": [{
+            "title": "Synthetic single problem",
+            "is_primary": True,
+            "disposition": "separate_note",
+            "template_id": str(template.id),
+        }]}),
+        generation_response=lambda: json.dumps({"title": "Unexpected", "content": "Unexpected"}),
+    )
+    page = context.new_page()
+    try:
+        _login(page, owner.email)
+        page.goto(f"/transcribe?transcript_id={transcript_id}")
+        review = page.get_by_role("button", name="Review problems", exact=True)
+        review.wait_for(state="visible", timeout=6_000)
+        with sessions() as db:
+            assert db.scalar(select(func.count()).select_from(ConsultationSplitIntent).where(ConsultationSplitIntent.transcript_id == transcript_id)) == 0
+            assert db.scalar(select(func.count()).select_from(ConsultationSplitAnalysis).where(ConsultationSplitAnalysis.transcript_id == transcript_id)) == 0
+            assert db.scalar(select(func.count()).select_from(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript_id)) == 0
+
+        review.click()
+        page.locator("[data-split-review-modal]").wait_for(state="visible")
+        assert page.get_by_role("button", name="Suggest problems", exact=True).is_enabled()
+        with sessions() as db:
+            assert db.scalar(select(func.count()).select_from(ConsultationSplitIntent).where(ConsultationSplitIntent.transcript_id == transcript_id)) == 0
+            assert db.scalar(select(func.count()).select_from(ConsultationSplitAnalysis).where(ConsultationSplitAnalysis.transcript_id == transcript_id)) == 0
+            assert db.scalar(select(func.count()).select_from(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript_id)) == 0
+
+        with page.expect_response(lambda response: "/consultation-split-intents" in response.url) as response_info:
+            page.get_by_role("button", name="Suggest problems", exact=True).click()
+        assert response_info.value.status in {200, 202}
+        payload = response_info.value.request.post_data_json
+        assert payload["manual_review_requested"] is True
+        assert "retry_failed_analysis" not in payload
+        analysis_id = _execution_id(sessions, transcript_id, "analysis")
+        assert _run_analysis(sessions, analysis_id).outcome == "not_required"
+        with sessions() as db:
+            intent_id = db.scalar(
+                select(ConsultationSplitIntent.id)
+                .where(ConsultationSplitIntent.transcript_id == transcript_id)
+                .order_by(ConsultationSplitIntent.created_at.desc())
+            )
+        assert _progress_intent(sessions, intent_id).outcome == "review_ready"
+        page.reload()
+        page.get_by_role("button", name="Review problems", exact=True).click()
+        page.locator("[data-split-review-modal]").wait_for(state="visible")
+        add_problem = page.get_by_role("button", name="Add problem", exact=True)
+        add_problem.wait_for(state="visible", timeout=6_000)
+        assert add_problem.is_enabled()
+        with sessions() as db:
+            assert db.scalar(select(func.count()).select_from(GeneratedDocument).where(GeneratedDocument.transcript_id == transcript_id)) == 0
+    finally:
+        page.close()
+        context.close()
+
+
 @pytest.mark.parametrize("split_enabled", [False, True], ids=["ordinary", "split-single-issue"])
 def test_browser_create_waits_for_durable_acceptance_before_history_switch(
     split_browser,
@@ -517,7 +601,9 @@ def test_browser_ready_split_completed_while_switched_restores_passive_confirmab
         assert page.locator("[data-split-review-modal]").is_hidden()
         trigger.click()
         page.locator("[data-split-review-modal]").wait_for(state="visible")
-        assert page.locator("[data-split-review-create]").is_enabled()
+        create_notes = page.locator("[data-split-review-create]")
+        create_notes.wait_for(state="visible", timeout=6_000)
+        assert create_notes.is_enabled()
     finally:
         page.close()
         context.close()

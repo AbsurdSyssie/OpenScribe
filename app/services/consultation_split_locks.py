@@ -153,6 +153,12 @@ def lock_analysis_execution_work(
     analysis = db.scalar(select(ConsultationSplitAnalysis).where(
         ConsultationSplitAnalysis.id == execution.analysis_id,
     ).with_for_update())
+    latest_execution_id = db.scalar(select(ConsultationSplitExecution.id).where(
+        ConsultationSplitExecution.analysis_id == execution.analysis_id,
+        ConsultationSplitExecution.kind == ConsultationSplitExecutionKind.analysis,
+    ).order_by(
+        ConsultationSplitExecution.attempt_no.desc(), ConsultationSplitExecution.id.desc()
+    ).limit(1))
     attempt = db.scalar(select(ProviderAttempt).where(
         ProviderAttempt.consultation_split_execution_id == execution.id,
     ).with_for_update())
@@ -162,6 +168,7 @@ def lock_analysis_execution_work(
     ).with_for_update())
     if (
         analysis is None
+        or latest_execution_id != execution.id
         or attempt is None
         or dispatch is None
         or (requirements.analysis_status is not None and analysis.status is not requirements.analysis_status)

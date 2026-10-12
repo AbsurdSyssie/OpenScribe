@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import ConsultationSplitAnalysis, ConsultationSplitBatch, ConsultationSplitIntent, ConsultationSplitIntentStatus, Transcript, User
@@ -51,7 +51,16 @@ def analysis_split_enabled(db: Session, actor: User, *, analysis_id) -> bool:
             ConsultationSplitIntent.analysis_id == analysis_id,
             ConsultationSplitIntent.owner_user_id == actor.id,
             ConsultationSplitIntent.team_id == actor.team_id,
-            ConsultationSplitIntent.status.in_([ConsultationSplitIntentStatus.analysis_pending, ConsultationSplitIntentStatus.confirmed]),
+            or_(
+                ConsultationSplitIntent.status.in_([
+                    ConsultationSplitIntentStatus.analysis_pending,
+                    ConsultationSplitIntentStatus.confirmed,
+                ]),
+                and_(
+                    ConsultationSplitIntent.status == ConsultationSplitIntentStatus.failed,
+                    ConsultationSplitIntent.manual_review_requested.is_(True),
+                ),
+            ),
             ConsultationSplitAnalysis.owner_user_id == actor.id,
             ConsultationSplitAnalysis.team_id == actor.team_id,
             ConsultationSplitAnalysis.transcript_id == ConsultationSplitIntent.transcript_id,

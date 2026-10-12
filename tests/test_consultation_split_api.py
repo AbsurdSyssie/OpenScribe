@@ -2034,6 +2034,16 @@ def test_intent_start_route_creates_and_replays_only_one_durable_chain(
     )
     assert malformed_known_key.status_code == 422
     assert extra_known_key.status_code == 422
+    assert client.post(
+        f"/api/v1/transcripts/{transcript.id}/consultation-split-intents",
+        json={"client_idempotency_key": str(key), "selected_template_id": str(first_template.id),
+              "manual_review_requested": "true"},
+    ).status_code == 422
+    assert client.post(
+        f"/api/v1/transcripts/{transcript.id}/consultation-split-intents",
+        json={"client_idempotency_key": str(key), "selected_template_id": str(first_template.id),
+              "retry_failed_analysis": 1},
+    ).status_code == 422
     assert db_session.query(ConsultationSplitIntent).count() == 1
     assert db_session.query(ConsultationSplitAnalysis).count() == 1
     assert db_session.query(ConsultationSplitExecution).count() == 1
@@ -2234,6 +2244,8 @@ def test_intent_start_route_enforces_strict_body_and_auth_csrf_scope_and_new_key
     assert client.post("/api/v1/auth/login", json={"email": owner.email, "password": "password-1"}).status_code == 200
     malformed = client.post(path, json={**body, "unexpected": "rejected"})
     assert malformed.status_code == 422
+    retry_without_review = client.post(path, json={**body, "retry_failed_analysis": True})
+    assert retry_without_review.status_code == 422
     assert db_session.query(ConsultationSplitIntent).count() == 0
     disabled = client.post(path, json=body)
     assert disabled.status_code == 403

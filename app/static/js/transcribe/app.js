@@ -11,7 +11,7 @@ import { csrfFetch } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
 import { createTemplateSuggestionController } from './templateSuggestions.js?v=20260830-template-suggestion-preference';
- import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261012-one-note-refresh';
+ import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261012-review-problems';
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,
@@ -353,6 +353,34 @@ let statusDetailsHideTimer = null;
         capabilityAvailable: consultationSplittingAvailable,
         multipleProblemsMarked: multipleProblemsController?.isMarked?.(),
       });
+      const splitSuggestionReadiness = () => {
+        if (!transcriptId) return { ready: false, message: 'Open a consultation before reviewing problems.' };
+        if (isConsultationCaptureActive() || currentTranscriptStatus === 'recording') {
+          return { ready: false, message: 'Stop the consultation recording before suggesting problems.' };
+        }
+        if (dictationRecordingState === 'recording' || dictationRecordingState === 'paused' || dictationUiBusy) {
+          return { ready: false, message: 'Finish post-consultation dictation before suggesting problems.' };
+        }
+        if (['queued', 'processing'].includes(latestIngestionJobStatus || '')
+          || ['queued', 'transcribing', 'processing', 'uploading'].includes(currentTranscriptStatus || '')) {
+          return { ready: false, message: 'Wait for transcription to finish before suggesting problems.' };
+        }
+        if (!hasLlmSelection || !hasSelectableOptions(generateOutputTemplateSelect) || !generateOutputTemplateSelect?.value) {
+          return { ready: false, message: 'Choose an available template before suggesting problems.' };
+        }
+        if (!(readActiveDraftText().trim() || workingNoteHasContent() || hasDictationContent())) {
+          return { ready: false, message: 'Add transcript text, a Working note, or dictation before suggesting problems.' };
+        }
+        return { ready: true, message: '' };
+      };
+      const syncSplitSuggestionReadiness = () => {
+        const readiness = splitSuggestionReadiness();
+        splitReviewController?.updateSuggestionReadiness?.({
+          nextCapabilityAvailable: consultationSplittingAvailable,
+          nextSourceReady: readiness.ready,
+          nextSourceReadinessMessage: readiness.message,
+        });
+      };
       const splitBatchInFlightStatuses = new Set(['generation_queued', 'generating', 'verifying']);
       const splitBatchTerminalStatuses = new Set(['ready', 'partially_ready', 'completed_partial', 'failed']);
       const protectedInitialDisabled = new Map(localBusyProtected.map((button) => [button, button.disabled]));
@@ -2663,6 +2691,7 @@ let statusDetailsHideTimer = null;
         if (generateFollowupTrigger) {
           generateFollowupTrigger.disabled = !canGenerateFollowup;
         }
+        syncSplitSuggestionReadiness();
       };
 
       const isTranscriptWaitingForText = () => ['queued', 'processing'].includes(latestIngestionJobStatus || '')
@@ -4194,13 +4223,19 @@ let statusDetailsHideTimer = null;
           // A restored draft is passive. The current browser operation may
           // re-enable this only after it proves its intent and review state.
           setContinueOneNoteAvailable(false);
+          const suggestionReadiness = splitSuggestionReadiness();
           splitReviewController?.applyWorkspaceState({
           draft: workspace.consultation_split_draft || null,
           availableTemplates: workspace.available_templates || [],
           batch: workspace.consultation_split_batch || null,
-           manualReview: Boolean(latestSplitIntent?.manual_review_requested),
-           nextTranscriptId: transcriptId,
-         });
+          manualReview: Boolean(latestSplitIntent?.manual_review_requested),
+          analysis: latestSplitAnalysis,
+          intent: latestSplitIntent,
+          nextCapabilityAvailable: consultationSplittingAvailable,
+          nextSourceReady: suggestionReadiness.ready,
+          nextSourceReadinessMessage: suggestionReadiness.message,
+          nextTranscriptId: transcriptId,
+        });
           splitGenerateController?.applyWorkspaceState({
            capabilityEnabled: consultationSplittingEnabled,
            capabilityAvailable: consultationSplittingAvailable,
@@ -4345,14 +4380,20 @@ let statusDetailsHideTimer = null;
            transcriptId,
            intentId: getConfirmSplitIntentId(),
          }) || false,
-          beginEdit: async () => {
-            const editTranscriptId = transcriptId;
+          suggestProblems: async ({ transcriptId: suggestedTranscriptId, retryFailedAnalysis = false, forceNewReview = false } = {}) => {
+            const editTranscriptId = suggestedTranscriptId || transcriptId;
             const templateId = generateOutputTemplateSelect?.value || '';
             if (!editTranscriptId || !templateId) {
-              showFlash('Choose a template before starting a new split review.', 'warning');
+              showFlash('Choose an available template before suggesting problems.', 'warning');
               return false;
             }
-            return splitGenerateController?.start?.({ transcriptId: editTranscriptId, templateId }) || false;
+            return splitGenerateController?.start?.({
+              transcriptId: editTranscriptId,
+              templateId,
+              manualReviewRequested: true,
+              retryFailedAnalysis: Boolean(retryFailedAnalysis),
+              forceNewReview: Boolean(forceNewReview),
+            }) || false;
           },
           getConfirmIntentId: () => getConfirmSplitIntentId(),
           onSplitBatchStarted: ({ draft, batchId, phase, pendingBatchId = false } = {}) => {
@@ -4361,6 +4402,7 @@ let statusDetailsHideTimer = null;
        });
        splitGenerateController = createSplitGenerateController({
          getCapabilityEnabled: () => splitCreateEnabled(),
+         getCapabilityAvailable: () => consultationSplittingAvailable,
          getTranscriptId: () => transcriptId,
          getTemplateId: () => generateOutputTemplateSelect?.value || '',
          saveSources: async ({ transcriptId: sourceTranscriptId } = {}) => {
@@ -4393,6 +4435,13 @@ let statusDetailsHideTimer = null;
             if (generatedTranscriptId === transcriptId) scheduleWorkspaceRefreshBurst();
           },
         });
+       const initialSuggestionReadiness = splitSuggestionReadiness();
+       splitReviewController.applyWorkspaceState({
+         nextTranscriptId: transcriptId,
+         nextCapabilityAvailable: consultationSplittingAvailable,
+         nextSourceReady: initialSuggestionReadiness.ready,
+         nextSourceReadinessMessage: initialSuggestionReadiness.message,
+       });
        splitPartialActionsController = createSplitPartialActionsController({
          getTranscriptId: () => transcriptId,
          refreshWorkspace: (nextTranscriptId, options) => fetchWorkspace(nextTranscriptId, options),

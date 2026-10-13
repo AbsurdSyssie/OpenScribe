@@ -222,5 +222,9 @@ class ConsultationSplitBatchDetail(BaseModel):
     # This is metadata only.  It lets the workspace select a useful note after
     # a completed partial decision without exposing any topic or provider data.
     preferred_document_id: UUID | None = None
+    # A ready outcome whose materialized child is absent is the durable signal
+    # that the owner independently deleted that note. Topic UUIDs let the
+    # browser omit only those slots without exposing titles or output.
+    deleted_topic_uuids: list[UUID] = Field(default_factory=list, max_length=6)
     verification_status: Literal["pending", "verifying", "verified", "unchecked"] = "pending"
     verification_correction_count: int | None = Field(default=None, ge=0)

@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import subprocess
+import textwrap
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +26,7 @@ def test_split_review_workspace_accessibility_hooks_and_cachebusters():
     assert 'data-split-review-create' in workspace
     assert 'splitReview.js?v=20261012-one-note-refresh' in app_js
     assert 'splitReviewController?.applyWorkspaceState' in app_js
-    assert 'app.js?v=20261012-one-note-refresh' in shell
+    assert 'app.js?v=20261013-deleted-split-slots' in shell
     assert 'transcribe.css?v=20261005-multiple-problems' in head
     assert 'data-split-continue-one-note hidden' in workspace
     assert 'data-split-review-confirm' not in workspace
@@ -38,6 +39,78 @@ def test_split_review_workspace_accessibility_hooks_and_cachebusters():
     assert 'data-split-retry-missing hidden' in workspace
     assert 'data-split-keep-available hidden' in workspace
     assert 'id="split-partial-status"' in workspace
+
+
+def test_split_placeholder_reconciliation_omits_only_deleted_materialized_topics(tmp_path):
+    source = (ROOT / "app/static/js/transcribe/app.js").read_text()
+    build_start = source.index("      const buildSplitDisplayDocuments")
+    start_start = source.index("      const startSplitPlaceholderBatch", build_start)
+    reconcile_start = source.index("      const reconcileSplitPlaceholderState", start_start)
+    functions_end = source.index("      const splitGenerationBatchActive", reconcile_start)
+    functions = textwrap.dedent(
+        source[build_start:start_start]
+        + source[start_start:reconcile_start]
+        + source[reconcile_start:functions_end]
+    )
+    runner = tmp_path / "split-placeholder-deletion-runner.js"
+    runner.write_text(
+        f"""
+const splitBatchInFlightStatuses = new Set(['generation_queued', 'generating', 'verifying']);
+const splitBatchTerminalStatuses = new Set(['ready', 'partially_ready', 'completed_partial', 'failed']);
+let transcriptId = 'tx-1';
+let splitPlaceholderState = null;
+let splitBatchFallbackState = null;
+let latestSplitBatch = null;
+let workspaceNoteDocuments = [];
+let workspaceNoteHistoryDocuments = [];
+let selectedNoteSlotKey = null;
+let selectedNoteDocumentId = null;
+const renderSelectedNote = () => {{}};
+const syncGenerationAvailability = () => {{}};
+const readActiveDraftText = () => '';
+const setTab = () => {{}};
+const splitDiagnosticMessage = () => 'failed';
+const splitTitleKey = (value) => String(value || '').trim().replace(/\\s+/g, ' ').toLocaleLowerCase();
+const splitTopicsForPlaceholders = (draft) => draft.topics
+  .filter((topic) => topic.disposition === 'separate_note' && topic.title.trim())
+  .map((topic, index) => ({{ topicUuid: String(topic.topic_uuid), title: topic.title.trim(), isPrimary: Boolean(topic.is_primary), order: index }}));
+const splitPlaceholderId = (topic) => `split-placeholder:${{transcriptId}}:${{topic.topicUuid}}`;
+const splitSlotKey = (topic) => `split-slot:${{transcriptId}}:${{topic.topicUuid}}`;
+const splitPlaceholderStatus = (phase) => phase === 'generation_queued'
+  ? {{ status: 'queued', label: 'Queued' }}
+  : splitBatchTerminalStatuses.has(phase)
+    ? {{ status: 'failed', label: 'failed' }}
+    : {{ status: 'processing', label: 'Processing' }};
+{functions}
+const topics = [
+  {{ topic_uuid: 'topic-a', title: 'Alpha', is_primary: true, disposition: 'separate_note' }},
+  {{ topic_uuid: 'topic-b', title: 'Beta', is_primary: false, disposition: 'separate_note' }},
+];
+const draft = {{ status: 'confirmed', topics }};
+const alpha = {{ id: 'doc-a', title: 'Alpha', status: 'ready' }};
+const historicalAlpha = {{ id: 'old-doc-a', title: 'Alpha', status: 'ready' }};
+const beta = {{ id: 'doc-b', title: 'Beta', status: 'ready' }};
+startSplitPlaceholderBatch({{ draft, batchId: 'batch-1', phase: 'ready', existingDocumentIds: [], deletedTopicUuids: [] }});
+let rendered = reconcileSplitPlaceholderState({{
+  draft, batch: {{ batch_id: 'batch-1', status: 'ready', deleted_topic_uuids: ['topic-a'] }}, noteDocuments: [historicalAlpha, beta],
+}});
+if (rendered.length !== 1 || rendered[0].id !== 'doc-b') throw new Error('same-page deletion recreated a failed slot');
+rendered = reconcileSplitPlaceholderState({{
+  draft, batch: {{ batch_id: 'batch-1', status: 'ready', deleted_topic_uuids: ['topic-a', 'topic-b'] }}, noteDocuments: [],
+}});
+if (rendered.length !== 0) throw new Error('all-deleted batch kept phantom slots');
+rendered = reconcileSplitPlaceholderState({{
+  draft, batch: {{ batch_id: 'batch-1', status: 'partially_ready', deleted_topic_uuids: [] }}, noteDocuments: [alpha],
+}});
+if (rendered.length !== 2 || rendered[1].id !== 'split-placeholder:tx-1:topic-b' || rendered[1].status !== 'failed') {{
+  throw new Error('true failed topic lost its unavailable slot');
+}}
+startSplitPlaceholderBatch({{ draft, batchId: 'batch-2', phase: 'generation_queued', existingDocumentIds: [] }});
+rendered = buildSplitDisplayDocuments([]);
+if (rendered.length !== 2 || rendered.some((item) => item.status !== 'queued')) throw new Error('new explicit batch inherited deleted slots');
+""",
+    )
+    subprocess.run(["node", str(runner)], check=True, cwd=ROOT)
 
 
 def test_split_diagnostic_messages_are_stage_specific_and_never_render_untrusted_values(tmp_path):

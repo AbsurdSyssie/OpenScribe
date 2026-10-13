@@ -1960,7 +1960,7 @@ def test_workspace_rest_and_sse_safe_split_projection_excludes_encrypted_source_
     expected = ConsultationSplitBatchDetail(
         batch_id=uuid4(), status="partially_ready", failed_topic_count=1, validated_topic_count=1,
         primary_failed=True, can_retry_missing=True, can_keep_available=True,
-        active_execution_id=None, preferred_document_id=None,
+        active_execution_id=None, preferred_document_id=None, deleted_topic_uuids=[uuid4()],
     )
     monkeypatch.setattr("app.web.transcribe_workspace.read_workspace_split_batch", lambda *_args, **_kwargs: expected)
     assert client.post("/api/v1/auth/login", json={"email": owner.email, "password": "password-1"}).status_code == 200
@@ -1968,6 +1968,7 @@ def test_workspace_rest_and_sse_safe_split_projection_excludes_encrypted_source_
     assert rest.status_code == 200
     split = rest.json()["consultation_split_batch"]
     assert split == expected.model_dump(mode="json")
+    assert split["deleted_topic_uuids"] == [str(expected.deleted_topic_uuids[0])]
     assert not ({"source_snapshot", "confirmed_plan", "provider_snapshot", "output", "title"} & set(split))
 
     from app.schemas import TranscribeWorkspaceDetail

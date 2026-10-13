@@ -2469,7 +2469,11 @@ let statusDetailsHideTimer = null;
 
       const buildSplitDisplayDocuments = (noteDocuments = []) => {
         if (!splitPlaceholderState?.topics?.length) return noteDocuments;
-        const topicKeys = new Set(splitPlaceholderState.topics.map((topic) => splitTitleKey(topic.title)));
+        const visibleTopics = splitPlaceholderState.topics.filter(
+          (topic) => !splitPlaceholderState.deletedTopicUuids?.has(topic.topicUuid),
+        );
+        const allTopicKeys = new Set(splitPlaceholderState.topics.map((topic) => splitTitleKey(topic.title)));
+        const topicKeys = new Set(visibleTopics.map((topic) => splitTitleKey(topic.title)));
         const priorDocumentIds = new Set(splitPlaceholderState.existingDocumentIds || []);
         const candidates = new Map();
         noteDocuments.forEach((document) => {
@@ -2479,7 +2483,7 @@ let statusDetailsHideTimer = null;
           if (!existing) candidates.set(key, document);
         });
         const phase = splitPlaceholderState.phase || latestSplitBatch?.status || 'generation_queued';
-        const displayTopics = splitPlaceholderState.topics.map((topic) => {
+        const displayTopics = visibleTopics.map((topic) => {
           const candidate = candidates.get(splitTitleKey(topic.title));
           if (candidate?.status === 'ready') {
             return { ...candidate, split_slot_key: splitSlotKey(topic), split_topic_uuid: topic.topicUuid };
@@ -2503,12 +2507,12 @@ let statusDetailsHideTimer = null;
         const splitDocumentIds = new Set(displayTopics.map((document) => document.id));
         const otherDocuments = noteDocuments.filter((document) => {
           const key = splitTitleKey(document?.title);
-          return !topicKeys.has(key) && !splitDocumentIds.has(document.id);
+          return !allTopicKeys.has(key) && !splitDocumentIds.has(document.id);
         });
         return [...otherDocuments, ...displayTopics];
       };
 
-      const startSplitPlaceholderBatch = ({ draft, batchId = null, phase = 'generation_queued', pendingBatchId = false, existingDocumentIds = null } = {}) => {
+      const startSplitPlaceholderBatch = ({ draft, batchId = null, phase = 'generation_queued', pendingBatchId = false, existingDocumentIds = null, deletedTopicUuids = null } = {}) => {
         const topics = splitTopicsForPlaceholders(draft);
         if (!transcriptId || !topics.length) return;
         splitBatchFallbackState = null;
@@ -2524,6 +2528,7 @@ let statusDetailsHideTimer = null;
           pendingBatchId,
           topicSignature,
           topics,
+          deletedTopicUuids: new Set(Array.isArray(deletedTopicUuids) ? deletedTopicUuids.map(String) : []),
           existingDocumentIds: sameBatchTopics
             ? splitPlaceholderState.existingDocumentIds
             : (Array.isArray(existingDocumentIds) ? existingDocumentIds : workspaceNoteHistoryDocuments.map((document) => document.id)),
@@ -2566,12 +2571,16 @@ let statusDetailsHideTimer = null;
             existingDocumentIds: splitBatchTerminalStatuses.has(batch.status)
               ? []
               : noteDocuments.map((document) => document.id),
+            deletedTopicUuids: batch.deleted_topic_uuids,
           });
         }
         if (!splitPlaceholderState || splitPlaceholderState.transcriptId !== transcriptId) return noteDocuments;
         if (batchId && splitPlaceholderState.batchId && batchId === splitPlaceholderState.batchId) {
           splitPlaceholderState.phase = batch?.status || splitPlaceholderState.phase;
           splitPlaceholderState.pendingBatchId = false;
+          splitPlaceholderState.deletedTopicUuids = new Set(
+            Array.isArray(batch?.deleted_topic_uuids) ? batch.deleted_topic_uuids.map(String) : [],
+          );
         }
         return buildSplitDisplayDocuments(noteDocuments);
       };

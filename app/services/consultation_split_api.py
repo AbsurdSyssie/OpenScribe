@@ -354,6 +354,14 @@ def read_workspace_split_batch(db: Session, actor: User, *, transcript_id: UUID)
             (documents_by_topic.get(topic.id) for topic in topics if documents_by_topic.get(topic.id) is not None),
             None,
         )
+    deleted_topic_uuids = [
+        topic.topic_uuid
+        for topic in topics
+        if topic.disposition is ConsultationSplitTopicDisposition.separate_note
+        and outcomes.get(topic.id) is not None
+        and outcomes[topic.id].status is ConsultationSplitTopicOutcomeStatus.ready
+        and topic.id not in documents_by_topic
+    ]
     return ConsultationSplitBatchDetail(
         batch_id=batch.id, status=batch.status.value, failed_topic_count=len(failed),
         validated_topic_count=len(validated), primary_failed=any(topic.is_primary for topic in failed),
@@ -361,6 +369,7 @@ def read_workspace_split_batch(db: Session, actor: User, *, transcript_id: UUID)
         can_keep_available=partial and bool(validated) and active is None,
         active_execution_id=active.id if active else None,
         preferred_document_id=preferred_document_id,
+        deleted_topic_uuids=deleted_topic_uuids,
         verification_status=batch.verification_status.value,
         verification_correction_count=batch.verification_correction_count,
     )

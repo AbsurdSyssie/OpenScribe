@@ -1080,6 +1080,19 @@ def test_generation_topic_titles_are_encrypted_owner_only_and_document_deletion_
     assert db_session.get(GeneratedDocument, sibling.id) is not None
     outcome = next(item for item in outcomes if item.batch_topic_id == removed_topic_id)
     assert outcome.status is ConsultationSplitTopicOutcomeStatus.ready and outcome.output_encrypted
+    projection = read_workspace_split_batch(db_session, owner, transcript_id=execution.transcript_id)
+    assert projection is not None
+    assert projection.deleted_topic_uuids == [surviving_topic.topic_uuid]
+    sibling_topic_id = sibling.consultation_split_batch_topic_id
+    db_session.delete(sibling); db_session.commit(); db_session.rollback()
+    projection = read_workspace_split_batch(db_session, owner, transcript_id=execution.transcript_id)
+    assert projection is not None
+    assert set(projection.deleted_topic_uuids) == {
+        surviving_topic.topic_uuid,
+        db_session.get(ConsultationSplitBatchTopic, sibling_topic_id).topic_uuid,
+    }
+    assert projection.failed_topic_count == 0
+    assert projection.can_retry_missing is False
 
 
 def test_generation_expired_root_before_submission_cancels_reservation_without_provider(db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch):

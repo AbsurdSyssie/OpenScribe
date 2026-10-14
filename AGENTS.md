@@ -42,11 +42,11 @@ Prefer storing implementation plans under plans/. Plans describe intended work, 
 
 Delegation
 
-Preserve Sol capacity. Sol plans and orchestrates; Luna and Terra should perform almost all executable work.
+Preserve Sol 6.1 capacity. Sol plans and orchestrates; Luna and Terra should perform almost all executable work.
 
 For substantial work, Sol should establish the intended outcome, constraints, acceptance criteria, and delegation boundaries, then delegate execution wherever practical.
 
-Luna
+Luna 6
 
 Use Luna by default for bounded, low-risk, read-heavy work:
 
@@ -64,7 +64,7 @@ small factual investigations.
 
 Prefer Luna when either Luna or Terra would be sufficient.
 
-Terra
+Terra 5.6
 
 Use Terra by default for normal engineering execution:
 
@@ -84,7 +84,7 @@ clear multi-file or coordinated changes.
 
 Sol should normally avoid implementation that Terra can safely perform.
 
-Sol
+Sol 6.1
 
 Reserve Sol for work that materially benefits from the strongest reasoning or central orchestration:
 

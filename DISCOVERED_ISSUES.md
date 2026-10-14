@@ -1,5 +1,15 @@
 # Discovered issues
 
+## GEMINI-400-ERROR-CLASSIFICATION — 2026-10-14
+
+- Discovery commits: working tree `dcdc3b7`; deployed `78ac327`.
+- Location: `app/services/llm_adapters/gemini_enterprise.py`, `translate_gemini_error`.
+- Exact excerpt: `if status_code == 400 and operation in {"model_validation", "generation"}: return AppError(422, "llm_model_unavailable", ...)`.
+- Observed problem: every Gemini generation HTTP 400 is classified as `llm_model_unavailable`, including a valid model request rejected because its thinking level is unsupported.
+- Likely impact: operators and clinicians can receive misleading model-availability guidance for malformed or model-option-specific requests, slowing diagnosis.
+- Not fixed during the Gemini 3.8 Flash thinking-level repair because changing the error taxonomy requires a bounded, content-safe interpretation of Google's structured error reasons across validation and generation. Broadening this patch could alter existing provider failure contracts.
+- Follow-up: inventory synthetic Gemini 400 response shapes, identify stable structured reason fields without persisting provider messages, and add focused translation tests before refining the classifier.
+
 ## OPENSCRIBE-CONTAINER-UNHEALTHY — 2026-10-12
 
 - Discovery commit: `2d7bfcb`.

@@ -266,6 +266,8 @@ def gemini_request_snapshot(request: LlmGenerationRequest) -> dict[str, object]:
 def _gemini_thinking_config(model: str) -> types.ThinkingConfig | None:
     """Keep hidden thinking from consuming note-output token budgets."""
     model_id = model.rsplit("/", 1)[-1].lower()
+    if model_id == "gemini-3.8-flash":
+        return types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW)
     if model_id.startswith(("gemini-3.1-pro", "gemini-3-pro")):
         return types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW)
     if model_id.startswith("gemini-3"):

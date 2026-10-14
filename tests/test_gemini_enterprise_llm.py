@@ -266,6 +266,45 @@ def test_generation_constrains_gemini_3_json_and_uses_explicit_schema(monkeypatc
     assert config.thinking_config.thinking_level.value == "MINIMAL"
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemini-3.8-flash",
+        "publishers/google/models/gemini-3.8-flash",
+    ],
+)
+def test_generation_uses_supported_low_thinking_for_gemini_3_8_flash(
+    monkeypatch, model,
+):
+    client = FakeClient()
+    _install_client(monkeypatch, client)
+    response_schema = {
+        "type": "object",
+        "required": ["title", "content"],
+        "properties": {
+            "title": {"type": "string"},
+            "content": {"type": "object"},
+        },
+    }
+
+    adapter.generate_gemini_text(
+        project_id="p",
+        location="eu",
+        credentials=None,
+        request=_request(
+            expect_json=True,
+            response_json_schema=response_schema,
+            model=model,
+        ),
+    )
+
+    call = client.models.generate_calls[0]
+    assert call["model"] == model
+    assert call["config"].thinking_config.thinking_level.value == "LOW"
+    assert call["config"].response_mime_type == "application/json"
+    assert call["config"].response_json_schema == response_schema
+
+
 def test_generation_rejects_max_tokens_before_json_parser(monkeypatch):
     client = FakeClient()
     client.models.generate_result = SimpleNamespace(

@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/celery-workers.sh"
+
 if [[ "$(id -u)" -eq 0 ]]; then
   mkdir -p /app/.local/vault
   chown -R openscribe:openscribe /app/.local/vault
@@ -80,17 +82,14 @@ bootstrap_runtime() {
 }
 
 run_runtime() {
+  validate_celery_workers
   bootstrap_runtime
 
-  local worker_pid beat_pid app_pid
+  local beat_pid app_pid
   local -a child_pids
 
-  echo "Starting Celery worker..."
-  celery -A app.celery_app:celery_app worker \
-    -Q control,generation,ingestion \
-    --concurrency "${CELERY_WORKER_CONCURRENCY:-1}" \
-    --loglevel "${CELERY_LOG_LEVEL:-INFO}" &
-  worker_pid=$!
+  echo "Starting Celery workers ($CELERY_WORKER_MODE)..."
+  start_celery_workers celery
 
   echo "Starting Celery Beat..."
   celery -A app.celery_app:celery_app beat \
@@ -106,7 +105,7 @@ run_runtime() {
     --forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-127.0.0.1}" &
   app_pid=$!
 
-  child_pids=("$worker_pid" "$beat_pid" "$app_pid")
+  child_pids=("${CELERY_WORKER_PIDS[@]}" "$beat_pid" "$app_pid")
 
   shutdown() {
     trap - INT TERM

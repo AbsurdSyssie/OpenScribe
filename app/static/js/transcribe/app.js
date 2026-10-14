@@ -1,6 +1,6 @@
 import { attachTranscribeActions } from './actions.js?v=20261006-durable-create';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20261005-multiple-problems';
-import { createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationLoadingHtml } from './documents.js?v=20260918-retired-note-workspace';
+import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261014-generation-status';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
 import { createAudioCaptureController } from './media.js?v=20261001-audio-upload-recovery';
 import { createStructuredEditor } from './structured.js?v=20260918-retired-note-workspace';
@@ -11,7 +11,7 @@ import { csrfFetch } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
 import { createTemplateSuggestionController } from './templateSuggestions.js?v=20260830-template-suggestion-preference';
- import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261012-review-problems';
+ import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261014-generation-status';
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,
@@ -154,6 +154,7 @@ import {
       const flashWrap = document.querySelector('[data-flash-wrap]');
       const flashBanner = document.querySelector('[data-flash]');
       const latestGeneratedOutput = document.querySelector('[data-latest-generated-output]');
+      const noteCheckStatus = document.querySelector('[data-note-check-status]');
       const noteEditorToolbar = document.querySelector('[data-note-editor-toolbar]');
       const generatedFreeformPanel = document.querySelector('[data-generated-freeform-panel]');
       const generatedFreeformRows = document.querySelector('[data-generated-freeform-rows]');
@@ -2484,12 +2485,12 @@ let statusDetailsHideTimer = null;
 
       const splitPlaceholderId = (topic) => `split-placeholder:${transcriptId}:${topic.topicUuid}`;
       const splitSlotKey = (topic) => `split-slot:${transcriptId}:${topic.topicUuid}`;
-      const splitPlaceholderStatus = (phase, batchId = null) => {
+      const splitPlaceholderStatus = (phase, failurePresentation = null) => {
         if (phase === 'generation_queued') return { status: 'queued', label: 'Queued' };
         if (phase === 'failed' || splitBatchTerminalStatuses.has(phase)) {
           return {
             status: 'failed',
-            label: splitDiagnosticMessage({ stage: 'generation', operationId: batchId }),
+            label: generationFailureMessage(failurePresentation),
           };
         }
         return { status: 'processing', label: phase === 'verifying' ? 'Checking' : 'Processing' };
@@ -2497,7 +2498,11 @@ let statusDetailsHideTimer = null;
 
       const buildSplitDisplayDocuments = (noteDocuments = []) => {
         if (!splitPlaceholderState?.topics?.length) return noteDocuments;
-        const topicKeys = new Set(splitPlaceholderState.topics.map((topic) => splitTitleKey(topic.title)));
+        const visibleTopics = splitPlaceholderState.topics.filter(
+          (topic) => !splitPlaceholderState.deletedTopicUuids?.has(topic.topicUuid),
+        );
+        const allTopicKeys = new Set(splitPlaceholderState.topics.map((topic) => splitTitleKey(topic.title)));
+        const topicKeys = new Set(visibleTopics.map((topic) => splitTitleKey(topic.title)));
         const priorDocumentIds = new Set(splitPlaceholderState.existingDocumentIds || []);
         const candidates = new Map();
         noteDocuments.forEach((document) => {
@@ -2507,12 +2512,13 @@ let statusDetailsHideTimer = null;
           if (!existing) candidates.set(key, document);
         });
         const phase = splitPlaceholderState.phase || latestSplitBatch?.status || 'generation_queued';
-        const displayTopics = splitPlaceholderState.topics.map((topic) => {
+        const displayTopics = visibleTopics.map((topic) => {
           const candidate = candidates.get(splitTitleKey(topic.title));
           if (candidate?.status === 'ready') {
             return { ...candidate, split_slot_key: splitSlotKey(topic), split_topic_uuid: topic.topicUuid };
           }
-          const placeholderState = splitPlaceholderStatus(phase, latestSplitBatch?.batch_id || splitPlaceholderState.batchId);
+          const failurePresentation = latestSplitBatch?.failure_presentation || splitPlaceholderState.failurePresentation;
+          const placeholderState = splitPlaceholderStatus(phase, failurePresentation);
           return {
             id: splitPlaceholderId(topic),
             kind: 'split_placeholder',
@@ -2522,7 +2528,9 @@ let statusDetailsHideTimer = null;
             title: topic.title,
             status: placeholderState.status,
             split_generation_phase: phase,
+            split_generation_started_at: latestSplitBatch?.active_since || splitPlaceholderState.activeSince,
             split_generation_status_label: placeholderState.label,
+            failure_presentation: failurePresentation,
             document_mode: 'freeform',
             generator_type: 'template',
             order: topic.order,
@@ -2531,12 +2539,12 @@ let statusDetailsHideTimer = null;
         const splitDocumentIds = new Set(displayTopics.map((document) => document.id));
         const otherDocuments = noteDocuments.filter((document) => {
           const key = splitTitleKey(document?.title);
-          return !topicKeys.has(key) && !splitDocumentIds.has(document.id);
+          return !allTopicKeys.has(key) && !splitDocumentIds.has(document.id);
         });
         return [...otherDocuments, ...displayTopics];
       };
 
-      const startSplitPlaceholderBatch = ({ draft, batchId = null, phase = 'generation_queued', pendingBatchId = false, existingDocumentIds = null } = {}) => {
+      const startSplitPlaceholderBatch = ({ draft, batchId = null, phase = 'generation_queued', pendingBatchId = false, existingDocumentIds = null, deletedTopicUuids = null, activeSince = null, failurePresentation = null } = {}) => {
         const topics = splitTopicsForPlaceholders(draft);
         if (!transcriptId || !topics.length) return;
         splitBatchFallbackState = null;
@@ -2549,9 +2557,12 @@ let statusDetailsHideTimer = null;
           transcriptId,
           batchId: batchId || splitPlaceholderState?.batchId || null,
           phase,
+          activeSince,
+          failurePresentation,
           pendingBatchId,
           topicSignature,
           topics,
+          deletedTopicUuids: new Set(Array.isArray(deletedTopicUuids) ? deletedTopicUuids.map(String) : []),
           existingDocumentIds: sameBatchTopics
             ? splitPlaceholderState.existingDocumentIds
             : (Array.isArray(existingDocumentIds) ? existingDocumentIds : workspaceNoteHistoryDocuments.map((document) => document.id)),
@@ -2582,7 +2593,7 @@ let statusDetailsHideTimer = null;
           return noteDocuments;
         }
         if (batchIsRelevant && !draftIsConfirmed) {
-          splitBatchFallbackState = { batchId, phase: batch.status };
+          splitBatchFallbackState = { batchId, phase: batch.status, activeSince: batch.active_since, failurePresentation: batch.failure_presentation };
           return noteDocuments;
         }
         splitBatchFallbackState = null;
@@ -2594,12 +2605,20 @@ let statusDetailsHideTimer = null;
             existingDocumentIds: splitBatchTerminalStatuses.has(batch.status)
               ? []
               : noteDocuments.map((document) => document.id),
+            deletedTopicUuids: batch.deleted_topic_uuids,
+            activeSince: batch.active_since,
+            failurePresentation: batch.failure_presentation,
           });
         }
         if (!splitPlaceholderState || splitPlaceholderState.transcriptId !== transcriptId) return noteDocuments;
         if (batchId && splitPlaceholderState.batchId && batchId === splitPlaceholderState.batchId) {
           splitPlaceholderState.phase = batch?.status || splitPlaceholderState.phase;
+          splitPlaceholderState.activeSince = batch?.active_since || splitPlaceholderState.activeSince;
+          splitPlaceholderState.failurePresentation = batch?.failure_presentation || splitPlaceholderState.failurePresentation;
           splitPlaceholderState.pendingBatchId = false;
+          splitPlaceholderState.deletedTopicUuids = new Set(
+            Array.isArray(batch?.deleted_topic_uuids) ? batch.deleted_topic_uuids.map(String) : [],
+          );
         }
         return buildSplitDisplayDocuments(noteDocuments);
       };
@@ -2611,11 +2630,10 @@ let statusDetailsHideTimer = null;
 
       const renderSplitBatchFallback = () => {
         if (!splitBatchFallbackState || !latestGeneratedOutput) return;
+        clearDelayedGenerationStatus(latestGeneratedOutput);
         const phase = splitBatchFallbackState.phase || 'generation_queued';
         if (phase === 'failed') {
-          latestGeneratedOutput.textContent = splitDiagnosticMessage({
-            stage: 'generation', operationId: latestSplitBatch?.batch_id || splitBatchFallbackState.batchId,
-          });
+          latestGeneratedOutput.innerHTML = `<span class="text-slate">${generationFailureMessage(splitBatchFallbackState.failurePresentation)}</span>${generationFailureDetailsHtml(splitBatchFallbackState.failurePresentation, { formatTime: formatWorkspaceCreatedAt })}`;
           return;
         }
         const message = phase === 'generation_queued'
@@ -2624,6 +2642,10 @@ let statusDetailsHideTimer = null;
             ? 'Checking your split notes...'
             : 'Generating your split notes...';
         latestGeneratedOutput.innerHTML = generationLoadingHtml({ label: 'split notes', message });
+        scheduleDelayedGenerationStatus(latestGeneratedOutput, {
+          since: splitBatchFallbackState.activeSince,
+          message: 'This is taking a little longer than usual. We’re still working on your note.',
+        });
       };
 
       const syncGenerationAvailability = (draftText = '') => {
@@ -3358,6 +3380,7 @@ let statusDetailsHideTimer = null;
 
       const renderFollowupOutput = (document) => {
         if (!latestFollowupOutput) return;
+        clearDelayedGenerationStatus(latestFollowupOutput);
         const status = document?.status || '';
         const isReady = status === 'ready';
         const isTerminal = isReady || status === 'failed';
@@ -3405,6 +3428,7 @@ let statusDetailsHideTimer = null;
             label: 'follow-up',
             message: 'This may take a few seconds.',
           });
+          scheduleDelayedGenerationStatus(latestFollowupOutput, { since: document.started_at || document.created_at, message: 'This is taking a little longer than usual. We’re still working on your follow-up.' });
           return;
         }
         if (document.status === 'processing') {
@@ -3412,10 +3436,11 @@ let statusDetailsHideTimer = null;
             label: 'follow-up',
             message: 'This may take a few seconds.',
           });
+          scheduleDelayedGenerationStatus(latestFollowupOutput, { since: document.started_at || document.created_at, message: 'This is taking a little longer than usual. We’re still working on your follow-up.' });
           return;
         }
         if (document.status === 'failed') {
-          latestFollowupOutput.innerHTML = '<span class="text-slate">We couldn’t create this follow-up. Select Regenerate to try again.</span>';
+          latestFollowupOutput.innerHTML = `<span class="text-slate">${generationFailureMessage(document.failure_presentation, { kind: 'follow-up' })}</span>${generationFailureDetailsHtml(document.failure_presentation, { formatTime: formatWorkspaceCreatedAt })}`;
           return;
         }
         latestFollowupOutput.innerHTML = '<span class="text-slate">No follow-up content yet.</span>';
@@ -3759,6 +3784,7 @@ let statusDetailsHideTimer = null;
           followupMeta,
           followupHistory,
           latestGeneratedOutput,
+          noteCheckStatus,
           latestFollowupOutput,
           outputRedactionSlot,
           followupRedactionSlot,

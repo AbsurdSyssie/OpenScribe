@@ -14,6 +14,9 @@ with PostgreSQL, so at-most-once submission wins over an uncertain retry.
 
 from __future__ import annotations
 
+from app.services.provider_transport_telemetry import provider_attempt_execution
+from app.services.llm_execution import ExecutionBudget
+
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Literal
@@ -77,7 +80,7 @@ from app.services.transcripts import transcript_is_expired
 # This is intentionally shorter than the reservation, but long enough for the
 # existing provider transport timeouts.  A timeout closes the submitted quota
 # attempt conservatively through the regular quota lifecycle worker.
-SPLIT_ANALYSIS_PROVIDER_DEADLINE_SECONDS = 600
+SPLIT_ANALYSIS_PROVIDER_DEADLINE_SECONDS = 90
 RECOVERABLE_RESPONSE_MAX_CHARS = CONSULTATION_SPLIT_MAX_RESPONSE_CHARS * 8
 MAX_RECORDED_TOKENS = 10_000_000
 MAX_RECORDED_DURATION_MS = 86_400_000
@@ -832,11 +835,12 @@ def _run_prepared_provider_call(db: Session, *, prepared: PreparedSplitAnalysisS
     if not _is_durably_submitted_for_provider_call(db, execution_id=prepared.execution_id):
         return SplitAnalysisRuntimeResult("noop", prepared.execution_id)
     try:
-        response_text, raw_usage = llm_runtime.invoke_llm(
-            snapshot=prepared.provider_snapshot,
-            credential=prepared.credential,
-            request_body=prepared.request_body,
-        )
+        with provider_attempt_execution(db, attempt_id=prepared.attempt_id, maximum_seconds=90):
+            response_text, raw_usage = llm_runtime.invoke_llm(
+                snapshot=prepared.provider_snapshot,
+                credential=prepared.credential,
+                request_body=prepared.request_body,
+            )
     except AppError as exc:
         provider_error_code, provider_http_status = _safe_provider_error(exc)
         return _terminalize_submitted_failure(

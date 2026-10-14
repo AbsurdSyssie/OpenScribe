@@ -24,6 +24,7 @@ celery_app.conf.update(
     result_serializer="json",
     accept_content=["json"],
     task_track_started=True,
+    worker_prefetch_multiplier=1,
     task_always_eager=_env_flag("CELERY_TASK_ALWAYS_EAGER", default=False),
     task_eager_propagates=True,
     timezone="UTC",

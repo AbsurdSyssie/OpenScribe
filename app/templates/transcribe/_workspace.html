@@ -14,7 +14,7 @@
 <div class="note-generation-loading" role="status" aria-live="polite">
 {{ loading_orbit() }}
 <h2>{% if label == 'follow-up' %}Creating{% else %}Generating{% endif %} your {{ label }}</h2>
-<p>{{ message }}{% if detail %}<br>{{ detail }}{% endif %}</p>
+<p data-generation-status>{{ message }}{% if detail %}<br>{{ detail }}{% endif %}</p>
 </div>
 {%- endmacro %}
 
@@ -427,13 +427,35 @@ data-latest-generated-updated-at="{{ latest_generated_document.updated_at.isofor
 {% elif latest_generated_document and latest_generated_document.status.value in ["queued", "processing"] %}
 {% set note_generation_loading_message = 'Waiting for transcription to finish before writing your note.' if latest_generated_document.status.value == "queued" and active_transcript and active_transcript.status.value in ["queued", "transcribing", "processing"] else 'This usually takes a few seconds.' %}
 {% set note_generation_loading_detail = none if latest_generated_document.status.value == "queued" and active_transcript and active_transcript.status.value in ["queued", "transcribing", "processing"] else "We're preparing your clinical note..." %}
+{% if latest_generation_is_delayed %}{% set note_generation_loading_message = 'This is taking a little longer than usual. We’re still working on your note.' %}{% set note_generation_loading_detail = none %}{% endif %}
 {{ generation_loading('note', note_generation_loading_message, note_generation_loading_detail) }}
 {% elif latest_generated_document and latest_generated_document.status.value == "failed" %}
-<span class="text-slate">The latest note could not be created{% if latest_generated_document.error_message %}: {{ latest_generated_document.error_message }}{% endif %}.</span>
+{% set failure = latest_generated_failure_presentation %}
+{% if failure and failure.category == 'configuration' %}
+{% if failure.technical_details %}<span class="text-slate">We couldn’t create your note because your team’s AI service needs attention. Check Team → AI services, then try again.</span>
+{% else %}<span class="text-slate">We couldn’t create your note because the AI service needs attention. Please ask your team leader to check the AI provider settings.</span>{% endif %}
+{% elif failure and failure.category == 'input_or_validation' %}<span class="text-slate">We couldn’t create your note from the saved inputs. Review the note and try again.</span>
+{% elif failure and failure.category == 'temporary' %}<span class="text-slate">We couldn’t create your note. Please try again in a minute.</span>
+{% else %}<span class="text-slate">We couldn’t create your note. Try again or ask your team leader for help.</span>{% endif %}
+{% if failure %}<details class="generation-support-details"><summary>Support details</summary>
+<p>Reference: {{ failure.support_reference }}</p>
+{% if failure.occurred_at %}<p>{% if failure.time_basis == 'created' %}Created (failure time unavailable){% else %}Failed{% endif %}: {{ failure.occurred_at.strftime("%d/%m/%Y, %H:%M UTC") }}</p>{% endif %}
+{% set technical = failure.technical_details %}{% if technical and (technical.application_code or technical.provider_code or technical.provider_http_status) %}<details><summary>Technical details</summary>
+{% if technical.application_code %}<p>Application code: {{ technical.application_code }}</p>{% endif %}
+{% if technical.provider_code %}<p>Provider code: {{ technical.provider_code }}</p>{% endif %}
+{% if technical.provider_http_status %}<p>Provider status: {{ technical.provider_http_status }}</p>{% endif %}
+</details>{% endif %}</details>{% endif %}
 {% elif latest_generated_document %}
 <span class="text-slate">No note content yet.</span>
 {% else %}
 {% endif %}
+</div>
+
+<div class="text-sm text-slate mt-2" data-note-check-status role="status" aria-live="polite"{% if not latest_checker_unavailable and not (latest_active_retry_presentation and latest_active_retry_presentation.technical_details) %} hidden{% endif %}>
+{% if latest_checker_unavailable %}Draft ready. Automatic checking was unavailable; please review carefully.
+{% if latest_checker_failure_presentation %}<details class="generation-support-details"><summary>Support details</summary><p>Reference: {{ latest_checker_failure_presentation.support_reference }}</p>{% if latest_checker_failure_presentation.occurred_at %}<p>{% if latest_checker_failure_presentation.time_basis == 'created' %}Created (failure time unavailable){% else %}Failed{% endif %}: {{ latest_checker_failure_presentation.occurred_at.strftime("%d/%m/%Y, %H:%M UTC") }}</p>{% endif %}</details>{% endif %}
+{% endif %}
+{% if latest_active_retry_presentation and latest_active_retry_presentation.technical_details %}<p>The provider is busy. We’re retrying this request automatically.</p><details class="generation-support-details"><summary>Support details</summary><p>Reference: {{ latest_active_retry_presentation.support_reference }}</p>{% if latest_active_retry_presentation.occurred_at %}<p>Observed: {{ latest_active_retry_presentation.occurred_at.strftime("%d/%m/%Y, %H:%M UTC") }}</p>{% endif %}<details><summary>Technical details</summary><p>Provider code: {{ latest_active_retry_presentation.technical_details.provider_code }}</p><p>Provider status: {{ latest_active_retry_presentation.technical_details.provider_http_status }}</p></details></details>{% endif %}
 </div>
 
 <div class="template-picker-modal" data-template-picker-modal hidden>
@@ -682,9 +704,14 @@ data-latest-followup-updated-at="{{ latest_followup_document.updated_at if lates
 {% if latest_followup_document and latest_followup_document.status.value == "ready" %}
 <textarea class="followup-output-card-v2__content followup-output-body-input-v2" aria-label="Follow-up text" data-followup-copy-body data-followup-body-input>{{ latest_followup_document.edited_output_text }}</textarea>
 {% elif latest_followup_document and latest_followup_document.status.value in ["queued", "processing"] %}
-{{ generation_loading('follow-up', 'This may take a few seconds.') }}
+{% if latest_followup_is_delayed %}{{ generation_loading('follow-up', 'This is taking a little longer than usual. We’re still working on your note.') }}{% else %}{{ generation_loading('follow-up', 'This may take a few seconds.') }}{% endif %}
 {% elif latest_followup_document and latest_followup_document.status.value == "failed" %}
-<span class="text-slate">We couldn’t create this follow-up. Select Regenerate to try again.</span>
+{% set failure = latest_followup_failure_presentation %}{% if failure and failure.category == 'configuration' %}
+{% if failure.technical_details %}<span class="text-slate">We couldn’t create your follow-up because your team’s AI service needs attention. Check Team → AI services, then try again.</span>{% else %}<span class="text-slate">We couldn’t create your follow-up because the AI service needs attention. Please ask your team leader to check the AI provider settings.</span>{% endif %}
+{% elif failure and failure.category == 'temporary' %}<span class="text-slate">We couldn’t create your follow-up. Please try again in a minute.</span>
+{% elif failure and failure.category == 'input_or_validation' %}<span class="text-slate">We couldn’t create your follow-up from the saved inputs. Review the request and try again.</span>
+{% else %}<span class="text-slate">We couldn’t create your follow-up. Try again or ask your team leader for help.</span>{% endif %}
+{% if failure %}<details class="generation-support-details"><summary>Support details</summary><p>Reference: {{ failure.support_reference }}</p>{% if failure.occurred_at %}<p>{% if failure.time_basis == 'created' %}Created (failure time unavailable){% else %}Failed{% endif %}: {{ failure.occurred_at.strftime("%d/%m/%Y, %H:%M UTC") }}</p>{% endif %}{% set technical = failure.technical_details %}{% if technical and (technical.application_code or technical.provider_code or technical.provider_http_status) %}<details><summary>Technical details</summary>{% if technical.application_code %}<p>Application code: {{ technical.application_code }}</p>{% endif %}{% if technical.provider_code %}<p>Provider code: {{ technical.provider_code }}</p>{% endif %}{% if technical.provider_http_status %}<p>Provider status: {{ technical.provider_http_status }}</p>{% endif %}</details>{% endif %}</details>{% endif %}
 {% else %}
 <div class="empty-state"><div class="empty-state__text">Choose a quick action or add context, then select Generate.</div></div>
 {% endif %}

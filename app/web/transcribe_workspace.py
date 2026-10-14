@@ -14,6 +14,12 @@ from ..errors import AppError
 from ..models import (
     GeneratedDocument,
     ClinicalEntityRun,
+    AttemptKind,
+    AttemptOutcome,
+    AttemptStatus,
+    GeneratedDocumentStatus,
+    HallucinationCheckStatus,
+    ProviderAttempt,
     GeneratedDocumentGeneratorType,
     RedactionRun,
     RedactionRunStatus,
@@ -58,6 +64,7 @@ from ..services.preferences import (
     get_user_app_preferences as get_user_app_preferences_service,
 )
 from ..services.consultation_split_gates import consultation_splitting_available as consultation_splitting_available_service, transcript_split_enabled
+from ..services.generation_presentation import generated_document_status_projection
 from ..services.dictations import dictation_detail_response, dictation_effective_text, get_post_consultation_dictation
 from ..services.stt import active_team_stt_selection as active_team_stt_selection_service
 from ..services.stt import check_selected_stt_health as check_selected_stt_health_service
@@ -119,7 +126,8 @@ def _earliest_retryable_ingestion_job(db: Session, *, transcript: Transcript) ->
         statement = statement.order_by(TranscriptIngestionJob.chunk_sequence_no.asc(), TranscriptIngestionJob.created_at.asc())
     else:
         statement = statement.order_by(TranscriptIngestionJob.created_at.desc())
-    return db.scalar(statement.limit(1))
+    job = db.scalar(statement.limit(1))
+    return job if job is not None and not ingestion_retry_source_expired_service(job) else None
 
 
 def _missing_stt_selection_message(*, team_leader_email: str | None) -> str:
@@ -974,6 +982,8 @@ def resolve_transcribe_workspace(
         ]
         latest_generated_document = note_documents[0] if note_documents else None
         latest_followup_document = followup_documents[0] if followup_documents else None
+        latest_generated_status = generated_document_status_projection(db, latest_generated_document, current_user) if latest_generated_document else {}
+        latest_followup_status = generated_document_status_projection(db, latest_followup_document, current_user) if latest_followup_document else {}
         selected_template = preferred_template or (available_templates[0] if available_templates else None)
         structured_section_definitions = (
             _structured_section_definitions_for_document(latest_generated_document)
@@ -992,6 +1002,15 @@ def resolve_transcribe_workspace(
                 "note_documents": note_documents,
                 "followup_documents": followup_documents,
                 "latest_generated_document": latest_generated_document,
+                "latest_generated_failure_presentation": latest_generated_status.get("failure_presentation"),
+                "latest_checker_failure_presentation": latest_generated_status.get("checker_failure_presentation"),
+                "latest_checker_unavailable": bool(latest_generated_status.get("checker_unavailable")),
+                "latest_active_retry_presentation": latest_generated_status.get("active_retry_presentation"),
+                "latest_generation_is_delayed": bool(
+                    latest_generated_document is not None
+                    and latest_generated_document.status in {GeneratedDocumentStatus.queued, GeneratedDocumentStatus.processing}
+                    and (utcnow() - (latest_generated_document.started_at or latest_generated_document.created_at)).total_seconds() >= 15
+                ),
                 "latest_generated_document_section_lines": _document_section_lines(db, latest_generated_document),
                 "structured_editor_sections": _structured_editor_sections(
                     db,
@@ -1004,6 +1023,12 @@ def resolve_transcribe_workspace(
                     generated_document=latest_generated_document,
                 ),
                 "latest_followup_document": latest_followup_document,
+                "latest_followup_failure_presentation": latest_followup_status.get("failure_presentation"),
+                "latest_followup_is_delayed": bool(
+                    latest_followup_document is not None
+                    and latest_followup_document.status in {GeneratedDocumentStatus.queued, GeneratedDocumentStatus.processing}
+                    and (utcnow() - (latest_followup_document.started_at or latest_followup_document.created_at)).total_seconds() >= 15
+                ),
                 "active_note_input_available": bool(
                     active_template_generation_input_available
                     or _generated_note_has_content(db, latest_generated_document)

@@ -167,6 +167,7 @@ def test_runtime_commits_valid_zero_single_or_multiple_topic_response_once(
 @pytest.mark.parametrize(
     "response",
     ["not json", "x" * (CONSULTATION_SPLIT_MAX_RESPONSE_CHARS * 8 + 1), json.dumps({"topics": [{"title": "Unknown", "is_primary": True, "disposition": "separate_note", "template_id": str(uuid4())}]})],
+    ids=["invalid-json", "oversized-response", "unknown-template"],
 )
 def test_runtime_rejects_invalid_or_unavailable_provider_output_once(
     db_session, make_user, make_llm_config, make_llm_selection, make_user_app_preference, monkeypatch, response,

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from app.services.provider_transport_telemetry import provider_attempt_execution
+from app.services.llm_execution import ExecutionBudget
+
 import json
 import logging
 from datetime import timedelta
@@ -39,7 +42,7 @@ TEMPLATE_SUGGESTION_MIN_CHARS = 1200
 TEMPLATE_SUGGESTION_MAX_CHARS = 4500
 TEMPLATE_SUGGESTION_OUTPUT_TOKENS = 220
 TEMPLATE_SUGGESTION_RESERVATION_SECONDS = 1500
-TEMPLATE_SUGGESTION_PROVIDER_DEADLINE_SECONDS = 900
+TEMPLATE_SUGGESTION_PROVIDER_DEADLINE_SECONDS = 90
 logger = logging.getLogger("openscribe.template_suggestion")
 
 
@@ -398,14 +401,15 @@ def process_template_suggestion(db: Session, *, job_id: UUID) -> TemplateSuggest
     _log("template_suggestion_provider_submitted", job=locked, adapter_kind=locked.llm_adapter_kind)
     try:
         adapter = LlmAdapterKind(locked.llm_adapter_kind)
-        output, usage = _invoke_frozen_llm(
-            config=config,
-            adapter_kind=adapter,
-            base_url=locked.llm_base_url,
-            provider_config=dict(locked.llm_provider_config_json or {}),
-            credential=credential,
-            request_body=request_body,
-        )
+        with provider_attempt_execution(db, attempt_id=attempt.id, maximum_seconds=90):
+            output, usage = _invoke_frozen_llm(
+                config=config,
+                adapter_kind=adapter,
+                base_url=locked.llm_base_url,
+                provider_config=dict(locked.llm_provider_config_json or {}),
+                credential=credential,
+                request_body=request_body,
+            )
         parsed = _ProviderSuggestion.model_validate(_extract_json(output))
         candidate_ids = {str(item.get("id")) for item in locked.candidates_snapshot_json if isinstance(item, dict)}
         selected_id = str((locked.selected_template_snapshot_json or {}).get("id") or "")

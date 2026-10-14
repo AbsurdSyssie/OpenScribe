@@ -299,8 +299,8 @@ def test_generation_loading_replaces_plain_text_placeholders():
     assert "Your follow-up is being written." not in app_js
     assert "generationLoadingHtml" in documents_js
     assert "structured.js?v=20260918-retired-note-workspace" in app_js
-    assert "documents.js?v=20260918-retired-note-workspace" in app_js
-    assert "/static/js/transcribe/app.js?v=20260930-detected-pii-override" in shell_extras
+    assert "documents.js?v=20261014-generation-status" in app_js
+    assert "/static/js/transcribe/app.js?v=20261014-generation-status" in shell_extras
     assert ".note-generation-loading" in transcribe_css
     assert "@keyframes note-generation-orbit" in transcribe_css
     assert 'data-transcription-loading' in workspace_template

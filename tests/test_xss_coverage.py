@@ -245,26 +245,30 @@ class TestNoUnsafeRendering:
         assert 'setAttribute("style"' not in template
 
     def test_error_message_escaped_in_structured_js(self):
-        """Verify the XSS fix: structured.js uses escapeHtml for error_message."""
+        """Failure sinks use controlled guidance instead of provider wording."""
         text = Path("app/static/js/transcribe/structured.js").read_text()
-        # The vulnerable pattern (fixed)
-        assert "escapeHtml(generatedDocument.error_message)" in text, (
-            "structured.js must escape error_message before innerHTML"
-        )
-        # The old vulnerable pattern (must NOT exist)
-        assert '`: ${generatedDocument.error_message}`' not in text, (
-            "structured.js has unescaped error_message in innerHTML"
-        )
+        assert "generatedDocument.error_message" not in text
+        assert "generationFailureMessage(generatedDocument.failure_presentation)" in text
+        assert "generationFailureDetailsHtml(generatedDocument.failure_presentation)" in text
 
-    def test_error_message_escaped_in_generated_document_renderer(self):
-        """The renderer escapes an error message before inserting generated-document HTML."""
-        text = Path("app/static/js/transcribe/structured.js").read_text()
-        assert "escapeHtml(generatedDocument.error_message)" in text, (
-            "structured.js must escape error_message before innerHTML"
-        )
-        assert '`: ${generatedDocument.error_message}`' not in text, (
-            "structured.js has unescaped error_message in innerHTML"
-        )
+    def test_error_message_escaped_in_generated_document_renderer(self, tmp_path):
+        """Exercise the imported renderer against malicious metadata at its HTML sink."""
+        import subprocess
+        renderer = (Path(__file__).resolve().parents[1] / "app/static/js/transcribe/documents.js").as_uri()
+        runner = tmp_path / "failure-xss.mjs"
+        runner.write_text(f"""
+import assert from 'node:assert/strict';
+import {{ generationFailureDetailsHtml, generationFailureMessage }} from '{renderer}';
+const malicious = '<img src=x onerror=alert(1)><script>alert(1)</script>';
+const projection = {{ category: malicious, support_reference: malicious, occurred_at: malicious,
+  technical_details: {{application_code: malicious, provider_code: malicious, provider_http_status: 503}} }};
+const html = generationFailureMessage(projection) + generationFailureDetailsHtml(projection);
+assert.ok(!html.includes('<img') && !html.includes('<script>'));
+assert.ok(html.includes('&lt;img') && html.includes('&lt;script&gt;'));
+assert.ok(html.includes('Provider status: 503'));
+assert.ok(!generationFailureMessage({{category: malicious, error_message: malicious}}).includes(malicious));
+""", encoding="utf-8")
+        subprocess.run(["node", str(runner)], check=True)
 
     def test_workspace_html_uses_tojson_forceescape(self):
         """Verify _workspace.html uses |tojson|forceescape in attributes."""

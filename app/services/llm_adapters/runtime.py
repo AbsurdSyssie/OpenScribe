@@ -25,6 +25,7 @@ from app.services.llm_adapters.gemini_enterprise import (
     generate_gemini_text,
 )
 from app.services.llm_adapters.types import LlmGenerationRequest, LlmProviderSnapshot
+from app.services.llm_execution import bounded_request, current_budget, retry_after_seconds
 from app.services.provider_errors import safe_provider_error_code
 from app.services.provider_inspection import response_content_length_exceeds
 
@@ -265,7 +266,7 @@ def invoke_llm(
     raise AppError(422, "business_rule_violation", "Unsupported LLM adapter", {"adapter_kind": adapter_kind.value})
 
 
-def invoke_openai_compatible(
+def _invoke_openai_compatible_once(
     *,
     api_key: str,
     base_url: str,
@@ -277,8 +278,9 @@ def invoke_openai_compatible(
 ) -> tuple[str, GenerationUsage]:
     require_safe_provider_url(base_url)
     started = time.perf_counter()
+    client = None
     try:
-        client = client_factory(api_key=api_key, base_url=base_url, max_retries=0)
+        client = client_factory(api_key=api_key, base_url=base_url, max_retries=0, timeout=current_budget().timeout())
         completion = client.chat.completions.create(**request_body)
     except Exception as exc:  # pragma: no cover - provider transport is isolated by unit tests
         raise translate_openai_generation_error(
@@ -287,6 +289,14 @@ def invoke_openai_compatible(
             connection_error_cls=connection_error_cls,
             status_error_cls=status_error_cls,
         ) from exc
+    finally:
+        if client is not None:
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
     message = completion.choices[0].message if completion.choices else None
     generated_text = openai_message_content_text(getattr(message, "content", None) if message is not None else None)
     if not generated_text:
@@ -321,7 +331,7 @@ def openai_message_content_text(content: object) -> str:
     return "".join(parts).strip()
 
 
-def invoke_ollama(
+def _invoke_ollama_once(
     *,
     base_url: str,
     bearer_token: str | None,
@@ -365,7 +375,7 @@ def invoke_ollama(
     try:
         with stream_factory(
             "POST", f"{base_url.rstrip('/')}/api/chat", headers=headers, json=request_body,
-            timeout=httpx.Timeout(connect=10.0, read=300.0, write=60.0, pool=60.0),
+            timeout=current_budget().timeout(),
         ) as response:
             response.raise_for_status()
             if response_content_length_exceeds(response, max_bytes=max_response_bytes):
@@ -411,7 +421,7 @@ def invoke_ollama(
     )
 
 
-def invoke_gemini(*, provider_config: Mapping[str, object], credential: object | None, request_body: dict[str, object]) -> tuple[str, GenerationUsage]:
+def _invoke_gemini_once(*, provider_config: Mapping[str, object], credential: object | None, request_body: dict[str, object]) -> tuple[str, GenerationUsage]:
     result = generate_gemini_text(
         project_id=str(provider_config.get("project_id") or ""),
         location=str(provider_config.get("location") or ""),
@@ -458,12 +468,14 @@ def translate_openai_generation_error(
         status_code = getattr(exc, "status_code", None)
         provider_error_code = None
         body = getattr(exc, "body", None)
+        error = None
+        code = None
         if isinstance(body, dict):
             error = body.get("error")
             code = error.get("code") if isinstance(error, dict) else None
             if isinstance(code, str) and code.strip():
                 provider_error_code = safe_provider_error_code(code, status_code=status_code)
-        return AppError(502, "llm_generation_failed", _safe_provider_http_error_message(status_code=status_code, provider_error_code=provider_error_code), {"provider_http_status": status_code, "provider_error_code": provider_error_code})
+        return AppError(502, "llm_generation_failed", _safe_provider_http_error_message(status_code=status_code, provider_error_code=provider_error_code), {"provider_http_status": status_code, "provider_error_code": provider_error_code, **_retry_details(exc, status_code=status_code, provider_error_code=code if isinstance(body, dict) and isinstance(error, dict) else None)})
     return AppError(502, "llm_generation_failed", "LLM generation failed")
 
 
@@ -493,7 +505,7 @@ def translate_ollama_generation_error(
                     "model_not_found" if status_code == 404 and "model" in normalized and "not found" in normalized else error_value,
                     status_code=status_code,
                 )
-        return AppError(502, "llm_generation_failed", _safe_provider_http_error_message(status_code=status_code, provider_error_code=provider_error_code), {"provider_http_status": status_code, "provider_error_code": provider_error_code})
+        return AppError(502, "llm_generation_failed", _safe_provider_http_error_message(status_code=status_code, provider_error_code=provider_error_code), {"provider_http_status": status_code, "provider_error_code": provider_error_code, **_retry_details(exc, status_code=status_code, provider_error_code=None)})
     return AppError(502, "llm_generation_failed", "LLM generation failed")
 
 
@@ -504,3 +516,75 @@ def generation_usage(*, input_tokens: object = None, output_tokens: object = Non
     if normalized_total is None and normalized_input is not None and normalized_output is not None:
         normalized_total = normalized_input + normalized_output
     return {"input_tokens": normalized_input, "output_tokens": normalized_output, "total_tokens": normalized_total, "duration_ms": duration_ms if isinstance(duration_ms, int) else None, "provider_duration_ms": provider_duration_ms if isinstance(provider_duration_ms, int) else None}
+
+
+def invoke_openai_compatible(
+    *,
+    api_key: str,
+    base_url: str,
+    request_body: dict[str, object],
+    client_factory: Callable[..., object] = OpenAI,
+    timeout_error_cls: type[Exception] = APITimeoutError,
+    connection_error_cls: type[Exception] = APIConnectionError,
+    status_error_cls: type[Exception] = APIStatusError,
+) -> tuple[str, GenerationUsage]:
+    return bounded_request(lambda budget: _invoke_openai_compatible_once(
+        api_key=api_key,
+        base_url=base_url,
+        request_body=request_body,
+        client_factory=client_factory,
+        timeout_error_cls=timeout_error_cls,
+        connection_error_cls=connection_error_cls,
+        status_error_cls=status_error_cls,
+    ))
+
+
+def invoke_ollama(
+    *,
+    base_url: str,
+    bearer_token: str | None,
+    request_body: dict[str, object],
+    max_response_bytes: int = OLLAMA_STREAM_MAX_RESPONSE_BYTES,
+    max_fragments: int = OLLAMA_STREAM_MAX_FRAGMENTS,
+    raw_chunk_bytes: int = OLLAMA_STREAM_RAW_CHUNK_BYTES,
+    stream_factory: Callable[..., object] = httpx.stream,
+    http_error_cls: type[Exception] = httpx.HTTPError,
+    timeout_exception_cls: type[Exception] = httpx.TimeoutException,
+    connect_error_cls: type[Exception] = httpx.ConnectError,
+    http_status_error_cls: type[Exception] = httpx.HTTPStatusError,
+) -> tuple[str, GenerationUsage]:
+    return bounded_request(lambda budget: _invoke_ollama_once(
+        base_url=base_url,
+        bearer_token=bearer_token,
+        request_body=request_body,
+        max_response_bytes=max_response_bytes,
+        max_fragments=max_fragments,
+        raw_chunk_bytes=raw_chunk_bytes,
+        stream_factory=stream_factory,
+        http_error_cls=http_error_cls,
+        timeout_exception_cls=timeout_exception_cls,
+        connect_error_cls=connect_error_cls,
+        http_status_error_cls=http_status_error_cls,
+    ))
+
+
+def invoke_gemini(*, provider_config: Mapping[str, object], credential: object | None, request_body: dict[str, object]) -> tuple[str, GenerationUsage]:
+    return bounded_request(lambda budget: _invoke_gemini_once(
+        provider_config=provider_config,
+        credential=credential,
+        request_body=request_body,
+    ))
+
+
+def _retry_details(exc: Exception, *, status_code: int | None, provider_error_code: str | None) -> dict[str, object]:
+    # Unknown/hard quota 429s fail closed. Inspect only structured, known codes.
+    if status_code != 429 or provider_error_code not in {"rate_limit_exceeded", "server_overloaded", "capacity_exhausted"}:
+        return {}
+    details: dict[str, object] = {"temporary_capacity": True}
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    value = headers.get("retry-after") if headers is not None else None
+    seconds = retry_after_seconds(value)
+    if seconds is not None:
+        details["retry_after_seconds"] = seconds
+    return details

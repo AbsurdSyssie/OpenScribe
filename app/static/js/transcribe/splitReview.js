@@ -1,4 +1,5 @@
 import { csrfFetch } from '../csrf.js';
+import { CHECKER_UNAVAILABLE_MESSAGE, generationFailureDetailsHtml, generationFailureMessage } from './documents.js?v=20261014-generation-status';
 
 const VALID_DISPOSITIONS = new Set([
   'separate_note',
@@ -38,19 +39,16 @@ const SAFE_SPLIT_ERROR_CODES = new Set([
   'consultation_split_llm_model_unavailable',
   'not_found',
 ]);
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const asString = (value) => (value === null || value === undefined ? '' : String(value));
 const normalizeTitle = (value) => asString(value).trim().replace(/\s+/g, ' ');
 const safeSplitErrorCode = (value) => (typeof value === 'string' && SAFE_SPLIT_ERROR_CODES.has(value) ? value : null);
-const safeOperationReference = (value) => (typeof value === 'string' && UUID_PATTERN.test(value) ? value : null);
 
 // Error text is deliberately selected here, rather than copied from an API
 // response. Split work can involve clinical/provider data, which is never safe
 // to interpolate into the owner UI.
-export function splitDiagnosticMessage({ stage, errorCode = null, operationId = null, reusedAnalysis = false, analysisStatus = null, canContinue = false } = {}) {
+export function splitDiagnosticMessage({ stage, operationId = null, errorCode = null, reusedAnalysis = false, analysisStatus = null, canContinue = false, failurePresentation = null } = {}) {
   const code = safeSplitErrorCode(errorCode);
-  const reference = safeOperationReference(operationId);
   let message;
   if (stage === 'analysis') {
     if (code === 'consultation_split_source_stale' || analysisStatus === 'stale') {
@@ -89,15 +87,14 @@ export function splitDiagnosticMessage({ stage, errorCode = null, operationId = 
       ? 'A template for these split notes is unavailable. Choose an available template and select Create again.'
       : 'Split-note regeneration could not be started. Please try again.';
   } else if (stage === 'generation') {
-    message = 'The split notes could not be generated. Select Create to start a new request.';
+    message = generationFailureMessage(failurePresentation);
   } else if (stage === 'submission') {
     message = 'The note split could not be started. Review the consultation and select Create again.';
   } else {
     message = 'The note split could not be started. Review the consultation and select Create again.';
   }
-  if (code) message += ` Code: ${code}.`;
-  if (reference) message += ` Reference: ${reference}.`;
-  return message;
+  const reference = typeof operationId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(operationId) ? operationId : null;
+  return reference ? `${message} Reference: ${reference}.` : message;
 }
 
 // This is deliberately conservative rather than a full Unicode case-fold.
@@ -263,6 +260,11 @@ export function createSplitPartialActionsController({
     status.textContent = message;
     status.dataset.statusKind = kind;
   };
+  const setCheckerUnavailableStatus = (presentation) => {
+    if (!status) return;
+    status.innerHTML = `${CHECKER_UNAVAILABLE_MESSAGE}${generationFailureDetailsHtml(presentation)}`;
+    status.dataset.statusKind = 'warning';
+  };
   const render = () => {
     const canAct = Boolean(batch?.can_retry_missing || batch?.can_keep_available);
     const completedPartial = batch?.status === 'completed_partial';
@@ -270,7 +272,8 @@ export function createSplitPartialActionsController({
     const primaryFailed = Boolean(batch?.primary_failed);
     // Controls themselves remain server-flag-only. The completed state stays
     // visible as a safe clinical acknowledgement after both flags turn off.
-    if (actionsRoot) actionsRoot.hidden = !batch?.batch_id || (!canAct && !completedPartial && !verifying);
+    const checkerUnavailable = Boolean(batch?.checker_unavailable);
+    if (actionsRoot) actionsRoot.hidden = !batch?.batch_id || (!canAct && !completedPartial && !verifying && !checkerUnavailable);
     if (retryButton) { retryButton.hidden = !batch?.can_retry_missing; retryButton.disabled = inFlight || !batch?.can_retry_missing; }
     if (keepButton) {
       keepButton.hidden = !batch?.can_keep_available;
@@ -281,7 +284,9 @@ export function createSplitPartialActionsController({
       if (primaryFailed && batch?.can_keep_available) keepButton.setAttribute('aria-describedby', 'split-partial-status');
       else keepButton.removeAttribute('aria-describedby');
     }
-    if (!inFlight) {
+    if (checkerUnavailable) {
+      setCheckerUnavailableStatus(batch?.checker_failure_presentation);
+    } else if (!inFlight) {
       if (verifying) {
         setStatus('Checking generated notes before they are available.', 'progress');
       } else if (completedPartial && primaryFailed) {

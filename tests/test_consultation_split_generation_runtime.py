@@ -1080,6 +1080,19 @@ def test_generation_topic_titles_are_encrypted_owner_only_and_document_deletion_
     assert db_session.get(GeneratedDocument, sibling.id) is not None
     outcome = next(item for item in outcomes if item.batch_topic_id == removed_topic_id)
     assert outcome.status is ConsultationSplitTopicOutcomeStatus.ready and outcome.output_encrypted
+    projection = read_workspace_split_batch(db_session, owner, transcript_id=execution.transcript_id)
+    assert projection is not None
+    assert projection.deleted_topic_uuids == [surviving_topic.topic_uuid]
+    sibling_topic_id = sibling.consultation_split_batch_topic_id
+    db_session.delete(sibling); db_session.commit(); db_session.rollback()
+    projection = read_workspace_split_batch(db_session, owner, transcript_id=execution.transcript_id)
+    assert projection is not None
+    assert set(projection.deleted_topic_uuids) == {
+        surviving_topic.topic_uuid,
+        db_session.get(ConsultationSplitBatchTopic, sibling_topic_id).topic_uuid,
+    }
+    assert projection.failed_topic_count == 0
+    assert projection.can_retry_missing is False
 
 
 def test_generation_expired_root_before_submission_cancels_reservation_without_provider(db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch):
@@ -1414,10 +1427,11 @@ def test_submitted_verifier_finishes_after_gate_flip_without_reopening_manual_ac
             ProviderAttempt.consultation_split_execution_id == verification_id)),
     )
     _disable_split_gate(db_session, owner, monkeypatch, gate)
+    # Preference opt-out preserves this exact confirmed intent; batch state still rejects new actions.
     for action in (keep_available_split_notes, retry_missing_split_notes):
-        with pytest.raises(AppError, match="Consultation splitting is not enabled") as raised:
+        with pytest.raises(AppError) as raised:
             action(db_session, owner, transcript_id=transcript.id, batch_id=batch.id)
-        assert raised.value.code == "consultation_split_disabled"
+        assert raised.value.code == ("consultation_split_disabled" if gate == "deployment" else "consultation_split_batch_unavailable")
         db_session.rollback()
     calls = []
     monkeypatch.setattr("app.services.consultation_split_verification_runtime.resolve_generation_credential", lambda _config: "token")
@@ -1450,7 +1464,7 @@ def test_submitted_verifier_finishes_after_gate_flip_without_reopening_manual_ac
     for action in (keep_available_split_notes, retry_missing_split_notes):
         with pytest.raises(AppError) as raised:
             action(db_session, owner, transcript_id=transcript.id, batch_id=batch.id)
-        assert raised.value.code == "consultation_split_disabled"
+        assert raised.value.code == ("consultation_split_disabled" if gate == "deployment" else "consultation_split_batch_unavailable")
         db_session.rollback()
 
 
@@ -1567,7 +1581,7 @@ def test_submitted_verifier_fail_open_materializes_originals_after_gate_flip(
     for action in (keep_available_split_notes, retry_missing_split_notes):
         with pytest.raises(AppError) as raised:
             action(db_session, owner, transcript_id=transcript.id, batch_id=batch.id)
-        assert raised.value.code == "consultation_split_disabled"
+        assert raised.value.code == ("consultation_split_disabled" if gate == "deployment" else "consultation_split_batch_unavailable")
         db_session.rollback()
 
 
@@ -1983,7 +1997,7 @@ def test_verifier_deadline_wins_over_late_provider_response_without_a_second_cal
     for action in (keep_available_split_notes, retry_missing_split_notes):
         with pytest.raises(AppError) as raised:
             action(db_session, owner, transcript_id=transcript.id, batch_id=batch.id)
-        assert raised.value.code == "consultation_split_disabled"
+        assert raised.value.code == ("consultation_split_disabled" if gate == "deployment" else "consultation_split_batch_unavailable")
         db_session.rollback()
 
 

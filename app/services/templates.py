@@ -1,3 +1,6 @@
+from app.services.provider_transport_telemetry import provider_attempt_execution
+from app.services.llm_execution import ExecutionBudget
+
 import json
 import logging
 import os
@@ -145,8 +148,8 @@ GENERATION_WAIT_FOR_TRANSCRIPT_TIMEOUT_SECONDS = int(
 )
 # Must cover transcript wait, normal outbox retry delay, and worker pickup.
 GENERATION_RESERVATION_VALIDITY_SECONDS = GENERATION_WAIT_FOR_TRANSCRIPT_TIMEOUT_SECONDS + 600
-GENERATION_PROVIDER_DEADLINE_SECONDS = 900
-HALLUCINATION_CHECK_PROVIDER_DEADLINE_SECONDS = 900
+GENERATION_PROVIDER_DEADLINE_SECONDS = 150
+HALLUCINATION_CHECK_PROVIDER_DEADLINE_SECONDS = 30
 NOTE_GENERATION_LENGTH_TOKEN_CAPS = {
     "short": 800,
     "normal": 1600,
@@ -2941,6 +2944,7 @@ def _run_hallucination_check(
     sections: list[dict[str, str | int]],
     note_generation_options: NoteGenerationOptions,
 ) -> tuple[str, list[dict[str, str | int]], HallucinationCheckStatus, int | None]:
+    checker_started_at = utcnow()
     selection = active_team_hallucination_check_selection(db, team_id=document.team_id)
     debug_payload: dict[str, object] | None = None
     if _hallucination_check_debug_enabled():
@@ -2995,7 +2999,15 @@ def _run_hallucination_check(
     document.hallucination_check_model_name = model_name
     document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
     failure_code: str | None = None
+    main_attempt = _main_generation_attempt(db, document_id=document.id)
+    checker_deadline = checker_started_at + timedelta(seconds=30)
+    if main_attempt is not None and main_attempt.deadline_at is not None:
+        checker_deadline = min(checker_deadline, main_attempt.deadline_at)
+    checker_budget = ExecutionBudget.until(checker_deadline, maximum_seconds=30)
     for attempt in range(2):
+        if not _lock_live_generation_result(db, document=document) or checker_deadline <= utcnow():
+            db.rollback()
+            return title, sections, HallucinationCheckStatus.failed_provider, None
         system_message, user_message = _build_hallucination_check_messages(
             transcript_text=transcript_text,
             working_note_text=working_note_text,
@@ -3082,7 +3094,7 @@ def _run_hallucination_check(
             mark_provider_attempt_submitted(
                 db,
                 attempt_id=checker_attempt.id,
-                deadline_at=now + timedelta(seconds=HALLUCINATION_CHECK_PROVIDER_DEADLINE_SECONDS),
+                deadline_at=checker_deadline,
                 now=now,
             )
             # Provider can receive request only after durable submitted state.
@@ -3101,15 +3113,19 @@ def _run_hallucination_check(
                 db.commit()
             raise
         try:
-            response_text, checker_usage = _invoke_frozen_llm(
-                config=config,
-                adapter_kind=config.adapter_kind,
-                base_url=config.base_url,
-                provider_config=dict(config.provider_config_json or {}),
-                credential=runtime_credential,
-                request_body=request_body,
-            )
+            with provider_attempt_execution(db, attempt_id=checker_attempt.id, maximum_seconds=30, budget=checker_budget):
+                response_text, checker_usage = _invoke_frozen_llm(
+                    config=config,
+                    adapter_kind=config.adapter_kind,
+                    base_url=config.base_url,
+                    provider_config=dict(config.provider_config_json or {}),
+                    credential=runtime_credential,
+                    request_body=request_body,
+                )
         except AppError as exc:
+            if not _lock_live_generation_result(db, document=document):
+                db.rollback()
+                return title, sections, HallucinationCheckStatus.failed_provider, None
             settled = _settle_hallucination_check_attempt(
                 db,
                 attempt=checker_attempt,
@@ -3133,6 +3149,9 @@ def _run_hallucination_check(
             db.commit()
             return title, sections, HallucinationCheckStatus.failed_provider, None
         except Exception:
+            if not _lock_live_generation_result(db, document=document):
+                db.rollback()
+                return title, sections, HallucinationCheckStatus.failed_provider, None
             _settle_hallucination_check_attempt(
                 db, attempt=checker_attempt, usage=None, outcome=AttemptOutcome.unknown,
                 error_code="hallucination_check_failed",
@@ -3143,6 +3162,9 @@ def _run_hallucination_check(
                 error_code="hallucination_check_failed",
             )
             db.commit()
+            return title, sections, HallucinationCheckStatus.failed_provider, None
+        if not _lock_live_generation_result(db, document=document):
+            db.rollback()
             return title, sections, HallucinationCheckStatus.failed_provider, None
         try:
             parsed = _parse_hallucination_check_response(response_text, edit_cap=edit_cap)
@@ -4648,6 +4670,7 @@ def _claim_generated_document_for_dispatch(
     now = utcnow()
     set_generated_document_llm_request_payload(db, document=document, plaintext=llm_request_payload)
     document.status = GeneratedDocumentStatus.processing
+    document.validated_draft_at = None
     document.started_at = document.started_at or now
     document.completed_at = None
     document.error_code = None
@@ -4703,6 +4726,60 @@ def _settle_main_generation_terminal(
         db.add(settled)
 
 
+
+def _lock_live_generation_result(db: Session, *, document: GeneratedDocument) -> bool:
+    """Late provider/checker results cannot resurrect roots or terminal drafts."""
+    with db.no_autoflush:
+        owner = db.scalar(select(User.id).where(User.id == document.owner_user_id).with_for_update())
+        root = db.execute(select(Transcript.id, Transcript.retention_expires_at).where(Transcript.id == document.transcript_id).with_for_update()).first()
+        state = db.scalar(select(GeneratedDocument.status).where(GeneratedDocument.id == document.id).with_for_update())
+        attempt = db.execute(select(ProviderAttempt.status, ProviderAttempt.deadline_at).where(
+            ProviderAttempt.correlation_id == document.id, ProviderAttempt.attempt_number == 1,
+            ProviderAttempt.attempt_kind == AttemptKind.llm_generation).with_for_update()).first()
+    now = utcnow()
+    return owner is not None and root is not None and root.retention_expires_at > now and state is GeneratedDocumentStatus.processing and attempt is not None and attempt.status is AttemptStatus.submitted and attempt.deadline_at > now
+
+
+def _current_terminal_generation(db: Session, *, document_id: UUID) -> GeneratedDocument:
+    db.rollback()
+    current = db.get(GeneratedDocument, document_id)
+    if current is None:
+        raise AppError(404, "not_found", "Generated document not found")
+    return current
+
+
+def _checkpoint_validated_structured_draft(db: Session, *, document: GeneratedDocument,
+                                          title: str, sections: list[dict[str, str | int]],
+                                          phi_index: list, usage: GenerationUsage) -> bool:
+    if not _lock_live_generation_result(db, document=document):
+        db.rollback()
+        return False
+    restored_sections = [{**section, "text": reidentify_text(str(section["text"]), phi_index=phi_index)} for section in sections]
+    text = _render_structured_sections_text(restored_sections)
+    set_generated_document_text(db, document=document, field="original_output_text_encrypted", plaintext=text)
+    set_generated_document_text(db, document=document, field="edited_output_text_encrypted", plaintext=text)
+    document.title = reidentify_text(title, phi_index=phi_index)[:255]
+    for existing in list(document.sections):
+        db.delete(existing)
+    db.flush()
+    for section in restored_sections:
+        row = GeneratedDocumentSection(id=uuid4(), generated_document_id=document.id,
+            section_key=str(section["section_key"]), section_label=str(section["section_label"]),
+            section_order=int(section["section_order"]), original_text_encrypted="", edited_text_encrypted="", is_edited=False)
+        for field in ("original_text_encrypted", "edited_text_encrypted"):
+            set_generated_document_section_text(db, section=row, field=field,
+                owner_user_id=document.owner_user_id, plaintext=str(section["text"]))
+        db.add(row)
+    document.input_token_count = usage.get("input_tokens")
+    document.output_token_count = usage.get("output_tokens")
+    document.total_token_count = usage.get("total_tokens")
+    document.duration_ms = usage.get("duration_ms")
+    document.provider_duration_ms = usage.get("provider_duration_ms")
+    document.validated_draft_at = utcnow()
+    db.commit()
+    db.refresh(document)
+    return True
+
 def _fail_generated_document_after_submit(
     db: Session,
     *,
@@ -4714,6 +4791,8 @@ def _fail_generated_document_after_submit(
     include_provider_http_status: bool = False,
 ) -> GeneratedDocument:
     """Persist one post-submit terminal failure with safe metadata and settlement."""
+    if not _lock_live_generation_result(db, document=document):
+        return _current_terminal_generation(db, document_id=document.id)
     document.status = GeneratedDocumentStatus.failed
     document.error_code = exc.code if exc is not None else "llm_generation_failed"
     document.error_message = (exc.message if exc is not None else "LLM generation failed")[:255]
@@ -5163,14 +5242,15 @@ def _process_split_regenerated_document(
     document = claimed_document
     _record_generation_usage_event(db, event="llm_generation_started", document=document, config=config, status=document.status.value)
     try:
-        generated_text, usage = _invoke_frozen_llm(
-            config=config,
-            adapter_kind=adapter_kind,
-            base_url=document.llm_base_url or config.base_url,
-            provider_config=dict(document.llm_provider_config_json or {}),
-            credential=credential,
-            request_body=request_body,
-        )
+        with provider_attempt_execution(db, attempt_id=_main_generation_attempt(db, document_id=document.id).id, maximum_seconds=90):
+            generated_text, usage = _invoke_frozen_llm(
+                config=config,
+                adapter_kind=adapter_kind,
+                base_url=document.llm_base_url or config.base_url,
+                provider_config=dict(document.llm_provider_config_json or {}),
+                credential=credential,
+                request_body=request_body,
+            )
     except AppError as exc:
         return _fail_generated_document_after_submit(
             db, document=document, config=config, exc=exc, include_provider_http_status=True
@@ -5214,6 +5294,8 @@ def _process_split_regenerated_document(
             db, document=document, config=config, exc=exc, output_redacted=generated_text, usage=usage
         )
 
+    if not _lock_live_generation_result(db, document=document):
+        return _current_terminal_generation(db, document_id=document.id)
     set_generated_document_text(db, document=document, field="original_output_text_encrypted", plaintext=restored_text)
     set_generated_document_text(db, document=document, field="edited_output_text_encrypted", plaintext=restored_text)
     for existing_section in list(document.sections):
@@ -5538,14 +5620,15 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
 
     try:
         request_body = llm_request_payload
-        generated_text, usage = _invoke_frozen_llm(
-            config=config,
-            adapter_kind=adapter_kind,
-            base_url=base_url,
-            provider_config=dict(document.llm_provider_config_json or {}),
-            credential=runtime_credential,
-            request_body=request_body,
-        )
+        with provider_attempt_execution(db, attempt_id=_main_generation_attempt(db, document_id=document.id).id, maximum_seconds=90):
+            generated_text, usage = _invoke_frozen_llm(
+                config=config,
+                adapter_kind=adapter_kind,
+                base_url=base_url,
+                provider_config=dict(document.llm_provider_config_json or {}),
+                credential=runtime_credential,
+                request_body=request_body,
+            )
     except AppError as exc:
         return _fail_generated_document_after_submit(
             db, document=document, config=config, exc=exc, include_provider_http_status=True
@@ -5569,6 +5652,8 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
                 if template_config is None:
                     raise AppError(422, "business_rule_violation", "Structured template config is missing for this generated document")
                 redacted_title, redacted_sections = _parse_generated_structured_note_json(generated_text, template_config=template_config)
+                if not _checkpoint_validated_structured_draft(db, document=document, title=redacted_title, sections=redacted_sections, phi_index=phi_index, usage=usage):
+                    return _current_terminal_generation(db, document_id=document.id)
                 redacted_title, redacted_sections, check_status, applied_edit_count = _run_hallucination_check(
                     db,
                     document=document,
@@ -5615,12 +5700,18 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
         return _fail_generated_document_after_submit(
             db, document=document, config=config, exc=exc, output_redacted=generated_text, usage=usage
         )
+    if not _lock_live_generation_result(db, document=document):
+        return _current_terminal_generation(db, document_id=document.id)
     set_generated_document_text(db, document=document, field="original_output_text_encrypted", plaintext=restored_text)
     set_generated_document_text(db, document=document, field="edited_output_text_encrypted", plaintext=restored_text)
     document.failed_provider_output_redacted_encrypted = None
     if document.generator_type is GeneratedDocumentGeneratorType.template:
         for existing_section in list(document.sections):
             db.delete(existing_section)
+        # Checkpoint rows already occupy the per-document section keys.
+        # Delete them before inserting checked replacements.
+        db.flush()
+        db.expire(document, ["sections"])
         for section in structured_sections:
             section_record = GeneratedDocumentSection(
                 id=uuid4(),

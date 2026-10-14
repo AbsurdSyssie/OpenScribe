@@ -1,6 +1,6 @@
 import json
 import re
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -15,6 +15,9 @@ from tests.constants import PERMANENT_TEST_PASSWORD
 from app.errors import AppError
 from app.models import (
     AccountRequest,
+    AttemptKind,
+    AttemptOutcome,
+    AttemptStatus,
     ClinicalEntity,
     ClinicalEntityRun,
     ConsultationSplitAnalysis,
@@ -40,6 +43,7 @@ from app.models import (
     ProviderFeatureType,
     ProviderUsageEvent,
     ProviderUsageEventType,
+    ProviderAttempt,
     PromptTemplate,
     PromptTemplateVersion,
     QuickAction,
@@ -99,6 +103,12 @@ from app.services.default_assets import (
     import_team_assets_to_defaults,
 )
 from app.services.admin import admin_usage_overview
+from app.services.quotas import (
+    mark_provider_attempt_submitted,
+    reserve_provider_attempt,
+    settle_provider_attempt_tokens,
+    settle_provider_attempt_unknown_tokens,
+)
 from app.services.content_crypto import is_encrypted_envelope
 from app.services.dictations import update_post_consultation_dictation
 from app.services.passwords import verify_password
@@ -3624,8 +3634,8 @@ def test_transcribe_documents_show_hallucination_check_panel():
     documents_js = (root / "app" / "static" / "js" / "transcribe" / "documents.js").read_text(encoding="utf-8")
 
     assert "Hallucination check" in documents_js
-    assert "Debug payload not available. Set HALLUCINATION_CHECK_DEBUG_UI=1 before generating the note" in documents_js
-    assert "documents.js?v=20260918-retired-note-workspace" in app_js
+    assert "Debug payload not available" not in documents_js
+    assert "documents.js?v=20261014-generation-status" in app_js
 
 
 def test_admin_llm_draft_flow_hides_key_after_saved_and_shows_pending_state(
@@ -4198,7 +4208,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' not in page.text
     assert 'aria-label="Workspace navigation"' in page.text
     assert "My Library" in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20261006-durable-create"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20261014-generation-status"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -5057,7 +5067,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20261006-durable-create" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261014-generation-status" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -6858,7 +6868,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20261006-durable-create" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261014-generation-status" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():
@@ -10084,3 +10094,251 @@ def test_active_admin_gemini_wizard_uses_typed_google_fields_and_file_input():
     assert "Check credentials and find models" in markup
     assert "google_service_account_json: googleCredential" in markup
     assert "external_account" not in markup
+
+
+def test_admin_usage_reports_recovered_transport_retry_and_recent_health(db_session, make_team, make_user):
+    team = make_team(name="Transport monitoring clinic")
+    owner = make_user(
+        email="transport-monitoring-owner@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.user,
+    )
+    now = utcnow()
+    correlation_id = uuid4()
+    attempt = reserve_provider_attempt(
+        db_session,
+        team_id=team.id,
+        owner_user_id=owner.id,
+        resource=QuotaResource.tokens,
+        attempt_kind=AttemptKind.llm_generation,
+        correlation_id=correlation_id,
+        attempt_number=1,
+        reserved_units=10,
+        authorized_at=now,
+        reservation_valid_until=now + timedelta(minutes=5),
+        provider_adapter="openai_chat",
+        provider_model="synthetic-test-model",
+    )
+    mark_provider_attempt_submitted(
+        db_session,
+        attempt_id=attempt.id,
+        deadline_at=now + timedelta(minutes=2),
+        now=now,
+    )
+    attempt.transport_events_json = [
+        {
+            "occurred_at": (now - timedelta(seconds=2)).isoformat(),
+            "request_ordinal": 1,
+            "duration_ms": 120,
+            "code": "rate_limited",
+            "http_status": 429,
+            "retry_wait_ms": 1000,
+        },
+        {
+            "occurred_at": (now - timedelta(seconds=1)).isoformat(),
+            "request_ordinal": 2,
+            "duration_ms": 300,
+            "code": "success",
+            "http_status": 200,
+            "retry_wait_ms": 0,
+        },
+    ]
+    settle_provider_attempt_tokens(
+        db_session,
+        attempt_id=attempt.id,
+        reported_total_tokens=5,
+        outcome=AttemptOutcome.succeeded,
+        now=now,
+    )
+    db_session.commit()
+
+    overview = admin_usage_overview(
+        db_session,
+        team_id=team.id,
+        range_key="30d",
+        monitor_reference=str(correlation_id),
+    )
+
+    assert len(overview["usage_recent_operational_rows"]) == 1
+    row = overview["usage_recent_operational_rows"][0]
+    assert row.reference_id == correlation_id
+    assert row.outcome == "Recovered after retry"
+    assert row.retry_count == 1
+    assert row.provider_adapter == "openai_chat"
+    assert row.error_code == "rate_limit_exceeded"
+    health = overview["usage_operational_health"]
+    assert health["observed_calls"] == 2
+    assert health["http_429"] == 1
+    assert health["degraded_calls"] == 1
+    assert health["avg_provider_latency_ms"] == 210.0
+
+
+def test_admin_usage_sanitizes_unknown_provider_failure_metadata(db_session, make_team, make_user):
+    team = make_team(name="Unknown attempt monitoring")
+    owner = make_user(
+        email="unknown-attempt-owner@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.user,
+    )
+    now = utcnow()
+    correlation_id = uuid4()
+    attempt = reserve_provider_attempt(
+        db_session,
+        team_id=team.id,
+        owner_user_id=owner.id,
+        resource=QuotaResource.tokens,
+        attempt_kind=AttemptKind.llm_generation,
+        correlation_id=correlation_id,
+        attempt_number=1,
+        reserved_units=10,
+        authorized_at=now,
+        reservation_valid_until=now + timedelta(minutes=5),
+        provider_adapter="openai_chat",
+        provider_model="synthetic-test-model",
+    )
+    mark_provider_attempt_submitted(
+        db_session, attempt_id=attempt.id, deadline_at=now + timedelta(minutes=2), now=now,
+    )
+    attempt.error_code = "patient payload: DO NOT DISPLAY"
+    attempt.provider_error_code = "provider response: DO NOT DISPLAY"
+    attempt.provider_http_status = 503
+    attempt.transport_events_json = [{
+        "occurred_at": now.isoformat(), "request_ordinal": 1, "duration_ms": 80,
+        "code": "provider_error", "http_status": 503, "retry_wait_ms": 0,
+    }]
+    settle_provider_attempt_unknown_tokens(db_session, attempt_id=attempt.id, now=now)
+    db_session.commit()
+
+    overview = admin_usage_overview(
+        db_session, team_id=team.id, range_key="30d", monitor_reference=str(correlation_id),
+    )
+
+    assert len(overview["usage_recent_operational_rows"]) == 1
+    row = overview["usage_recent_operational_rows"][0]
+    assert row.outcome == "Failed"
+    assert row.error_code == "other_failure"
+    assert row.provider_error_code == "provider_server_error"
+    assert row.provider_http_status == 503
+    assert "DO NOT DISPLAY" not in repr(row)
+
+
+def test_admin_usage_includes_checker_predispatch_failure_from_safe_usage_event(
+    db_session, make_team, make_user, make_generated_document,
+):
+    team = make_team(name="Checker event monitoring")
+    owner = make_user(
+        email="checker-event-owner@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.user,
+    )
+    transcript = Transcript(
+        owner_user_id=owner.id,
+        team_id=team.id,
+        title="Synthetic transcript",
+        retention_days_applied=team.default_retention_days,
+        retention_expires_at=utcnow() + timedelta(days=team.default_retention_days),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    version = TranscriptVersion(
+        transcript_id=transcript.id, version_no=1, text_encrypted="synthetic encrypted test fixture",
+    )
+    db_session.add(version)
+    db_session.flush()
+    document = make_generated_document(
+        owner=owner, transcript=transcript, transcript_version=version,
+    )
+    event_time = utcnow()
+    db_session.add(ProviderUsageEvent(
+        team_id=team.id,
+        owner_user_id=owner.id,
+        generated_document_id=document.id,
+        transcript_id=transcript.id,
+        feature_type=ProviderFeatureType.llm_generation,
+        event_type=ProviderUsageEventType.failed,
+        status="hallucination_check:failed_provider",
+        error_code="hallucination_check_invalid_config",
+        provider_http_status=503,
+        created_at=event_time,
+    ))
+    db_session.commit()
+
+    overview = admin_usage_overview(
+        db_session, team_id=team.id, range_key="30d", monitor_reference=str(document.id),
+    )
+
+    rows = overview["usage_recent_operational_rows"]
+    assert len(rows) == 1
+    assert rows[0].reference_id == document.id
+    assert rows[0].stage == "Note check"
+    assert rows[0].outcome == "Failed"
+    assert rows[0].error_code == "hallucination_check_invalid_config"
+    assert rows[0].provider_http_status == 503
+    assert "synthetic encrypted test fixture" not in repr(rows[0])
+
+
+@pytest.mark.parametrize('transport_succeeded', [False, True])
+def test_admin_usage_keeps_legacy_unknown_outcomes_without_transport_metadata(db_session, make_team, make_user, transport_succeeded):
+    team = make_team(name='Legacy unknown monitoring')
+    owner = make_user(email='legacy-unknown-owner@example.com', password='password-1', team=team)
+    now = utcnow()
+    correlation_id = uuid4()
+    attempt = reserve_provider_attempt(
+        db_session, team_id=team.id, owner_user_id=owner.id, resource=QuotaResource.tokens,
+        attempt_kind=AttemptKind.llm_generation, correlation_id=correlation_id,
+        attempt_number=1, reserved_units=10, authorized_at=now,
+        reservation_valid_until=now + timedelta(minutes=5),
+        provider_adapter='openai_chat', provider_model='synthetic-test-model',
+    )
+    mark_provider_attempt_submitted(db_session, attempt_id=attempt.id, deadline_at=now + timedelta(minutes=2), now=now)
+    if transport_succeeded:
+        attempt.transport_events_json = [dict(occurred_at=now.isoformat(), request_ordinal=1,
+            duration_ms=100, code='success', http_status=200, retry_wait_ms=0)]
+    settle_provider_attempt_unknown_tokens(db_session, attempt_id=attempt.id, now=now)
+    db_session.commit()
+    overview = admin_usage_overview(db_session, team_id=team.id, monitor_reference=str(correlation_id))
+    rows = overview['usage_recent_operational_rows']
+    assert len(rows) == 1
+    assert rows[0].outcome == ('Usage unknown' if transport_succeeded else 'Unknown outcome')
+    assert rows[0].error_code == 'other_failure'
+    assert rows[0].provider_error_code is None
+    assert rows[0].provider_http_status is None
+
+
+@pytest.mark.parametrize('transport_metadata', [True, False])
+def test_admin_health_counts_each_failed_transport_once_across_failure_categories(db_session, make_team, make_user, transport_metadata):
+    team = make_team(name='Mixed transport health')
+    owner = make_user(email='mixed-transport-owner@example.com', password='password-1', team=team)
+    now = utcnow()
+    failures = [('provider_error', 401), ('provider_error', 403), ('provider_error', 400),
+                ('connection_error', None), ('timeout', 503)]
+    for code, status in failures:
+        attempt = reserve_provider_attempt(
+            db_session, team_id=team.id, owner_user_id=owner.id, resource=QuotaResource.tokens,
+            attempt_kind=AttemptKind.llm_generation, correlation_id=uuid4(), attempt_number=1,
+            reserved_units=10, authorized_at=now - timedelta(seconds=2),
+            reservation_valid_until=now + timedelta(minutes=5),
+            provider_adapter='openai_chat', provider_model='synthetic-test-model',
+        )
+        mark_provider_attempt_submitted(db_session, attempt_id=attempt.id,
+            deadline_at=now + timedelta(minutes=2), now=now - timedelta(seconds=1))
+        if transport_metadata:
+            attempt.transport_events_json = [dict(occurred_at=now.isoformat(), request_ordinal=1,
+                duration_ms=100, code=code, http_status=status, retry_wait_ms=0)]
+        # Duplicate legacy metadata must not count an observed request twice.
+        attempt.provider_http_status = status
+        attempt.provider_error_code = 'timeout' if code == 'timeout' else 'connection_error' if code == 'connection_error' else 'authentication_error'
+        settle_provider_attempt_unknown_tokens(db_session, attempt_id=attempt.id, now=now)
+    db_session.commit()
+    overview = admin_usage_overview(db_session, team_id=team.id)
+    health = overview['usage_operational_health']
+    assert health['observed_calls'] == 5
+    assert health['degraded_calls'] == 5
+    assert health['degradation_pct'] == 100.0
+    assert health['http_429'] == 0
+    assert health['http_503'] == 1
+    assert health['timeouts'] == 1
+    assert 'provider_errors_elevated' in health['alerts']

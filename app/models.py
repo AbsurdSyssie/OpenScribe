@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import BigInteger, Boolean, Date, JSON, CheckConstraint, DateTime, Enum, Float, ForeignKey, ForeignKeyConstraint, Index, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -2565,6 +2565,7 @@ class GeneratedDocument(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
     worker_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    validated_draft_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -2748,9 +2749,13 @@ class UserQuotaPolicyEvent(Base):
     revoker: Mapped[User | None] = relationship(foreign_keys=[revoker_user_id])
 
 
+from app.provider_transport_schema import TRANSPORT_EVENTS_CONSTRAINT
+
+
 class ProviderAttempt(Base):
     __tablename__ = "provider_attempts"
     __table_args__ = (
+        CheckConstraint(TRANSPORT_EVENTS_CONSTRAINT, name="ck_provider_attempts_transport_events"),
         CheckConstraint("attempt_number >= 1", name="ck_provider_attempts_attempt_number_positive"),
         CheckConstraint("reserved_units > 0", name="ck_provider_attempts_reserved_units_positive"),
         CheckConstraint("settled_units IS NULL OR settled_units >= 0", name="ck_provider_attempts_settled_units_nonnegative"),
@@ -2833,6 +2838,7 @@ class ProviderAttempt(Base):
     error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     provider_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     provider_http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    transport_events_json: Mapped[list[dict]] = mapped_column(JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb"))
     authorized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     reservation_valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -177,7 +177,7 @@ Reusable configuration must not contain patient content.
 
 ## Usage and Audit
 
-Usage provides global or validated selected-team aggregate operational telemetry. Per-user aggregates appear only under selected-team scope. See [usage_tab.md](usage_tab.md).
+Usage provides global or validated selected-team aggregate operational telemetry, bounded recent failure/retry projections, and 15-minute health indicators. Per-user aggregates appear only under selected-team scope. The operational tables show safe metadata and never grant access to transcript-derived content. See [usage_tab.md](usage_tab.md).
 
 Audit supports validated filters for safe dimensions such as time range, team, actor ID, action, category, outcome, and sanitized request IP. A fully authenticated system administrator can place, renew or release a retention hold on a visible event. Each approval has a controlled reason, bounded reference, owner, review date and expiry; one approval cannot exceed 90 days.
 

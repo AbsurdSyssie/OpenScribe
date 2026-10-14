@@ -641,7 +641,7 @@ def test_owner_post_returns_accepted_safe_projection(client, db_session, make_us
 
     assert response.status_code == 202
     assert response.json()["status"] == "queued"
-    assert set(response.json()) == {"analysis_id", "status", "error_code", "updated_at", "completed_at", "manual_review_requested", "topics"}
+    assert set(response.json()) == {"analysis_id", "status", "error_code", "updated_at", "completed_at", "manual_review_requested", "topics", "active_since", "failure_presentation", "active_retry_presentation"}
 
 
 @pytest.mark.parametrize("persisted_status", ["queued", "processing"])
@@ -706,7 +706,7 @@ def test_projection_has_exact_safe_topic_fields_and_no_snapshots(db_session, mak
 
     payload = queue_split_analysis_api(db_session, owner, transcript_id=transcript.id).model_dump(mode="json")
 
-    assert set(payload) == {"analysis_id", "status", "error_code", "updated_at", "completed_at", "manual_review_requested", "topics"}
+    assert set(payload) == {"analysis_id", "status", "error_code", "updated_at", "completed_at", "manual_review_requested", "topics", "active_since", "failure_presentation", "active_retry_presentation"}
     assert set(payload["topics"][0]) == {"topic_uuid", "title", "is_primary", "disposition", "template_id"}
     assert not any(secret in str(payload) for secret in ("source_snapshot", "provider", "fingerprint", "execution", "recoverable"))
 
@@ -1960,7 +1960,7 @@ def test_workspace_rest_and_sse_safe_split_projection_excludes_encrypted_source_
     expected = ConsultationSplitBatchDetail(
         batch_id=uuid4(), status="partially_ready", failed_topic_count=1, validated_topic_count=1,
         primary_failed=True, can_retry_missing=True, can_keep_available=True,
-        active_execution_id=None, preferred_document_id=None,
+        active_execution_id=None, preferred_document_id=None, deleted_topic_uuids=[uuid4()],
     )
     monkeypatch.setattr("app.web.transcribe_workspace.read_workspace_split_batch", lambda *_args, **_kwargs: expected)
     assert client.post("/api/v1/auth/login", json={"email": owner.email, "password": "password-1"}).status_code == 200
@@ -1968,6 +1968,7 @@ def test_workspace_rest_and_sse_safe_split_projection_excludes_encrypted_source_
     assert rest.status_code == 200
     split = rest.json()["consultation_split_batch"]
     assert split == expected.model_dump(mode="json")
+    assert split["deleted_topic_uuids"] == [str(expected.deleted_topic_uuids[0])]
     assert not ({"source_snapshot", "confirmed_plan", "provider_snapshot", "output", "title"} & set(split))
 
     from app.schemas import TranscribeWorkspaceDetail
@@ -2218,7 +2219,12 @@ def test_intent_start_route_maps_bounded_analysis_results_without_leaking_metada
         "completed_at",
         "manual_review_requested",
         "topics",
+        "active_since",
+        "failure_presentation",
+        "active_retry_presentation",
     }
+    assert response.json()["analysis"]["failure_presentation"] is None
+    assert response.json()["analysis"]["active_retry_presentation"] is None
     assert not any(value in response.text for value in ("snapshot", "provider", "execution", "fingerprint", "quota", "outbox"))
 
 
@@ -2364,3 +2370,36 @@ def test_intent_start_route_keeps_outbox_pending_when_immediate_broker_publish_f
     assert dispatch.attempt_count == 1
     assert dispatch.last_error_code == PUBLISH_ERROR_CODE
     assert dispatch.next_attempt_at == publish_time + timedelta(seconds=10)
+
+
+@pytest.mark.parametrize('role', [TeamRole.user, TeamRole.leader])
+def test_generated_failure_api_support_projection_is_owner_safe(
+    client, db_session, make_user, make_generated_document, role,
+):
+    from app.models import GeneratedDocumentStatus, HallucinationCheckStatus
+    owner = make_user(email=f'failure-owner-{role.value}@example.com', team_role=role,
+                      mfa_required=False, mfa_enabled=False)
+    foreign = make_user(email=f'failure-foreign-{role.value}@example.com', team=owner.team,
+                        team_role=TeamRole.leader, mfa_required=False, mfa_enabled=False)
+    transcript, document = _split_generated_document(db_session, owner, make_generated_document)
+    document.status = GeneratedDocumentStatus.failed
+    document.error_code = 'llm_provider_timeout'
+    document.provider_error_code = 'timeout'
+    document.provider_http_status = 503
+    document.error_message = 'synthetic confidential provider diagnostic'
+    document.completed_at = utcnow()
+    document.hallucination_check_status = HallucinationCheckStatus.not_applicable
+    db_session.commit()
+    assert client.post('/api/v1/auth/login', json={'email': owner.email, 'password': 'password-1'}).status_code == 200
+    response = client.get(f'/api/v1/transcripts/{transcript.id}/generated-documents')
+    assert response.status_code == 200
+    projection = response.json()[0]
+    failure = projection['failure_presentation']
+    assert failure['support_reference'] == str(document.id)
+    assert failure['category'] == 'temporary'
+    assert bool(failure['technical_details']) == (role is TeamRole.leader)
+    assert projection['checker_unavailable'] is False
+    assert 'synthetic confidential provider diagnostic' not in response.text
+    assert client.post('/api/v1/auth/logout').status_code == 200
+    assert client.post('/api/v1/auth/login', json={'email': foreign.email, 'password': 'password-1'}).status_code == 200
+    assert client.get(f'/api/v1/transcripts/{transcript.id}/generated-documents').status_code in {403, 404}

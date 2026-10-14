@@ -267,14 +267,23 @@ def test_generation_constrains_gemini_3_json_and_uses_explicit_schema(monkeypatc
 
 
 @pytest.mark.parametrize(
-    "model",
+    ("model", "expected_level"),
     [
-        "gemini-3.8-flash",
-        "publishers/google/models/gemini-3.8-flash",
+        ("gemini-3.8-flash", "LOW"),
+        ("publishers/google/models/gemini-3.8-flash", "LOW"),
+        ("gemini-3.7-flash", "LOW"),
+        ("publishers/google/models/gemini-3.7-flash", "LOW"),
+        ("gemini-3.8-flash-cyber", "LOW"),
+        ("publishers/google/models/gemini-3.8-flash-cyber", "LOW"),
+        ("gemini-3.5-flash", "MINIMAL"),
+        ("gemini-3.5-flash-lite", "MINIMAL"),
+        ("gemini-3.6-flash", "MINIMAL"),
+        ("gemini-3.1-flash-lite", "MINIMAL"),
+        ("gemini-3.1-pro-preview", "LOW"),
     ],
 )
-def test_generation_uses_supported_low_thinking_for_gemini_3_8_flash(
-    monkeypatch, model,
+def test_generation_uses_documented_gemini_3_thinking_level(
+    monkeypatch, model, expected_level,
 ):
     client = FakeClient()
     _install_client(monkeypatch, client)
@@ -300,9 +309,49 @@ def test_generation_uses_supported_low_thinking_for_gemini_3_8_flash(
 
     call = client.models.generate_calls[0]
     assert call["model"] == model
-    assert call["config"].thinking_config.thinking_level.value == "LOW"
+    assert call["config"].thinking_config.thinking_level.value == expected_level
     assert call["config"].response_mime_type == "application/json"
     assert call["config"].response_json_schema == response_schema
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_budget"),
+    [
+        ("gemini-2.5-flash", 0),
+        ("publishers/google/models/gemini-2.5-flash-lite", 0),
+        ("gemini-2.5-pro", 128),
+    ],
+)
+def test_generation_preserves_gemini_2_5_thinking_budget(
+    monkeypatch, model, expected_budget,
+):
+    client = FakeClient()
+    _install_client(monkeypatch, client)
+
+    adapter.generate_gemini_text(
+        project_id="p",
+        location="eu",
+        credentials=None,
+        request=_request(model=model),
+    )
+
+    config = client.models.generate_calls[0]["config"]
+    assert config.thinking_config.thinking_budget == expected_budget
+
+
+@pytest.mark.parametrize("model", ["gemini-4-argon", "gemini-unknown"])
+def test_generation_leaves_unknown_thinking_policy_unset(monkeypatch, model):
+    client = FakeClient()
+    _install_client(monkeypatch, client)
+
+    adapter.generate_gemini_text(
+        project_id="p",
+        location="eu",
+        credentials=None,
+        request=_request(model=model),
+    )
+
+    assert client.models.generate_calls[0]["config"].thinking_config is None
 
 
 def test_generation_rejects_max_tokens_before_json_parser(monkeypatch):

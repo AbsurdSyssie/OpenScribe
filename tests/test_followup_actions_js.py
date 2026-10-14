@@ -25,7 +25,7 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
             const documentsSource = fs.readFileSync(documentsPath, 'utf8')
               .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';", '')
               .replaceAll('export const ', 'var ')
-              .replace('export function workingNoteToEditorDocument', 'function workingNoteToEditorDocument')
+              .replaceAll('export function ', 'function ')
               .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
             const regenerationSource = fs.readFileSync(regenerationPath, 'utf8')
               .replace('export function createGeneratedNoteRegenerationController', 'function createGeneratedNoteRegenerationController');
@@ -134,6 +134,7 @@ def test_followup_actions_route_and_preserve_steering_state_in_browser(tmp_path)
                 matchMedia: () => mobileMedia,
               },
             };
+            sandbox.document = fakeDocument;
             sandbox.globalThis = sandbox;
             vm.createContext(sandbox);
             vm.runInContext(regenerationSource, sandbox, { filename: regenerationPath });

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import socket
 import time
 from collections.abc import Mapping
@@ -17,6 +18,7 @@ from google.genai import types
 from google.oauth2 import service_account
 
 from app.errors import AppError
+from app.services.llm_execution import current_budget, retry_after_seconds
 from app.services.llm_adapters.types import LlmGenerationRequest, LlmGenerationResult
 
 
@@ -66,7 +68,10 @@ def build_gemini_client(
     if api_version not in {"v1", "v1beta1"}:
         raise ValueError("Unsupported Gemini API version")
     headers = _CAPACITY_HEADERS[capacity_mode]
-    http_options = types.HttpOptions(api_version=api_version, headers=headers or None)
+    http_options = types.HttpOptions(api_version=api_version, headers=headers or None,
+        timeout=max(1, round(current_budget().remaining() * 1000)),
+        retry_options=types.HttpRetryOptions(attempts=1),
+        client_args={"timeout": current_budget().timeout()})
     return genai.Client(
         enterprise=True,
         project=project_id,
@@ -266,7 +271,11 @@ def gemini_request_snapshot(request: LlmGenerationRequest) -> dict[str, object]:
 def _gemini_thinking_config(model: str) -> types.ThinkingConfig | None:
     """Keep hidden thinking from consuming note-output token budgets."""
     model_id = model.rsplit("/", 1)[-1].lower()
-    if model_id == "gemini-3.8-flash":
+    if model_id in {
+        "gemini-3.7-flash",
+        "gemini-3.8-flash",
+        "gemini-3.8-flash-cyber",
+    }:
         return types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW)
     if model_id.startswith(("gemini-3.1-pro", "gemini-3-pro")):
         return types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW)
@@ -309,6 +318,16 @@ def translate_gemini_error(exc: Exception, *, operation: str = "generation") -> 
     if status_code in {408, 504}:
         return AppError(504, "llm_provider_timeout", "The Gemini request timed out.", details)
     if status_code == 429:
+        details = dict(details or {})
+        # Explicit capacity reasons only; generic RESOURCE_EXHAUSTED can mean
+        # a hard quota and must not trigger replay.
+        if _temporary_gemini_capacity(exc, reason_codes):
+            details["temporary_capacity"] = True
+            response = getattr(exc, "response", None)
+            headers = getattr(response, "headers", None)
+            delay = retry_after_seconds(headers.get("retry-after") if headers is not None else None)
+            if delay is not None:
+                details["retry_after_seconds"] = delay
         return AppError(429, "llm_provider_rate_limited", "Gemini capacity is temporarily unavailable.", details)
     if status_code == 404:
         if operation in {"model_validation", "generation"}:
@@ -396,3 +415,25 @@ def _provider_reason_codes(exc: Exception) -> set[str]:
 
     collect(response_json)
     return reasons
+
+
+def _temporary_gemini_capacity(exc: Exception, reasons: set[str]) -> bool:
+    if reasons & {"QUOTA_EXCEEDED", "DAILY_LIMIT_EXCEEDED", "BILLING_DISABLED", "CREDIT_EXHAUSTED"}:
+        return False
+    payload = getattr(exc, "response_json", None)
+    if not isinstance(payload, dict):
+        payload = getattr(exc, "details", None)
+    def has_quota_failure(value: object) -> bool:
+        if isinstance(value, dict):
+            kind = value.get("@type")
+            return (isinstance(kind, str) and kind.endswith("google.rpc.QuotaFailure")) or any(has_quota_failure(item) for item in value.values())
+        return isinstance(value, list) and any(has_quota_failure(item) for item in value)
+    if has_quota_failure(payload):
+        return False
+    if reasons & {"RATE_LIMIT_EXCEEDED", "CAPACITY_EXHAUSTED", "SERVER_OVERLOADED"}:
+        return True
+    error = payload.get("error") if isinstance(payload, dict) else None
+    message = error.get("message") if isinstance(error, dict) else None
+    # Google's documented PayGo capacity response. Only classify this known
+    # marker transiently; never persist provider message text.
+    return isinstance(message, str) and re.match(r"^resource exhausted[.,]\s*please try again later[.]", message.strip(), re.IGNORECASE) is not None

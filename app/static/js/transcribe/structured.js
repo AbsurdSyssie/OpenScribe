@@ -1,4 +1,4 @@
-import { generationLoadingHtml } from './documents.js?v=20260912-split-placeholder-slots';
+import { clearDelayedGenerationStatus, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261014-generation-status';
 
 export function createStructuredEditor({
   dom,
@@ -1576,6 +1576,7 @@ export function createStructuredEditor({
 
   const renderGeneratedOutput = (generatedDocument, structuredContext = {}) => {
     if (!dom.latestGeneratedOutput || !dom.generatedStructuredPanel || !dom.generatedFreeformPanel) return;
+    clearDelayedGenerationStatus(dom.latestGeneratedOutput);
     currentRenderedDocument = generatedDocument || null;
     currentRenderRequiresCopyReview = Boolean(generatedDocument?.id && generatedDocument?.kind !== 'working_note');
     resetCopyReviewStateForDocument();
@@ -1617,7 +1618,7 @@ export function createStructuredEditor({
     }
     if (generatedDocument.kind === 'split_placeholder' || generatedDocument.split_placeholder === true) {
       if (generatedDocument.status === 'failed') {
-        dom.latestGeneratedOutput.innerHTML = '<span class="text-slate">The split notes could not be created. Select Create to try again.</span>';
+        dom.latestGeneratedOutput.innerHTML = `<span class="text-slate">${generationFailureMessage(generatedDocument.failure_presentation)}</span>${generationFailureDetailsHtml(generatedDocument.failure_presentation)}`;
       } else {
         const phase = generatedDocument.split_generation_phase || '';
         const message = phase === 'generation_queued'
@@ -1626,6 +1627,10 @@ export function createStructuredEditor({
             ? 'Checking your split notes...'
             : 'Generating your split notes...';
         dom.latestGeneratedOutput.innerHTML = generationLoadingHtml({ label: 'split notes', message });
+        scheduleDelayedGenerationStatus(dom.latestGeneratedOutput, {
+          since: generatedDocument.split_generation_started_at,
+          message: 'This is taking a little longer than usual. We’re still working on your note.',
+        });
       }
       syncNoteEditorToolbar();
       return;
@@ -1640,16 +1645,19 @@ export function createStructuredEditor({
         ? 'Waiting for transcription to finish before writing your note.'
         : "This usually takes a few seconds.<br>We're preparing your clinical note...";
       dom.latestGeneratedOutput.innerHTML = generationLoadingHtml({ label: 'note', message });
+      scheduleDelayedGenerationStatus(dom.latestGeneratedOutput, { since: generatedDocument.started_at || generatedDocument.created_at });
       syncNoteEditorToolbar();
       return;
     }
     if (generatedDocument.status === 'processing') {
       dom.latestGeneratedOutput.innerHTML = generationLoadingHtml({ label: 'note' });
+      scheduleDelayedGenerationStatus(dom.latestGeneratedOutput, { since: generatedDocument.started_at || generatedDocument.created_at });
       syncNoteEditorToolbar();
       return;
     }
     if (generatedDocument.status === 'failed') {
-      dom.latestGeneratedOutput.innerHTML = `<span class="text-slate">The latest note could not be created${generatedDocument.error_message ? `: ${escapeHtml(generatedDocument.error_message)}` : ''}.</span>`;
+      const failure = generatedDocument.failure_presentation;
+      dom.latestGeneratedOutput.innerHTML = `<span class="text-slate">${generationFailureMessage(failure)}</span>${generationFailureDetailsHtml(failure, { formatTime: formatWorkspaceCreatedAt })}`;
       syncNoteEditorToolbar();
       return;
     }

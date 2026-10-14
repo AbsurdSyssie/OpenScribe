@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
-from .templates import GeneratedDocumentDetail
+from .templates import GeneratedDocumentDetail, GenerationFailurePresentation
 
 
 ConsultationSplitPublicStatus = Literal[
@@ -42,6 +42,9 @@ class ConsultationSplitAnalysisDetail(BaseModel):
     error_code: str | None = None
     updated_at: datetime | None = None
     completed_at: datetime | None = None
+    failure_presentation: GenerationFailurePresentation | None = None
+    active_retry_presentation: GenerationFailurePresentation | None = None
+    active_since: datetime | None = None
     manual_review_requested: bool = False
     topics: list[ConsultationSplitTopicDetail] = Field(default_factory=list, max_length=6)
 
@@ -221,8 +224,17 @@ class ConsultationSplitBatchDetail(BaseModel):
     can_retry_missing: bool
     can_keep_available: bool
     active_execution_id: UUID | None = None
+    active_since: datetime | None = None
     # This is metadata only.  It lets the workspace select a useful note after
     # a completed partial decision without exposing any topic or provider data.
     preferred_document_id: UUID | None = None
+    # A ready outcome whose materialized child is absent is the durable signal
+    # that the owner independently deleted that note. Topic UUIDs let the
+    # browser omit only those slots without exposing titles or output.
+    deleted_topic_uuids: list[UUID] = Field(default_factory=list, max_length=6)
     verification_status: Literal["pending", "verifying", "verified", "unchecked"] = "pending"
     verification_correction_count: int | None = Field(default=None, ge=0)
+    failure_presentation: GenerationFailurePresentation | None = None
+    active_retry_presentation: GenerationFailurePresentation | None = None
+    checker_unavailable: bool = False
+    checker_failure_presentation: GenerationFailurePresentation | None = None

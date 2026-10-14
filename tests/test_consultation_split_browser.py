@@ -350,6 +350,34 @@ def test_browser_split_happy_path_creates_bundled_drafts_and_ignores_a_switched_
         latest_output.wait_for(state="attached", timeout=6_000)
         with sessions() as db:
             assert db.scalar(select(func.count()).select_from(GeneratedDocument).where(GeneratedDocument.transcript_id == first_id)) == 2
+            documents = db.scalars(
+                select(GeneratedDocument)
+                .where(GeneratedDocument.transcript_id == first_id)
+                .order_by(GeneratedDocument.created_at)
+            ).all()
+            document_ids = [str(document.id) for document in documents]
+            db.delete(documents[0])
+            db.commit()
+        page.reload()
+        page.locator(f'[data-note-document-select][data-document-id="{document_ids[1]}"]').wait_for(
+            state="attached", timeout=6_000,
+        )
+        playwright_sync.expect(page.locator('[data-document-id^="split-placeholder:"]')).to_have_count(0)
+        playwright_sync.expect(page.locator('[data-note-selector] [data-note-document-select]')).to_have_count(2)
+        page.reload()
+        playwright_sync.expect(page.locator('[data-document-id^="split-placeholder:"]')).to_have_count(0)
+        playwright_sync.expect(page.locator('[data-note-selector] [data-note-document-select]')).to_have_count(2)
+        with sessions() as db:
+            survivor = db.get(GeneratedDocument, UUID(document_ids[1]))
+            assert survivor is not None
+            db.delete(survivor)
+            db.commit()
+        page.reload()
+        page.locator('[data-note-selector] [data-note-document-select]').first.wait_for(
+            state="attached", timeout=6_000,
+        )
+        playwright_sync.expect(page.locator('[data-document-id^="split-placeholder:"]')).to_have_count(0)
+        playwright_sync.expect(page.locator('[data-note-selector] [data-note-document-select]')).to_have_count(1)
         # Let a second queued result finish after the rendered browser has
         # selected the first consultation. Its review must not bleed across.
         _start_review(page, second_id)

@@ -121,6 +121,8 @@ Use the dedicated `CIS2_OIDC_*` settings, not the custom `OIDC_*` provider worka
 
 Celery Beat publishes pending task-dispatch outbox rows every second. Transcript-root retention, 24-hour failed-ingestion source expiry, transcript-audio cleanup, six-month security-audit expiry, legal-document retention, provider-secret cleanup, and quota lifecycle processing run every 10 seconds. These schedules are code constants, not environment settings.
 
+Maintained launchers validate the mode and all concurrency values before bootstrap. Workers use the prefork pool and prefetch multiplier 1; task acknowledgement and durable claim/idempotency behavior are unchanged. Each runtime starts one Beat. Size concurrency against measured memory, CPU, and provider capacity: setting generation concurrency to 10 is supported, but a 1 CPU / 2 GB host is too small to enable ten slots without capacity assessment. Changing these settings requires restarting the runtime.
+
 Accepted consultation split Create intents use the existing task outbox to start `openscribe.process_consultation_split_intent`. Its worker retries with bounded backoff while analysis is queued or processing; it has no separate Beat schedule. A later preference or deployment-gate change affects new split actions, while already accepted intent progress remains subject to owner, source-freshness, and transcript-retention checks. Existing gates continue to control workspace visibility and explicit review/confirmation.
 
 Redis append-only persistence protects queued work, result data, and rate-limit state across normal restarts. PostgreSQL remains authoritative and Redis is not a substitute for database backups.
@@ -208,7 +210,11 @@ Google SDK identity is configured through standard Google variables rather than 
 | --- | --- | --- |
 | `DOCKER_APP_BIND` | `127.0.0.1` | Host interface on which Compose publishes the web port. |
 | `DOCKER_SEED_TEST_ACCOUNTS` | `false` | Seed reusable local accounts during application-container startup. Keep disabled on persistent or shared instances. |
-| `CELERY_WORKER_CONCURRENCY` | `1` | Concurrency for the single local runtime worker consuming all queues. |
+| `CELERY_WORKER_MODE` | `combined` | Container and host development topology: `combined` consumes all three queues in one worker; `isolated` starts separate control, generation, and ingestion workers. |
+| `CELERY_WORKER_CONCURRENCY` | `1` | Positive integer concurrency for the combined worker. |
+| `CELERY_CONTROL_CONCURRENCY` | `1` | Positive integer concurrency for isolated control work. |
+| `CELERY_GENERATION_CONCURRENCY` | `2` | Positive integer concurrency for isolated generation work. |
+| `CELERY_INGESTION_CONCURRENCY` | `1` | Positive integer concurrency for isolated ingestion work. |
 | `CONTAINER_STARTUP_TIMEOUT_SECONDS` | `90` | Wait for PostgreSQL and Redis before bootstrap. |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxy IPs whose forwarded headers Uvicorn accepts. Do not use `*` unless direct origin access is blocked. |
 

@@ -64,6 +64,8 @@ After a migration test, teardown invalidates the worker's canonical-schema readi
 
 Test engines use `NullPool` so connections do not retain stale cached plans across schema drops.
 
+The focused transport migration check in [test_llm_execution.py](../tests/test_llm_execution.py) runs the additive revision's upgrade and downgrade against PostgreSQL temporary tables that shadow only that fixture connection's table names. It checks the default empty event array and removal of the added column without altering the public schema. A separate test keeps the frozen migration constraint equal to canonical metadata. PostgreSQL persistence tests reject extra event keys, invalid code/status types and fractional durations; the constraint permits at most four allowlisted observations.
+
 ## Redis isolation
 
 Sequential database-backed tests clear the configured test limiter store before and after each test.
@@ -161,6 +163,8 @@ Designated fields must contain versioned ciphertext envelopes in PostgreSQL, not
 - audit and task/outbox rows contain metadata only.
 
 ## Durable outbox, quota, and cleanup
+
+[test_llm_execution.py](../tests/test_llm_execution.py) also covers timeout observation after deadline expiry, live-root validated-draft promotion, expired-root rejection, checker expiry followed by a late provider response, and duplicate delivery without a second provider call. A main deadline before checker selection preserves the existing no-checker status. Structured checker API tests verify that encrypted checkpoint sections can be replaced safely by the final validated draft. Run the focused file with `APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_llm_execution.py`; keep database-backed commands sequential.
 
 Database tests should cover the transaction and concurrency boundaries for:
 

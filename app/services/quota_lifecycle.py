@@ -35,6 +35,8 @@ from app.models import (
     ConsultationSplitTopicOutcome,
     ConsultationSplitTopicOutcomeStatus,
     ProviderAttempt,
+    HallucinationCheckStatus,
+    TemplateMode,
     ProviderSettlementBasis,
     QuotaResource,
     TaskDispatchOutbox,
@@ -244,13 +246,36 @@ def _fail_document(db: Session, document_id: UUID, error_code: str, now: datetim
         return False
     # Keep normal owned lifecycle order: User -> Transcript -> source.
     db.scalar(select(User).where(User.id == identity.owner_user_id).with_for_update())
-    db.scalar(select(Transcript).where(Transcript.id == identity.transcript_id).with_for_update())
+    root = db.scalar(select(Transcript).where(Transcript.id == identity.transcript_id).with_for_update())
     document = db.scalar(select(GeneratedDocument).where(GeneratedDocument.id == document_id).with_for_update())
     permitted = {GeneratedDocumentStatus.queued}
     if error_code == PROVIDER_ATTEMPT_OUTCOME_UNKNOWN:
         permitted.add(GeneratedDocumentStatus.processing)
     if document is None or document.status not in permitted:
         return False
+    checkpoint = (document.document_mode is TemplateMode.structured and document.validated_draft_at is not None
+        and document.original_output_text_encrypted and document.edited_output_text_encrypted
+        and bool(document.sections) and all(section.original_text_encrypted and section.edited_text_encrypted for section in document.sections))
+    if checkpoint and root is not None and root.retention_expires_at > now and error_code == PROVIDER_ATTEMPT_OUTCOME_UNKNOWN:
+        document.status = GeneratedDocumentStatus.ready
+        document.error_code = None
+        document.error_message = None
+        document.completed_at = now
+        checker_attempted = document.hallucination_check_llm_config_id is not None or db.scalar(
+            select(ProviderAttempt.id).where(
+                ProviderAttempt.generated_document_id == document.id,
+                ProviderAttempt.attempt_kind == AttemptKind.llm_hallucination_check,
+            ).limit(1)
+        ) is not None
+        if checker_attempted and document.hallucination_check_status not in {
+            HallucinationCheckStatus.checked_unchanged, HallucinationCheckStatus.checked_corrected,
+            HallucinationCheckStatus.skipped_not_configured, HallucinationCheckStatus.skipped_config_invalid,
+            HallucinationCheckStatus.skipped_quota,
+        }:
+            document.hallucination_check_status = HallucinationCheckStatus.failed_provider
+            document.hallucination_check_completed_at = now
+        cancel_pending_dispatches_for_sources(db, generated_document_ids=(document_id,), now=now)
+        return True
     document.status = GeneratedDocumentStatus.failed
     document.error_code = error_code
     document.error_message = None
@@ -382,7 +407,15 @@ def _reconcile_sources(db: Session, attempts: list[ProviderAttempt], now: dateti
     changed = 0
     for attempt in attempts:
         error = QUOTA_RESERVATION_EXPIRED if attempt.status is AttemptStatus.cancelled else PROVIDER_ATTEMPT_OUTCOME_UNKNOWN
-        if attempt.generated_document_id is not None:
+        if attempt.generated_document_id is not None and attempt.attempt_kind is AttemptKind.llm_hallucination_check:
+            document = db.get(GeneratedDocument, attempt.generated_document_id)
+            if document is not None and document.status is GeneratedDocumentStatus.processing:
+                document.hallucination_check_status = HallucinationCheckStatus.failed_provider
+                document.hallucination_check_completed_at = now
+                # A checkpoint is a validated encrypted draft; failing checking
+                # cannot invalidate it. Main attempt remains conservatively live.
+                changed += _fail_document(db, document.id, PROVIDER_ATTEMPT_OUTCOME_UNKNOWN, now)
+        elif attempt.generated_document_id is not None:
             changed += _fail_document(db, attempt.generated_document_id, error, now)
         if attempt.transcript_ingestion_job_id is not None:
             changed += _fail_ingestion_job(db, attempt.transcript_ingestion_job_id, error, now)

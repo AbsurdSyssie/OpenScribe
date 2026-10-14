@@ -50,6 +50,15 @@ The reporting service aggregates metadata from current persistence models, inclu
 - bounded error/provider status metadata;
 - timestamps.
 
+### Provider attempts and dispatch timing
+
+- provider attempt correlation and attempt kind;
+- submitted, settled, and deadline timestamps;
+- bounded transport request events: UTC timestamp, ordinal, duration, controlled outcome/status, and numeric retry wait;
+- outcome and allowlisted application/provider error metadata.
+
+Each transport request event is counted once. Admin projections select scalar fields and only the fixed transport-event keys; they do not render arbitrary JSON or ORM objects. Older attempts without transport events use their one logical attempt and terminal safe status as a fallback.
+
 ### Generated documents
 
 - generator type (`template`, `followup`, `quick_action`);
@@ -74,6 +83,27 @@ controlled provider code, and HTTP status. It does not serialize an ORM object
 or event row to the browser. The all-available range includes retained failed
 split executions even when no provider usage event was recorded.
 
+The page also has **Operational health · last 15 minutes** and **Recent failures
+and retries** panels. Health counts every failed provider transport request once, including authentication, configuration, connection and timeout failures. It retains separate HTTP 429/503 and timeout counts,
+including recovered rate-limit retries, reports mean recorded request duration
+and queue wait where timestamps exist, and shows the oldest queued work and
+currently overdue provider attempts. It warns when queued work is over 60
+seconds old, when any provider attempt is overdue, or when at least five
+observed requests and at least 20% of observed requests are degraded. These
+thresholds concern transport failures; invalid generated output is reported separately in the failure table. They are page indicators, not external notifications. Queue age and
+overdue counts describe current open work; request/error and latency summaries
+cover the trailing 15 minutes.
+
+The bounded **Recent failures and retries** table covers generation, note
+checking, template suggestions, speech ingestion, split failures, and recovered retries.
+It groups provider attempts by correlation and operation kind so a failed check
+does not hide a generation failure. It shows time, stage, operation reference,
+final outcome, retry count, allowlisted error category, safe provider status,
+provider adapter, model metadata, and duration. A controlled terminal transport failure appears as Failed even when quota settlement remains conservative. A successful transport with uncertain usage appears as Usage unknown; legacy attempts without evidence retain Unknown outcome. Search accepts a UUID operation reference and/or
+a UTC start time within the selected reporting range. It is capped at 50 rows.
+The separate detailed split table also shows terminal split failures, including
+failures recorded without a provider attempt.
+
 ### Transcript ingestion jobs
 
 - team and owner identifiers;
@@ -86,9 +116,9 @@ split executions even when no provider usage event was recorded.
 - bounded error code/message;
 - created, started, completed, and applied timestamps.
 
-The reporting service returns aggregates to chart code. The recent split
-failure table is the sole exception: it receives the explicit bounded
-metadata-only projection described above, never raw event rows.
+The reporting service returns aggregates to chart code. The recent split and
+operational failure tables receive bounded metadata-only projections described
+above, never raw event rows.
 
 ## Reporting ranges
 
@@ -117,6 +147,8 @@ The canonical admin workspace renders:
 - selected-team user aggregate rows.
 - a bounded recent split-failure metadata projection in global and selected-team
   Usage views.
+- bounded recent operational failure/retry projections and a 15-minute health
+  summary in global and selected-team Usage views.
 
 Charts use the locally vendored Apache ECharts runtime and server-rendered aggregate data. No usage data or runtime code is loaded from a public CDN.
 

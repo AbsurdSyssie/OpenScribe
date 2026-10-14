@@ -12,12 +12,15 @@ from ..models import (
     DeidentificationAdapterKind,
     DeidentificationAuthMode,
     GeneratedDocument,
+    AttemptKind,
+    AttemptStatus,
     HallucinationCheckStatus,
     LlmAdapterKind,
     LlmAuthMode,
     LlmConfigSetupStatus,
     LlmProviderPreset,
     PromptTemplate,
+    ProviderAttempt,
     QuickAction,
     SmartPhrase,
     SecurityAuditHoldReason,
@@ -123,6 +126,7 @@ from ..services.templates import (
     list_team_templates as list_team_templates_service,
     list_team_templates_for_member as list_team_templates_for_member_service,
 )
+from ..services.generation_presentation import generated_document_status_projection
 from ..services.smart_phrases import list_personal_smart_phrases as list_personal_smart_phrases_service
 from ..services.default_assets import (
     list_default_quick_actions as list_default_quick_actions_service,
@@ -500,6 +504,10 @@ def _hallucination_check_bucket(status: HallucinationCheckStatus | str | None) -
 
 def generated_document_response(db: Session, document: GeneratedDocument, *, actor: User | None = None) -> GeneratedDocumentDetail:
     payload = GeneratedDocumentDetail.model_validate(document, from_attributes=True).model_dump()
+    # Failure guidance comes from the closed presentation mapping. Persisted
+    # exception wording may include provider data and is never client-facing.
+    payload["error_message"] = None
+    payload.update(generated_document_status_projection(db, document, actor))
     # Split-topic titles are transcript-derived content.  Keep the persisted
     # document title generic, and reveal this display-only title solely to the
     # exact owner after the split service has rechecked the full lineage.
@@ -1001,13 +1009,40 @@ def render_admin(
         "usage_ingestion_rows": [],
         "usage_failure_rows": [],
         "usage_recent_split_failure_rows": [],
+        "usage_recent_operational_rows": [],
+        "usage_operational_health": {},
+        "usage_monitor_reference": "",
+        "usage_monitor_since": "",
+        "usage_monitor_lookup_error": None,
     }
     if resolved_admin_tab in {"usage", "failures"} or workspace_team_tab == "usage":
+        monitor_reference = request.query_params.get("reference", "").strip()
+        monitor_since_text = request.query_params.get("monitor_since", "").strip()
+        monitor_since = None
+        monitor_lookup_error = None
+        if monitor_reference:
+            try:
+                monitor_reference = str(UUID(monitor_reference))
+            except ValueError:
+                monitor_lookup_error = "Enter a valid operation reference (UUID)."
+        if monitor_since_text:
+            try:
+                monitor_since = datetime.fromisoformat(monitor_since_text.replace("Z", "+00:00"))
+                monitor_since = monitor_since.replace(tzinfo=UTC) if monitor_since.tzinfo is None else monitor_since.astimezone(UTC)
+                if monitor_since > datetime.now(UTC):
+                    raise ValueError
+            except ValueError:
+                monitor_since = None
+                monitor_lookup_error = "Enter a valid past date and time."
         usage_context = admin_usage_overview_service(
             db,
             team_id=selected_uuid,
             range_key=request.query_params.get("range", "30d"),
+            monitor_reference=monitor_reference,
+            monitor_since=monitor_since,
+            monitor_lookup_error=monitor_lookup_error,
         )
+        usage_context["usage_monitor_since"] = monitor_since_text
     audit_context = {
         "audit_since": request.query_params.get("audit_since", "24h"),
         "audit_action_filter": request.query_params.get("audit_action", ""),

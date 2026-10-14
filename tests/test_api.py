@@ -11159,7 +11159,10 @@ def test_generate_freeform_output_ollama_streams_chunks_and_collects_usage(monke
         assert kwargs["json"]["stream"] is True
         timeout = kwargs["timeout"]
         assert isinstance(timeout, httpx.Timeout)
-        assert timeout.read == 300.0
+        assert 0 < timeout.read <= 90.0
+        assert 0 < timeout.connect <= 10.0
+        assert 0 < timeout.write <= 90.0
+        assert 0 < timeout.pool <= 90.0
         return FakeHttpxStreamResponse(
             [
                 '{"message":{"content":"{\\"title\\":\\"Visit"},"done":false}',

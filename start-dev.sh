@@ -19,6 +19,9 @@ set -a
 source .env
 set +a
 
+source docker/celery-workers.sh
+validate_celery_workers
+
 : "${APP_HOST:=127.0.0.1}"
 : "${APP_PORT:=8080}"
 : "${DEV_ALLOW_REMOTE_BIND:=false}"
@@ -115,41 +118,34 @@ if [[ "${DEV_SEED_TEST_ACCOUNTS:-true}" == "true" ]]; then
   .venv/bin/python scripts/seed_dev_accounts.py
 fi
 
-CELERY_WORKER_PID=""
+CELERY_WORKER_PIDS=()
 CELERY_BEAT_PID=""
 BRAVE_PID=""
+APP_PID=""
 
 cleanup() {
   echo "Cleaning up processes..."
 
-  if [[ -n "${CELERY_WORKER_PID}" ]]; then
-    kill "${CELERY_WORKER_PID}" 2>/dev/null || true
-  fi
-
-  if [[ -n "${CELERY_BEAT_PID}" ]]; then
-    kill "${CELERY_BEAT_PID}" 2>/dev/null || true
-  fi
-
-  if [[ -n "${BRAVE_PID}" ]]; then
-    kill "${BRAVE_PID}" 2>/dev/null || true
+  local -a pids=("${CELERY_WORKER_PIDS[@]}")
+  [[ -z "$CELERY_BEAT_PID" ]] || pids+=("$CELERY_BEAT_PID")
+  [[ -z "$APP_PID" ]] || pids+=("$APP_PID")
+  [[ -z "$BRAVE_PID" ]] || pids+=("$BRAVE_PID")
+  if (( ${#pids[@]} )); then
+    kill -TERM "${pids[@]}" 2>/dev/null || true
+    wait "${pids[@]}" 2>/dev/null || true
   fi
 }
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 143' INT TERM
 
 if [[ "${DEV_START_CELERY:-true}" == "true" ]]; then
   if [[ "${DEV_PURGE_CELERY_QUEUE}" == "true" ]]; then
     echo "Purging stale Celery tasks from all dev queues..."
     .venv/bin/celery -A app.celery_app:celery_app purge -f >/dev/null 2>&1 || true
   fi
-  # Production: run separate workers per queue for isolation:
-  #   celery ... worker -Q control  -n control@%%h
-  #   celery ... worker -Q generation -n generation@%%h
-  #   celery ... worker -Q ingestion -n ingestion@%%h
-  # Dev: single worker consuming all queues is sufficient.
-  echo "Starting Celery worker (all queues: control, generation, ingestion)..."
-  .venv/bin/celery -A app.celery_app:celery_app worker -Q control,generation,ingestion --loglevel "${CELERY_LOG_LEVEL:-INFO}" &
-  CELERY_WORKER_PID=$!
+  echo "Starting Celery workers ($CELERY_WORKER_MODE)..."
+  start_celery_workers .venv/bin/celery
   echo "Starting Celery Beat for scheduled retention and Vault cleanup..."
   .venv/bin/celery -A app.celery_app:celery_app beat --loglevel "${CELERY_LOG_LEVEL:-INFO}" &
   CELERY_BEAT_PID=$!
@@ -173,4 +169,12 @@ echo "Starting FastAPI on ${APP_BIND_HOST}:${APP_PORT} with trusted proxy ${DEV_
   --port "${APP_PORT}" \
   --reload-dir "${ROOT_DIR}/app" \
   --proxy-headers \
-  --forwarded-allow-ips "${DEV_FORWARDED_ALLOW_IPS}"
+  --forwarded-allow-ips "${DEV_FORWARDED_ALLOW_IPS}" &
+APP_PID=$!
+
+# A failed worker or Beat stops the dev runtime instead of leaving queued work stranded.
+set +e
+wait -n "$APP_PID" "${CELERY_WORKER_PIDS[@]}" ${CELERY_BEAT_PID:+"$CELERY_BEAT_PID"}
+status=$?
+set -e
+exit "$status"

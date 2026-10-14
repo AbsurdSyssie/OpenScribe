@@ -6,13 +6,17 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import DateTime, Integer, cast, func, select, true, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, joinedload
 
 from app.cookie_security import app_environment
 from app.errors import AppError
 from app.models import (
+    AttemptKind,
+    AttemptOutcome,
+    AttemptStatus,
     AccountRequest,
     AccountRequestStatus,
     AuthEmailToken,
@@ -32,6 +36,7 @@ from app.models import (
     PromptTemplate,
     PromptTemplateVersion,
     ProviderUsageEvent,
+    ProviderAttempt,
     ProviderUsageEventType,
     ProviderFeatureType,
     QuickAction,
@@ -53,6 +58,8 @@ from app.models import (
     TranscriptIngestionJob,
     TranscriptIngestionJobKind,
     TranscriptIngestionJobStatus,
+    TemplateSuggestionJob,
+    TemplateSuggestionStatus,
     User,
     UserMfaMethod,
     UserOnboardingState,
@@ -390,6 +397,21 @@ class AdminUsageSplitFailureRow:
     provider_http_status: int | None
 
 
+@dataclass(slots=True)
+class AdminUsageOperationalRow:
+    timestamp: datetime
+    stage: str
+    reference_id: UUID
+    outcome: str
+    error_code: str
+    provider_error_code: str | None = None
+    provider_http_status: int | None = None
+    retry_count: int = 0
+    model: str | None = None
+    provider_adapter: str | None = None
+    duration_ms: int | None = None
+
+
 _SAFE_SPLIT_APPLICATION_ERROR_CODES = frozenset(
     {
         "consultation_split_analysis_invalid_output",
@@ -426,6 +448,23 @@ _SAFE_SPLIT_PROVIDER_ERROR_CODES = frozenset(
     }
 )
 RECENT_SPLIT_FAILURE_LIMIT = 25
+RECENT_OPERATIONAL_LIMIT = 50
+_SAFE_OPERATIONAL_CODES = frozenset({
+    "authentication_error", "bad_request", "connection_error", "generation_enqueue_failed",
+    "generation_snapshot_invalid", "hallucination_check_failed", "hallucination_check_invalid_config",
+    "hallucination_check_invalid_response", "http_status_error", "ingestion_enqueue_failed",
+    "ingestion_failed", "invalid_api_key", "invalid_json", "invalid_request", "invalid_request_error",
+    "ingestion_source_expired", "ingestion_processing_stale", "template_suggestion_provider_unavailable",
+    "template_suggestion_preference_disabled",
+    "llm_generation_attempt_conflict", "llm_generation_attempt_missing", "llm_generation_failed",
+    "llm_execution_context_unsupported",
+    "llm_generation_invalid_json", "llm_generation_preparation_failed", "llm_provider_bad_response",
+    "ingestion_retry_expired", "ingestion_retry_unavailable", "ingestion_source_unavailable",
+    "audio_duration_probe_failed", "audio_normalization_failed", "llm_provider_timeout",
+    "llm_provider_unreachable", "model_not_found", "not_found",
+    "permission_denied", "provider_conflict", "provider_server_error", "quota_exceeded",
+    "rate_limit_exceeded", "timeout", "transcript_wait_timeout",
+})
 
 
 def _safe_split_application_error_code(value: object) -> str:
@@ -438,6 +477,334 @@ def _safe_split_provider_error_code(value: object) -> str | None:
 
 def _safe_split_provider_http_status(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599 else None
+
+
+def _safe_operational_code(value: object) -> str:
+    return value if isinstance(value, str) and value in _SAFE_OPERATIONAL_CODES else "other_failure"
+
+
+def _recent_operational_rows(
+    db: Session, *, since: datetime, until: datetime, team_id: UUID | None, reference: str | None = None,
+) -> list[AdminUsageOperationalRow]:
+    """Return a bounded metadata-only failure/recovery projection for support."""
+    from app.models import GeneratedDocumentStatus
+
+    reference_uuid = None
+    if reference:
+        try:
+            reference_uuid = UUID(reference.strip())
+        except (ValueError, AttributeError):
+            return []
+
+    stmt = select(
+        ProviderAttempt.correlation_id, ProviderAttempt.attempt_number, ProviderAttempt.attempt_kind,
+        ProviderAttempt.status, ProviderAttempt.outcome, ProviderAttempt.error_code, ProviderAttempt.provider_error_code,
+        ProviderAttempt.provider_http_status, ProviderAttempt.settled_at, ProviderAttempt.provider_model,
+        ProviderAttempt.transport_events_json, ProviderAttempt.provider_adapter,
+    ).where(
+        func.coalesce(ProviderAttempt.settled_at, ProviderAttempt.authorized_at) >= since,
+        func.coalesce(ProviderAttempt.settled_at, ProviderAttempt.authorized_at) < until,
+        ProviderAttempt.status.in_((AttemptStatus.settled, AttemptStatus.submitted)),
+    )
+    if team_id is not None:
+        stmt = stmt.where(ProviderAttempt.team_id == team_id)
+    if reference_uuid is not None:
+        stmt = stmt.where(ProviderAttempt.correlation_id == reference_uuid)
+    stmt = stmt.order_by(ProviderAttempt.authorized_at.desc(), ProviderAttempt.attempt_number.desc()).limit(500)
+    grouped: dict[tuple[UUID, AttemptKind], list[object]] = {}
+    for row in db.execute(stmt):
+        grouped.setdefault((row.correlation_id, row.attempt_kind), []).append(row)
+
+    labels = {
+        AttemptKind.llm_generation: "Generation",
+        AttemptKind.llm_hallucination_check: "Note check",
+        AttemptKind.llm_template_suggestion: "Template suggestion",
+        AttemptKind.consultation_split_analysis: "Split analysis",
+        AttemptKind.consultation_split_generation: "Split generation",
+        AttemptKind.consultation_split_verification: "Split verification",
+    }
+    result: list[AdminUsageOperationalRow] = []
+    for (correlation_id, attempt_kind), attempts in grouped.items():
+        attempts.sort(key=lambda item: (item.attempt_number, item.settled_at or until))
+        final = attempts[-1]
+        events = [event for item in attempts for event in (item.transport_events_json or []) if isinstance(event, dict)]
+        transport_retry_count = sum(
+            max(0, len(item.transport_events_json or []) - 1) for item in attempts
+        )
+        failures = [event for event in events if event.get("code") in {"rate_limited", "timeout", "connection_error", "provider_error"}]
+        previous_failed_attempts = [item for item in attempts if item.outcome is AttemptOutcome.failed]
+        if not failures and not previous_failed_attempts and final.outcome is not AttemptOutcome.unknown:
+            continue
+        source = previous_failed_attempts[-1] if previous_failed_attempts else final
+        has_retry = len(events) > 1 or len(attempts) > 1
+        recovered = final.outcome is AttemptOutcome.succeeded and bool(failures or previous_failed_attempts) and has_retry
+        if final.status is AttemptStatus.submitted:
+            outcome = "Retrying" if failures and has_retry else "In progress"
+        elif final.outcome is AttemptOutcome.failed:
+            outcome = "Failed"
+        elif final.outcome is AttemptOutcome.unknown:
+            terminal_event = events[-1] if events else {}
+            known_failure = terminal_event.get("code") in {
+                "rate_limited", "timeout", "connection_error", "provider_error"
+            } or _safe_operational_code(final.error_code) != "other_failure" or (
+                _safe_split_provider_error_code(final.provider_error_code) is not None
+                or (_safe_split_provider_http_status(final.provider_http_status) or 0) >= 400
+            )
+            outcome = "Failed" if known_failure else "Usage unknown" if terminal_event.get("code") == "success" else "Unknown outcome"
+        elif recovered:
+            outcome = "Recovered after retry"
+        else:
+            continue
+        stage = labels.get(attempt_kind, "Provider operation")
+        last_event = events[-1] if events else {}
+        event_time = None
+        try:
+            if last_event.get("occurred_at"):
+                event_time = datetime.fromisoformat(last_event["occurred_at"].replace("Z", "+00:00"))
+        except (AttributeError, TypeError, ValueError):
+            event_time = None
+        last_error_event = next((event for event in reversed(events) if event.get("code") != "success"), {})
+        event_code = {
+            "rate_limited": "rate_limit_exceeded", "timeout": "timeout",
+            "connection_error": "connection_error", "provider_error": "provider_server_error",
+        }.get(last_error_event.get("code"))
+        safe_code = _safe_operational_code(source.error_code or event_code)
+        provider_status = _safe_split_provider_http_status(
+            last_error_event.get("http_status") if last_error_event else source.provider_http_status
+        )
+        provider_error = _safe_split_provider_error_code(source.provider_error_code)
+        if event_code:
+            provider_error = event_code if event_code in _SAFE_SPLIT_PROVIDER_ERROR_CODES else provider_error
+        result.append(AdminUsageOperationalRow(
+            timestamp=event_time or final.settled_at or source.settled_at or until,
+            stage=stage,
+            reference_id=correlation_id,
+            outcome=outcome,
+            error_code=safe_code,
+            provider_error_code=provider_error,
+            provider_http_status=provider_status,
+            retry_count=transport_retry_count + max(0, len(attempts) - 1),
+            model=final.provider_model,
+            provider_adapter=final.provider_adapter,
+            duration_ms=sum(int(event.get("duration_ms", 0)) for event in events if isinstance(event.get("duration_ms"), int)),
+        ))
+
+    doc_stmt = select(
+        GeneratedDocument.id, GeneratedDocument.completed_at, GeneratedDocument.error_code,
+        GeneratedDocument.provider_error_code, GeneratedDocument.provider_http_status,
+        GeneratedDocument.model_used, GeneratedDocument.duration_ms,
+    ).where(
+        GeneratedDocument.status == GeneratedDocumentStatus.failed,
+        GeneratedDocument.completed_at >= since,
+        GeneratedDocument.completed_at < until,
+        GeneratedDocument.consultation_split_batch_topic_id.is_(None),
+    )
+    if team_id is not None:
+        doc_stmt = doc_stmt.where(GeneratedDocument.team_id == team_id)
+    if reference_uuid is not None:
+        doc_stmt = doc_stmt.where(GeneratedDocument.id == reference_uuid)
+    doc_stmt = doc_stmt.order_by(GeneratedDocument.completed_at.desc()).limit(RECENT_OPERATIONAL_LIMIT)
+    seen_keys = {(reference_id, labels.get(kind, "Provider operation")) for reference_id, kind in grouped}
+    for row in db.execute(doc_stmt):
+        if (row.id, "Generation") in seen_keys:
+            continue
+        result.append(AdminUsageOperationalRow(
+            timestamp=row.completed_at, stage="Generation", reference_id=row.id, outcome="Failed",
+            error_code=_safe_operational_code(row.error_code),
+            provider_error_code=_safe_split_provider_error_code(row.provider_error_code),
+            provider_http_status=_safe_split_provider_http_status(row.provider_http_status),
+            model=row.model_used, duration_ms=row.duration_ms,
+        ))
+
+    usage_stmt = select(
+        ProviderUsageEvent.created_at, ProviderUsageEvent.generated_document_id,
+        ProviderUsageEvent.status, ProviderUsageEvent.error_code, ProviderUsageEvent.provider_error_code,
+        ProviderUsageEvent.provider_http_status, ProviderUsageEvent.model_name,
+        ProviderUsageEvent.provider_duration_ms,
+    ).where(
+        ProviderUsageEvent.created_at >= since,
+        ProviderUsageEvent.created_at < until,
+        ProviderUsageEvent.event_type.in_((ProviderUsageEventType.failed, ProviderUsageEventType.enqueue_failed)),
+        ProviderUsageEvent.generated_document_id.is_not(None),
+        ProviderUsageEvent.feature_type == ProviderFeatureType.llm_generation,
+    )
+    if team_id is not None:
+        usage_stmt = usage_stmt.where(ProviderUsageEvent.team_id == team_id)
+    if reference_uuid is not None:
+        usage_stmt = usage_stmt.where(ProviderUsageEvent.generated_document_id == reference_uuid)
+    usage_stmt = usage_stmt.order_by(ProviderUsageEvent.created_at.desc()).limit(RECENT_OPERATIONAL_LIMIT * 3)
+    for row in db.execute(usage_stmt):
+        stage = "Note check" if (row.status or "").startswith("hallucination_check:") else "Generation"
+        if (row.generated_document_id, stage) in seen_keys or (row.generated_document_id, stage) in {
+            (item.reference_id, item.stage) for item in result
+        }:
+            continue
+        result.append(AdminUsageOperationalRow(
+            timestamp=row.created_at, stage=stage, reference_id=row.generated_document_id,
+            outcome="Failed", error_code=_safe_operational_code(row.error_code),
+            provider_error_code=_safe_split_provider_error_code(row.provider_error_code),
+            provider_http_status=_safe_split_provider_http_status(row.provider_http_status),
+            model=row.model_name, duration_ms=row.provider_duration_ms,
+        ))
+
+    suggestion_stmt = select(
+        TemplateSuggestionJob.id, TemplateSuggestionJob.completed_at, TemplateSuggestionJob.error_code,
+    ).where(
+        TemplateSuggestionJob.completed_at >= since,
+        TemplateSuggestionJob.completed_at < until,
+        TemplateSuggestionJob.status == TemplateSuggestionStatus.failed,
+    )
+    if team_id is not None:
+        suggestion_stmt = suggestion_stmt.where(TemplateSuggestionJob.team_id == team_id)
+    # Only the correlation identifier is searchable for this job family.
+    if reference_uuid is not None:
+        suggestion_stmt = suggestion_stmt.where(TemplateSuggestionJob.id == reference_uuid)
+    suggestion_stmt = suggestion_stmt.order_by(TemplateSuggestionJob.completed_at.desc()).limit(RECENT_OPERATIONAL_LIMIT)
+    for row in db.execute(suggestion_stmt):
+        if (row.id, "Template suggestion") in {(item.reference_id, item.stage) for item in result}:
+            continue
+        result.append(AdminUsageOperationalRow(
+            timestamp=row.completed_at, stage="Template suggestion", reference_id=row.id,
+            outcome="Failed", error_code=_safe_operational_code(row.error_code),
+        ))
+
+    ingestion_stmt = select(
+        TranscriptIngestionJob.id, TranscriptIngestionJob.completed_at,
+        TranscriptIngestionJob.automatic_retry_count, TranscriptIngestionJob.status,
+        TranscriptIngestionJob.error_code,
+    ).where(
+        TranscriptIngestionJob.completed_at >= since,
+        TranscriptIngestionJob.completed_at < until,
+        (TranscriptIngestionJob.status == TranscriptIngestionJobStatus.failed)
+        | (TranscriptIngestionJob.automatic_retry_count > 0),
+    )
+    if team_id is not None:
+        ingestion_stmt = ingestion_stmt.where(TranscriptIngestionJob.team_id == team_id)
+    if reference_uuid is not None:
+        ingestion_stmt = ingestion_stmt.where(TranscriptIngestionJob.id == reference_uuid)
+    ingestion_stmt = ingestion_stmt.order_by(TranscriptIngestionJob.completed_at.desc()).limit(RECENT_OPERATIONAL_LIMIT)
+    for row in db.execute(ingestion_stmt):
+        result.append(AdminUsageOperationalRow(
+            timestamp=row.completed_at, stage="Speech ingestion", reference_id=row.id,
+            outcome="Recovered after retry" if row.status is not TranscriptIngestionJobStatus.failed and row.automatic_retry_count else "Failed",
+            error_code=_safe_operational_code(row.error_code), retry_count=int(row.automatic_retry_count or 0),
+        ))
+    result.sort(key=lambda row: row.timestamp, reverse=True)
+    return result[:RECENT_OPERATIONAL_LIMIT]
+
+
+def _operational_health(db: Session, *, team_id: UUID | None, now: datetime) -> dict[str, object]:
+    from app.models import GeneratedDocumentStatus, ConsultationSplitExecutionStatus
+
+    since = now - timedelta(minutes=15)
+    transport = func.jsonb_array_elements(ProviderAttempt.transport_events_json).table_valued("value").alias("transport_event")
+    event = cast(transport.c.value, JSONB)
+    event_code = event["code"].astext
+    event_status = cast(event["http_status"].astext, Integer)
+    event_duration = cast(event["duration_ms"].astext, Integer)
+    event_time = cast(event["occurred_at"].astext, DateTime(timezone=True))
+    transport_stmt = select(
+        func.count(event).label("observed_calls"),
+        func.count(event).filter((event_status == 429) | (event_code == "rate_limited")).label("http_429"),
+        func.count(event).filter(event_status == 503).label("http_503"),
+        func.count(event).filter(event_code == "timeout").label("timeouts"),
+        func.count(event).filter(event_code.in_(("rate_limited", "timeout", "connection_error", "provider_error"))).label("degraded_calls"),
+        func.avg(event_duration).label("avg_duration_ms"),
+    ).select_from(ProviderAttempt).join(transport, true()).where(
+        ProviderAttempt.submitted_at >= since - timedelta(seconds=180),
+        ProviderAttempt.submitted_at < now,
+        event_time >= since, event_time < now,
+    )
+    if team_id is not None:
+        transport_stmt = transport_stmt.where(ProviderAttempt.team_id == team_id)
+    attempt_row = db.execute(transport_stmt).one()
+
+    # Older attempts have no request-event list. Count their one submitted
+    # provider call from the terminal safe metadata, without double counting
+    # rows that already have request events.
+    legacy_stmt = select(
+        func.count(ProviderAttempt.id).label("observed_calls"),
+        func.count(ProviderAttempt.id).filter(ProviderAttempt.provider_http_status == 429).label("http_429"),
+        func.count(ProviderAttempt.id).filter(ProviderAttempt.provider_http_status == 503).label("http_503"),
+        func.count(ProviderAttempt.id).filter(
+            (ProviderAttempt.provider_error_code == "timeout") | (ProviderAttempt.error_code == "llm_provider_timeout")
+        ).label("timeouts"),
+        func.count(ProviderAttempt.id).filter(
+            (ProviderAttempt.provider_http_status >= 400)
+            | ProviderAttempt.provider_error_code.in_(_SAFE_SPLIT_PROVIDER_ERROR_CODES)
+            | ProviderAttempt.error_code.in_(("llm_provider_timeout", "llm_provider_unreachable"))
+        ).label("degraded_calls"),
+    ).where(
+        ProviderAttempt.submitted_at >= since, ProviderAttempt.submitted_at < now,
+        func.jsonb_array_length(ProviderAttempt.transport_events_json) == 0,
+    )
+    if team_id is not None:
+        legacy_stmt = legacy_stmt.where(ProviderAttempt.team_id == team_id)
+    legacy = db.execute(legacy_stmt).one()
+    overdue_stmt = select(func.count(ProviderAttempt.id)).where(
+        ProviderAttempt.status == AttemptStatus.submitted, ProviderAttempt.deadline_at < now,
+    )
+    if team_id is not None:
+        overdue_stmt = overdue_stmt.where(ProviderAttempt.team_id == team_id)
+    overdue_attempts = int(db.scalar(overdue_stmt) or 0)
+
+    queued = []
+    for model, active_statuses in (
+        (GeneratedDocument, (GeneratedDocumentStatus.queued,)),
+        (TranscriptIngestionJob, (TranscriptIngestionJobStatus.queued,)),
+        (TemplateSuggestionJob, (TemplateSuggestionStatus.queued,)),
+        (ConsultationSplitExecution, (ConsultationSplitExecutionStatus.queued,)),
+    ):
+        stmt = select(func.min(model.created_at)).where(model.status.in_(active_statuses))
+        if team_id is not None:
+            stmt = stmt.where(model.team_id == team_id)
+        queued.append(db.scalar(stmt))
+    oldest = min((value for value in queued if value is not None), default=None)
+
+    latency = attempt_row.avg_duration_ms
+    if latency is None:
+        latency_stmt = select(func.avg(ProviderUsageEvent.provider_duration_ms)).where(
+            ProviderUsageEvent.created_at >= since, ProviderUsageEvent.provider_duration_ms.is_not(None),
+        )
+        if team_id is not None:
+            latency_stmt = latency_stmt.where(ProviderUsageEvent.team_id == team_id)
+        latency = db.scalar(latency_stmt)
+    queue_wait_sum_ms = 0.0
+    queue_wait_count = 0
+    for model in (GeneratedDocument, TranscriptIngestionJob, TemplateSuggestionJob):
+        received_at = model.worker_received_at
+        wait_stmt = select(
+            func.coalesce(func.sum(func.extract("epoch", received_at - model.created_at) * 1000), 0),
+            func.count(model.id),
+        ).where(received_at >= since)
+        if team_id is not None:
+            wait_stmt = wait_stmt.where(model.team_id == team_id)
+        wait_sum, wait_count = db.execute(wait_stmt).one()
+        queue_wait_sum_ms += float(wait_sum or 0)
+        queue_wait_count += int(wait_count or 0)
+    http_429 = int(attempt_row.http_429 or 0) + int(legacy.http_429 or 0)
+    http_503 = int(attempt_row.http_503 or 0) + int(legacy.http_503 or 0)
+    timeouts = int(attempt_row.timeouts or 0) + int(legacy.timeouts or 0)
+    degraded_calls = int(attempt_row.degraded_calls or 0) + int(legacy.degraded_calls or 0)
+    observed_calls = int(attempt_row.observed_calls or 0) + int(legacy.observed_calls or 0)
+    degradation_pct = round(100 * degraded_calls / observed_calls, 1) if observed_calls else None
+    alerts = []
+    if oldest is not None and (now - oldest).total_seconds() > 60:
+        alerts.append("queued_work_over_60_seconds")
+    if overdue_attempts:
+        alerts.append("provider_attempts_overdue")
+    if degraded_calls >= 5 and degradation_pct is not None and degradation_pct >= 20:
+        alerts.append("provider_errors_elevated")
+    return {
+        "observed_calls": observed_calls,
+        "http_429": http_429, "http_503": http_503,
+        "timeouts": timeouts, "degraded_calls": degraded_calls, "degradation_pct": degradation_pct,
+        "overdue_attempts": overdue_attempts, "alerts": alerts,
+        "oldest_queued_at": oldest,
+        "oldest_queue_age_seconds": max(0, int((now - oldest).total_seconds())) if oldest else None,
+        "avg_queue_wait_ms": round(queue_wait_sum_ms / queue_wait_count, 1) if queue_wait_count else None,
+        "avg_provider_latency_ms": round(float(latency), 1) if latency is not None else None,
+    }
 
 
 def _failure_event_clause():
@@ -1164,7 +1531,11 @@ def _earliest_split_failure_timestamp(db: Session) -> datetime | None:
     )
 
 
-def admin_usage_overview(db: Session, *, team_id: UUID | None = None, range_key: str = "30d") -> dict[str, object]:
+def admin_usage_overview(
+    db: Session, *, team_id: UUID | None = None, range_key: str = "30d",
+    monitor_reference: str | None = None, monitor_since: datetime | None = None,
+    monitor_lookup_error: str | None = None,
+) -> dict[str, object]:
     now = utcnow()
     range_definitions = {
         "30d": ("Last 30 days", timedelta(days=30), "day"),
@@ -1176,8 +1547,12 @@ def admin_usage_overview(db: Session, *, team_id: UUID | None = None, range_key:
         provider_since = db.scalar(select(func.min(ProviderUsageEvent.created_at)))
         ingestion_since = db.scalar(select(func.min(TranscriptIngestionJob.created_at)))
         split_failure_since = _earliest_split_failure_timestamp(db)
+        generated_since = db.scalar(select(func.min(GeneratedDocument.created_at)))
+        suggestion_since = db.scalar(select(func.min(TemplateSuggestionJob.created_at)))
+        attempt_since = db.scalar(select(func.min(ProviderAttempt.authorized_at)))
         available_starts = [
-            value for value in (provider_since, ingestion_since, split_failure_since) if value is not None
+            value for value in (provider_since, ingestion_since, split_failure_since, generated_since,
+                                suggestion_since, attempt_since) if value is not None
         ]
         range_since = min(available_starts) if available_starts else now - timedelta(days=29)
         range_label = "All available data"
@@ -1187,6 +1562,7 @@ def admin_usage_overview(db: Session, *, team_id: UUID | None = None, range_key:
         range_label, range_delta, range_bucket = range_definitions[resolved_range_key]
         range_since = now - range_delta
         comparison_since = range_since - range_delta
+    operational_since = max(range_since, monitor_since) if monitor_since is not None else range_since
     windows = []
     window_definitions = (
         ("Last 24 hours", timedelta(hours=24)),
@@ -1278,6 +1654,14 @@ def admin_usage_overview(db: Session, *, team_id: UUID | None = None, range_key:
         "usage_recent_split_failure_rows": _recent_split_failure_rows(
             db, since=range_since, until=now, team_id=team_id
         ),
+        "usage_recent_operational_rows": _recent_operational_rows(
+            db, since=operational_since, until=now, team_id=team_id,
+            reference=monitor_reference,
+        ),
+        "usage_operational_health": _operational_health(db, team_id=team_id, now=now),
+        "usage_monitor_reference": monitor_reference or "",
+        "usage_monitor_since": monitor_since.isoformat(timespec="minutes") if monitor_since else "",
+        "usage_monitor_lookup_error": monitor_lookup_error,
         "usage_scope_team": selected_team,
     }
 

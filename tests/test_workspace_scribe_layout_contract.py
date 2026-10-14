@@ -165,9 +165,9 @@ def test_scribe_mobile_flow_assets_have_current_cache_keys():
     legacy_transcribe = read("app/templates/transcribe.html")
 
     assert 'workspace/app.js?v=20260924-dynamic-recording-lock' in workspace
-    assert 'transcribe/app.js?v=20261012-review-problems' in shell_extras
+    assert 'transcribe/app.js?v=20261014-generation-status' in shell_extras
     assert 'transcribe/mobile.js?v=20260823-mobile-toast' in shell_extras
-    assert 'documents.js?v=20260918-retired-note-workspace' in read("app/static/js/transcribe/app.js")
+    assert 'documents.js?v=20261014-generation-status' in read("app/static/js/transcribe/app.js")
     assert 'transcribe-mobile.css?v=20260930-detected-pii-override' in legacy_transcribe
     assert 'src="/static/js/transcribe/mobile.js' not in legacy_transcribe
 

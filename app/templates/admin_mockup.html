@@ -2486,6 +2486,35 @@
                 </div>
               </section>
               <section class="usage-panel">
+                <header><h2>Operational health · last 15 minutes</h2><p>Provider error counts include recovered and failed HTTP requests; overdue attempts and queue age show current open work.</p></header>
+                <div class="usage-kpi-grid">
+                  <article class="usage-kpi"><span>HTTP 429 responses</span><strong>{{ usage_operational_health.http_429 }}</strong></article>
+                  <article class="usage-kpi"><span>HTTP 503 responses</span><strong>{{ usage_operational_health.http_503 }}</strong></article>
+                  <article class="usage-kpi"><span>Provider timeouts</span><strong>{{ usage_operational_health.timeouts }}</strong></article>
+                  <article class="usage-kpi"><span>Overdue attempts</span><strong>{{ usage_operational_health.overdue_attempts }}</strong></article>
+                  <article class="usage-kpi"><span>Oldest queued work</span><strong>{% if usage_operational_health.oldest_queue_age_seconds is not none %}{{ usage_operational_health.oldest_queue_age_seconds }} sec{% else %}—{% endif %}</strong></article>
+                  <article class="usage-kpi"><span>Mean queue wait</span><strong>{% if usage_operational_health.avg_queue_wait_ms is not none %}{{ usage_operational_health.avg_queue_wait_ms }} ms{% else %}—{% endif %}</strong></article>
+                  <article class="usage-kpi"><span>Mean provider call</span><strong>{% if usage_operational_health.avg_provider_latency_ms is not none %}{{ usage_operational_health.avg_provider_latency_ms }} ms{% else %}—{% endif %}</strong></article>
+                </div>
+                <p class="usage-detail">{{ usage_operational_health.degraded_calls }} degraded requests / {{ usage_operational_health.observed_calls }} observed requests{% if usage_operational_health.degradation_pct is not none %} ({{ usage_operational_health.degradation_pct }}%){% endif %}.</p>
+                {% if usage_operational_health.alerts %}<p class="usage-detail">{% for alert in usage_operational_health.alerts %}{% if alert == 'queued_work_over_60_seconds' %}Queued work is older than 60 seconds.{% elif alert == 'provider_attempts_overdue' %}One or more provider attempts passed their deadline.{% elif alert == 'provider_errors_elevated' %}At least 5 provider errors occurred and reached 20% of observed attempts.{% endif %}{% if not loop.last %} {% endif %}{% endfor %}</p>{% else %}<p class="usage-detail">No operational warning thresholds were reached.</p>{% endif %}
+              </section>
+              <section class="usage-panel">
+                <header><h2>Recent failures and retries</h2><p>Bounded operational metadata for support lookup. This table contains no clinical or provider response content.</p></header>
+                <form method="get" action="/admin" class="usage-filter-form">
+                  <input type="hidden" name="range" value="{{ usage_range_key }}" />
+                  {% if selected_team_id %}<input type="hidden" name="team_id" value="{{ selected_team_id }}" /><input type="hidden" name="team_tab" value="usage" />{% else %}<input type="hidden" name="tab" value="usage" />{% endif %}
+                  <label>Operation reference <input name="reference" value="{{ usage_monitor_reference }}" placeholder="UUID" /></label>
+                  <label>From (UTC) <input type="datetime-local" name="monitor_since" value="{{ usage_monitor_since[:16] }}" /></label>
+                  <button class="btn small" type="submit">Search</button>
+                  <a class="btn small" href="/admin?{% if selected_team_id %}team_id={{ selected_team_id }}&amp;team_tab=usage{% else %}tab=usage{% endif %}&amp;range={{ usage_range_key }}">Clear</a>
+                </form>
+                {% if usage_monitor_lookup_error %}<p class="usage-detail" role="alert">{{ usage_monitor_lookup_error }}</p>{% endif %}
+                {% if usage_recent_operational_rows %}<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>Time (UTC)</th><th>Stage</th><th>Reference</th><th>Outcome</th><th>Retries</th><th>Error</th><th>Provider / HTTP</th><th>Provider / model / latency</th></tr></thead><tbody>
+                  {% for row in usage_recent_operational_rows %}<tr><td>{{ row.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td><td>{{ row.stage }}</td><td><code>{{ row.reference_id }}</code></td><td>{{ row.outcome }}</td><td>{{ row.retry_count }}</td><td>{{ row.error_code }}</td><td>{% if row.provider_error_code %}{{ row.provider_error_code }}{% else %}—{% endif %}{% if row.provider_http_status %}<br><small>HTTP {{ row.provider_http_status }}</small>{% endif %}</td><td>{% if row.provider_adapter %}{{ row.provider_adapter }}<br>{% endif %}{% if row.model %}{{ row.model }}{% else %}—{% endif %}{% if row.duration_ms is not none %}<br><small>{{ row.duration_ms }} ms</small>{% endif %}</td></tr>{% endfor %}
+                </tbody></table></div>{% else %}<div class="usage-empty">No matching failures or recovered retries in this range.</div>{% endif %}
+              </section>
+              <section class="usage-panel">
                 <header><h2>Recent split failures</h2><p>Up to 25 retained, failed split executions in {{ usage_range_label|lower }}. These are safe operational metadata for support correlation; they contain no source or provider response content.</p></header>
                 {% if usage_recent_split_failure_rows %}
                 <div class="usage-table-wrap">
@@ -4127,6 +4156,20 @@
                       </table>
                     </div>
                     {% else %}<div class="usage-empty">No user usage recorded for this range.</div>{% endif %}
+                  </section>
+                  <section class="usage-panel">
+                    <header><h2>Operational health · last 15 minutes</h2><p>Provider error counts include recovered and failed HTTP requests; overdue attempts and queue age show current open work.</p></header>
+                    <div class="usage-kpi-grid">
+                      <article class="usage-kpi"><span>HTTP 429 responses</span><strong>{{ usage_operational_health.http_429 }}</strong></article><article class="usage-kpi"><span>HTTP 503 responses</span><strong>{{ usage_operational_health.http_503 }}</strong></article><article class="usage-kpi"><span>Provider timeouts</span><strong>{{ usage_operational_health.timeouts }}</strong></article><article class="usage-kpi"><span>Overdue attempts</span><strong>{{ usage_operational_health.overdue_attempts }}</strong></article><article class="usage-kpi"><span>Oldest queued work</span><strong>{% if usage_operational_health.oldest_queue_age_seconds is not none %}{{ usage_operational_health.oldest_queue_age_seconds }} sec{% else %}—{% endif %}</strong></article><article class="usage-kpi"><span>Mean queue wait</span><strong>{% if usage_operational_health.avg_queue_wait_ms is not none %}{{ usage_operational_health.avg_queue_wait_ms }} ms{% else %}—{% endif %}</strong></article><article class="usage-kpi"><span>Mean provider call</span><strong>{% if usage_operational_health.avg_provider_latency_ms is not none %}{{ usage_operational_health.avg_provider_latency_ms }} ms{% else %}—{% endif %}</strong></article>
+                    </div>
+                    <p class="usage-detail">{{ usage_operational_health.degraded_calls }} degraded requests / {{ usage_operational_health.observed_calls }} observed requests{% if usage_operational_health.degradation_pct is not none %} ({{ usage_operational_health.degradation_pct }}%){% endif %}.</p>
+                    {% if usage_operational_health.alerts %}<p class="usage-detail">{% for alert in usage_operational_health.alerts %}{% if alert == 'queued_work_over_60_seconds' %}Queued work is older than 60 seconds.{% elif alert == 'provider_attempts_overdue' %}One or more provider attempts passed their deadline.{% elif alert == 'provider_errors_elevated' %}At least 5 provider errors occurred and reached 20% of observed attempts.{% endif %}{% if not loop.last %} {% endif %}{% endfor %}</p>{% else %}<p class="usage-detail">No operational warning thresholds were reached.</p>{% endif %}
+                  </section>
+                  <section class="usage-panel">
+                    <header><h2>Recent failures and retries</h2><p>Bounded operational metadata for this team; no clinical or provider response content.</p></header>
+                    <form method="get" action="/admin" class="usage-filter-form"><input type="hidden" name="team_id" value="{{ selected_team.id }}" /><input type="hidden" name="team_tab" value="usage" /><input type="hidden" name="range" value="{{ usage_range_key }}" /><label>Operation reference <input name="reference" value="{{ usage_monitor_reference }}" placeholder="UUID" /></label><label>From (UTC) <input type="datetime-local" name="monitor_since" value="{{ usage_monitor_since[:16] }}" /></label><button class="btn small" type="submit">Search</button><a class="btn small" href="/admin?team_id={{ selected_team.id }}&amp;team_tab=usage&amp;range={{ usage_range_key }}">Clear</a></form>
+                    {% if usage_monitor_lookup_error %}<p class="usage-detail" role="alert">{{ usage_monitor_lookup_error }}</p>{% endif %}
+                    {% if usage_recent_operational_rows %}<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>Time (UTC)</th><th>Stage</th><th>Reference</th><th>Outcome</th><th>Retries</th><th>Error</th><th>Provider / HTTP</th><th>Provider / model / latency</th></tr></thead><tbody>{% for row in usage_recent_operational_rows %}<tr><td>{{ row.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td><td>{{ row.stage }}</td><td><code>{{ row.reference_id }}</code></td><td>{{ row.outcome }}</td><td>{{ row.retry_count }}</td><td>{{ row.error_code }}</td><td>{% if row.provider_error_code %}{{ row.provider_error_code }}{% else %}—{% endif %}{% if row.provider_http_status %}<br><small>HTTP {{ row.provider_http_status }}</small>{% endif %}</td><td>{% if row.provider_adapter %}{{ row.provider_adapter }}<br>{% endif %}{% if row.model %}{{ row.model }}{% else %}—{% endif %}{% if row.duration_ms is not none %}<br><small>{{ row.duration_ms }} ms</small>{% endif %}</td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="usage-empty">No matching failures or recovered retries in this range.</div>{% endif %}
                   </section>
                   <section class="usage-panel">
                     <header><h2>Recent split failures</h2><p>Up to 25 retained, failed split executions for this team in {{ usage_range_label|lower }}. These are safe operational metadata for support correlation; they contain no source or provider response content.</p></header>

@@ -483,4 +483,6 @@ def test_dev_runtime_starts_and_stops_retention_scheduler():
 
     assert "celery -A app.celery_app:celery_app beat" in script
     assert 'CELERY_BEAT_PID=""' in script
-    assert 'kill "${CELERY_BEAT_PID}"' in script
+    assert 'pids+=("$CELERY_BEAT_PID")' in script
+    assert 'kill -TERM "${pids[@]}"' in script
+    assert 'wait "${pids[@]}"' in script

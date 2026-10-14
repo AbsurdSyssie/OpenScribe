@@ -11,9 +11,81 @@ export const generationLoadingHtml = ({
       <div class="note-generation-loading__star">&#10022;</div>
     </div>
     <h2>${label === 'follow-up' ? 'Creating' : 'Generating'} your ${label}</h2>
-    <p>${message}</p>
+    <p data-generation-status>${message}</p>
   </div>
 `;
+
+const delayedStatusTimers = new WeakMap();
+export const CHECKER_UNAVAILABLE_MESSAGE = 'Draft ready. Automatic checking was unavailable; please review carefully.';
+export const DELAYED_GENERATION_STATUS_MS = 15000;
+export const DELAYED_GENERATION_STATUS_MESSAGE = 'This is taking a little longer than usual. We’re still working on your note.';
+
+export function clearDelayedGenerationStatus(container) {
+  if (!container || !delayedStatusTimers.has(container)) return;
+  clearTimeout(delayedStatusTimers.get(container));
+  delayedStatusTimers.delete(container);
+}
+
+export function scheduleDelayedGenerationStatus(container, { since = null, message = DELAYED_GENERATION_STATUS_MESSAGE } = {}) {
+  clearDelayedGenerationStatus(container);
+  const sinceMs = Date.parse(String(since || ''));
+  if (!Number.isFinite(sinceMs) || !container?.querySelector) return;
+  const update = () => {
+    delayedStatusTimers.delete(container);
+    const status = container.querySelector('[data-generation-status]');
+    if (status) status.textContent = message;
+  };
+  const remaining = DELAYED_GENERATION_STATUS_MS - (Date.now() - sinceMs);
+  if (remaining <= 0) update();
+  else delayedStatusTimers.set(container, setTimeout(update, remaining));
+}
+
+const escapeStatusHtml = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+export function generationFailureMessage(presentation, { kind = 'note' } = {}) {
+  const subject = kind === 'follow-up' ? 'follow-up' : 'note';
+  if (presentation?.category === 'configuration') {
+    return presentation?.technical_details
+      ? `We couldn’t create your ${subject} because your team’s AI service needs attention. Check Team → AI services, then try again.`
+      : `We couldn’t create your ${subject} because the AI service needs attention. Please ask your team leader to check the AI provider settings.`;
+  }
+  if (presentation?.category === 'input_or_validation') {
+    return `We couldn’t create your ${subject} from the saved inputs. Review the note and try again.`;
+  }
+  if (presentation?.category === 'temporary') {
+    return kind === 'follow-up'
+      ? 'We couldn’t create your follow-up. Please try again in a minute.'
+      : 'We couldn’t create your note. Please try again in a minute.';
+  }
+  return `We couldn’t create your ${subject}. Try again or ask your team leader for help.`;
+}
+
+export function generationFailureDetailsHtml(presentation, { formatTime = (value) => value || '', timeLabel = null } = {}) {
+  if (!presentation || typeof presentation !== 'object') return '';
+  const reference = typeof presentation.support_reference === 'string' ? presentation.support_reference : '';
+  const time = formatTime(presentation.occurred_at);
+  const resolvedTimeLabel = timeLabel || (presentation.time_basis === 'created' ? 'Created (failure time unavailable)' : 'Failed');
+  const displayedTimeLabel = `${resolvedTimeLabel} (${formatTime === formatWorkspaceCreatedAt ? 'local time' : 'UTC'})`;
+  const technical = presentation.technical_details;
+  const technicalRows = technical && typeof technical === 'object'
+    ? [
+      technical.application_code ? `<p>Application code: ${escapeStatusHtml(technical.application_code)}</p>` : '',
+      technical.provider_code ? `<p>Provider code: ${escapeStatusHtml(technical.provider_code)}</p>` : '',
+      Number.isInteger(technical.provider_http_status) ? `<p>Provider status: ${technical.provider_http_status}</p>` : '',
+    ].join('')
+    : '';
+  return `<details class="generation-support-details"><summary>Support details</summary>${reference ? `<p>Reference: ${escapeStatusHtml(reference)}</p>` : ''}${time ? `<p>${displayedTimeLabel}: ${escapeStatusHtml(time)}</p>` : ''}${technicalRows ? `<details><summary>Technical details</summary>${technicalRows}</details>` : ''}</details>`;
+}
+
+export function generationRetryStatusHtml(presentation, { formatTime = (value) => value || '' } = {}) {
+  if (!presentation?.technical_details) return '';
+  return `<p class="text-sm text-slate">The provider is busy. We’re retrying this request automatically.</p>${generationFailureDetailsHtml(presentation, { formatTime, timeLabel: 'Observed' })}`;
+}
 
 export const formatWorkspaceCreatedAt = (value) => {
   if (!value) return '';
@@ -136,7 +208,8 @@ export function createDocumentNavigator({
     noteMeta,
     followupMeta,
     followupHistory,
-    latestGeneratedOutput,
+  latestGeneratedOutput,
+  noteCheckStatus,
     latestFollowupOutput,
     outputRedactionSlot,
     followupRedactionSlot,
@@ -320,17 +393,14 @@ export function createDocumentNavigator({
     if (!slot) return;
     slot.innerHTML = '';
     if (!document) return;
-    const checkBucket = document.hallucination_check_bucket || 'not_applicable';
-    if (checkBucket !== 'not_applicable' || document.hallucination_check_debug_json) {
+    const debugPayload = document.hallucination_check_debug_json;
+    if (debugPayload) {
       const checkWrapper = window.document.createElement('section');
       checkWrapper.className = 'followup-output-card-v2 followup-llm-request-card-v2';
       checkWrapper.dataset.hallucinationCheckDebugPanel = 'true';
-      const debugPayload = document.hallucination_check_debug_json
-        ? `<pre class="followup-llm-request-pre-v2">${escapeHtml(JSON.stringify(document.hallucination_check_debug_json, null, 2))}</pre>`
-        : '<p class="text-xs text-slate">Debug payload not available. Set HALLUCINATION_CHECK_DEBUG_UI=1 before generating the note to capture first-pass output and checker edits.</p>';
       checkWrapper.innerHTML = `
-        <div class="followup-output-card-v2__meta"><span class="followup-status">Hallucination check</span><span>${escapeHtml(checkBucket)}</span></div>
-        ${debugPayload}
+        <div class="followup-output-card-v2__meta"><span class="followup-status">Hallucination check</span><span>${escapeHtml(document.hallucination_check_bucket || 'not_applicable')}</span></div>
+        <pre class="followup-llm-request-pre-v2">${escapeHtml(JSON.stringify(debugPayload, null, 2))}</pre>
       `;
       slot.appendChild(checkWrapper);
     }
@@ -415,8 +485,23 @@ export function createDocumentNavigator({
       noteMeta.textContent = selectedNote?.kind === "working_note"
         ? "Working note · Your own notes used as context for generation."
         : (selectedNote
-          ? `${noteDocumentLabel(selectedNote)} · ${selectedNote.model_used || "model not shown"} · ${selectedNote.status} · ${selectedNote.hallucination_check_bucket || "not_applicable"} · ${formatWorkspaceCreatedAt(selectedNote.created_at)}`
+          ? `${noteDocumentLabel(selectedNote)} · ${selectedNote.model_used || "model not shown"} · ${({ ready: "Draft ready", failed: "Generation failed", queued: "Queued", processing: "Generating" })[selectedNote.status] || "Draft"} · ${formatWorkspaceCreatedAt(selectedNote.created_at)}`
           : "No note yet.");
+    }
+    if (noteCheckStatus) {
+      const checkerUnavailable = Boolean(selectedNote?.checker_unavailable);
+      const activeRetry = selectedNote?.active_retry_presentation;
+      noteCheckStatus.hidden = !checkerUnavailable && !activeRetry?.technical_details;
+      if (checkerUnavailable || activeRetry?.technical_details) {
+        noteCheckStatus.innerHTML = [
+          checkerUnavailable
+            ? `${CHECKER_UNAVAILABLE_MESSAGE}${generationFailureDetailsHtml(selectedNote.checker_failure_presentation, { formatTime: formatWorkspaceCreatedAt })}`
+            : '',
+          activeRetry?.technical_details ? generationRetryStatusHtml(activeRetry, { formatTime: formatWorkspaceCreatedAt }) : '',
+        ].join('');
+      } else {
+        noteCheckStatus.textContent = '';
+      }
     }
     renderDocumentSelector({
       wrap: noteSelectorWrap,

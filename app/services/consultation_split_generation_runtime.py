@@ -5,6 +5,9 @@ separate from analysis runtime because generation persists ordinary documents.
 """
 from __future__ import annotations
 
+from app.services.provider_transport_telemetry import provider_attempt_execution
+from app.services.llm_execution import ExecutionBudget
+
 import json
 from dataclasses import dataclass
 from datetime import timedelta
@@ -48,7 +51,7 @@ from app.services.templates import _transcript_title_can_be_auto_filled
 from app.services.transcripts import transcript_is_expired
 from app.services.redaction import reidentify_text
 
-SPLIT_GENERATION_PROVIDER_DEADLINE_SECONDS = 600
+SPLIT_GENERATION_PROVIDER_DEADLINE_SECONDS = 90
 RECOVERABLE_GENERATION_RESPONSE_MAX_CHARS = 2_097_152
 _CONTROLLED_PROVIDER_ERROR_BY_APP_CODE = {
     # Gemini's timeout adapter intentionally omits provider details. This is a
@@ -552,7 +555,9 @@ def process_consultation_split_generation_execution(db: Session, *, execution_id
     if not isinstance(prepared, tuple): return prepared or SplitGenerationRuntimeResult("noop", execution_id)
     work, provider, request, credential=prepared
     if not _submit(db, work): return SplitGenerationRuntimeResult("noop", execution_id)
-    try: text, raw_usage=llm_runtime.invoke_llm(snapshot=provider, credential=credential, request_body=request)
+    try:
+        with provider_attempt_execution(db, attempt_id=work.attempt.id, maximum_seconds=90):
+            text, raw_usage=llm_runtime.invoke_llm(snapshot=provider, credential=credential, request_body=request)
     except AppError as exc:
         provider_error_code, provider_http_status = _safe_provider_error(exc)
         work=_lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)

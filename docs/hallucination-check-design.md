@@ -6,6 +6,8 @@ Implemented for structured Template note generation. This document records the c
 
 The checker reviews a redacted first-pass structured note against the redacted sources used for generation, applies only validated exact-string edits, and stores the final checked or unchecked result under the normal owner-content encryption boundary.
 
+Before checking, generation commits the validated structured draft and sections under the existing owner encryption boundary and records `validated_draft_at`. The checker has at most 30 seconds, including its existing invalid-output retry, within the ordinary attempt's 150-second deadline. If lifecycle reconciliation expires checking or the main attempt, it promotes only an already validated encrypted draft whose transcript root remains live to ready. It marks checking unavailable only when saved checker configuration or an attempt shows that checking was selected; a crash before checker selection preserves the existing status. Submitted ambiguous attempts retain conservative unknown settlement. An expired or deleted root is never promoted. Late generation or checker results cannot replace a ready, edited or terminal document. With no selected checker, normal completion remains `skipped_not_configured`.
+
 Current route/provider/generation behavior is also documented in [api.md](api.md), [llm-providers.md](llm-providers.md), [security.md](security.md), and [transcript-capture.md](transcript-capture.md).
 
 ## Scope
@@ -158,6 +160,7 @@ Provider failure, malformed output, or patch failure yields an unchecked note wi
 ## Development debug visibility
 
 `HALLUCINATION_CHECK_DEBUG_UI=1` enables an explicit development-only owner debug path.
+The workspace renders the debug card only when that authorized path captured a payload for the selected note.
 
 Guardrails:
 

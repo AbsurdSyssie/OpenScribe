@@ -41,7 +41,7 @@ OpenScribe discovers publisher models through Google's `v1beta1` Model Garden ca
 
 For `gemini-3.5-flash`, Google's current model page lists `europe-west2` for model availability and Provisioned Throughput, while Standard PayGo is listed for `global`, `us`, and `eu`. A project without suitable provisioned capacity can therefore receive capacity errors in `europe-west2` even though the model and endpoint exist. Re-check the current model page and the project's Google capacity contract before rollout; do not infer PayGo availability from endpoint availability.
 
-Generation uses a model-aware thinking level. OpenScribe sends `LOW` for the exact `gemini-3.8-flash` model ID, including its publisher path, because that model supports `LOW`, `MEDIUM`, and `HIGH` rather than `MINIMAL`. Gemini 3.5 Flash retains the existing `MINIMAL` setting. Treat other model families according to their own documented levels instead of inferring support from the Gemini 3 prefix.
+Generation uses a model-aware thinking level. OpenScribe sends `LOW` for the exact `gemini-3.7-flash`, `gemini-3.8-flash`, and `gemini-3.8-flash-cyber` model IDs, including their publisher paths, because those models support `LOW`, `MEDIUM`, and `HIGH` rather than `MINIMAL`. Gemini 3.5 Flash retains the existing `MINIMAL` setting. Treat other model families according to their own documented levels instead of inferring support from the Gemini 3 prefix.
 
 ## Bare-metal development with user ADC
 

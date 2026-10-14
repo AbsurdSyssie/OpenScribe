@@ -17,7 +17,7 @@ from app.errors import AppError
 from app.models import (ConsultationSplitAnalysis, ConsultationSplitAnalysisStatus, ConsultationSplitBatch, ConsultationSplitIntent, ConsultationSplitIntentStatus,
     ConsultationSplitBatchStatus, ConsultationSplitBatchTopic, ConsultationSplitExecution,
     ConsultationSplitExecutionKind, ConsultationSplitExecutionStatus, ConsultationSplitTopicDisposition,
-    ConsultationSplitTopicOutcome, ConsultationSplitTopicOutcomeStatus, GeneratedDocument, Transcript, User)
+    ConsultationSplitTopicOutcome, ConsultationSplitTopicOutcomeStatus, GeneratedDocument, ProviderAttempt, TeamRole, Transcript, User)
 from app.schemas.consultation_split import ConsultationSplitAnalysisDetail, ConsultationSplitBatchDetail, ConsultationSplitTopicDetail
 from app.schemas.consultation_split import ConsultationSplitIntentStartResponse, ConsultationSplitIntentWorkspaceDetail
 from app.services.consultation_split_analysis import ValidatedSplitAnalysis
@@ -29,6 +29,7 @@ from app.services.consultation_split_sources import current_consultation_split_a
 from app.services.consultation_splits import read_split_analysis_json
 from app.services.preferences import consultation_splitting_enabled, consultation_splitting_feature_enabled
 from app.services.consultation_split_gates import analysis_split_enabled
+from app.services.generation_presentation import active_retry_presentation, generation_failure_presentation
 from app.services.transcripts import get_active_owner_transcript, transcript_is_expired
 
 
@@ -108,12 +109,60 @@ def _projection(
         ConsultationSplitIntent.manual_review_requested.is_(True),
         ConsultationSplitIntent.status.in_([ConsultationSplitIntentStatus.analysis_pending, ConsultationSplitIntentStatus.confirmed]),
     ).limit(1)) is not None
+    execution = db.scalar(
+        select(ConsultationSplitExecution)
+        .where(
+            ConsultationSplitExecution.analysis_id == analysis.id,
+            ConsultationSplitExecution.kind == ConsultationSplitExecutionKind.analysis,
+        )
+        .order_by(ConsultationSplitExecution.attempt_no.desc(), ConsultationSplitExecution.created_at.desc())
+        .limit(1)
+    )
+    team_leader_owner = bool(
+        actor.id == analysis.owner_user_id
+        and not actor.is_system_admin
+        and actor.team_role is TeamRole.leader
+        and actor.team_id is not None
+        and actor.team_id == analysis.team_id
+    )
+    active = execution is not None and execution.status in {
+        ConsultationSplitExecutionStatus.queued,
+        ConsultationSplitExecutionStatus.processing,
+    }
+    failure_presentation = None
+    if execution is not None and execution.status is ConsultationSplitExecutionStatus.failed:
+        failure_presentation = generation_failure_presentation(
+            reference=execution.id,
+            occurred_at=execution.completed_at or execution.created_at,
+            time_basis="failed" if execution.completed_at else "created",
+            error_code=execution.error_code or analysis.error_code,
+            provider_error_code=execution.provider_error_code,
+            provider_http_status=execution.provider_http_status,
+            include_technical_details=team_leader_owner,
+        )
+    active_retry = None
+    if active and execution.kind is ConsultationSplitExecutionKind.analysis and team_leader_owner:
+        attempt = db.scalar(
+            select(ProviderAttempt)
+            .where(
+                ProviderAttempt.consultation_split_execution_id == execution.id,
+                ProviderAttempt.owner_user_id == actor.id,
+                ProviderAttempt.team_id == analysis.team_id,
+                ProviderAttempt.transcript_id == analysis.transcript_id,
+            )
+            .limit(1)
+        )
+        if attempt is not None:
+            active_retry = active_retry_presentation(attempt, reference=execution.id)
     return ConsultationSplitAnalysisDetail(
         analysis_id=analysis.id,
         status=status,  # type: ignore[arg-type]
         error_code=error_code,
         updated_at=analysis.updated_at,
         completed_at=analysis.completed_at,
+        active_since=(execution.started_at or execution.created_at) if active and execution is not None else None,
+        failure_presentation=failure_presentation,
+        active_retry_presentation=active_retry,
         manual_review_requested=manual_review_requested,
         topics=topics,
     )
@@ -340,6 +389,33 @@ def read_workspace_split_batch(db: Session, actor: User, *, transcript_id: UUID)
         ConsultationSplitExecution.kind.in_([ConsultationSplitExecutionKind.generation, ConsultationSplitExecutionKind.verification]),
         ConsultationSplitExecution.status.in_([ConsultationSplitExecutionStatus.queued, ConsultationSplitExecutionStatus.processing]),
     ).order_by(ConsultationSplitExecution.attempt_no.desc()).limit(1))
+    failed_generation = db.scalar(
+        select(ConsultationSplitExecution)
+        .where(
+            ConsultationSplitExecution.batch_id == batch.id,
+            ConsultationSplitExecution.kind == ConsultationSplitExecutionKind.generation,
+            ConsultationSplitExecution.status == ConsultationSplitExecutionStatus.failed,
+        )
+        .order_by(ConsultationSplitExecution.attempt_no.desc(), ConsultationSplitExecution.completed_at.desc())
+        .limit(1)
+    )
+    failed_verification = db.scalar(
+        select(ConsultationSplitExecution)
+        .where(
+            ConsultationSplitExecution.batch_id == batch.id,
+            ConsultationSplitExecution.kind == ConsultationSplitExecutionKind.verification,
+            ConsultationSplitExecution.status == ConsultationSplitExecutionStatus.failed,
+        )
+        .order_by(ConsultationSplitExecution.attempt_no.desc(), ConsultationSplitExecution.completed_at.desc())
+        .limit(1)
+    )
+    team_leader_owner = bool(
+        actor.id == batch.owner_user_id
+        and not actor.is_system_admin
+        and actor.team_role is TeamRole.leader
+        and actor.team_id is not None
+        and actor.team_id == batch.team_id
+    )
     partial = batch.status is ConsultationSplitBatchStatus.partially_ready
     documents_by_topic = {
         document.consultation_split_batch_topic_id: document.id
@@ -354,13 +430,68 @@ def read_workspace_split_batch(db: Session, actor: User, *, transcript_id: UUID)
             (documents_by_topic.get(topic.id) for topic in topics if documents_by_topic.get(topic.id) is not None),
             None,
         )
+    deleted_topic_uuids = [
+        topic.topic_uuid
+        for topic in topics
+        if topic.disposition is ConsultationSplitTopicDisposition.separate_note
+        and outcomes.get(topic.id) is not None
+        and outcomes[topic.id].status is ConsultationSplitTopicOutcomeStatus.ready
+        and topic.id not in documents_by_topic
+    ]
+    failure_presentation = None
+    if failed_generation is not None and batch.status in {
+        ConsultationSplitBatchStatus.failed,
+        ConsultationSplitBatchStatus.partially_ready,
+        ConsultationSplitBatchStatus.completed_partial,
+    } and bool(failed):
+        failure_presentation = generation_failure_presentation(
+            reference=failed_generation.id,
+            occurred_at=failed_generation.completed_at or failed_generation.created_at,
+            time_basis="failed" if failed_generation.completed_at else "created",
+            error_code=failed_generation.error_code,
+            provider_error_code=failed_generation.provider_error_code,
+            provider_http_status=failed_generation.provider_http_status,
+            include_technical_details=team_leader_owner,
+        )
+    checker_unavailable = failed_verification is not None and batch.verification_status.value == "unchecked"
+    checker_failure_presentation = None
+    if checker_unavailable and failed_verification is not None:
+        checker_failure_presentation = generation_failure_presentation(
+            reference=failed_verification.id,
+            occurred_at=failed_verification.completed_at or failed_verification.created_at,
+            time_basis="failed" if failed_verification.completed_at else "created",
+            error_code=failed_verification.error_code,
+            provider_error_code=failed_verification.provider_error_code,
+            provider_http_status=failed_verification.provider_http_status,
+            include_technical_details=team_leader_owner,
+        )
+    active_retry = None
+    if active is not None and team_leader_owner:
+        attempt = db.scalar(
+            select(ProviderAttempt)
+            .where(
+                ProviderAttempt.consultation_split_execution_id == active.id,
+                ProviderAttempt.owner_user_id == actor.id,
+                ProviderAttempt.team_id == batch.team_id,
+                ProviderAttempt.transcript_id == batch.transcript_id,
+            )
+            .limit(1)
+        )
+        if attempt is not None:
+            active_retry = active_retry_presentation(attempt, reference=active.id)
     return ConsultationSplitBatchDetail(
         batch_id=batch.id, status=batch.status.value, failed_topic_count=len(failed),
         validated_topic_count=len(validated), primary_failed=any(topic.is_primary for topic in failed),
         can_retry_missing=partial and bool(failed) and active is None,
         can_keep_available=partial and bool(validated) and active is None,
         active_execution_id=active.id if active else None,
+        active_since=(active.started_at or active.created_at) if active else None,
         preferred_document_id=preferred_document_id,
+        deleted_topic_uuids=deleted_topic_uuids,
         verification_status=batch.verification_status.value,
         verification_correction_count=batch.verification_correction_count,
+        failure_presentation=failure_presentation,
+        active_retry_presentation=active_retry,
+        checker_unavailable=checker_unavailable,
+        checker_failure_presentation=checker_failure_presentation,
     )

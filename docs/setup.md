@@ -96,7 +96,9 @@ The persistent Docker runtime uses the separate `DOCKER_SEED_TEST_ACCOUNTS` swit
 
 ## Celery behavior
 
-The development worker consumes the `control`, `generation`, `ingestion`, and default `celery` queues. Beat schedules:
+The default combined development worker consumes `control`, `generation`, and `ingestion`, with `CELERY_WORKER_CONCURRENCY=1`. Set `CELERY_WORKER_MODE=isolated` to start separate workers with control/generation/ingestion concurrency 1/2/1. Override the corresponding `CELERY_CONTROL_CONCURRENCY`, `CELERY_GENERATION_CONCURRENCY`, and `CELERY_INGESTION_CONCURRENCY` settings with positive integers. Invalid settings fail before service startup. Both modes use prefork and prefetch multiplier 1, with one Beat; a web, worker, or Beat exit stops the development runtime and shuts down its children. Check host resources before increasing concurrency; ten generation slots are unsuitable for a 1 CPU / 2 GB host without capacity assessment. See [environment.md](environment.md).
+
+Beat schedules:
 
 - task-dispatch outbox publication every 1 second;
 - transcript retention cleanup every 10 seconds;

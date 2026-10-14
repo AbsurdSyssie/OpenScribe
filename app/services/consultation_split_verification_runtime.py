@@ -1,6 +1,9 @@
 """At-most-once, fail-open runtime for bundled split verification."""
 from __future__ import annotations
 
+from app.services.provider_transport_telemetry import provider_attempt_execution
+from app.services.llm_execution import ExecutionBudget
+
 from datetime import datetime, timedelta
 from uuid import UUID
 
@@ -33,7 +36,7 @@ from app.services.transcripts import transcript_is_expired
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.task_outbox import cancel_pending_task_dispatch
 
-_DEADLINE_SECONDS = 600
+_DEADLINE_SECONDS = 30
 
 
 def _credential_ok(config: TeamLlmConfig | None, credential: object | None) -> bool:
@@ -355,7 +358,8 @@ def process_consultation_split_verification_execution(db: Session, *, execution_
     mark_provider_attempt_submitted(db, attempt_id=attempt.id, now=utcnow(), deadline_at=utcnow() + timedelta(seconds=_DEADLINE_SECONDS))
     execution.status = ConsultationSplitExecutionStatus.processing; execution.started_at = utcnow(); db.commit()
     try:
-        text, usage = llm_runtime.invoke_llm(snapshot=provider, credential=credential, request_body=request)
+        with provider_attempt_execution(db, attempt_id=attempt.id, maximum_seconds=30):
+            text, usage = llm_runtime.invoke_llm(snapshot=provider, credential=credential, request_body=request)
     except Exception:
         work = _lock(db, execution_id)
         if work: _finish(db, work, reason="verification_provider_failed", verified=False, submitted=True)

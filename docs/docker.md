@@ -7,9 +7,9 @@ The profile starts:
 - PostgreSQL with a named data volume;
 - Redis with append-only persistence;
 - Vault with a named storage volume;
-- one OpenScribe container that bootstraps/unseals local Vault, applies migrations, and supervises FastAPI, one Celery worker consuming all queues, and Celery Beat.
+- one OpenScribe container that bootstraps/unseals local Vault, applies migrations, and supervises FastAPI, Celery workers, and one Celery Beat (one combined worker by default).
 
-This preserves the current local architecture. It is not a production reference topology: bundled database credentials and persistent local Vault root/unseal material must not be used as production secrets, and production workers should be isolated by queue.
+This preserves the current local architecture. It is not a production reference topology: bundled database credentials and persistent local Vault root/unseal material must not be used as production secrets, and production workers should be isolated by queue after checking host capacity.
 
 ## Prerequisites
 
@@ -44,6 +44,10 @@ On every application-container start, the entrypoint:
 6. applies `alembic upgrade head`;
 7. optionally seeds local test accounts;
 8. starts the Celery worker, Celery Beat, and Uvicorn.
+
+Set `CELERY_WORKER_MODE=isolated` to start separate prefork workers for `control`, `generation`, and `ingestion`. Their concurrency defaults are 1, 2, and 1; configure `CELERY_CONTROL_CONCURRENCY`, `CELERY_GENERATION_CONCURRENCY`, and `CELERY_INGESTION_CONCURRENCY` with positive integers. The default `combined` mode uses `CELERY_WORKER_CONCURRENCY=1`. Invalid modes or concurrency values stop startup before bootstrap. Both modes use prefetch multiplier 1, run bootstrap/web/Beat once, and stop all children if any supervised process exits or the container receives a termination signal.
+
+Ten generation slots are configurable but require measured CPU, memory, and provider capacity. Do not enable them blindly on a 1 CPU / 2 GB host. This change does not resize or reconfigure any production host. See [environment.md](environment.md) for settings.
 
 If any supervised long-running process exits, the container stops and `restart: unless-stopped` restarts the complete runtime consistently.
 

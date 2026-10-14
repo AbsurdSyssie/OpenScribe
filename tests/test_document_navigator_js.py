@@ -18,7 +18,7 @@ def test_initial_note_render_preserver_is_one_shot_and_requires_exact_note_versi
             const source = fs.readFileSync(sourcePath, 'utf8')
               .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';", '')
               .replaceAll('export const ', 'var ')
-              .replace('export function workingNoteToEditorDocument', 'function workingNoteToEditorDocument')
+              .replaceAll('export function ', 'function ')
               .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
             const sandbox = { Boolean, String };
             sandbox.globalThis = sandbox;
@@ -88,7 +88,7 @@ def test_document_navigator_preserves_matching_server_note_once_but_updates_meta
             const documentsSource = fs.readFileSync(documentsPath, 'utf8')
               .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';", '')
               .replaceAll('export const ', 'var ')
-              .replace('export function workingNoteToEditorDocument', 'function workingNoteToEditorDocument')
+              .replaceAll('export function ', 'function ')
               .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
             const makeElement = () => ({
               dataset: {}, hidden: false, innerHTML: '', textContent: '', children: [],
@@ -190,6 +190,102 @@ def test_document_navigator_preserves_matching_server_note_once_but_updates_meta
     subprocess.run(["node", str(runner)], check=True, cwd=root)
 
 
+def test_document_navigator_only_renders_hallucination_debug_card_with_payload(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    runner = tmp_path / "hallucination_debug_panel_runner.mjs"
+    runner.write_text(
+        textwrap.dedent(
+            """
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import vm from 'node:vm';
+
+            const root = __OPENSCRIBE_ROOT__;
+            const documentsPath = `${root}/app/static/js/transcribe/documents.js`;
+            const noteTargetsPath = `${root}/app/static/js/transcribe/noteTargets.js`;
+            const noteTargetsSource = fs.readFileSync(noteTargetsPath, 'utf8').replaceAll('export const ', 'var ');
+            const documentsSource = fs.readFileSync(documentsPath, 'utf8')
+              .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';", '')
+              .replaceAll('export const ', 'var ')
+              .replaceAll('export function ', 'function ')
+              .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
+            const makeElement = () => ({
+              dataset: {}, hidden: false, innerHTML: '', textContent: '', children: [],
+              append(...children) { this.children.push(...children); },
+              appendChild(child) { this.children.push(child); },
+              insertAdjacentHTML() {},
+              querySelectorAll() { return []; },
+              setAttribute(name, value) { this[name] = value; },
+            });
+            const fakeDocument = {
+              activeElement: null,
+              createElement: () => makeElement(),
+              dispatchEvent: () => {},
+              querySelector: () => null,
+            };
+            const sandbox = {
+              Array, Boolean, CustomEvent: class CustomEvent {}, Date, JSON, Map, Number, String,
+              window: { document: fakeDocument },
+            };
+            sandbox.globalThis = sandbox;
+            vm.createContext(sandbox);
+            vm.runInContext(noteTargetsSource, sandbox, { filename: noteTargetsPath });
+            vm.runInContext(documentsSource, sandbox, { filename: documentsPath });
+
+            const slot = makeElement();
+            const noteMeta = makeElement();
+            const state = {
+              hasActiveTranscript: true,
+              activeTranscriptId: 'transcript-1',
+              selectedNoteDocumentId: 'note-1',
+              workspaceNoteDocuments: [],
+              workspaceStructuredContext: {},
+            };
+            const navigator = sandbox.createDocumentNavigator({
+              dom: {
+                latestGeneratedOutput: makeElement(), noteMeta,
+                noteSelector: makeElement(), noteSelectorCount: makeElement(), noteSelectorWrap: makeElement(),
+                outputLlmRequestSlot: slot, outputRedactionSlot: makeElement(),
+              },
+              helpers: {
+                escapeHtml: (value) => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
+                refreshIcons: () => {}, renderGeneratedOutput: () => {}, renderRedactionDebugPanel: () => {},
+              },
+              getState: () => state,
+              setState: () => {},
+            });
+
+            const render = (bucket, debugPayload) => {
+              slot.children = [];
+              state.workspaceNoteDocuments = [{
+                id: 'note-1', title: 'Note', status: 'ready', document_mode: 'freeform',
+                hallucination_check_bucket: bucket,
+                hallucination_check_debug_json: debugPayload,
+              }];
+              navigator.renderSelectedNote();
+            };
+            const debugCards = () => slot.children.filter((child) => child.dataset.hallucinationCheckDebugPanel === 'true');
+
+            for (const bucket of ['checked', 'unchecked']) {
+              render(bucket, null);
+              assert.equal(debugCards().length, 0, `${bucket} status must not create an orphan debug card`);
+              assert.doesNotMatch(slot.children.map((child) => child.innerHTML).join(''), /HALLUCINATION_CHECK_DEBUG_UI/);
+              assert.match(noteMeta.textContent, /Draft ready/, 'ordinary draft status uses a human label');
+              assert.doesNotMatch(noteMeta.textContent, /checked|unchecked|not_applicable/);
+            }
+
+            render('checked', { first_pass: '<synthetic>' });
+            assert.equal(debugCards().length, 1, 'an authorized captured payload renders the debug card');
+            assert.match(debugCards()[0].innerHTML, /&lt;synthetic&gt;/);
+            assert.doesNotMatch(debugCards()[0].innerHTML, /<synthetic>/);
+            """
+        ).replace("__OPENSCRIBE_ROOT__", repr(str(root))),
+        encoding="utf-8",
+    )
+
+    subprocess.run(["node", str(runner)], check=True, cwd=root)
+
+
 def test_note_selection_rail_formats_created_at_in_browser_timezone(tmp_path):
     root = Path(__file__).resolve().parents[1]
     runner = tmp_path / "note_created_at_runner.mjs"
@@ -204,7 +300,7 @@ def test_note_selection_rail_formats_created_at_in_browser_timezone(tmp_path):
             const source = fs.readFileSync(sourcePath, 'utf8')
               .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';", '')
               .replaceAll('export const ', 'var ')
-              .replace('export function workingNoteToEditorDocument', 'function workingNoteToEditorDocument')
+              .replaceAll('export function ', 'function ')
               .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
             const makeElement = () => ({
               dataset: {},
@@ -312,7 +408,7 @@ def test_document_navigator_clears_stale_note_editor_when_note_selection_becomes
             const documentsSource = fs.readFileSync(documentsPath, 'utf8')
               .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';", '')
               .replaceAll('export const ', 'var ')
-              .replace('export function workingNoteToEditorDocument', 'function workingNoteToEditorDocument')
+              .replaceAll('export function ', 'function ')
               .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
 
             const makeElement = () => ({
@@ -466,9 +562,9 @@ def test_note_regeneration_controls_and_scroll_rail_contract():
     app = (root / "app/static/js/transcribe/app.js").read_text(encoding="utf-8")
     shell = (root / "app/templates/transcribe/_shell_extras.html").read_text(encoding="utf-8")
     assert "actions.js?v=20261006-durable-create" in app
-    assert "documents.js?v=20260918-retired-note-workspace" in app
+    assert "documents.js?v=20261014-generation-status" in app
     assert "structured.js?v=20260918-retired-note-workspace" in app
-    assert "app.js?v=20261006-durable-create" in shell
+    assert "app.js?v=20261014-generation-status" in shell
 
 
 def test_retired_note_workspace_compatibility_plumbing_is_absent():
@@ -505,7 +601,7 @@ def test_working_note_to_editor_document_maps_virtual_target(tmp_path):
             const documentsSource = fs.readFileSync(documentsPath, 'utf8')
               .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';", '')
               .replaceAll('export const ', 'var ')
-              .replace('export function workingNoteToEditorDocument', 'function workingNoteToEditorDocument')
+              .replaceAll('export function ', 'function ')
               .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
             const sandbox = { Array, Boolean, Object, String, console };
             sandbox.globalThis = sandbox;
@@ -571,3 +667,50 @@ def test_working_note_to_editor_document_maps_virtual_target(tmp_path):
     )
 
     subprocess.run(["node", str(runner)], check=True, cwd=root)
+
+
+def test_delayed_generation_status_and_support_message_contract(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    runner = tmp_path / 'generation_status_runner.mjs'
+    runner.write_text(textwrap.dedent(r'''
+        import assert from 'node:assert/strict';
+        import fs from 'node:fs';
+        import vm from 'node:vm';
+        const source = fs.readFileSync(__SOURCE__, 'utf8')
+          .replace(/^import .*$/m, '')
+          .replaceAll('export const ', 'var ')
+          .replaceAll('export function ', 'function ');
+        let pending = null;
+        let cleared = 0;
+        const sandbox = {Date, WeakMap, Boolean, String, Number,
+          setTimeout: (callback, delay) => {pending = {callback, delay}; return 1;},
+          clearTimeout: () => {cleared += 1; pending = null;}};
+        sandbox.globalThis = sandbox;
+        vm.createContext(sandbox);
+        vm.runInContext(source, sandbox);
+        const status = {textContent: 'Generating your note'};
+        const container = {querySelector: () => status};
+        sandbox.scheduleDelayedGenerationStatus(container, {since: new Date().toISOString()});
+        assert.ok(pending.delay > 14000 && pending.delay <= 15000);
+        assert.equal(status.textContent, 'Generating your note');
+        sandbox.clearDelayedGenerationStatus(container);
+        assert.equal(pending, null, 'switching away cancels delayed updates');
+        assert.equal(cleared, 1);
+        sandbox.scheduleDelayedGenerationStatus(container, {since: new Date(Date.now()-16000).toISOString()});
+        assert.match(status.textContent, /still working/);
+        assert.match(sandbox.generationFailureMessage({category: 'temporary'}), /in a minute/);
+        assert.match(sandbox.generationFailureMessage({category: 'configuration'}), /team leader/);
+        assert.match(sandbox.generationFailureMessage({category: 'configuration', technical_details: {}}), /Team → AI services/);
+        assert.match(sandbox.generationFailureMessage({category: 'input_or_validation'}), /saved inputs/);
+        assert.equal(sandbox.generationRetryStatusHtml({category: 'temporary'}), '');
+        assert.equal(sandbox.generationFailureDetailsHtml(null), '');
+        const rendered = sandbox.generationFailureDetailsHtml({support_reference: '<script>', occurred_at: '<img>',
+          technical_details: {application_code: '<secret>', provider_http_status: 503}});
+        assert.ok(!rendered.includes('<script>') && !rendered.includes('<img>'));
+        assert.match(rendered, /Technical details/);
+        assert.match(rendered, /Failed \(UTC\)/);
+        const localDetails = sandbox.generationFailureDetailsHtml({occurred_at: new Date().toISOString()}, {formatTime: sandbox.formatWorkspaceCreatedAt});
+        assert.match(localDetails, /local time/);
+        assert.match(sandbox.generationRetryStatusHtml({technical_details: {provider_http_status: 429}}), /We’re retrying/);
+    ''').replace('__SOURCE__', repr(str(root / 'app/static/js/transcribe/documents.js'))), encoding='utf-8')
+    subprocess.run(['node', str(runner)], check=True, cwd=root)

@@ -164,6 +164,22 @@ class QuickActionDetail(BaseModel):
     latest_version: QuickActionVersionDetail
 
 
+class GenerationFailureTechnicalDetails(BaseModel):
+    application_code: str | None = None
+    provider_code: str | None = None
+    provider_http_status: int | None = None
+
+
+class GenerationFailurePresentation(BaseModel):
+    """Content-free status and support correlation for a terminal failure."""
+
+    category: Literal["temporary", "configuration", "input_or_validation", "unknown"]
+    support_reference: UUID
+    occurred_at: datetime | None = None
+    time_basis: Literal["failed", "created"] = "failed"
+    technical_details: GenerationFailureTechnicalDetails | None = None
+
+
 class GeneratedDocumentDetail(BaseModel):
     id: UUID
     owner_user_id: UUID
@@ -204,6 +220,10 @@ class GeneratedDocumentDetail(BaseModel):
     provider_error_code: str | None = None
     provider_http_status: int | None = None
     error_message: str | None = None
+    failure_presentation: GenerationFailurePresentation | None = None
+    active_retry_presentation: GenerationFailurePresentation | None = None
+    checker_unavailable: bool = False
+    checker_failure_presentation: GenerationFailurePresentation | None = None
     created_at: datetime
     updated_at: datetime
     started_at: datetime | None = None

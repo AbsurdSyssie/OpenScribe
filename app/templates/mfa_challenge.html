@@ -6,7 +6,7 @@
   <title>OpenScribe MFA</title>
   <link rel="stylesheet" href="/static/css/tokens.css?v=20260701-token-harmonise">
   <link rel="stylesheet" href="/static/css/components.css?v=20260701-home-components">
-  <link rel="stylesheet" href="/static/css/auth.css?v=20260718-mfa-code-slots">
+  <link rel="stylesheet" href="/static/css/auth.css?v=20261016-mfa-auto-submit">
 </head>
 <body class="auth-page auth-page--mfa">
   <main>
@@ -48,11 +48,15 @@
       </div>
 
       <form class="mfa-challenge-form" id="mfa-challenge-form" method="post" action="/mfa/challenge">
-        <label for="mfa-code">6-digit code</label>
+        <label class="inline-check">
+          <input type="checkbox" name="remember_device" value="true">
+          <span>Remember this browser for 24 hours</span>
+        </label>
+        <label for="totp">6-digit authenticator code</label>
         <div class="mfa-code-control" data-mfa-code-control>
           <input
             class="mfa-code-input"
-            id="mfa-code"
+            id="totp"
             type="text"
             name="code"
             required
@@ -80,12 +84,8 @@
             <circle cx="12" cy="12" r="8"></circle>
             <path d="M12 8v4l3 2"></path>
           </svg>
-          <span>Codes refresh about every 30 seconds. If yours changes, enter the new code.</span>
+          <span>Codes refresh about every 30 seconds. If yours changes, enter the new code. After the sixth digit, the code is verified automatically.</span>
         </div>
-        <label class="inline-check">
-          <input type="checkbox" name="remember_device" value="true">
-          <span>Remember this browser for 24 hours</span>
-        </label>
       </form>
 
       <div class="mfa-actions-row">
@@ -96,27 +96,45 @@
       </div>
     </section>
   <div class="toast-container" data-toast-container></div>
+  {% include "_csrf_script.html" %}
   <script nonce="{{ request.state.csp_nonce }}">
     (() => {
       document.documentElement.classList.add('js');
 
-      const codeInput = document.querySelector('#mfa-code');
-      const codeControl = document.querySelector('[data-mfa-code-control]');
-      const codeSlots = Array.from(document.querySelectorAll('[data-mfa-code-slot]'));
-      const syncCodeSlots = () => {
-        if (!codeInput) return;
-        const digits = codeInput.value.replace(/[^0-9]/g, '').slice(0, 6);
-        if (codeInput.value !== digits) codeInput.value = digits;
-        codeSlots.forEach((slot, index) => {
-          const digit = digits[index] || '';
-          slot.textContent = digit;
-          slot.classList.toggle('is-filled', Boolean(digit));
-          slot.classList.toggle('is-current', index === digits.length && digits.length < 6);
-        });
-        codeControl?.classList.toggle('is-complete', digits.length === 6);
-      };
+      const initializeCodeInput = () => {
+        const codeInput = document.querySelector('#totp');
+        const codeControl = document.querySelector('[data-mfa-code-control]');
+        const codeForm = document.querySelector('#mfa-challenge-form');
+        const codeSlots = Array.from(document.querySelectorAll('[data-mfa-code-slot]'));
+        let submitted = false;
 
-      if (codeInput) {
+        codeForm?.addEventListener('submit', (event) => {
+          if (submitted) {
+            event.preventDefault();
+            return;
+          }
+          submitted = true;
+        });
+
+        const syncCodeSlots = ({ autoSubmit = false } = {}) => {
+          if (!codeInput) return;
+          const digits = codeInput.value.replace(/[^0-9]/g, '').slice(0, 6);
+          if (codeInput.value !== digits) codeInput.value = digits;
+          const selection = codeInput.selectionStart ?? digits.length;
+          const activeIndex = Math.min(selection, 5);
+          codeSlots.forEach((slot, index) => {
+            const digit = digits[index] || '';
+            slot.textContent = digit;
+            slot.classList.toggle('is-filled', Boolean(digit));
+            slot.classList.toggle('is-current', index === activeIndex);
+          });
+          codeControl?.classList.toggle('is-complete', digits.length === 6);
+          if (autoSubmit && digits.length === 6 && !submitted) {
+            codeForm.requestSubmit();
+          }
+        };
+
+        if (!codeInput) return;
         codeInput.addEventListener('beforeinput', (event) => {
           if (event.inputType === 'insertText' && event.data && /[^0-9]/.test(event.data)) {
             event.preventDefault();
@@ -125,11 +143,31 @@
         codeInput.addEventListener('paste', (event) => {
           event.preventDefault();
           codeInput.value = event.clipboardData.getData('text').replace(/[^0-9]/g, '').slice(0, 6);
+          syncCodeSlots({ autoSubmit: true });
+        });
+        codeInput.addEventListener('input', () => syncCodeSlots({ autoSubmit: true }));
+        codeInput.addEventListener('change', () => syncCodeSlots({ autoSubmit: true }));
+        codeInput.addEventListener('keyup', () => syncCodeSlots());
+        codeInput.addEventListener('click', (event) => {
+          if (event.detail === 0) return;
+          const slotCenters = codeSlots.map((slot) => {
+            const rect = slot.getBoundingClientRect();
+            return rect.left + rect.width / 2;
+          });
+          if (slotCenters.every((center) => center === 0)) return;
+          const nearestSlot = slotCenters.reduce((best, center, index) =>
+            Math.abs(center - event.clientX) < Math.abs(slotCenters[best] - event.clientX) ? index : best, 0);
+          codeInput.setSelectionRange(nearestSlot, nearestSlot);
           syncCodeSlots();
         });
-        codeInput.addEventListener('input', syncCodeSlots);
-        codeInput.addEventListener('change', syncCodeSlots);
-        syncCodeSlots();
+        codeInput.addEventListener('select', () => syncCodeSlots());
+        syncCodeSlots({ autoSubmit: true });
+      };
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initializeCodeInput, { once: true });
+      } else {
+        initializeCodeInput();
       }
 
       const toastContainer = document.querySelector('[data-toast-container]');
@@ -149,7 +187,6 @@
       });
     })();
   </script>
-  {% include "_csrf_script.html" %}
   </main>
   {% include "_legal_footer_banner.html" %}
 </body>

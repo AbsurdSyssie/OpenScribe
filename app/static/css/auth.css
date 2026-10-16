@@ -346,8 +346,6 @@
 .auth-page .mfa-code-input {
   width: min(100%, 360px);
   max-width: 360px;
-  padding-left: calc(14px + 0.38em);
-  color: var(--ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: clamp(1.35rem, 5vw, 1.75rem);
   font-weight: 700;
@@ -355,13 +353,34 @@
   text-align: center;
 }
 
+.js .auth-page .mfa-code-input {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+  -webkit-text-fill-color: transparent;
+  letter-spacing: 0;
+  text-align: left;
+}
+
 .mfa-code-control {
+  position: relative;
   width: min(100%, 360px);
+  height: 58px;
   margin-top: 6px;
 }
 
 .mfa-code-slots {
   display: none;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .mfa-code-slot {
@@ -386,6 +405,11 @@
   box-shadow: var(--shadow-focus);
 }
 
+.mfa-code-control:focus-within .mfa-code-slot.is-current {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .mfa-code-slot.is-filled {
   transform: translateY(-2px);
   border-color: rgba(61, 122, 140, 0.38);
@@ -399,6 +423,10 @@
 
 .auth-page .mfa-code-input::placeholder {
   color: rgba(113, 128, 150, 0.42);
+}
+
+.js .mfa-code-slots {
+  display: grid;
 }
 
 .mfa-code-help {
@@ -721,6 +749,34 @@
     min-height: 50px;
     border-radius: 10px;
     font-size: 1.2rem;
+  }
+
+  .mfa-code-control {
+    height: 50px;
+  }
+}
+
+@media (forced-colors: active) {
+  .js .mfa-code-slots {
+    display: none;
+  }
+
+  .js .auth-page .mfa-code-input {
+    position: static;
+    width: min(100%, 360px);
+    min-height: 58px;
+    padding: 12px 14px;
+    border: 1px solid CanvasText;
+    outline: none;
+    background: Canvas;
+    color: CanvasText;
+    caret-color: CanvasText;
+    -webkit-text-fill-color: CanvasText;
+  }
+
+  .js .auth-page .mfa-code-input:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
   }
 }
 

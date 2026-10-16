@@ -60,6 +60,8 @@ For an onboarded account:
 4. successful TOTP verification rotates that session to `full`;
 5. when the user chooses to remember the browser, OpenScribe issues a separate opaque trusted-device cookie.
 
+The browser challenge accepts the six-digit code in one accessible input shown as six visual slots. The input uses the standard `autocomplete="one-time-code"` hint and a `totp` field ID to support authenticator autofill. With JavaScript enabled, entering or pasting all six digits submits the form automatically; the explicit **Verify and continue** button remains available as a fallback. Users can choose **Remember this browser for 24 hours** before entering the code.
+
 Trusted-device behavior:
 
 - the trusted-device cookie cannot authenticate by itself;

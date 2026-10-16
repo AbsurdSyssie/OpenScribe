@@ -6955,7 +6955,7 @@ def test_auth_recovery_pages_use_current_shell_styling():
     for html in unchanged_auth_pages:
         assert '<link rel="stylesheet" href="/static/css/auth.css?v=20260701-auth-extract">' in html
     assert '<link rel="stylesheet" href="/static/css/auth.css?v=20260821-social-sign-in-spacing">' in login_html
-    assert '<link rel="stylesheet" href="/static/css/auth.css?v=20260718-mfa-code-slots">' in mfa_html
+    assert '<link rel="stylesheet" href="/static/css/auth.css?v=20261016-mfa-auto-submit">' in mfa_html
 
     assert "font-family: var(--font-display);" in auth_css
     assert "var(--accent)" in auth_css
@@ -6980,20 +6980,29 @@ def test_mfa_challenge_gives_clear_authenticator_code_guidance():
     assert "autofocus" in mfa_html
     assert 'id="mfa-challenge-form" method="post" action="/mfa/challenge"' in mfa_html
     assert 'type="submit" form="mfa-challenge-form">Verify and continue</button>' in mfa_html
+    assert 'for="totp">6-digit authenticator code</label>' in mfa_html
+    assert 'id="totp"' in mfa_html
+    assert "querySelector('#totp')" in mfa_html
+    assert mfa_html.index('name="remember_device"') < mfa_html.index('id="totp"')
+    assert "After the sixth digit, the code is verified automatically." in mfa_html
     assert '<form class="mfa-signout-form" method="post" action="/logout">' in mfa_html
     challenge_form_end = mfa_html.index("</form>", mfa_html.index('id="mfa-challenge-form"'))
     logout_form_start = mfa_html.index('<form class="mfa-signout-form"')
     assert challenge_form_end < logout_form_start
     assert ".mfa-device-visual" in auth_css
     assert ".mfa-code-input" in auth_css
-    assert ".js .auth-page .mfa-code-input" not in auth_css
     assert "opacity: 0;" not in auth_css
+    assert ".js .auth-page .mfa-code-input" in auth_css
+    assert "grid-template-columns: repeat(6, minmax(0, 1fr));" in auth_css
+    assert "@media (forced-colors: active)" in auth_css
     assert mfa_html.count('data-mfa-code-slot>') == 6
     assert 'data-mfa-countdown' not in mfa_html
     assert 'setInterval' not in mfa_html
     assert "replace(/[^0-9]/g, '').slice(0, 6)" in mfa_html
     assert "addEventListener('beforeinput'" in mfa_html
     assert "addEventListener('paste'" in mfa_html
+    assert "codeForm.requestSubmit();" in mfa_html
+    assert mfa_html.index('{% include "_csrf_script.html" %}') < mfa_html.index("const initializeCodeInput")
     assert "@media (prefers-reduced-motion: reduce)" in auth_css
     assert ".mfa-actions-row" in auth_css
     actions_rule = auth_css.split(".mfa-actions-row {", 1)[1].split("}", 1)[0]

@@ -7,9 +7,14 @@ from app.errors import AppError
 from app.services.consultation_split_verification import (
     apply_split_verification_response,
     prepare_split_verification_request,
+    split_verification_request_reservation_units,
 )
 from app.services.templates import _structured_section_definitions_snapshot
 from app.schemas.templates import StructuredTemplateConfig
+from app.models import LlmAdapterKind
+from app.services.llm_adapters.runtime import generation_request_snapshot, request_output_token_cap
+from app.services.quotas import estimate_token_reservation
+from uuid import uuid4
 
 
 def _plan():
@@ -67,3 +72,32 @@ def test_bundled_verification_rejects_freeform_survivors_instead_of_inventing_pa
     with pytest.raises(AppError):
         prepare_split_verification_request(source_snapshot={}, clinical_snapshot={}, confirmed_plan=plan,
             survivor_outputs=outputs)
+
+
+@pytest.mark.parametrize(
+    ("adapter", "expected_cap"),
+    [
+        (LlmAdapterKind.openai_chat, 2_048),
+        (LlmAdapterKind.ollama_chat, 2_048),
+        (LlmAdapterKind.gemini_enterprise, 30_000),
+    ],
+)
+def test_bundled_verification_reservation_matches_adapter_request_cap(adapter, expected_cap):
+    topic_ids, plan = _plan()
+    prepared = prepare_split_verification_request(
+        source_snapshot={"sources": {"transcript": "Synthetic source"}},
+        clinical_snapshot={}, confirmed_plan=plan, survivor_outputs=_outputs(topic_ids),
+    )
+    messages = prepared.request_body["messages"]
+    request = generation_request_snapshot(
+        adapter_kind=adapter, model="synthetic-model", user_id=uuid4(),
+        system_message=messages[0]["content"], user_message=messages[1]["content"],
+        output_token_cap=prepared.output_token_cap, response_json_schema=prepared.response_json_schema,
+    )
+
+    assert request_output_token_cap(request) == expected_cap
+    if adapter is LlmAdapterKind.gemini_enterprise:
+        assert "messages" not in request
+    assert split_verification_request_reservation_units(request, prepared_messages=messages) == estimate_token_reservation(
+        tuple(message["content"] for message in messages), max_completion_tokens=expected_cap,
+    )

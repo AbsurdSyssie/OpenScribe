@@ -8,6 +8,7 @@ from app.web.workspace import (
     WORKSPACE_SECTION_PATHS,
     WORKSPACE_SECTION_TEMPLATES,
     build_workspace_shell_context,
+    templates,
 )
 from app.web.presentation import (
     home_page_route_from_return_view,
@@ -25,6 +26,9 @@ def _login(client, user, password="Password123"):
 
 
 def test_workspace_scribe_and_personal_routes_load(client, make_team, make_user):
+    anonymous_help = client.get("/workspace/help", follow_redirects=False)
+    assert anonymous_help.status_code == 303
+    assert anonymous_help.headers["location"] == "/login"
     team = make_team(name="Workspace Personal")
     user = make_user(email="workspace@example.com", password="Password123", team=team)
     _login(client, user)
@@ -32,6 +36,7 @@ def test_workspace_scribe_and_personal_routes_load(client, make_team, make_user)
     scribe = client.get("/workspace")
     account = client.get("/workspace/account")
     preferences = client.get("/workspace/preferences")
+    help_page = client.get("/workspace/help")
 
     assert scribe.status_code == 200
     assert scribe.headers["Cache-Control"] == "no-store"
@@ -45,6 +50,36 @@ def test_workspace_scribe_and_personal_routes_load(client, make_team, make_user)
     assert preferences.status_code == 200
     assert 'data-workspace-section="preferences"' in preferences.text
     assert 'data-settings-panel="preferences"' in preferences.text
+    assert help_page.status_code == 200
+    assert help_page.headers["Cache-Control"] == "no-store"
+    assert 'data-workspace-section="help"' in help_page.text
+    assert 'id="workspace-help-title"' in help_page.text
+    assert 'href="/workspace/help"' in scribe.text
+    assert 'data-start-guide' in scribe.text
+    assert 'data-sidebar-step=' not in scribe.text, "Scribe must not render non-Scribe sidebar width buttons"
+    assert 'data-sidebar-step="-16"' in help_page.text
+    assert 'data-sidebar-step="16"' in help_page.text
+    assert 'aria-current="page"' in help_page.text
+    assert 'href="/workspace/help" aria-label="Help" data-recording-navigation' in scribe.text
+    assert help_page.text.count('class="workspace-help__section"') == 13
+    assert "13. Privacy, retention, account, and help" in help_page.text
+    assert 'aria-label="The desktop workspace has a persistent sidebar' in help_page.text
+    assert "alternate tab views, not panels shown together" in help_page.text
+    for workflow_label in (
+        "Delete selected consultations",
+        "Review items",
+        "Remove",
+        "Delete working note permanently",
+        "note-version rail",
+        "Use template",
+        "Dismiss",
+        "Save split",
+        "Create notes",
+        "Record context",
+        "Copy selected",
+        "Fictional, non-clinical example",
+    ):
+        assert workflow_label in help_page.text
 
 
 def test_workspace_library_routes_load_for_team_member(client, make_team, make_user):
@@ -58,6 +93,23 @@ def test_workspace_library_routes_load_for_team_member(client, make_team, make_u
         "/workspace/library/smart-phrases",
     ):
         assert client.get(path).status_code == 200
+
+
+def test_workspace_help_without_team_hides_library_links(db_session, make_user):
+    user = make_user(email="help-no-team@example.com", password="Password123")
+    user.team_id = None
+    user.team_role = None
+    db_session.commit()
+    context = build_workspace_shell_context(
+        db_session, current_user=user, active_section="help"
+    )
+    assert context["show_workspace_library"] is False
+    help_article = templates.env.get_template("workspace/_help.html").render(
+        show_workspace_library=context["show_workspace_library"]
+    )
+    assert 'href="/workspace/library/templates"' not in help_article
+    assert 'href="/workspace/library/quick-actions"' not in help_article
+    assert 'href="/workspace/library/smart-phrases"' not in help_article
 
 
 def test_workspace_team_routes_require_leader(client, make_team, make_user):
@@ -93,7 +145,7 @@ def test_workspace_routes_keep_system_admin_separate(client, make_user):
     )
     _login(client, admin)
 
-    for path in ("/workspace", "/workspace/account", "/workspace/team/members"):
+    for path in ("/workspace", "/workspace/account", "/workspace/team/members", "/workspace/help"):
         response = client.get(path, follow_redirects=False)
         assert response.status_code == 303
         assert response.headers["location"] == "/admin"

@@ -485,6 +485,7 @@ PUBLIC_NO_STORE_PATHS = {
     "/privacy",
     "/cookies",
     "/terms",
+    "/accessibility",
 }
 CSRF_COOKIE_SKIP_PATHS = {
     "/robots.txt",
@@ -493,6 +494,7 @@ CSRF_COOKIE_SKIP_PATHS = {
     "/privacy",
     "/cookies",
     "/terms",
+    "/accessibility",
 }
 CSRF_COOKIE_SKIP_PREFIXES = ("/static/",)
 PUBLIC_CACHE_PATHS = {
@@ -993,6 +995,8 @@ from .routes import web_oidc as _web_oidc  # noqa: F401
 from .routes import web_pages as _web_pages  # noqa: F401
 from .routes import web_team_management as _web_team_management  # noqa: F401
 from .routes import web_transcribe as _web_transcribe  # noqa: F401
+from .routes import deepgram_live as _deepgram_live
 
 
 app.include_router(api)
+app.include_router(_deepgram_live.router)

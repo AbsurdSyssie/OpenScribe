@@ -21,6 +21,7 @@ WORKSPACE_SMART_PHRASES: Final = "smart-phrases"
 WORKSPACE_AI_SERVICES: Final = "ai-services"
 WORKSPACE_TEAM_MEMBERS: Final = "team-members"
 WORKSPACE_ACCOUNT_REQUESTS: Final = "account-requests"
+WORKSPACE_HELP: Final = "help"
 
 WORKSPACE_SECTION_PATHS: Final[dict[str, str]] = {
     WORKSPACE_SCRIBE: "/workspace",
@@ -32,6 +33,7 @@ WORKSPACE_SECTION_PATHS: Final[dict[str, str]] = {
     WORKSPACE_AI_SERVICES: "/workspace/team/ai-services",
     WORKSPACE_TEAM_MEMBERS: "/workspace/team/members",
     WORKSPACE_ACCOUNT_REQUESTS: "/workspace/team/account-requests",
+    WORKSPACE_HELP: "/workspace/help",
 }
 
 WORKSPACE_SECTION_TEMPLATES: Final[dict[str, str]] = {
@@ -43,6 +45,7 @@ WORKSPACE_SECTION_TEMPLATES: Final[dict[str, str]] = {
     WORKSPACE_AI_SERVICES: "settings/_ai_services.html",
     WORKSPACE_TEAM_MEMBERS: "settings/_team_members.html",
     WORKSPACE_ACCOUNT_REQUESTS: "settings/_account_requests.html",
+    WORKSPACE_HELP: "workspace/_help.html",
 }
 
 WORKSPACE_LIBRARY_SECTIONS: Final = frozenset(

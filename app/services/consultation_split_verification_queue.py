@@ -13,7 +13,10 @@ from app.models import (ConsultationSplitBatch, ConsultationSplitBatchStatus, Co
     ConsultationSplitTopicDisposition, ConsultationSplitTopicOutcome,
     ConsultationSplitTopicOutcomeStatus, ConsultationSplitVerificationStatus,
     User, utcnow)
-from app.services.consultation_split_verification import prepare_split_verification_request
+from app.services.consultation_split_verification import (
+    prepare_split_verification_request,
+    split_verification_request_reservation_units,
+)
 from app.services.consultation_splits import (queue_split_execution,
     read_split_batch_json, read_split_topic_outcome_output)
 from app.services.llm import active_team_hallucination_check_selection
@@ -82,6 +85,9 @@ def queue_split_verification_or_mark_unchecked(db: Session, *, batch: Consultati
         request = generation_request_snapshot(adapter_kind=selection.config.adapter_kind, model=model,
             user_id=owner.id, system_message=messages[0]["content"], user_message=messages[1]["content"],
             output_token_cap=prepared.output_token_cap, response_json_schema=prepared.response_json_schema)
+        reservation_units = split_verification_request_reservation_units(
+            request, prepared_messages=messages,
+        )
     except Exception:
         batch.verification_status = ConsultationSplitVerificationStatus.unchecked
         batch.verification_reason = "verification_not_eligible"
@@ -95,7 +101,7 @@ def queue_split_verification_or_mark_unchecked(db: Session, *, batch: Consultati
     try:
         execution, _attempt, dispatch = queue_split_execution(db, owner,
             kind=ConsultationSplitExecutionKind.verification, batch=batch,
-            reserved_units=prepared.reservation_units,
+            reserved_units=reservation_units,
             reservation_valid_until=utcnow() + timedelta(seconds=SPLIT_VERIFICATION_RESERVATION_SECONDS),
             llm_config_id=selection.config.id, provider_snapshot=provider.to_dict(), request_payload=request,
             expected_model=model)

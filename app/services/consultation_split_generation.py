@@ -18,7 +18,7 @@ from app.models import TemplateMode
 from app.schemas.templates import EMIS_SECTION_KEYS, StructuredTemplateConfig
 from app.schemas.transcripts import EMIS_WORKING_NOTE_SECTION_KEYS
 from app.services.quotas import estimate_token_reservation
-from app.services.llm_adapters.runtime import generation_request_snapshot
+from app.services.llm_adapters.runtime import generation_request_snapshot, request_output_token_cap
 from app.services.templates import (
     NOTE_GENERATION_DETAIL_GUIDANCE,
     NOTE_GENERATION_LENGTH_TOKEN_CAPS,
@@ -157,12 +157,11 @@ class PreparedSplitGenerationRequest:
     request_body: dict[str, object] = field(repr=False)
     response_json_schema: dict[str, object]
     output_token_cap: int
-    reservation_units: int
 
     def __repr__(self) -> str:
         return (
             "PreparedSplitGenerationRequest("
-            f"output_token_cap={self.output_token_cap}, reservation_units={self.reservation_units})"
+            f"output_token_cap={self.output_token_cap})"
         )
 
 
@@ -186,6 +185,29 @@ def split_generation_request_snapshot(
         system_message=messages[0]["content"], user_message=messages[1]["content"],
         output_token_cap=prepared.output_token_cap,
         response_json_schema=prepared.response_json_schema,
+    )
+
+
+def split_generation_request_reservation_units(
+    request: Mapping[str, Any], *, prepared_messages: object | None = None,
+) -> int:
+    """Estimate quota from the exact adapter-specific request to be submitted."""
+    # Gemini snapshots intentionally use config.system_instruction and
+    # contents.parts, so pair their actual cap with the canonical messages
+    # supplied to the adapter snapshot builder.
+    messages = request.get("messages") if prepared_messages is None else prepared_messages
+    if (
+        not isinstance(messages, list)
+        or len(messages) != 2
+        or not all(isinstance(message, Mapping) and isinstance(message.get("content"), str) for message in messages)
+    ):
+        raise _invalid_input()
+    output_cap = request_output_token_cap(request)
+    if not isinstance(output_cap, int) or isinstance(output_cap, bool) or output_cap <= 0:
+        raise _invalid_input()
+    return estimate_token_reservation(
+        (messages[0]["content"], messages[1]["content"]),
+        max_completion_tokens=output_cap,
     )
 
 def split_generation_response_json_schema(topics: Sequence[SplitGenerationTopic] | None = None) -> dict[str, object]:
@@ -445,7 +467,6 @@ def prepare_split_generation_request(
         request_body=request_body,
         response_json_schema=schema,
         output_token_cap=output_token_cap,
-        reservation_units=estimate_token_reservation((system_message, user_message), max_completion_tokens=output_token_cap),
     )
 
 
@@ -544,9 +565,6 @@ def prepare_split_generation_recovery_request(
         request_body=request_body,
         response_json_schema=recovery_schema,
         output_token_cap=output_cap,
-        reservation_units=estimate_token_reservation(
-            (system_message, user_message), max_completion_tokens=output_cap,
-        ),
     )
 
 

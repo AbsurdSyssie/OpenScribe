@@ -123,6 +123,9 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "security_audit_event_holds",
         "smart_phrases",
         "transcript_manual_pii_entities",
+        "transcript_stream_sessions",
+        "transcript_stream_windows",
+        "transcript_stream_deliveries",
         "teams",
         "team_deidentification_provider_assignments",
         "team_deidentification_selections",
@@ -456,6 +459,25 @@ def test_operator_legal_content_migration_creates_retained_legal_schema():
         }
     assert enum_values["legaldocumentkind"] == ["privacy", "cookie_storage", "terms"]
     assert enum_values["legaldocumentversionstate"] == ["draft", "published", "superseded"]
+
+
+@pytest.mark.migration
+def test_accessibility_legal_kind_survives_additive_migration_downgrade_and_reupgrade():
+    reset_public_schema()
+    config = alembic_config()
+
+    command.upgrade(config, "head")
+    command.downgrade(config, "b9c0d1e2f3a6")
+    command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        values = connection.execute(
+            text(
+                "SELECT enumlabel FROM pg_enum JOIN pg_type ON pg_type.oid = pg_enum.enumtypid "
+                "WHERE pg_type.typname = 'legaldocumentkind' ORDER BY enumsortorder"
+            )
+        ).scalars().all()
+    assert values == ["privacy", "cookie_storage", "terms", "accessibility"]
 
 
 @pytest.mark.migration
@@ -2895,10 +2917,10 @@ def test_quota_accounting_foundation_schema_has_metadata_only_constraints_and_fk
         "quotaperiod": ["daily", "monthly"],
         "userquotapolicyeventtype": ["grant", "reset", "limit_change"],
         "userquotareasoncode": ["policy_change", "temporary_allowance", "failed_job_correction", "administrative_correction", "other"],
-        "attemptkind": ["llm_generation", "llm_hallucination_check", "stt_conversation", "stt_post_consultation_dictation", "stt_prompt_context", "stt_provider_test", "llm_template_suggestion", "consultation_split_analysis", "consultation_split_generation", "consultation_split_verification"],
+        "attemptkind": ["llm_generation", "llm_hallucination_check", "stt_conversation", "stt_post_consultation_dictation", "stt_prompt_context", "stt_provider_test", "llm_template_suggestion", "consultation_split_analysis", "consultation_split_generation", "consultation_split_verification", "stt_deepgram_live_stream"],
         "attemptstatus": ["reserved", "submitted", "settled", "cancelled"],
         "attemptoutcome": ["succeeded", "failed", "unknown", "cancelled"],
-        "providersettlementbasis": ["reported", "measured", "conservative_unknown"],
+        "providersettlementbasis": ["reported", "measured", "conservative_unknown", "stream_authorized", "stream_measured"],
         "taskdispatchkind": ["generation", "ingestion", "template_suggestion", "consultation_split_analysis", "consultation_split_generation", "consultation_split_verification", "consultation_split_intent"],
         "taskdispatchstate": ["pending", "published", "cancelled", "failed"],
         "taskdispatchsourcekind": ["generated_document", "transcript_ingestion_job", "template_suggestion_job", "consultation_split_execution", "consultation_split_intent"],
@@ -3497,6 +3519,7 @@ def test_consultation_split_passive_schema_has_encrypted_content_and_reversible_
             "stt_post_consultation_dictation", "stt_prompt_context", "stt_provider_test",
             "llm_template_suggestion", "consultation_split_analysis",
             "consultation_split_generation", "consultation_split_verification",
+            "stt_deepgram_live_stream",
         ],
         "taskdispatchkind": [
             "generation", "ingestion", "template_suggestion", "consultation_split_analysis",
@@ -3762,3 +3785,32 @@ def test_split_batch_materialization_version_migration_round_trips_nullable_line
     assert "materialization_transcript_version_id" not in {
         column["name"] for column in downgraded.get_columns("consultation_split_batches")
     }
+
+
+@pytest.mark.migration
+def test_deepgram_stream_schema_upgrades_after_current_head_with_durable_claim_constraints():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "head")
+
+    inspector = inspect(engine)
+    assert {
+        "transcript_stream_sessions", "transcript_stream_windows", "transcript_stream_deliveries",
+    } <= set(inspector.get_table_names())
+    session_columns = {column["name"] for column in inspector.get_columns("transcript_stream_sessions")}
+    assert {
+        "transcript_id", "owner_user_id", "selection_snapshot_json", "connection_fence",
+        "lease_expires_at", "next_source_sample_offset", "authorized_sample_count", "failure_code",
+    } <= session_columns
+    delivery_columns = {column["name"] for column in inspector.get_columns("transcript_stream_deliveries")}
+    assert {
+        "session_id", "source_sample_offset", "sample_count", "pcm_digest", "provider_attempt_id",
+    } <= delivery_columns
+    unique_delivery_keys = {
+        tuple(constraint["column_names"])
+        for constraint in inspector.get_unique_constraints("transcript_stream_deliveries")
+    }
+    assert ("session_id", "source_sample_offset") in unique_delivery_keys
+    assert any(
+        fk["referred_table"] == "transcripts" and fk.get("options", {}).get("ondelete") == "CASCADE"
+        for fk in inspector.get_foreign_keys("transcript_stream_sessions")
+    )

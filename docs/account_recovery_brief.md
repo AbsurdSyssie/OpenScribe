@@ -2,7 +2,7 @@
 
 ## Status
 
-This document records the implemented local-auth recovery model and explicitly separates unimplemented future options. The earlier “current gaps” were obsolete: transactional email, self-service password reset, activation/setup links, manager MFA reset, manager recovery links, break-glass recovery, session/trusted-device revocation, and durable security audit metadata are implemented.
+This document describes implemented local-auth recovery and identifies future options. Transactional email, self-service password reset, activation/setup links, manager MFA reset, manager recovery links, break-glass recovery, session/trusted-device revocation, and security-audit metadata are implemented.
 
 The authoritative route and access contract is [auth.md](auth.md) and [api.md](api.md).
 
@@ -29,7 +29,7 @@ OpenScribe currently owns local authentication:
 - manager-assisted recovery;
 - break-glass temporary-password recovery.
 
-There is no implemented `auth_provider` model or Auth0 login/recovery mode in the current route/schema contract. External identity integration requires a separate architecture decision; do not document Auth0 as an available recovery path.
+OpenScribe supports linked OIDC sign-in, but local authentication remains authoritative for password reset, MFA, activation, and account recovery. The current route/schema contract has no Auth0-owned login or recovery mode. Do not describe Auth0 as an available recovery path; adding an identity provider that owns recovery would require a separate authority decision.
 
 ## Implemented self-service recovery
 
@@ -152,7 +152,7 @@ See [environment.md](environment.md) and [setup.md](setup.md).
 
 ## Future external identity
 
-External IdP support is not currently implemented. Before adding it, define:
+External providers can supply linked OIDC sign-in, but they do not own OpenScribe passwords or recovery. Before adding an IdP-owned authentication or recovery mode, define:
 
 - per-account auth authority (`local` versus specific external provider);
 - account linking/provisioning/deprovisioning;

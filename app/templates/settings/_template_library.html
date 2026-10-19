@@ -53,7 +53,7 @@
       </section>
       </div>
 
-      <div class="template-library-utilities" aria-label="Template import and export">
+      <div class="template-library-utilities" role="group" aria-label="Template import and export">
         <div class="template-library-utilities__default">
           <button type="button" class="template-library-utility" data-template-import-open aria-haspopup="dialog" aria-controls="template-import-dialog" title="Add templates from a JSON file or pasted JSON"><i data-lucide="upload" aria-hidden="true"></i><span>Import</span></button>
           <button type="button" class="template-library-utility" data-template-export-open title="Download selected templates as a JSON file"><i data-lucide="download" aria-hidden="true"></i><span>Export</span></button>
@@ -125,7 +125,7 @@
     <form method="dialog" class="template-import-dialog__frame">
       <header class="template-import-dialog__header"><div><span class="settings-kicker">Template help</span><h2 id="template-help-title">Create a template with AI</h2></div><button type="submit" class="template-import-dialog__close" value="cancel" aria-label="Close template help"><i data-lucide="x" aria-hidden="true"></i></button></header>
       <div class="template-import-dialog__body template-help-dialog__body">
-        <p>Templates tell OpenScribe how to organise and write your finished note. If the existing templates do not suit the way you work, an AI assistant can help you create one. You do not need to write any code.</p>
+        <p>Templates tell OpenScribe how to structure a draft note. You can use an AI assistant to create a template for import.</p>
         <div class="template-help-io-summary">
           <p><strong>Import</strong> adds a template to OpenScribe from a JSON file or pasted text.</p>
           <p><strong>Export</strong> saves selected templates as a JSON file so you can keep or move them.</p>
@@ -133,11 +133,12 @@
         <div class="template-help-warning"><i data-lucide="shield-alert" aria-hidden="true"></i><p>Do not include patient information, transcripts, clinical notes, credentials, or other confidential data.</p></div>
         <h3>How to create a template</h3>
         <ol class="template-help-steps">
-          <li>Select <strong>Copy instructions for AI</strong>. This copies everything the AI needs to create a template OpenScribe can understand.</li>
-          <li>Open the AI assistant you normally use and paste the instructions.</li>
-          <li>Describe the note you want—for example, its purpose, headings, level of detail, and anything it should leave out. The AI will ask questions if anything is unclear.</li>
-          <li>When the AI gives you the finished JSON, copy all of it. JSON is simply the specially formatted text OpenScribe needs—you do not need to understand or edit it.</li>
-          <li>Return to OpenScribe, select <strong>Import</strong>, paste the JSON, then select <strong>Submit</strong>.</li>
+          <li>Select <strong>Copy instructions for AI</strong>.</li>
+          <li>Paste the instructions into your AI assistant.</li>
+          <li>Describe the note's purpose, headings, level of detail, and anything it should leave out. Ask the assistant to clarify missing details.</li>
+          <li>Copy the complete JSON response. JSON is the text format OpenScribe imports; you do not need to edit it.</li>
+          <li>Return to OpenScribe, select <strong>Import</strong>, choose the destination if offered, paste the JSON, then select <strong>Submit</strong>.</li>
+          <li>Review the proposed templates and warnings, select the items to import, then select <strong>Import templates</strong>.</li>
         </ol>
         <button type="button" class="btn-primary" data-template-help-copy>Copy instructions for AI</button>
         <p class="template-import-status" data-template-help-status role="status" aria-live="polite"></p>

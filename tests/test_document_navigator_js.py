@@ -564,7 +564,7 @@ def test_note_regeneration_controls_and_scroll_rail_contract():
     assert "actions.js?v=20261006-durable-create" in app
     assert "documents.js?v=20261014-generation-status" in app
     assert "structured.js?v=20260918-retired-note-workspace" in app
-    assert "app.js?v=20261014-generation-status" in shell
+    assert "app.js?v=20261018-dictation-save-await" in shell
 
 
 def test_retired_note_workspace_compatibility_plumbing_is_absent():

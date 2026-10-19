@@ -1,0 +1,145 @@
+<article class="workspace-help" aria-labelledby="workspace-help-title">
+  <header class="workspace-help__header">
+    <p class="settings-kicker">OpenScribe workspace</p>
+    <h1 id="workspace-help-title">Help</h1>
+    <p>Use this reference to understand the workspace, prepare source material, create draft notes, and check them before you copy them into the clinical record.</p>
+    <p class="workspace-help__guide-note">For a short guided tour, return to Scribe and select <strong>Guide</strong> in the sidebar.</p>
+  </header>
+
+  <nav class="workspace-help__contents" aria-label="Help topics">
+    <h2>On this page</h2>
+    <ol>
+      <li><a href="#help-orientation-title">Workspace layout</a></li>
+      <li><a href="#help-consultation-title">Choose a consultation</a></li>
+      <li><a href="#help-capture-title">Record or upload audio</a></li>
+      <li><a href="#help-transcript-title">Review transcript and PII</a></li>
+      <li><a href="#help-working-note-title">Working note</a></li>
+      <li><a href="#help-dictation-title">Post-consultation dictation</a></li>
+      <li><a href="#help-preferences-title">Preferences and their effects</a></li>
+      <li><a href="#help-templates-title">Templates and note generation</a></li>
+      <li><a href="#help-splitting-title">Separate notes for distinct topics</a></li>
+      <li><a href="#help-review-title">Review, edit, check, and regenerate</a></li>
+      <li><a href="#help-followups-title">Follow Ups and reusable text</a></li>
+      <li><a href="#help-copy-title">Copy into the clinical record</a></li>
+      <li><a href="#help-privacy-title">Privacy, retention, account, and help</a></li>
+    </ol>
+  </nav>
+
+  <div class="workspace-help__sections">
+    <section id="help-orientation" class="workspace-help__section" aria-labelledby="help-orientation-title">
+      <h2 id="help-orientation-title" tabindex="-1">1. Workspace layout</h2>
+      <p>The sidebar links to Scribe, <a href="/workspace/account">Account</a>, <a href="/workspace/preferences">Preferences</a>, and, when available, My Library. Team leaders also see team settings. Select the OpenScribe brand or <strong>Back to Scribe</strong> to return to the consultation workspace. On a small screen, open the sidebar from the menu button. Select <strong>Guide</strong> in Scribe for a short tour; this Help page stays available from the sidebar on every workspace page.</p>
+      <p>In Scribe, the consultation title and capture controls sit across the top. The desktop tabs are <strong>Clinical Note</strong>, <strong>Follow Ups</strong>, and <strong>Transcript</strong>. On mobile, use <strong>Capture</strong>, <strong>Transcript</strong>, <strong>Note</strong>, and <strong>Follow-ups</strong> at the bottom. The consultation list opens from <strong>Recent consultations</strong> in the sidebar.</p>
+      <figure class="workspace-help__map" aria-labelledby="help-workspace-map-caption">
+        <figcaption id="help-workspace-map-caption">A simplified desktop map of Scribe. Tabs switch the content area shown below them.</figcaption>
+        <div class="workspace-help__map-surface" role="img" aria-label="The desktop workspace has a persistent sidebar on the left. Across the main area, the consultation title and capture controls are at the top. Below are Clinical Note, Follow Ups, and Transcript tabs. Selecting Clinical Note shows its template, generation controls, note versions, and draft editor. Selecting Transcript instead shows the read-only transcript with the Review items side panel; these are alternate tab views, not panels shown together.">
+          <div class="workspace-help__map-sidebar"><strong>Sidebar</strong><span>Recent consultations</span><span>Account · Preferences</span><span>Help · Sign out</span></div>
+          <div class="workspace-help__map-main">
+            <div class="workspace-help__map-top"><strong>Consultation title</strong><span>Capture controls</span></div>
+            <div class="workspace-help__map-tabs"><span>Clinical Note</span><span>Follow Ups</span><span>Transcript</span></div>
+            <div class="workspace-help__map-content"><div><strong>Clinical Note tab</strong><span>Template · Create / Regenerate</span><span>Working note and draft versions</span><span>Note editor and copy tools</span></div><aside><strong>Transcript tab instead</strong><span>Read-only transcript</span><span>Review items / PII panel</span></aside></div>
+          </div>
+        </div>
+      </figure>
+      <ol>
+        <li>Select or create the right consultation.</li>
+        <li>Record or upload audio, then wait for transcription to finish.</li>
+        <li>Review the transcript and PII; add and save any Working note or dictation.</li>
+        <li>Choose a template and create the draft note.</li>
+        <li>Review, correct, and save the draft, then copy verified text into the right clinical-record field.</li>
+      </ol>
+    </section>
+
+    <section id="help-consultation" class="workspace-help__section" aria-labelledby="help-consultation-title">
+      <h2 id="help-consultation-title" tabindex="-1">2. Choose a consultation</h2>
+      <p>Select a recent consultation to continue that work, or choose <strong>Create new consultation</strong> for a different encounter. Check the consultation title before recording, uploading, or adding notes. Audio and notes attach to the selected consultation.</p>
+      <p>The recent list belongs to your account. A team leader or administrator cannot open your transcript content through their management role.</p>
+      <p>To rename a consultation, edit its title field across the top of Scribe, then press Enter or move focus away to save. To delete consultations, open <strong>Recent consultations</strong>, select the checkboxes beside the consultations, and choose <strong>Delete selected consultations</strong>. OpenScribe asks you to confirm when a selected consultation contains transcript text. Deletion is permanent.</p>
+    </section>
+
+    <section id="help-capture" class="workspace-help__section" aria-labelledby="help-capture-title">
+      <h2 id="help-capture-title" tabindex="-1">3. Record or upload audio</h2>
+      <p><strong>Recorded upload</strong> records audio for transcription; the browser may upload it in parts while you record. <strong>Live capture</strong> sends audio in chunks while you speak. <strong>Upload audio</strong> selects an approved audio file for the current consultation. The available controls depend on the consultation mode, team speech service, and browser support.</p>
+      <p>Allow microphone access when prompted. Follow your organisation's consent and recording policy. During recording, workspace navigation is guarded; stop the recording before leaving. Text shown during Live capture may be provisional or unsaved. Review the final saved transcript after transcription finishes.</p>
+      <p>If the interface offers <strong>Retry audio upload</strong> or <strong>Retry retained interval</strong>, use that action for the failed audio. If a failed upload has expired, select the audio file again. Do not keep resubmitting a request that is still processing.</p>
+      <p>If a Deepgram live stream fails, recording stops. Use the offered retry action for the failed interval, or choose <strong>Discard unresolved interval</strong> to continue without that audio. OpenScribe does not replay failed audio automatically. Keep the tab open while resolving the failure: refreshing, signing out, or closing it can lose unsaved audio, and retained audio expires. Saved transcript text remains. Leaving the page can interrupt finalisation; live capture does not guarantee a complete recording. Check the final transcript for missing speech before creating a note.</p>
+    </section>
+
+    <section id="help-transcript" class="workspace-help__section" aria-labelledby="help-transcript-title">
+      <h2 id="help-transcript-title" tabindex="-1">4. Review the transcript and identified PII</h2>
+      <p>Open <strong>Transcript</strong> to read the transcription. This panel is read-only; it does not edit the source transcript. Check names, dates, medicines and doses, allergies, diagnoses, important negatives, examination findings, and plans. Treat the text as a draft and correct errors in your clinical workflow before using generated text.</p>
+      <p>On desktop, review the side panel headed <strong>Review items</strong> beside the transcript. On mobile, tap <strong>Details</strong> to open <strong>Transcript details</strong>. <strong>Hide PII</strong> masks detected and manually added values in the list and their transcript highlights; <strong>Show PII</strong> reveals them again. Use <strong>Add PII</strong> for a missed value so redacted copies and provider requests can protect it. Use <strong>Remove</strong> beside a manual entry if it should no longer be protected. If a detected value is a false positive, use <strong>Mark false positive</strong>; future redacted copies and AI requests may then include its original text. Manually added PII remains protected.</p>
+      <p>Redaction checks can miss information and may flag text that is not PII. Review the detected list and redaction status; add missed items, and do not continue when a required redaction check has failed. <strong>Copy transcript</strong> includes original PII. <strong>Copy redacted transcript</strong> copies the redacted version. Handle either as confidential clinical information.</p>
+    </section>
+
+    <section id="help-working-note" class="workspace-help__section" aria-labelledby="help-working-note-title">
+      <h2 id="help-working-note-title" tabindex="-1">5. Working note</h2>
+      <p>In <strong>Clinical Note</strong>, find the note-version rail beneath the template and Create/Regenerate controls. Select <strong>Working note</strong> to view or edit your clinician-authored source. On mobile, tap <strong>Versions</strong> to open the same selector, then choose Working note. Generated notes appear alongside it; select one to switch back to that draft.</p>
+      <p>Use Working note for clinician-authored context that should inform the note. Before its first non-empty save, its mode follows the selected Template: choose a <strong>Free text</strong> template for freeform notes or a <strong>Sectioned</strong> template for structured notes. The first non-empty save locks the source mode; changing the output Template later does not convert it. To reset the mode, use the Working note's trash control labeled <strong>Delete working note permanently</strong> and confirm. This permanently clears the Working note and its mode, but leaves generated outputs in place. Watch the save status. If you see <strong>Note changed elsewhere. Reload note before saving again.</strong>, OpenScribe did not merge the edits. Keep the page open, review the latest saved version, and reconcile your unsaved changes before reloading or trying again.</p>
+      <p>Generation uses a saved snapshot of the Working note. If you have unsaved Working note edits, generation saves them first; if that save fails, generation stops. Editing a generated document does not change the Working note or transcript. You can create a note without recording or uploading audio when you have saved Working note text or saved dictation; at least one saved source is still required.</p>
+    </section>
+
+    <section id="help-dictation" class="workspace-help__section" aria-labelledby="help-dictation-title">
+      <h2 id="help-dictation-title" tabindex="-1">6. Post-consultation dictation</h2>
+      <p>Use <strong>Add dictation</strong> for a separate clinician summary, assessment, or plan. You can record, upload, or type text in the editable box. Review and correct the transcribed text there before saving. Choose <strong>Save dictation</strong> to keep it as a source, or <strong>Save &amp; generate note</strong> to save it and start generation.</p>
+      <p>Dictation remains separate from the consultation transcript and Working note. Cancel discards unsaved changes. If transcription fails, review the message and use the explicit retry control when offered.</p>
+    </section>
+
+    <section id="help-preferences" class="workspace-help__section" aria-labelledby="help-preferences-title">
+      <h2 id="help-preferences-title" tabindex="-1">7. Preferences and their effects</h2>
+      <p>Open <a href="/workspace/preferences">Preferences</a> to view the team's configured Speech service and Writing assistant. These service choices come from team policy. Your personal settings can choose an allowed writing model, a usual note length and detail level, and optional generation features. If a control is missing, the service or feature may not be available for your account.</p>
+      <dl class="workspace-help__settings">
+        <div><dt>Length</dt><dd>Short is up to about 1 page, Normal up to about 2 pages, and Long up to about 4 pages. This is a target, not a guaranteed page count. The model and template also affect the result.</dd></div>
+        <div><dt>Detail</dt><dd>Concise asks for compact wording; Balanced uses standard clinical wording; Detailed asks for fuller wording where useful. Length controls the size target; detail controls the writing guidance.</dd></div>
+        <div><dt>Writing assistant model</dt><dd>Advanced lists models approved by your team. Choose <strong>Use team default</strong> to follow team policy. A personal choice affects future requests and remains subject to the team's available models.</dd></div>
+        <div><dt>Suggest a template based on the consultation</dt><dd>When enabled, OpenScribe can suggest a matching available template. You choose whether to use it. The preference is on by default when offered.</dd></div>
+        <div><dt>Split a consultation into separate notes</dt><dd>When enabled and available, OpenScribe can identify distinct topics and let you decide whether to make separate notes. It does not create them without your review and choice.</dd></div>
+      </dl>
+    </section>
+
+    <section id="help-templates" class="workspace-help__section" aria-labelledby="help-templates-title">
+      <h2 id="help-templates-title" tabindex="-1">8. Templates and note generation</h2>
+      <p>Templates set the structure and instructions for a note. Select a template that fits the intended destination. <strong>Sectioned</strong> templates produce separate configured sections; <strong>Free text</strong> templates produce a continuous note. Personal templates are yours. Team templates are shared reusable configuration; members can use or copy them, while team leaders manage them.</p>
+      <p>Before you create a note, confirm the consultation, source material, and template. Generation needs at least one saved source: transcript text, Working note, or dictation. Select the main Clinical Note action, labelled <strong>Create</strong> before the first output and <strong>Regenerate</strong> after an output exists. It starts a fresh request with the selected template and current saved sources. Wait for the queued or processing status to finish. If transcription is unfinished, generation may wait for it to finish. The result is a draft for your review.</p>
+      <p>{% if show_workspace_library %}Open <a href="/workspace/library/templates">My Templates</a> to use <strong>New</strong> to create a personal template. You can edit, duplicate, disable, or delete personal templates. Import and export move reusable template content as JSON.{% else %}Team leaders make approved templates available for you to use.{% endif %} Do not put patient information in a template.</p>
+      <p>If a template suggestion appears, select <strong>Use template</strong> to switch to the suggested template. Select <strong>Dismiss</strong> to close it and keep your current choice. You can still choose another template from the template picker.</p>
+    </section>
+
+    <section id="help-splitting" class="workspace-help__section" aria-labelledby="help-splitting-title">
+      <h2 id="help-splitting-title" tabindex="-1">9. Separate notes for distinct topics</h2>
+      <p>If your team has enabled the feature, the <strong>Split a consultation into separate notes</strong> preference can request topic suggestions during Create. You can also mark <strong>Multiple problems</strong> for this consultation and select <strong>Review problems</strong>, even when automatic splitting is off. Opening the review does not run analysis. Select <strong>Suggest problems</strong>, or <strong>Update suggestions</strong> when the list is stale, to prepare an editable proposal. Review the titles, choose which topics need separate notes, and check each topic's template and source.</p>
+      <p>Select <strong>Save split</strong> to save your reviewed topic choices without generating notes. When the split is valid, select <strong>Create notes</strong> to queue the separate drafts, or select <strong>Continue as one note</strong> to use one note instead. If some generated notes fail, <strong>Retry missing notes</strong> retries the missing items; <strong>Keep available notes</strong> continues with the drafts that succeeded.</p>
+      <p>Splitting may be unavailable while transcription is unfinished or when the team has not enabled the feature. If some notes fail, use <strong>Retry missing notes</strong> or <strong>Keep available notes</strong> when offered. A split analysis is a suggestion; review every resulting draft as a clinician.</p>
+    </section>
+
+    <section id="help-review" class="workspace-help__section" aria-labelledby="help-review-title">
+      <h2 id="help-review-title" tabindex="-1">10. Review, edit, check, and regenerate</h2>
+      <p>Read the full generated note. Check that it belongs to the right consultation, preserves important facts and negatives, uses the right medicines and doses, includes the intended plan, and places information in the correct sections. Remove unsupported, repeated, or overly certain statements. Edit the draft until it reflects your clinical judgement.</p>
+      <p>Structured notes show editable sections and statements; freeform notes show editable text. Copy controls can copy a whole note, selected statements, or a section. When a checker runs, read the status shown beneath the note. A warning may say automatic checking was unavailable; review the draft with extra care. A clear checker result does not confirm clinical accuracy.</p>
+      <p>To reopen an earlier draft, select it in the note-version rail; on mobile, tap <strong>Versions</strong> and select the draft. Each generated note version has its own <strong>Regenerate</strong> control. It uses that saved note as a starting point and keeps that note's saved source snapshot. Choose <strong>More detail</strong> or <strong>Less detail</strong>, add optional steering, or select <strong>Regenerate now</strong> to use no extra direction. Save your current edits first. By contrast, the main <strong>Create</strong>/<strong>Regenerate</strong> button starts a fresh request using the currently selected template and the latest saved sources. Review any new draft from the beginning.</p>
+      <p>When copying generated text, select the note statements you want and choose <strong>Copy selected</strong> (shown as <strong>Copy</strong> on small screens). If OpenScribe asks you to review before copying, scroll through each relevant section or through the full free-text note. Editing a section clears its reviewed state, so read it again before copying. The copy review gate helps you inspect content; it does not check clinical accuracy.</p>
+    </section>
+
+    <section id="help-followups" class="workspace-help__section" aria-labelledby="help-followups-title">
+      <h2 id="help-followups-title" tabindex="-1">11. Follow Ups and reusable text</h2>
+      <p>Use <strong>Follow Ups</strong> to create a separate draft, such as referral wording or follow-up instructions. Select an optional Quick Action, add context or instructions, then choose <strong>Generate</strong>. Quick Actions provide reusable instructions; context lets you tailor this request. To dictate context, select <strong>Record context</strong>, speak, then select <strong>Stop recording</strong>. OpenScribe transcribes the recording and inserts the text into the context field; review and edit it before you generate. Voice input depends on microphone permission and an available speech service. OpenScribe does not send the draft for you.</p>
+      <p>Use the history rail to reopen, search, copy, or delete a follow-up draft. Follow-up <strong>Regenerate</strong> starts another draft from the saved task or Quick Action and the consultation's latest transcript, Working note, and dictation. Add context first when you want to change the task. Review every follow-up before using it.</p>
+      <p>{% if show_workspace_library %}Open <a href="/workspace/library/quick-actions">My quick actions</a> for personal and team actions. Team members can copy a team action to Personal; team leaders can manage team actions. Open <a href="/workspace/library/smart-phrases">Smart phrases</a> for personal reusable text inserted in the editor by typing a slash and its trigger. Import and export use JSON bundles.{% else %}Quick Actions provide reusable instructions; Smart Phrases insert personal reusable text in the editor by typing a slash and its trigger.{% endif %} Keep patient information out of reusable assets.</p>
+      <p><strong>Fictional, non-clinical example:</strong> for staff meeting minutes, a Template could provide “Decisions” and “Actions” sections; a Quick Action could ask for a short, neutral summary; a Smart Phrase such as <code>/service</code> could insert “Contact the service desk.” A Template sets structure, a Quick Action sets the task, and a Smart Phrase inserts reusable text.</p>
+    </section>
+
+    <section id="help-copy" class="workspace-help__section" aria-labelledby="help-copy-title">
+      <h2 id="help-copy-title" tabindex="-1">12. Copy into the clinical record</h2>
+      <p>Before copying, verify the patient and consultation, read all copied text, and choose the correct destination field in your clinical system. After pasting, read the entry again before saving. Copy controls cannot confirm which patient or field you selected.</p>
+      <p>OpenScribe creates drafts. It does not send follow-ups or save text into your clinical system automatically.</p>
+    </section>
+
+    <section id="help-privacy" class="workspace-help__section" aria-labelledby="help-privacy-title">
+      <h2 id="help-privacy-title" tabindex="-1">13. Privacy, retention, account, and help</h2>
+      <p>Transcript-derived content belongs to you and remains private to your account. Team leaders manage team settings and reusable team assets; these roles do not give them access to your transcript content. OpenScribe applies configured redaction at provider boundaries, but you still need to review detected and manual PII. Handle transcripts, notes, audio, and copied text as confidential.</p>
+      <p>Consultations follow your team's retention policy. Deleting a consultation removes its transcript-derived content and cannot be undone. Confirm the selected consultation before deleting it.</p>
+      <p>Use <a href="/workspace/account">Account</a> to manage your account details and <a href="/workspace/preferences">Preferences</a> to change personal generation choices. If Create is unavailable, check that you have saved source text, a template, and an available writing service. If the model or service is missing, ask your team leader to check the approved team configuration. If recording is unavailable, check browser microphone permission and ask your team leader about the speech service.</p>
+      <p>If a save fails, keep the page open and resolve the save state before navigating away. If OpenScribe reports that a note changed elsewhere, review the latest saved version and reconcile unsaved changes before reloading or retrying; OpenScribe does not merge conflicting edits. For repeated generation failures, report the time, consultation identifier, status, and safe error details. Do not include transcript, note, audio, password, or credential content in a support request.</p>
+    </section>
+  </div>
+</article>

@@ -1,4 +1,38 @@
-import { csrfFetch } from '../csrf.js';
+import { csrfFetch, csrfToken } from '../csrf.js';
+import { DeepgramLiveStream, trimPinnedVadSpeechBuffer } from './deepgramLiveStream.js?v=20261017-deepgram-live-stream';
+
+const createWavPcmBuffer = (sampleCount, sampleRate) => {
+  const pcmData = new ArrayBuffer(44 + (sampleCount * 2));
+  const view = new DataView(pcmData);
+  const writeString = (offset, value) => {
+    for (let index = 0; index < value.length; index += 1) {
+      view.setUint8(offset + index, value.charCodeAt(index));
+    }
+  };
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + (sampleCount * 2), true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeString(36, 'data');
+  view.setUint32(40, sampleCount * 2, true);
+  return { pcmData, view };
+};
+
+export function createLivePcm16WavBlob(samples, sampleRate = 16000) {
+  if (!(samples instanceof Int16Array) || samples.length === 0) return null;
+  const { pcmData, view } = createWavPcmBuffer(samples.length, sampleRate);
+  for (let index = 0; index < samples.length; index += 1) {
+    view.setInt16(44 + (index * 2), samples[index], true);
+  }
+  return new Blob([pcmData], { type: 'audio/wav' });
+}
 
 export function createAudioCaptureController({
   dom,
@@ -38,6 +72,12 @@ export function createAudioCaptureController({
   let mediaStream = null;
   let captureMode = 'batch';
   let liveVadInstance = null;
+  let deepgramStream = null;
+  let deepgramStreamTranscriptId = null;
+  let deepgramConnectPending = false;
+  let liveCaptureGeneration = 0;
+  let deepgramRecovery = null;
+  let deepgramFinishPromise = null;
   let batchVadInstance = null;
   let batchSpeechSegments = [];
   let batchRolloverTimeoutId = null;
@@ -89,14 +129,15 @@ export function createAudioCaptureController({
     if (dom.pendingAudioRetryMessage) dom.pendingAudioRetryMessage.textContent = '';
   };
 
-  const showPendingAudioRetry = (message, retry, transcriptId = null) => {
-    pendingAudioRetry = { retry, transcriptId };
+  const showPendingAudioRetry = (message, retry, transcriptId = null, discard = null) => {
+    pendingAudioRetry = { retry, transcriptId, discard };
     if (dom.pendingAudioRetryButton) {
       dom.pendingAudioRetryButton._openscribePendingAudioRetry = {
         owner: pendingAudioRetryOwner,
         retry,
         transcriptId,
-        discard: () => {
+        discard: async () => {
+          if (typeof discard === 'function') await discard();
           clearPendingAudioRetry();
           setMicStatus('Pending audio discarded.');
           setSessionProgress('Pending audio discarded. You can choose or record replacement audio.');
@@ -388,6 +429,8 @@ export function createAudioCaptureController({
   };
 
   const resetRecordingState = () => {
+    liveCaptureGeneration += 1;
+    deepgramConnectPending = false;
     finalizeAccumulatedTimer();
     if (timerId) {
       window.clearInterval(timerId);
@@ -414,6 +457,9 @@ export function createAudioCaptureController({
     livePendingOverlapAudio = null;
     liveChunkProcessing = Promise.resolve();
     liveLastChunkUploadStartedAt = 0;
+    deepgramStream = null;
+    deepgramStreamTranscriptId = null;
+    deepgramFinishPromise = null;
     stopStreamTracks();
     cleanupLiveVad();
     cleanupBatchVad();
@@ -499,32 +545,11 @@ export function createAudioCaptureController({
   };
 
   const encodeWavPcm = (audio) => {
-    const pcmData = new ArrayBuffer(44 + (audio.length * 2));
-    const view = new DataView(pcmData);
-    const writeString = (offset, value) => {
-      for (let index = 0; index < value.length; index += 1) {
-        view.setUint8(offset + index, value.charCodeAt(index));
-      }
-    };
-    writeString(0, 'RIFF');
-    view.setUint32(4, 36 + (audio.length * 2), true);
-    writeString(8, 'WAVE');
-    writeString(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, config.liveVadSampleRate, true);
-    view.setUint32(28, config.liveVadSampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeString(36, 'data');
-    view.setUint32(40, audio.length * 2, true);
+    const { pcmData, view } = createWavPcmBuffer(audio.length, config.liveVadSampleRate);
 
-    let offset = 44;
     for (let index = 0; index < audio.length; index += 1) {
       const sample = Math.max(-1, Math.min(1, audio[index]));
-      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-      offset += 2;
+      view.setInt16(44 + (index * 2), sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
     }
     return pcmData;
   };
@@ -558,13 +583,14 @@ export function createAudioCaptureController({
     stopStreamTracks();
   };
 
-  const commonVadCallbacks = ({ onSpeechStart, onSpeechEnd, onVADMisfire }) => ({
+  const commonVadCallbacks = ({ onFrameProcessed, onSpeechStart, onSpeechEnd, onVADMisfire }) => ({
     getStream: createVadMicStream,
     pauseStream: pauseVadMicStream,
     resumeStream: createVadMicStream,
     onFrameProcessed: (probabilities, frame) => {
       setMicVisualizerLevels(buildMicVisualizerLevelsFromVadFrame(frame));
       setMicVisualizerVadActive(Boolean(probabilities && probabilities.isSpeech > probabilities.notSpeech));
+      onFrameProcessed?.(probabilities, frame);
     },
     onSpeechStart: () => {
       setMicVisualizerVadActive(true);
@@ -723,9 +749,13 @@ export function createAudioCaptureController({
     }
   };
 
-  const buildLiveVadInstance = async () => {
-    return window.vad.MicVAD.new({
+  const buildLiveVadInstance = async ({ streaming = false, stream = null, generation = liveCaptureGeneration } = {}) => {
+    const isCurrentCapture = () => generation === liveCaptureGeneration;
+    let streamingFrameProcessor = null;
+    const vadInstance = await window.vad.MicVAD.new({
       model: config.liveVadModel,
+      positiveSpeechThreshold: 0.3,
+      startOnLoad: !getState().deepgramLiveStreamingAvailable,
       preSpeechPadMs: config.livePreRollMs,
       redemptionMs: config.liveSilenceThresholdMs,
       minSpeechMs: config.liveMinChunkMs,
@@ -733,16 +763,39 @@ export function createAudioCaptureController({
       baseAssetPath: config.liveVadAssetBasePath,
       onnxWASMBasePath: config.liveVadOnnxBasePath,
       ...commonVadCallbacks({
+        onFrameProcessed: (probabilities, frame) => {
+          if (!isCurrentCapture()) return;
+          if (streaming) {
+            if (!trimPinnedVadSpeechBuffer(streamingFrameProcessor, frame, config.liveVadSampleRate, 5)) {
+              stream?.interrupt();
+              return;
+            }
+            stream?.pushFrame(frame, Number(probabilities?.isSpeech) >= 0.3);
+          }
+        },
         onSpeechStart: () => {
+          if (!isCurrentCapture()) return;
           liveSpeechActive = true;
+          if (streaming) {
+            stream?.speechStarted();
+            setVisibleStatus('speech detected');
+            setSessionProgress('Speech detected. Streaming live audio to the selected speech service...');
+            setMicStatus('Speech detected. Live audio is streaming as it is captured.');
+            return;
+          }
           setVisibleStatus('speech detected');
           setSessionProgress('Speech detected. Preparing the next live audio part...');
           setMicStatus('Speech detected. Waiting for a pause or 30 second split...');
           armLiveChunkTimeout();
         },
         onSpeechEnd: (audio) => {
+          if (!isCurrentCapture()) return;
           clearLiveChunkTimeout();
           liveSpeechActive = false;
+          if (streaming) {
+            if (stream && liveStopRequested) void finishDeepgramCapture();
+            return;
+          }
           const resumeAfterSegment = liveForceContinueRequested && !liveStopRequested;
           const stopAfterSegment = liveStopRequested;
           liveForceContinueRequested = false;
@@ -753,8 +806,13 @@ export function createAudioCaptureController({
           });
         },
         onVADMisfire: () => {
+          if (!isCurrentCapture()) return;
           clearLiveChunkTimeout();
           liveSpeechActive = false;
+          if (streaming) {
+            if (stream && liveStopRequested) void finishDeepgramCapture();
+            return;
+          }
           const shouldResume = liveForceContinueRequested && !liveStopRequested;
           const shouldStop = liveStopRequested;
           liveForceContinueRequested = false;
@@ -775,6 +833,126 @@ export function createAudioCaptureController({
         },
       }),
     });
+    if (streaming) {
+      // This integration relies on vad-web 0.0.29's pinned FrameProcessor
+      // callback order: onFrameProcessed runs immediately before audioBuffer.push.
+      streamingFrameProcessor = vadInstance?.frameProcessor;
+      if (!Array.isArray(streamingFrameProcessor?.audioBuffer)) {
+        throw new Error('Live audio detector buffer is unavailable.');
+      }
+    }
+    return vadInstance;
+  };
+
+  const deepgramStreamErrorMessage = (error) => {
+    switch (error?.code) {
+      case 'quota_exceeded':
+      case 'quota_disabled':
+        return 'Live transcription stopped because your team has no transcription quota available. Contact your team administrator.';
+      case 'unauthorized':
+      case 'forbidden':
+      case 'not_found':
+      case 'stream_csrf_invalid':
+      case 'stream_session_expired':
+        return 'Your session expired or access changed. Sign in again, then reopen this consultation.';
+      case 'stt_config_secret_missing':
+      case 'stream_provider_ineligible':
+      case 'invalid_config':
+        return 'Live transcription is unavailable with the selected speech-service settings. Ask your team administrator to review them.';
+      default:
+        return 'Live transcription stopped. Check the connection and try again.';
+    }
+  };
+
+  const failDeepgramCapture = (error, { streamId = null, samples = null, unresolved = false, recoveryAvailable = false } = {}) => {
+    const transcriptId = deepgramStreamTranscriptId;
+    const currentStream = deepgramStream;
+    deepgramStream = null;
+    deepgramFinishPromise = null;
+    liveStopRequested = true;
+    const safeMessage = deepgramStreamErrorMessage(error);
+    setMicStatus(safeMessage, 'error');
+    setVisibleStatus('failed');
+    setSessionProgress(streamId
+      ? 'Live transcription stopped. Checking the server for an unfinished interval; no audio was replayed.'
+      : 'Live transcription stopped. No automatic replay was started.');
+    resetRecordingState();
+    dispatchWorkspaceRecordingEvent('failed');
+    deepgramRecovery = null;
+    const exactSamples = samples instanceof Int16Array ? samples : null;
+    if (streamId && transcriptId && unresolved && !recoveryAvailable && exactSamples?.length) {
+      deepgramRecovery = { streamId, transcriptId, samples: exactSamples };
+      const recover = async () => {
+        const pending = deepgramRecovery;
+        if (!pending || pending.transcriptId !== getState().transcriptId) {
+          throw new Error('Open the original consultation to retry this audio.');
+        }
+        let body;
+        if (pending.samples) {
+          body = new FormData();
+          body.append('audio', createLivePcm16WavBlob(pending.samples, config.liveVadSampleRate), 'live-recovery.wav');
+          body.append('declared_duration_seconds', (pending.samples.length / config.liveVadSampleRate).toFixed(6));
+        }
+        const response = await csrfFetch(`/api/v1/transcripts/${pending.transcriptId}/deepgram-stream/${pending.streamId}/retry`, {
+          method: 'POST', credentials: 'include', body,
+        });
+        if (!response.ok) throw new Error(await parseErrorMessage(response, 'Could not retry the unresolved live interval.'));
+        deepgramRecovery = null;
+        clearPendingAudioRetry();
+        reflectBackendStatus('transcribing');
+        scheduleWorkspaceRefreshBurst({ attempts: 90, minimumAttempts: 8 });
+      };
+      const discard = async () => {
+        const pending = deepgramRecovery;
+        if (!pending || pending.transcriptId !== getState().transcriptId) {
+          throw new Error('Open the original consultation to discard this audio.');
+        }
+        const response = await csrfFetch(`/api/v1/transcripts/${pending.transcriptId}/deepgram-stream/${pending.streamId}/discard`, {
+          method: 'POST', credentials: 'include',
+        });
+        if (!response.ok) throw new Error(await parseErrorMessage(response, 'Could not discard the unresolved live interval.'));
+        deepgramRecovery = null;
+      };
+      showPendingAudioRetry('The unfinished interval is available only in this tab for explicit retry.', recover, transcriptId, discard);
+    } else if (streamId && transcriptId && unresolved) {
+      setSessionProgress('The server is checking the unfinished interval. Refresh the consultation to retry retained audio or discard it.');
+      void pollWorkspace();
+    } else if (streamId && transcriptId) {
+      void pollWorkspace();
+    }
+    if (streamId || unresolved) scheduleWorkspaceRefreshBurst({ attempts: 90, minimumAttempts: 8 });
+    void currentStream;
+  };
+
+  const finishDeepgramCapture = () => {
+    if (deepgramFinishPromise) return deepgramFinishPromise;
+    if (!deepgramStream) return Promise.resolve(null);
+    liveStopRequested = true;
+    clearLiveChunkTimeout();
+    clearSilencePromptTimer();
+    hideSilencePrompt();
+    setVisibleStatus('finalizing');
+    setMicStatus('Finalizing live transcription...');
+    setSessionProgress('Finalizing the current live transcription window...');
+    deepgramFinishPromise = (async () => {
+      try {
+        if (liveVadInstance) await liveVadInstance.pause();
+        const result = await deepgramStream?.finish();
+        deepgramStream?.onInterim('');
+        deepgramStream = null;
+        deepgramStreamTranscriptId = null;
+        resetRecordingState();
+        setMicStatus('Live transcription finalized.', 'success');
+        setSessionProgress('Live transcription is saved. Review the transcript before generating notes.');
+        reflectBackendStatus('transcribing');
+        scheduleWorkspaceRefreshBurst({ attempts: 90, minimumAttempts: 8 });
+        return result;
+      } catch (error) {
+        if (deepgramStream) deepgramStream.interrupt();
+        return null;
+      }
+    })();
+    return deepgramFinishPromise;
   };
 
   const startLiveListeningLoop = () => {
@@ -1092,6 +1270,7 @@ export function createAudioCaptureController({
   };
 
   const beginLiveTranscription = async () => {
+    if (deepgramConnectPending || deepgramStream) return;
     if (sharedPendingAudioRetry()) {
       setMicStatus('Retry the pending audio upload before starting another recording.', 'error');
       return;
@@ -1105,13 +1284,69 @@ export function createAudioCaptureController({
       setMicStatus('Live speech detection could not start in this browser.', 'error');
       return;
     }
+    const streamingRequested = Boolean(getState().deepgramLiveStreamingAvailable);
+    const captureGeneration = ++liveCaptureGeneration;
+    let streamingInstance = null;
     try {
       captureMode = 'live';
+      setMicButtons(true);
+      deepgramConnectPending = streamingRequested;
       liveStopRequested = false;
       liveForceContinueRequested = false;
       liveRestartPending = false;
       liveChunkProcessing = Promise.resolve();
-      liveVadInstance = await buildLiveVadInstance();
+      const streamTranscriptId = getState().transcriptId;
+      if (streamingRequested) {
+        deepgramStreamTranscriptId = streamTranscriptId;
+        streamingInstance = new DeepgramLiveStream({
+          onInterim: (text) => {
+            if (deepgramStreamTranscriptId !== getState().transcriptId) return;
+            if (dom.deepgramInterim) {
+              dom.deepgramInterim.textContent = text;
+              dom.deepgramInterim.hidden = !text;
+            }
+          },
+          onWindowCommitted: () => {
+            if (dom.deepgramInterim) {
+              dom.deepgramInterim.textContent = '';
+              dom.deepgramInterim.hidden = true;
+            }
+            void pollWorkspace();
+          },
+          onState: (state) => {
+            if (state === 'streaming') {
+              setVisibleStatus('transcribing');
+              setMicStatus('Speech detected. Streaming live audio...');
+              setSessionProgress('Speech audio is streaming. Live words are provisional until saved.');
+            } else if (state === 'listening') {
+              setVisibleStatus('listening');
+              setMicStatus('Listening for speech...');
+              setSessionProgress('Listening locally. Audio pauses after 30 seconds without speech; a short pre-roll stays in this tab.');
+            }
+          },
+          onError: (error, recovery) => failDeepgramCapture(error, recovery),
+        });
+        deepgramStream = streamingInstance;
+        setVisibleStatus('connecting');
+        setMicStatus('Connecting to live transcription...');
+        setSessionProgress('Connecting securely to the selected Deepgram speech service...');
+        await streamingInstance.connect({ transcriptId: streamTranscriptId, csrfToken: csrfToken() });
+        if (captureGeneration !== liveCaptureGeneration || streamTranscriptId !== getState().transcriptId || !getState().deepgramLiveStreamingAvailable) {
+          streamingInstance.cancelPending();
+          return;
+        }
+      }
+      const vadInstance = await buildLiveVadInstance({
+        streaming: streamingRequested,
+        stream: streamingInstance,
+        generation: captureGeneration,
+      });
+      if (captureGeneration !== liveCaptureGeneration) {
+        try { vadInstance.destroy?.(); } catch (_) {}
+        return;
+      }
+      liveVadInstance = vadInstance;
+      deepgramConnectPending = false;
       reportMicIssue?.(null);
       beginAccumulatedTimer();
       timerId = window.setInterval(renderTimer, 1000);
@@ -1119,15 +1354,37 @@ export function createAudioCaptureController({
       dispatchWorkspaceRecordingEvent('started');
       startLiveListeningLoop();
     } catch (error) {
-      resetRecordingState();
-      dispatchWorkspaceRecordingEvent('failed');
+      if (captureGeneration !== liveCaptureGeneration) return;
+      if (deepgramStream) {
+        deepgramStream.interrupt();
+      } else if (streamingRequested && captureMode === 'batch') {
+        reportMicIssue?.(error);
+        return;
+      } else {
+        resetRecordingState();
+        dispatchWorkspaceRecordingEvent('failed');
+      }
       reportMicIssue?.(error);
-      setMicStatus('Microphone access was denied, or live speech detection could not start.', 'error');
+      if (!deepgramRecovery) setMicStatus('Microphone access was denied, or live speech detection could not start.', 'error');
+    } finally {
+      if (captureGeneration === liveCaptureGeneration) deepgramConnectPending = false;
     }
   };
 
   const endLiveTranscription = () => {
-    if (!liveVadInstance && !liveRestartPending) return;
+    if (deepgramConnectPending && !liveVadInstance) {
+      const pending = deepgramStream;
+      resetRecordingState();
+      pending?.cancelPending();
+      setMicStatus('Live transcription connection canceled.');
+      setSessionProgress('The live connection was canceled before microphone capture began.');
+      return;
+    }
+    if (!liveVadInstance && !liveRestartPending && !deepgramStream) return;
+    if (deepgramStream) {
+      void finishDeepgramCapture();
+      return;
+    }
     liveStopRequested = true;
     liveForceContinueRequested = false;
     clearLiveChunkTimeout();
@@ -1156,6 +1413,10 @@ export function createAudioCaptureController({
       setMicStatus(micStatusState.message, micStatusState.kind);
       void finalizeLiveCaptureIfNeeded();
     }
+  };
+
+  const stopDeepgramCaptureForContextChange = () => {
+    if (deepgramStream) deepgramStream.interrupt();
   };
 
   const beginMicrophoneBatch = async () => {
@@ -1234,7 +1495,8 @@ export function createAudioCaptureController({
   };
 
   const handleRecordToggle = async () => {
-    const liveCaptureActive = captureMode === 'live' && (Boolean(liveVadInstance) || liveRestartPending);
+    const liveCaptureActive = captureMode === 'live'
+      && (Boolean(liveVadInstance) || liveRestartPending || deepgramConnectPending || Boolean(deepgramStream));
     const batchCaptureActive = Boolean(batchVadInstance) || batchRestartPending;
     if (liveCaptureActive || batchCaptureActive) {
       if (captureMode === 'live') {
@@ -1302,15 +1564,25 @@ export function createAudioCaptureController({
       const retry = pending.retry;
       if (typeof retry !== 'function' || (pending.transcriptId && pending.transcriptId !== getState().transcriptId)) return;
       dom.pendingAudioRetryButton.disabled = true;
-      void retry().catch(() => {});
+      void Promise.resolve(retry()).catch((error) => {
+        if (dom.pendingAudioRetryMessage && error instanceof Error) dom.pendingAudioRetryMessage.textContent = error.message;
+        if (dom.pendingAudioRetryButton) dom.pendingAudioRetryButton.disabled = false;
+      });
     });
     dom.pendingAudioDiscardButton?.addEventListener('click', () => {
       const pending = sharedPendingAudioRetry();
       if (pending?.owner !== pendingAudioRetryOwner || typeof pending.discard !== 'function') return;
       if (!window.confirm('Discard this pending audio? It cannot be recovered after you discard it.')) return;
-      pending.discard();
+      dom.pendingAudioDiscardButton.disabled = true;
+      void Promise.resolve(pending.discard()).catch((error) => {
+        if (dom.pendingAudioRetryMessage && error instanceof Error) dom.pendingAudioRetryMessage.textContent = error.message;
+        if (dom.pendingAudioDiscardButton) dom.pendingAudioDiscardButton.disabled = false;
+      });
     });
     document.addEventListener('transcribe:active-transcript-changed', () => {
+      if (deepgramStream && deepgramStreamTranscriptId !== getState().transcriptId) {
+        deepgramStream.interrupt();
+      }
       const pending = sharedPendingAudioRetry();
       if (pending?.owner !== pendingAudioRetryOwner) return;
       const visible = !pending.transcriptId || pending.transcriptId === getState().transcriptId;
@@ -1318,6 +1590,10 @@ export function createAudioCaptureController({
     });
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden || captureMode !== 'live' || !liveVadInstance || liveStopRequested) {
+        return;
+      }
+      if (deepgramStream) {
+        setSessionProgress('Live transcription continues in the background. Keep the tab open until the stream is finalized.');
         return;
       }
       liveForceContinueRequested = true;
@@ -1337,11 +1613,39 @@ export function createAudioCaptureController({
   const handlePageLifecycleExit = () => {
     const liveCaptureActive = (
       captureMode === 'live'
-      && !liveStopRequested
-      && (Boolean(liveVadInstance) || liveRestartPending || liveSpeechActive)
+      && (deepgramConnectPending || Boolean(deepgramStream)
+        || (!liveStopRequested && (Boolean(liveVadInstance) || liveRestartPending || liveSpeechActive)))
     );
     if (!liveCaptureActive) {
       return false;
+    }
+
+    if (deepgramConnectPending && !liveVadInstance) {
+      const pending = deepgramStream;
+      resetRecordingState();
+      pending?.cancelPending();
+      return true;
+    }
+
+    if (deepgramStream) {
+      liveStopRequested = true;
+      clearLiveChunkTimeout();
+      resetSilencePromptState();
+      finalizeAccumulatedTimer();
+      if (timerId) {
+        window.clearInterval(timerId);
+        timerId = null;
+      }
+      setMicButtons(false);
+      setVisibleStatus('finalizing');
+      setSessionProgress('Finalizing live transcription as this tab closes...');
+      try {
+        liveVadInstance?.pause();
+        void deepgramStream.finish().catch(() => {});
+      } catch (_) {}
+      stopStreamTracks();
+      cleanupLiveVad();
+      return true;
     }
 
     liveStopRequested = true;
@@ -1372,8 +1676,8 @@ export function createAudioCaptureController({
     isCaptureUiActive: () => (
       (
         captureMode === 'live'
-        && !liveStopRequested
-        && (Boolean(liveVadInstance) || liveRestartPending || liveSpeechActive)
+        && (deepgramConnectPending || Boolean(deepgramStream)
+          || (!liveStopRequested && (Boolean(liveVadInstance) || liveRestartPending || liveSpeechActive)))
       )
       || (
         captureMode === 'batch'
@@ -1384,20 +1688,20 @@ export function createAudioCaptureController({
     isLiveCaptureUiActive: () => (
       getState().activeIngestionMode === 'live_chunked'
       && captureMode === 'live'
-      && !liveStopRequested
-      && (Boolean(liveVadInstance) || liveRestartPending || liveSpeechActive)
+      && (deepgramConnectPending || Boolean(deepgramStream)
+        || (!liveStopRequested && (Boolean(liveVadInstance) || liveRestartPending || liveSpeechActive)))
     ),
     shouldPollWhileLiveCaptureActive: () => (
       getState().activeIngestionMode === 'live_chunked'
       && captureMode === 'live'
-      && (Boolean(liveVadInstance) || liveRestartPending)
+      && (deepgramConnectPending || Boolean(deepgramStream) || Boolean(liveVadInstance) || liveRestartPending)
     ),
     shouldPreserveLiveMicStatus: () => (
       (
         getState().activeIngestionMode === 'live_chunked'
         && captureMode === 'live'
-        && !liveStopRequested
-        && (Boolean(liveVadInstance) || liveRestartPending || liveSpeechActive)
+        && (deepgramConnectPending || Boolean(deepgramStream)
+          || (!liveStopRequested && (Boolean(liveVadInstance) || liveRestartPending || liveSpeechActive)))
       )
       || (
         getState().activeIngestionMode === 'live_chunked'
@@ -1409,5 +1713,6 @@ export function createAudioCaptureController({
         )
       )
     ),
+    stopDeepgramCaptureForContextChange,
   };
 }

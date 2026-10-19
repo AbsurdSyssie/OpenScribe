@@ -13,6 +13,9 @@ from typing import Any
 from uuid import UUID
 
 from app.errors import AppError
+from app.services.json_validation import reject_duplicate_json_keys
+from app.services.llm_adapters.runtime import request_output_token_cap
+from app.services.quotas import estimate_token_reservation
 from app.services.consultation_split_generation import (
     SplitGenerationTopic,
     parse_split_generation,
@@ -32,7 +35,28 @@ class PreparedSplitVerification:
     request_body: dict[str, object]
     response_json_schema: dict[str, object]
     output_token_cap: int
-    reservation_units: int
+
+
+def split_verification_request_reservation_units(
+    request: Mapping[str, Any], *, prepared_messages: object | None = None,
+) -> int:
+    """Estimate quota from the exact adapter-specific checker request."""
+    # Gemini snapshots use system_instruction/contents rather than messages;
+    # retain the canonical inputs used to build them for quota estimation.
+    messages = request.get("messages") if prepared_messages is None else prepared_messages
+    if (
+        not isinstance(messages, list)
+        or len(messages) != 2
+        or not all(isinstance(message, Mapping) and isinstance(message.get("content"), str) for message in messages)
+    ):
+        raise _invalid()
+    output_cap = request_output_token_cap(request)
+    if not isinstance(output_cap, int) or isinstance(output_cap, bool) or output_cap <= 0:
+        raise _invalid()
+    return estimate_token_reservation(
+        (messages[0]["content"], messages[1]["content"]),
+        max_completion_tokens=output_cap,
+    )
 
 
 def _invalid() -> AppError:
@@ -103,13 +127,12 @@ def prepare_split_verification_request(*, source_snapshot: Mapping[str, Any], cl
         "required": [str(topic.topic_uuid) for topic in topics],
         "properties": {str(topic.topic_uuid): _hallucination_check_response_json_schema() for topic in topics},
     }
-    # A bounded, conservative estimate is enough for the independent checker
-    # reservation; no generated-document checker settings are inherited.
+    # This nominal cap expresses the checker workload. The queue derives the
+    # final reservation from the adapter-specific request, which can expand it.
     output_cap = max(512, min(8192, len(topics) * 1024))
     return PreparedSplitVerification(
         request_body={"messages": [{"role": "system", "content": system}, {"role": "user", "content": encoded}]},
         response_json_schema=schema, output_token_cap=output_cap,
-        reservation_units=max(1, (len(system) + len(encoded)) // 4 + output_cap),
     )
 
 
@@ -127,8 +150,8 @@ def apply_split_verification_response(*, payload_text: str, confirmed_plan: Mapp
     if set(survivor_outputs) != expected:
         raise _invalid()
     try:
-        raw = json.loads(payload_text)
-    except (TypeError, ValueError):
+        raw = json.loads(payload_text, object_pairs_hook=reject_duplicate_json_keys)
+    except (TypeError, ValueError, RecursionError):
         raise _invalid() from None
     if not isinstance(raw, dict) or set(raw) != {str(item) for item in expected}:
         raise _invalid()

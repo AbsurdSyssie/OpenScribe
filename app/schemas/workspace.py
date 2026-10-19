@@ -1,3 +1,6 @@
+from datetime import datetime
+from uuid import UUID
+
 from pydantic import BaseModel
 
 from .dictation import PostConsultationDictationDetail
@@ -5,6 +8,18 @@ from .consultation_split import ConsultationSplitAnalysisDetail, ConsultationSpl
 from .smart_phrases import SmartPhraseDetail
 from .templates import GeneratedDocumentDetail, PromptTemplateDetail, QuickActionDetail
 from .transcripts import TranscriptDetail, TranscriptListItem, TranscriptPiiEntityDetail, WorkingNoteDetail
+
+
+class TranscriptStreamGapDetail(BaseModel):
+    stream_id: UUID
+    window_no: int
+    source_start_sample_offset: int
+    source_end_sample_offset: int
+    forwarded_sample_count: int
+    recovery_available: bool
+    recovery_in_progress: bool = False
+    recovery_job_retry_available: bool = False
+    recovery_expires_at: datetime | None = None
 
 
 class TranscribeWorkspaceDetail(BaseModel):
@@ -25,6 +40,8 @@ class TranscribeWorkspaceDetail(BaseModel):
     active_template_generation_input_available: bool = False
     stt_selected: bool
     stt_available: bool
+    deepgram_live_streaming_available: bool = False
+    active_transcript_stream_gap: TranscriptStreamGapDetail | None = None
     stt_status_message: str | None = None
     stt_health: dict | None = None
     dictation_stt_selected: bool = False

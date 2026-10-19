@@ -23,9 +23,10 @@ from app.models import (
 )
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
 from app.services.llm import resolve_user_llm
+from app.services.llm_adapters import runtime as llm_runtime
 from app.services.preferences import template_suggestions_enabled
 from app.services.quotas import (
-    cancel_provider_attempt, estimate_token_reservation, mark_provider_attempt_submitted,
+    cancel_provider_attempt, estimate_token_reservation, increase_provider_attempt_reservation, mark_provider_attempt_submitted,
     reserve_provider_attempt, settle_provider_attempt_tokens, settle_provider_attempt_unknown_tokens,
 )
 from app.services.redaction import redact_transient_text
@@ -48,12 +49,26 @@ logger = logging.getLogger("openscribe.template_suggestion")
 
 def _log(event: str, *, job: TemplateSuggestionJob | None = None, transcript_id: UUID | None = None, **metadata: object) -> None:
     """Record lifecycle metadata without content, template details, or secrets."""
+    job_id = job.id if job is not None and isinstance(job.id, UUID) else None
+    safe_transcript_id = transcript_id if isinstance(transcript_id, UUID) else (
+        job.transcript_id if job is not None and isinstance(job.transcript_id, UUID) else None
+    )
+    status = metadata.get("status")
+    if not isinstance(status, str) or status not in {*(item.value for item in TemplateSuggestionStatus), "not_eligible", "missing"}:
+        status = None
+    message_fields = [f"event={event}"]
+    if job_id is not None:
+        message_fields.append(f"template_suggestion_job_id={job_id}")
+    if safe_transcript_id is not None:
+        message_fields.append(f"transcript_id={safe_transcript_id}")
+    if status is not None:
+        message_fields.append(f"status={status}")
     logger.info(
-        event,
+        " ".join(message_fields),
         extra={
             "event": event,
-            "template_suggestion_job_id": str(job.id) if job is not None else None,
-            "transcript_id": str(transcript_id or (job.transcript_id if job is not None else "")) or None,
+            "template_suggestion_job_id": str(job_id) if job_id is not None else None,
+            "transcript_id": str(safe_transcript_id) if safe_transcript_id is not None else None,
             "owner_user_id": str(job.owner_user_id) if job is not None else None,
             "team_id": str(job.team_id) if job is not None else None,
             **metadata,
@@ -173,7 +188,21 @@ def queue_template_suggestion(
         excerpt="x" * min(len(excerpt), TEMPLATE_SUGGESTION_MAX_CHARS), candidates=candidate_snapshot,
         selected_template=selected_template_snapshot,
     )
-    reserved_units = estimate_token_reservation((system_message, user_message), max_completion_tokens=TEMPLATE_SUGGESTION_OUTPUT_TOKENS)
+    request_body = llm_runtime.generation_request_snapshot(
+        adapter_kind=config.adapter_kind,
+        model=model_name,
+        user_id=actor.id,
+        system_message=system_message,
+        user_message=user_message,
+        output_token_cap=TEMPLATE_SUGGESTION_OUTPUT_TOKENS,
+        temperature=0.0,
+    )
+    submitted_output_cap = llm_runtime.request_output_token_cap(request_body)
+    if not isinstance(submitted_output_cap, int) or submitted_output_cap <= 0:
+        raise AppError(422, "business_rule_violation", "Template suggestion output limit is unavailable")
+    reserved_units = estimate_token_reservation(
+        (system_message, user_message), max_completion_tokens=submitted_output_cap,
+    )
     now = utcnow()
     try:
         db.add(job)
@@ -253,13 +282,16 @@ def _messages(*, excerpt: str, candidates: list[dict], selected_template: dict |
     )
 
 
-def _attempt(db: Session, job_id: UUID):
+def _attempt(db: Session, job_id: UUID, *, populate_existing: bool = False):
     from app.models import ProviderAttempt
-    return db.scalar(select(ProviderAttempt).where(
+    statement = select(ProviderAttempt).where(
         ProviderAttempt.correlation_id == job_id,
         ProviderAttempt.attempt_kind == AttemptKind.llm_template_suggestion,
         ProviderAttempt.attempt_number == 1,
-    ).with_for_update())
+    ).with_for_update()
+    if populate_existing:
+        statement = statement.execution_options(populate_existing=True)
+    return db.scalar(statement)
 
 
 def _fail(db: Session, job: TemplateSuggestionJob, code: str) -> TemplateSuggestionJob:
@@ -270,6 +302,53 @@ def _fail(db: Session, job: TemplateSuggestionJob, code: str) -> TemplateSuggest
             cancel_provider_attempt(db, attempt_id=attempt.id)
         elif attempt.status is AttemptStatus.submitted:
             settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id)
+    job.status = TemplateSuggestionStatus.failed
+    job.error_code = code[:128]
+    job.completed_at = utcnow()
+    db.add(job)
+    db.commit()
+    _log(
+        "template_suggestion_failed",
+        job=job,
+        status=job.status.value,
+        previous_status=previous_status,
+        reason_code=job.error_code,
+    )
+    return job
+
+
+def _fail_pre_submit(db: Session, *, job_id: UUID, code: str) -> TemplateSuggestionJob | None:
+    """Fail only a still-queued suggestion with no submitted winning attempt."""
+    identity = db.get(TemplateSuggestionJob, job_id)
+    if identity is None:
+        db.rollback()
+        return None
+    owner = db.scalar(select(User).where(User.id == identity.owner_user_id).with_for_update())
+    transcript = db.scalar(select(Transcript).where(Transcript.id == identity.transcript_id).with_for_update())
+    job = db.scalar(
+        select(TemplateSuggestionJob)
+        .where(TemplateSuggestionJob.id == job_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if job is None:
+        db.rollback()
+        return None
+    if (
+        job.status is not TemplateSuggestionStatus.queued
+        or owner is None
+        or transcript is None
+        or transcript.owner_user_id != job.owner_user_id
+    ):
+        db.rollback()
+        return job
+    attempt = _attempt(db, job.id, populate_existing=True)
+    if attempt is not None and attempt.status is not AttemptStatus.reserved:
+        db.rollback()
+        return job
+    previous_status = job.status.value
+    if attempt is not None:
+        cancel_provider_attempt(db, attempt_id=attempt.id)
     job.status = TemplateSuggestionStatus.failed
     job.error_code = code[:128]
     job.completed_at = utcnow()
@@ -348,15 +427,15 @@ def process_template_suggestion(db: Session, *, job_id: UUID) -> TemplateSuggest
     transcript = db.get(Transcript, job.transcript_id)
     if transcript is None or transcript_is_expired(transcript) or transcript.owner_user_id != job.owner_user_id:
         _log("template_suggestion_source_rejected", job=job, reason_code="source_unavailable")
-        return _fail(db, job, "template_suggestion_source_unavailable")
+        return _fail_pre_submit(db, job_id=job.id, code="template_suggestion_source_unavailable")
     owner = db.get(User, job.owner_user_id)
     if owner is None or not template_suggestions_enabled(db, owner):
         _log("template_suggestion_worker_skipped", job=job, reason_code="preference_disabled")
-        return _fail(db, job, "template_suggestion_preference_disabled")
+        return _fail_pre_submit(db, job_id=job.id, code="template_suggestion_preference_disabled")
     config = db.get(TeamLlmConfig, job.llm_config_id)
     if config is None or config.team_id != job.team_id:
         _log("template_suggestion_provider_rejected", job=job, reason_code="provider_unavailable")
-        return _fail(db, job, "template_suggestion_provider_unavailable")
+        return _fail_pre_submit(db, job_id=job.id, code="template_suggestion_provider_unavailable")
     try:
         redacted = redact_transient_text(db, _excerpt(db, job), team_id=job.team_id, start_index=1)
         safe_excerpt, _, _ = _apply_manual_pii_redaction(
@@ -377,19 +456,51 @@ def process_template_suggestion(db: Session, *, job_id: UUID) -> TemplateSuggest
         credential = _resolve_generation_credential(config)
     except Exception:
         _log("template_suggestion_preparation_failed", job=job, reason_code="redaction_or_credential_failed")
-        return _fail(db, job, "template_suggestion_preparation_failed")
+        return _fail_pre_submit(db, job_id=job.id, code="template_suggestion_preparation_failed")
     _log("template_suggestion_prepared", job=job, candidate_count=len(job.candidates_snapshot_json or []), adapter_kind=job.llm_adapter_kind)
 
-    locked = db.scalar(select(TemplateSuggestionJob).where(TemplateSuggestionJob.id == job.id).with_for_update())
+    # Keep the shared quota lock order: owner -> transcript root -> job -> attempt.
+    owner = db.scalar(select(User).where(User.id == job.owner_user_id).with_for_update())
+    transcript = db.scalar(select(Transcript).where(Transcript.id == job.transcript_id).with_for_update())
+    locked = db.scalar(
+        select(TemplateSuggestionJob)
+        .where(TemplateSuggestionJob.id == job.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if locked is None or locked.status is not TemplateSuggestionStatus.queued:
         db.rollback()
         _log("template_suggestion_worker_skipped", job=locked or job, reason_code="job_not_queued", status=locked.status.value if locked is not None else "missing")
         return locked
-    attempt = _attempt(db, locked.id)
+    if (
+        owner is None
+        or transcript is None
+        or transcript.owner_user_id != locked.owner_user_id
+        or transcript_is_expired(transcript)
+    ):
+        db.rollback()
+        return _fail_pre_submit(db, job_id=locked.id, code="template_suggestion_source_unavailable")
+    attempt = _attempt(db, locked.id, populate_existing=True)
     if attempt is None or attempt.status is not AttemptStatus.reserved:
         db.rollback()
         _log("template_suggestion_attempt_rejected", job=locked, reason_code="attempt_not_reserved", attempt_status=attempt.status.value if attempt is not None else "missing")
-        return _fail(db, locked, "template_suggestion_attempt_conflict")
+        return _fail_pre_submit(db, job_id=locked.id, code="template_suggestion_attempt_conflict")
+    submitted_output_cap = llm_runtime.request_output_token_cap(request_body)
+    if not isinstance(submitted_output_cap, int) or submitted_output_cap <= 0:
+        db.rollback()
+        _log("template_suggestion_preparation_failed", job=locked, reason_code="output_cap_unavailable")
+        return _fail_pre_submit(db, job_id=locked.id, code="template_suggestion_preparation_failed")
+    required_units = estimate_token_reservation(
+        (system_message, user_message), max_completion_tokens=submitted_output_cap,
+    )
+    try:
+        attempt = increase_provider_attempt_reservation(
+            db, attempt_id=attempt.id, required_units=required_units,
+        )
+    except Exception:
+        db.rollback()
+        _log("template_suggestion_preparation_failed", job=locked, reason_code="reservation_unavailable")
+        return _fail_pre_submit(db, job_id=locked.id, code="template_suggestion_preparation_failed")
     locked.status = TemplateSuggestionStatus.processing
     locked.started_at = utcnow()
     mark_provider_attempt_submitted(

@@ -44,8 +44,8 @@ Administrators can manage users, teams, providers, retention, and usage
 without being able to read clinicians' consultation content.
 
 Transcripts, dictation, notes, and other designated clinical content are
-encrypted with per-user keys. Provider credentials are held separately in
-Vault.
+encrypted with per-user keys. Provider secrets are stored in Vault; Gemini can
+use the deployment's runtime identity instead.
 
 ### Clinical safety
 
@@ -94,11 +94,12 @@ Third-party browser asset provenance, checksums, and licence locations are recor
 - User workspace and Scribe: `http://127.0.0.1:8080/workspace`
 - Account: `http://127.0.0.1:8080/workspace/account`
 - Preferences: `http://127.0.0.1:8080/workspace/preferences`
+- Help: `http://127.0.0.1:8080/workspace/help`
 - Libraries: `http://127.0.0.1:8080/workspace/library/templates`
 - Leader AI services: `http://127.0.0.1:8080/workspace/team/ai-services`
 - Admin UI: `http://127.0.0.1:8080/admin`
 - Operator legal-content admin: `http://127.0.0.1:8080/admin?tab=legal`
-- Published operator privacy/cookie/terms routes: `/privacy`, `/cookies`, `/terms`
+- Published operator privacy/cookie/terms/accessibility routes: `/privacy`, `/cookies`, `/terms`, `/accessibility`
 
 Successful normal-user and team-leader login lands directly on `/workspace`. Legacy `GET /home`, `/transcribe`, and `/settings` links redirect into canonical `/workspace` routes; `/home` is no longer a separately rendered landing page. The former `/transcribe-claude`, `/transcribe-glm-2`, and `/transcriber_col_changes` prototype routes have been removed. `/workspace` is the only Scribe product surface.
 

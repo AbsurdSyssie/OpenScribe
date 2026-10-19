@@ -54,7 +54,7 @@ Only one whole-file ingestion job is actively processed for a transcript at a ti
 
 ### Live chunked
 
-The browser uses the pinned same-origin VAD runtime to create speech chunks. Pauses and a maximum chunk duration trigger upload. The backend validates sequence/duration metadata, stores a queued chunk job, and updates the encrypted current draft as worker results complete.
+For selections other than eligible Deepgram streaming, the browser uses the pinned same-origin VAD runtime to create speech chunks. Pauses and a maximum chunk duration trigger upload. The backend validates sequence/duration metadata, stores a queued chunk job, and updates the encrypted current draft as worker results complete.
 
 Stopping live capture calls a finalize route. Finalization:
 
@@ -66,6 +66,8 @@ Stopping live capture calls a finalize route. Finalization:
 
 After live capture stops, the user can create/open another consultation while the prior transcript continues processing. Jobs remain attached to their original transcript root.
 
+Eligible Deepgram live capture uses an owner-bound durable stream session and server-side WebSocket relay instead of the prerecorded chunk route. The relay resolves the saved credential before audio dispatch, authorizes unique PCM sample batches before provider writes, and commits encrypted final text by bounded window. Successful-path audio is not routinely stored in Vault. A failed unresolved interval may use the established bounded Vault recovery path; browser-held fallback is offered only when exact server-reported sample bounds/count match sent-but-uncommitted data in tab memory. Unsent audio and pre-roll are excluded. A retry creates a fresh accounted ingestion job/outbox dispatch and retains the gap barrier until applied or discarded. See [live_stt.md](live_stt.md) for the browser pause, pre-roll, checkpoint, and failure states.
+
 ## Core API lifecycle
 
 The central routes include:
@@ -74,6 +76,7 @@ The central routes include:
 - owner transcript list/detail/workspace routes under `/api/v1/transcripts`
 - whole-file audio upload for a transcript
 - live audio-chunk upload for a transcript
+- eligible Deepgram live WebSocket stream and explicit stream-recovery/discard routes
 - live-capture finalization
 - ingestion job status/retry routes
 - transcript draft/commit/version routes
@@ -123,6 +126,8 @@ System administrators provision STT endpoint metadata and Vault-backed credentia
 OpenScribe snapshots the selected provider/config metadata onto queued work so later policy edits do not silently change an existing job. Runtime validates that the snapshotted config remains usable and resolves its credential before marking the provider attempt submitted.
 
 A definite credential failure before dispatch cancels the quota reservation without audio usage. Provider-call outcomes and accounting remain metadata-only.
+
+Ingestion failures emit `transcript_ingestion_failure` through `openscribe.transcript_ingestion` with a job UUID, controlled stage/error/action and timestamp. An observed failure precedes cleanup; `retry_scheduled` or `terminalized` reports the returned lifecycle state. Ingestion, note-generation and template-suggestion task boundaries log `generation_task_boundary_failed` through `openscribe.tasks` and raise a content-free task error for unexpected failures. The existing note-generation wait/retry path remains intact. The ingestion task replaces Celery's diagnostic kwargs representation before decoding any legacy audio payload; actual task arguments remain available to execution. Current durable dispatch sends identifiers only. These diagnostics exclude exception details, audio, clinical text, provider bodies and credentials.
 
 See [stt-config.md](stt-config.md).
 

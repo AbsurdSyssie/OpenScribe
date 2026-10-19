@@ -17,6 +17,7 @@ from app.models import (
 )
 from app.services.consultation_split_generation import (
     prepare_split_generation_recovery_request,
+    split_generation_request_reservation_units,
     split_generation_request_snapshot,
 )
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
@@ -171,9 +172,12 @@ def _queue_recovery(
     request = split_generation_request_snapshot(
         prepared, adapter_kind=config.adapter_kind, model=model.strip(), user_id=actor.id,
     )
+    reservation_units = split_generation_request_reservation_units(
+        request, prepared_messages=prepared.request_body.get("messages"),
+    )
     execution, _attempt, dispatch = queue_split_execution(
         db, actor, kind=ConsultationSplitExecutionKind.generation, batch=batch,
-        reserved_units=prepared.reservation_units,
+        reserved_units=reservation_units,
         reservation_valid_until=utcnow() + timedelta(seconds=SPLIT_RECOVERY_RESERVATION_SECONDS),
         llm_config_id=config.id, provider_snapshot=snapshot, request_payload=request,
         expected_model=model.strip(),

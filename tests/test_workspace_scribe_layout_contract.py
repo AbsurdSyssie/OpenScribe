@@ -144,7 +144,7 @@ def test_scribe_mobile_dictation_modal_owns_the_top_layer_and_safe_viewport():
     assert "body.modal-open [data-workspace-scribe-main] { z-index: 200; }" in transcribe_css
     assert "padding: var(--mobile-safe-top, env(safe-area-inset-top, 0px)) 0 var(--mobile-safe-bottom, env(safe-area-inset-bottom, 0px));" in transcribe_css
     assert "height: 100%; max-height: 100%; min-height: 0;" in transcribe_css
-    assert 'transcribe.css?v=20261012-review-problems-layout' in read("app/templates/transcribe/_head_assets.html")
+    assert 'transcribe.css?v=20261016-accessible-manual-guide' in read("app/templates/transcribe/_head_assets.html")
 
 
 def test_shared_modal_close_control_centres_its_icon():
@@ -164,8 +164,8 @@ def test_scribe_mobile_flow_assets_have_current_cache_keys():
     shell_extras = read("app/templates/transcribe/_shell_extras.html")
     legacy_transcribe = read("app/templates/transcribe.html")
 
-    assert 'workspace/app.js?v=20260924-dynamic-recording-lock' in workspace
-    assert 'transcribe/app.js?v=20261014-generation-status' in shell_extras
+    assert 'workspace/app.js?v=20261018-help-pointer-resize' in workspace
+    assert 'transcribe/app.js?v=20261018-dictation-save-await' in shell_extras
     assert 'transcribe/mobile.js?v=20260823-mobile-toast' in shell_extras
     assert 'documents.js?v=20261014-generation-status' in read("app/static/js/transcribe/app.js")
     assert 'transcribe-mobile.css?v=20260930-detected-pii-override' in legacy_transcribe
@@ -179,7 +179,8 @@ def test_scribe_mobile_toasts_are_single_accessible_snackbars_above_navigation()
     transcribe_css = compact_css(read("app/static/css/transcribe.css"))
     mobile_css = compact_css(read("app/static/css/transcribe-mobile.css"))
 
-    assert 'data-toast-container aria-label="Notifications"' in workspace
+    assert '<div class="toast-container" data-toast-container></div>' in workspace
+    assert 'data-toast-container aria-label=' not in workspace
     assert 'id="copy-toast"' not in extras
     assert "var durations = { success: 2500, info: 4000, warning: 6000, error: 0 };" in extras
     assert "window.matchMedia('(max-width: 767px)').matches" in extras

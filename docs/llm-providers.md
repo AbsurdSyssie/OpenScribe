@@ -112,6 +112,16 @@ Template note output caps are adapter-specific:
 - Saved length selections map to `short=800`, `normal=1600`, and `long=3200`; absent preferences use `normal`. For Gemini, the selection remains saved and snapshotted as preference metadata, but currently neither adds a semantic prompt guard nor lowers the fixed `max_output_tokens=30000` provider ceiling.
 - Length/detail presets apply only to template note generation. Follow-ups and quick actions keep their existing request shape.
 
+Generation completion is checked before note parsing. OpenAI-compatible responses with `finish_reason=length` fail as `llm_generation_truncated`; other explicit non-`stop` finish reasons fail as incomplete provider responses. A missing finish reason remains accepted for compatibility when the response contains usable text. Ollama must provide a terminal `/api/chat` frame with `done: true`; `done_reason=length` is truncation, and other explicit non-`stop` reasons are incomplete. A missing Ollama `done_reason` remains accepted on a terminal frame for compatibility. An absent terminal frame fails closed. Arbitrary provider reason text is never copied into error metadata; known classifications use fixed application metadata.
+
+These completion checks apply to Template notes, follow-ups, Quick Actions, and checker calls. An incomplete submitted call is terminalized with the existing conservative attempt settlement; duplicate task delivery does not replay it.
+
+Ordinary Template JSON output, checker JSON, and bundled split-verification JSON reject duplicate object keys at any depth before content or patches are accepted. Existing balanced-object and fenced-JSON compatibility remains in place where the ordinary Template parser supports it.
+
+Operational generation events through `openscribe.usage` include controlled stage (`queue` or `generation`) and generator (`template`, `followup`, `quick_action`) categories. Default log messages include IDs, status and a bounded error category; structured fields retain safe error codes and usage metadata. The checker emits its own events with `stage=checker`; see [hallucination-check-design.md](hallucination-check-design.md). Task-boundary failures use content-free errors before Celery handles them.
+
+Template suggestions retain their nominal 220-token output cap; Gemini uses the shared 30,000-token ceiling. Suggestion queue reservations account for the actual adapter output cap, and dispatch expands the reservation when the final redacted input requires more units. A failed expansion cancels only still-reserved work; it cannot cancel a concurrent submitted attempt. Split generation, targeted recovery and bundled verification also reserve from their exact adapter requests. See the [stage review](reviews/generation-stage-cost-logging-review-2026-10-16.md) for remaining cap and efficiency decisions.
+
 ## Labels
 
 LLM config labels are unique per team after trimming surrounding whitespace and comparing case-insensitively. Draft creation, finalization, and legacy save paths all return `409 conflict` with `An LLM provider with this name already exists for this team.` before saving duplicates.

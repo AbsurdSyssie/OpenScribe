@@ -21,6 +21,7 @@ slowapi==0.1.9
 redis==5.2.1
 openai==2.26.0
 google-genai==2.12.1
+deepgram-sdk==7.13.0
 google-auth==2.55.2
 celery[redis]==5.4.0
 presidio-analyzer==2.2.360

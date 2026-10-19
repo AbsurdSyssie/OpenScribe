@@ -7,6 +7,8 @@ __pycache__/
 docs/progress
 UI_Extract/
 frontend/node_modules/
+tests/accessibility/node_modules/
+test-results/accessibility/
 frontend/.next/
 app/templates/glm-2-reference.html
 app/templates/glm-3.html

@@ -53,7 +53,11 @@ from app.services.templates import (
     _structured_section_definitions_snapshot,
     _template_version_config,
 )
-from app.services.transcripts import snapshot_current_transcript_version, transcript_is_expired
+from app.services.transcripts import (
+    assert_no_unresolved_stream_session,
+    snapshot_current_transcript_version,
+    transcript_is_expired,
+)
 
 
 _TABLE_ANALYSIS = "consultation_split_analyses"
@@ -191,6 +195,11 @@ def confirm_split_draft(
         if existing.owner_user_id != owner.id or existing.transcript_id != transcript.id:
             raise AppError(500, "consultation_split_scope_invalid", "Consultation split content is unavailable")
         return _response(existing, replayed=True)
+
+    # A prepared analysis is only a proposal. Do not turn it into a newly
+    # accepted batch while a live stream interval is unresolved. Existing
+    # confirmed batches above retain their idempotent frozen-source replay.
+    assert_no_unresolved_stream_session(db, transcript_id=transcript.id)
 
     if intent.status is ConsultationSplitIntentStatus.bypassed:
         raise AppError(409, "consultation_split_intent_consumed", "This split request was continued as one note")

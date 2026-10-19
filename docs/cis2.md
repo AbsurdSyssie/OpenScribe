@@ -34,7 +34,7 @@ Register the exact deployed callback. Production configuration requires HTTPS. C
 
 NHS onboarding, assurance, technical conformance, penetration testing, production approval, and agreements remain outside OpenScribe runtime configuration. Installing OpenScribe does not grant access to CIS2.
 
-Use the current NHS England guidance for [CIS2 integration](https://digital.nhs.uk/services/care-identity-service/applications-and-services/cis2-authentication), [environment registration](https://digital.nhs.uk/services/care-identity-service/applications-and-services/cis2-authentication/integrate/design-and-build/register-to-access-an-environment), and [assurance](https://digital.nhs.uk/services/care-identity-service/applications-and-services/cis2-authentication/integrate/assurance). Confirm details with NHS England because environment and assurance requirements can change.
+Use the current NHS England guidance for [CIS2 integration](https://digital.nhs.uk/services/care-identity-service/applications-and-services/cis2-authentication), [environment registration](https://digital.nhs.uk/services/care-identity-service/applications-and-services/cis2-authentication/integrate/design-and-build/register-to-access-an-environment), and [assurance](https://digital.nhs.uk/services/care-identity-service/applications-and-services/cis2-authentication/integrate/get-your-software-assured). Confirm details with NHS England because environment and assurance requirements can change.
 
 ## Configuration
 

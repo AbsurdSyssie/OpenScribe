@@ -84,7 +84,7 @@ or event row to the browser. The all-available range includes retained failed
 split executions even when no provider usage event was recorded.
 
 The page also has **Operational health · last 15 minutes** and **Recent failures
-and retries** panels. Health counts every failed provider transport request once, including authentication, configuration, connection and timeout failures. It retains separate HTTP 429/503 and timeout counts,
+and retries** panels. Health counts observed failed provider requests once, including authentication responses, connection errors, and timeouts. Preflight configuration failures that make no request do not count. It retains separate HTTP 429/503 and timeout counts,
 including recovered rate-limit retries, reports mean recorded request duration
 and queue wait where timestamps exist, and shows the oldest queued work and
 currently overdue provider attempts. It warns when queued work is over 60
@@ -144,9 +144,9 @@ The canonical admin workspace renders:
 - failure charts;
 - team comparison rows in global scope;
 - provider/model, generator-type, ingestion-type, and failure aggregates;
-- selected-team user aggregate rows.
+- selected-team user aggregate rows;
 - a bounded recent split-failure metadata projection in global and selected-team
-  Usage views.
+  Usage views;
 - bounded recent operational failure/retry projections and a 15-minute health
   summary in global and selected-team Usage views.
 

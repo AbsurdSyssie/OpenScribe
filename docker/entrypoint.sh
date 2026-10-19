@@ -101,6 +101,8 @@ run_runtime() {
   uvicorn app.main:app \
     --host 0.0.0.0 \
     --port "${CONTAINER_APP_PORT:-8080}" \
+    --ws-max-size 65536 \
+    --ws-max-queue 4 \
     --proxy-headers \
     --forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-127.0.0.1}" &
   app_pid=$!

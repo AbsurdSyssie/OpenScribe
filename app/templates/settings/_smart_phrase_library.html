@@ -44,7 +44,7 @@
         </section>
       </div>
 
-      <div class="smart-phrase-library-utilities" aria-label="Smart phrase import and export">
+      <div class="smart-phrase-library-utilities" role="group" aria-label="Smart phrase import and export">
         <div class="smart-phrase-library-utilities__default">
           <button type="button" class="smart-phrase-library-utility" data-smart-phrase-import-open aria-haspopup="dialog" aria-controls="smart-phrase-import-dialog" title="Add smart phrases from a JSON file or pasted JSON"><i data-lucide="upload" aria-hidden="true"></i><span>Import</span></button>
           <button type="button" class="smart-phrase-library-utility" data-smart-phrase-export-open title="Download selected smart phrases as a JSON file"><i data-lucide="download" aria-hidden="true"></i><span>Export</span></button>
@@ -113,16 +113,17 @@
     <form method="dialog" class="smart-phrase-import-dialog__frame">
       <header class="smart-phrase-import-dialog__header"><div><span class="settings-kicker">Smart phrase help</span><h2 id="smart-phrase-help-title">Create a smart phrase with AI</h2></div><button type="submit" class="smart-phrase-import-dialog__close" value="cancel" aria-label="Close smart phrase help"><i data-lucide="x" aria-hidden="true"></i></button></header>
       <div class="smart-phrase-import-dialog__body template-help-dialog__body">
-        <p>Smart phrases insert reusable text when you type a slash and trigger, such as <strong>/FOLLOWUP</strong>, in the note editor. An AI assistant can help draft useful wording and package it for OpenScribe. You do not need to write any code.</p>
+        <p>Smart Phrases insert reusable text when you type a slash and trigger, such as <strong>/FOLLOWUP</strong>, in the note editor. You can use an AI assistant to prepare your personal phrases for import.</p>
         <div class="smart-phrase-help-summary"><p><strong>Import</strong> adds your personal smart phrases from a JSON file or pasted text.</p><p><strong>Export</strong> saves selected smart phrases as a JSON file so you can keep or move them.</p></div>
         <div class="smart-phrase-help-warning"><i data-lucide="shield-alert" aria-hidden="true"></i><p>Do not include patient information, transcripts, clinical notes, credentials, or other confidential data.</p></div>
         <h3>How to create a smart phrase</h3>
         <ol class="template-help-steps">
-          <li>Select <strong>Copy instructions for AI</strong>. This copies everything the AI needs to create smart phrases OpenScribe can understand.</li>
-          <li>Open the AI assistant you normally use and paste the instructions.</li>
-          <li>Describe the reusable text you need, when you use it, and any wording or placeholders it should contain. The AI will ask questions if anything is unclear.</li>
-          <li>Copy all the finished JSON the AI returns. You do not need to understand or edit it.</li>
+          <li>Select <strong>Copy instructions for AI</strong>.</li>
+          <li>Paste the instructions into your AI assistant.</li>
+          <li>Describe the reusable text, when you use it, and any wording or placeholders it should contain. Ask the assistant to clarify missing details.</li>
+          <li>Copy the complete JSON response. You do not need to edit it.</li>
           <li>Return to OpenScribe, select <strong>Import</strong>, paste the JSON, then select <strong>Submit</strong>.</li>
+          <li>Review the proposed phrases and warnings, select the items to import, then select <strong>Import smart phrases</strong>.</li>
         </ol>
         <button type="button" class="btn-primary" data-smart-phrase-help-copy>Copy instructions for AI</button>
         <p class="smart-phrase-import-status" data-smart-phrase-help-status role="status" aria-live="polite"></p>

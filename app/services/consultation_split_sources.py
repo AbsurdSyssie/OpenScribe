@@ -60,6 +60,7 @@ from app.services.redaction_primitives import (
 )
 from app.services.templates import list_available_templates_for_user
 from app.services.transcripts import (
+    assert_no_unresolved_stream_session,
     freeform_working_note_text,
     normalize_structured_working_note,
     manual_pii_entity_value,
@@ -352,6 +353,18 @@ def _current_server_transcript_binding(
     This deliberately shares normal generation's snapshot semantics, rather
     than treating the latest historical version as the current transcript.
     """
+    # Serialize the stream barrier with both stream start and source writers.
+    # The empty-source branch returns before the version snapshot below, so it
+    # needs this explicit root-lock check as well.
+    scope = lock_consultation_split_source_scope(
+        db,
+        owner_user_id=transcript.owner_user_id,
+        transcript_id=transcript.id,
+    )
+    if scope is None:
+        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript.id)})
+    transcript = scope.transcript
+    assert_no_unresolved_stream_session(db, transcript_id=transcript.id)
     if not _current_transcript_text(db, transcript=transcript):
         if requested_transcript_version_id is not None or requested_redaction_run_id is not None:
             raise AppError(409, "consultation_split_source_stale", "Consultation sources changed before analysis")
@@ -929,6 +942,7 @@ def prepare_source_bound_consultation_split_analysis(
     transcript = scope.transcript
     if transcript.retention_expires_at != locked_retention_expires_at:
         raise AppError(409, "consultation_split_source_stale", "Consultation sources changed before analysis")
+    assert_no_unresolved_stream_session(db, transcript_id=transcript.id)
     final_binding = _read_only_current_transcript_binding(
         db,
         transcript=transcript,
@@ -986,6 +1000,7 @@ def find_cached_prepared_consultation_split_analysis(
         return None
     owner = scope.owner
     locked_transcript = scope.transcript
+    assert_no_unresolved_stream_session(db, transcript_id=locked_transcript.id)
     current_binding = _read_only_current_transcript_binding(
         db,
         transcript=locked_transcript,

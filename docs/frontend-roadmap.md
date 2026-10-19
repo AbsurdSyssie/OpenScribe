@@ -4,7 +4,7 @@
 
 This is a roadmap, not the current frontend or authentication contract. Current implemented browser behavior is documented in [workspace.md](workspace.md), [auth.md](auth.md), and [security.md](security.md).
 
-OpenScribe remains server-rendered with FastAPI, Jinja templates, same-origin JavaScript, and CSS/assets served by the application. A future Next.js App Router frontend remains an option, but no `frontend/` Next.js application exists in the repository today.
+The maintained runtime uses FastAPI, Jinja templates, same-origin JavaScript, and application-served CSS/assets. The Docker and host launchers run this stack. `.gitignore` excludes `frontend/` and `docs/frontend-nextjs.md`; local experimental files at those paths do not establish a supported Next.js runtime. A future Next.js App Router frontend remains an option.
 
 ## Implemented frontend and browser security
 
@@ -19,7 +19,7 @@ Current behavior includes:
 - same-origin `Origin`/`Referer` enforcement for unsafe cookie-authorized API requests;
 - nonce-based Content Security Policy and locally served browser dependencies;
 - the permanent `/workspace` shell for Scribe, Account, Preferences, Library, and leader Team sections;
-- transitional compatibility routes while older `/home` rendering is retired.
+- compatibility redirects from `GET /home`, `/settings`, and `/transcribe` into `/workspace`.
 
 The earlier proposal to adopt `starsessions`, Redis-backed sessions, and `fastapi-csrf-protect` was not implemented. Redis is used for Celery and rate limiting; authentication sessions are database-backed and CSRF is implemented in the application.
 
@@ -58,7 +58,7 @@ Recommended future repository shape:
 3. transcript workspace shell and history navigation;
 4. recording, streaming, generated-document, and other high-interaction workflows.
 
-This order is deliberately different from the earlier login-first proposal: authentication pages are small, security-sensitive, and already work without a client framework. Moving them first would add cross-stack session and CSRF complexity before delivering substantial product value.
+Keep authentication pages on the existing stack until a migration provides a concrete benefit and covers session and CSRF behavior.
 
 ## Non-negotiable rules
 

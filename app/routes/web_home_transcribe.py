@@ -85,6 +85,7 @@ from ..web.presentation import render_home
 from ..web.workspace import (
     WORKSPACE_ACCOUNT,
     WORKSPACE_ACCOUNT_REQUESTS,
+    WORKSPACE_HELP,
     WORKSPACE_AI_SERVICES,
     WORKSPACE_LIBRARY_SECTIONS,
     WORKSPACE_PREFERENCES,
@@ -316,6 +317,13 @@ def _workspace_section_page(
         return response
     if context.user.is_system_admin:
         return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    if section == WORKSPACE_HELP:
+        return render_workspace(
+            request,
+            db,
+            current_user=context.user,
+            active_section=section,
+        )
     if section in WORKSPACE_LIBRARY_SECTIONS and context.user.team_id is None:
         return HTMLResponse("Workspace section unavailable", status_code=status.HTTP_403_FORBIDDEN)
     if section in WORKSPACE_TEAM_SECTIONS and (
@@ -395,6 +403,11 @@ def workspace_preferences_page(
     return _workspace_section_page(
         request, db, section=WORKSPACE_PREFERENCES, message=message, message_kind=message_kind
     )
+
+
+@app.get("/workspace/help", response_class=HTMLResponse)
+def workspace_help_page(request: Request, db: Session = Depends(get_db)):
+    return _workspace_section_page(request, db, section=WORKSPACE_HELP)
 
 
 @app.get("/workspace/library/templates", response_class=HTMLResponse)

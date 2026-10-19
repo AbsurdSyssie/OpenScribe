@@ -224,7 +224,7 @@
 
   .statement-row,
   .statement {
-    grid-template-columns: 1rem 1.35rem minmax(0, 1fr);
+    grid-template-columns: 1.5rem 1.5rem minmax(0, 1fr);
     gap: 0.45rem;
     padding: 0.62rem 0.75rem 0.62rem 0.4rem;
   }

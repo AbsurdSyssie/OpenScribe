@@ -260,9 +260,12 @@ def reserve_provider_attempt(
     transcript_ingestion_job_id: UUID | None = None,
     generated_document_id: UUID | None = None,
     consultation_split_execution_id: UUID | None = None,
+    transcript_stream_session_id: UUID | None = None,
     provider_adapter: str | None = None,
     provider_model: str | None = None,
     measured_audio_seconds: Decimal | float | None = None,
+    stream_received_samples: int | None = None,
+    stream_authorized_samples: int | None = None,
 ) -> ProviderAttempt:
     """Reserve units under locked owner row. Does not commit."""
     if reserved_units <= 0 or attempt_number < 1:
@@ -272,13 +275,29 @@ def reserve_provider_attempt(
     if reservation_valid_until <= authorized_at:
         raise ValueError("reservation_valid_until must be after authorized_at")
     measured = None if measured_audio_seconds is None else Decimal(str(measured_audio_seconds))
-    if resource is QuotaResource.audio_seconds:
+    is_stream_attempt = attempt_kind is AttemptKind.stt_deepgram_live_stream
+    if is_stream_attempt:
+        if (
+            resource is not QuotaResource.audio_seconds
+            or transcript_stream_session_id is None
+            or transcript_id is None
+            or measured is not None
+            or stream_received_samples is None
+            or stream_authorized_samples is None
+            or stream_received_samples < stream_authorized_samples
+            or stream_authorized_samples <= 0
+            or reserved_units != ceil(stream_authorized_samples / 16000)
+        ):
+            raise ValueError("stream reservations require exact authorized sample counts")
+    elif resource is QuotaResource.audio_seconds:
         if measured is None or measured <= 0:
             raise ValueError("audio reservations require positive measured_audio_seconds")
         if reserved_units != ceil(measured):
             raise ValueError("audio reserved_units must equal ceil(measured_audio_seconds)")
     elif measured is not None:
         raise ValueError("token reservations must not include measured_audio_seconds")
+    elif stream_received_samples is not None or stream_authorized_samples is not None or transcript_stream_session_id is not None:
+        raise ValueError("stream accounting fields are valid only for stream attempts")
 
     def matches_existing(existing: ProviderAttempt) -> bool:
         return (
@@ -295,9 +314,12 @@ def reserve_provider_attempt(
             and existing.transcript_ingestion_job_id == transcript_ingestion_job_id
             and existing.generated_document_id == generated_document_id
             and existing.consultation_split_execution_id == consultation_split_execution_id
+            and existing.transcript_stream_session_id == transcript_stream_session_id
             and existing.provider_adapter == provider_adapter
             and existing.provider_model == provider_model
             and (None if existing.measured_audio_seconds is None else Decimal(str(existing.measured_audio_seconds))) == measured
+            and existing.stream_received_samples == stream_received_samples
+            and existing.stream_authorized_samples == stream_authorized_samples
         )
 
     def existing_or_conflict() -> ProviderAttempt | None:
@@ -335,6 +357,25 @@ def reserve_provider_attempt(
             if reference.team_id != team_id or reference.owner_user_id != owner_user_id:
                 raise AppError(403, "provider_attempt_reference_scope_mismatch", "Provider attempt reference is outside owner scope")
             references[name] = reference
+        stream_session = None
+        if transcript_stream_session_id is not None:
+            from app.models import TranscriptStreamSession
+            stream_session = db.get(TranscriptStreamSession, transcript_stream_session_id)
+            if (
+                stream_session is None
+                or stream_session.transcript_id != transcript_id
+                or stream_session.owner_user_id != owner_user_id
+                or stream_session.team_id != team_id
+            ):
+                raise AppError(409, "provider_attempt_reference_mismatch", "Provider attempt references do not share a transcript")
+        if is_stream_attempt and (
+            stream_session is None
+            or correlation_id != transcript_stream_session_id
+            or attempt_number < 1
+        ):
+            raise AppError(422, "provider_attempt_stream_identity_invalid", "Provider stream attempt identity is invalid")
+        if not is_stream_attempt and stream_session is not None:
+            raise AppError(422, "provider_attempt_stream_kind_mismatch", "Provider attempt kind does not match stream source")
         ingestion_reference = references.get("transcript_ingestion_job")
         document_reference = references.get("generated_document")
         split_execution = references.get("consultation_split_execution")
@@ -373,6 +414,7 @@ def reserve_provider_attempt(
             or transcript_ingestion_job_id is not None
             or generated_document_id is not None
             or consultation_split_execution_id is not None
+            or transcript_stream_session_id is not None
         ):
             raise AppError(422, "provider_attempt_owner_required", "Content-linked provider attempts require an owner")
         existing = existing_or_conflict()
@@ -385,8 +427,11 @@ def reserve_provider_attempt(
         reservation_valid_until=reservation_valid_until, transcript_id=transcript_id,
         transcript_ingestion_job_id=transcript_ingestion_job_id, generated_document_id=generated_document_id,
         consultation_split_execution_id=consultation_split_execution_id,
+        transcript_stream_session_id=transcript_stream_session_id,
         provider_adapter=provider_adapter, provider_model=provider_model,
         measured_audio_seconds=measured,
+        stream_received_samples=stream_received_samples,
+        stream_authorized_samples=stream_authorized_samples,
     )
     try:
         # Savepoint prevents a concurrent unique-key loser from rolling back
@@ -456,6 +501,53 @@ def increase_provider_attempt_reservation(
                     delta=delta,
                 )
     attempt.reserved_units = required_units
+    db.flush()
+    return attempt
+
+
+def increase_stream_provider_attempt_reservation(
+    db: Session,
+    *,
+    attempt_id: UUID,
+    received_samples: int,
+    authorized_samples: int,
+    now: datetime | None = None,
+) -> ProviderAttempt:
+    """Grow only a submitted Deepgram stream reservation by exact PCM samples."""
+    now = _utc(now)
+    if received_samples < authorized_samples or authorized_samples <= 0:
+        raise ValueError("stream sample counts are invalid")
+    identity = db.scalar(select(ProviderAttempt).where(ProviderAttempt.id == attempt_id))
+    if identity is None or identity.attempt_kind is not AttemptKind.stt_deepgram_live_stream:
+        raise AppError(409, "provider_attempt_invalid_transition", "Provider attempt transition conflicts with current state")
+    if identity.owner_user_id is None:
+        raise AppError(409, "provider_attempt_owner_required", "Stream attempts require an owner")
+    owner = db.scalar(select(User).where(User.id == identity.owner_user_id).with_for_update())
+    if owner is None or owner.team_id != identity.team_id:
+        raise AppError(409, "provider_attempt_owner_changed", "Provider attempt owner changed")
+    attempt = _locked_attempt(db, attempt_id)
+    if (
+        attempt.status is not AttemptStatus.submitted
+        or attempt.resource is not QuotaResource.audio_seconds
+        or attempt.deadline_at is None
+        or attempt.deadline_at <= now
+        or attempt.stream_authorized_samples is None
+        or attempt.stream_received_samples is None
+    ):
+        raise _transition_error()
+    if received_samples < attempt.stream_received_samples or authorized_samples < attempt.stream_authorized_samples:
+        raise AppError(409, "provider_attempt_stream_samples_regressed", "Provider stream sample accounting regressed")
+    required_units = ceil(authorized_samples / 16000)
+    delta = required_units - attempt.reserved_units
+    if delta > 0:
+        summary = calculate_quota_summary(db, user=owner, resource=QuotaResource.audio_seconds, now=now)
+        for window in (summary.daily, summary.monthly):
+            # pending_reserved already includes this attempt's current units.
+            if window.effective_limit is not None and window.consumed + window.pending_reserved + delta > window.effective_limit:
+                raise _quota_error(window, requested=delta, required_units=required_units, delta=delta)
+    attempt.reserved_units = required_units
+    attempt.stream_received_samples = received_samples
+    attempt.stream_authorized_samples = authorized_samples
     db.flush()
     return attempt
 
@@ -549,6 +641,54 @@ def settle_provider_attempt_audio(
                    settled_units=ceil(measured), measured_audio_seconds=measured, now=now)
 
 
+def settle_provider_attempt_stream_audio(
+    db: Session,
+    *,
+    attempt_id: UUID,
+    authorized_samples: int,
+    now: datetime | None = None,
+) -> ProviderAttempt:
+    if authorized_samples <= 0:
+        raise ValueError("stream audio sample count must be positive")
+    attempt = _locked_attempt(db, attempt_id)
+    if (
+        attempt.attempt_kind is not AttemptKind.stt_deepgram_live_stream
+        or attempt.resource is not QuotaResource.audio_seconds
+        or attempt.stream_authorized_samples != authorized_samples
+        or attempt.reserved_units != ceil(authorized_samples / 16000)
+    ):
+        raise _transition_error()
+    return _settle(
+        db,
+        attempt_id=attempt_id,
+        outcome=AttemptOutcome.succeeded,
+        basis=ProviderSettlementBasis.stream_measured,
+        settled_units=ceil(Decimal(authorized_samples) / Decimal(16000)),
+        now=now,
+    )
+
+
+def settle_provider_attempt_stream_unknown(
+    db: Session, *, attempt_id: UUID, now: datetime | None = None
+) -> ProviderAttempt:
+    attempt = _locked_attempt(db, attempt_id)
+    if (
+        attempt.attempt_kind is not AttemptKind.stt_deepgram_live_stream
+        or attempt.resource is not QuotaResource.audio_seconds
+        or attempt.stream_authorized_samples is None
+        or attempt.stream_authorized_samples <= 0
+    ):
+        raise _transition_error()
+    return _settle(
+        db,
+        attempt_id=attempt_id,
+        outcome=AttemptOutcome.unknown,
+        basis=ProviderSettlementBasis.stream_authorized,
+        settled_units=attempt.reserved_units,
+        now=now,
+    )
+
+
 def settle_provider_attempt_unknown_tokens(db: Session, *, attempt_id: UUID, now: datetime | None = None) -> ProviderAttempt:
     attempt = _locked_attempt(db, attempt_id)
     if attempt.resource is not QuotaResource.tokens:
@@ -588,6 +728,13 @@ def reconcile_provider_attempts(db: Session, *, now: datetime | None = None, lim
             attempt.status = AttemptStatus.settled
             attempt.outcome = AttemptOutcome.unknown
             attempt.settlement_basis = ProviderSettlementBasis.conservative_unknown
+            attempt.settled_units = attempt.reserved_units
+            attempt.settled_at = now
+            settled += 1
+        elif attempt.attempt_kind is AttemptKind.stt_deepgram_live_stream:
+            attempt.status = AttemptStatus.settled
+            attempt.outcome = AttemptOutcome.unknown
+            attempt.settlement_basis = ProviderSettlementBasis.stream_authorized
             attempt.settled_units = attempt.reserved_units
             attempt.settled_at = now
             settled += 1

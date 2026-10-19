@@ -74,7 +74,7 @@ References: [account_recovery_brief.md](account_recovery_brief.md), [auth.md](au
 
 ### External identity provider decision
 
-No Auth0/external-IdP account authority exists today. Before implementation define per-account auth authority, linking/provisioning, password/MFA recovery owner, app-session/trusted-device behavior, deprovisioning, audit, migration, rollback, and break-glass policy.
+Linked OIDC sign-in is implemented for existing OpenScribe accounts, including the locally tested CIS2 provider. An IdP-owned account and recovery mode is not implemented. Before adding that mode, define per-account auth authority, linking/provisioning, password/MFA recovery owner, app-session/trusted-device behavior, deprovisioning, audit, migration, rollback, and break-glass policy.
 
 Do not run local and external password recovery against one identity without an explicit model.
 
@@ -134,7 +134,7 @@ Reference: [usage_tab.md](usage_tab.md).
 
 ## Frontend direction
 
-A Next.js frontend is not implemented and is not required merely to finish current workspace consolidation. Before adopting it, make a separate architecture decision covering deployment/origins, session/CSRF, SSR/cache, route migration/rollback, CSP/local assets, and preservation of backend authorization.
+The maintained runtime uses FastAPI and Jinja. `.gitignore` excludes local Next.js experiments under `frontend/`; they are not a supported deployment. Before adopting Next.js, make a separate architecture decision covering deployment/origins, session/CSRF, SSR/cache, route migration/rollback, CSP/local assets, and preservation of backend authorization.
 
 Reference: [frontend-roadmap.md](frontend-roadmap.md).
 

@@ -358,6 +358,8 @@ Full-user owner-scoped routes include:
 - `POST /api/v1/transcripts/{transcript_id}/commit`
 - `POST /api/v1/transcripts/{transcript_id}/audio-chunks`
 - `POST /api/v1/transcripts/{transcript_id}/finalize-live-capture`
+- `POST /api/v1/transcripts/{transcript_id}/deepgram-stream/{session_id}/retry`
+- `POST /api/v1/transcripts/{transcript_id}/deepgram-stream/{session_id}/discard`
 - `POST /api/v1/transcripts/{transcript_id}/audio-file`
 - `POST /api/v1/transcripts/{transcript_id}/retry-audio-file`
 - `POST /api/v1/transcripts/{transcript_id}/retry-audio`
@@ -410,6 +412,8 @@ Cross-cutting transcript rules:
 
 See [transcript-capture.md](transcript-capture.md), [live_stt.md](live_stt.md), and [workspace.md](workspace.md).
 
+The owner-only Deepgram WebSocket is `/api/v1/transcripts/{transcript_id}/deepgram-stream`. It checks the session cookie, same-origin `Origin`, and a session-bound CSRF token in the initial WebSocket message. Its `retry` and `discard` HTTP routes require a full session and use the normal API CSRF checks. These routes apply only to the Deepgram stream lifecycle; the chunk-upload routes above remain a separate live-capture path.
+
 ## Audio ingestion
 
 Whole-file defaults:
@@ -431,6 +435,8 @@ Live defaults:
 The server measures/probes audio rather than trusting declared duration for enforcement/accounting. Accepted jobs snapshot STT execution metadata and create task-dispatch/quota metadata transactionally. Whole-file and live-chunk uploads accept an optional UUID `Idempotency-Key` header. Repeating the exact accepted submission with that key returns its original `202` job response. Reusing a key for a different ingestion kind, live sequence, or byte length returns `409 idempotency_conflict`.
 
 Source audio required for asynchronous processing/retry is stored under a bounded Vault reference, not a new PostgreSQL audio blob. Its 24-hour expiry starts at the original Vault write and is preserved across automatic and manual retries. Successful processing and transcript deletion clear or durably queue cleanup sooner. At or after the deadline, transcript detail returns `latest_ingestion_retry_expired=true`, `latest_ingestion_retry_available=false`, and retry requires a fresh upload without exposing storage details. Retry requests return `409 ingestion_retry_expired` when that deadline has passed and `409 ingestion_retry_unavailable` when no retained failed source can be retried.
+
+An unresolved Deepgram stream window can also retain matching recovery audio in Vault for up to 24 hours, bounded by transcript retention. The owner can explicitly retry that interval through the stream `retry` route or discard the gap. Successful stream windows retain finalized transcript text and metadata, not the PCM audio.
 
 Provider timeout/connection failures and provider HTTP 429/5xx failures receive two durable automatic retries after the initial attempt, scheduled after five then ten seconds. Owner `retry-audio` retries the earliest retained failed live gap or failed file; the job-specific route retries that retained failed job. A live retry retains its original job and sequence number.
 

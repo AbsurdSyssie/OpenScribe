@@ -85,6 +85,9 @@ def _terminalize_locked_attempts(attempts: list[ProviderAttempt], now: datetime)
             if attempt.resource is QuotaResource.tokens:
                 attempt.settlement_basis = ProviderSettlementBasis.conservative_unknown
                 attempt.settled_units = attempt.reserved_units
+            elif attempt.attempt_kind is AttemptKind.stt_deepgram_live_stream:
+                attempt.settlement_basis = ProviderSettlementBasis.stream_authorized
+                attempt.settled_units = attempt.reserved_units
             else:
                 # Schema/reservation validation requires this server measurement.
                 if attempt.measured_audio_seconds is None:
@@ -486,6 +489,10 @@ def process_quota_lifecycle(db: Session, batch_size: int = 100, now: datetime | 
         .limit(batch_size).with_for_update(skip_locked=True)
     ).all()
     terminal = _terminalize_locked_attempts(expired, now)
+    # Source reconciliation may lock an execution with populate_existing=True.
+    # Persist the terminal attempt state first so that refresh cannot restore a
+    # reservation (or submitted attempt) and discard this transaction's update.
+    db.flush()
     changed = terminal.cancelled + terminal.settled_unknown + _reconcile_sources(db, expired, now)
     remaining = batch_size - len(expired)
     if remaining:
@@ -627,6 +634,8 @@ def process_quota_lifecycle(db: Session, batch_size: int = 100, now: datetime | 
                         # value over the lifecycle transition.
                         db.flush()
                         changed += _fail_split_execution(db, source.id, TASK_DISPATCH_FAILED, now)
+    from app.services.transcript_streaming import reconcile_expired_stream_sessions
+    changed += reconcile_expired_stream_sessions(db, batch_size=max(1, batch_size - changed), now=now)
     db.flush()
     db.commit()
     return changed

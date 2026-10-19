@@ -1,5 +1,5 @@
 from datetime import timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import func, select
@@ -61,9 +61,12 @@ from app.services.consultation_splits import (
     read_split_topic_title,
     reconcile_split_draft_staleness,
     require_split_owner_transcript,
+    _request_payload_contains_secret_key,
     split_execution_phase_mapping,
     validate_queued_split_execution_for_runtime,
 )
+
+
 from app.services.content_crypto import (
     decrypt_json_for_owner,
     encrypt_json_for_owner,
@@ -76,6 +79,51 @@ from app.services.admin import delete_team, delete_user
 from app.services.llm import delete_llm_config
 from app.services.quota_lifecycle import process_quota_lifecycle
 from app.services.quotas import mark_provider_attempt_submitted, reserve_provider_attempt
+
+
+def test_split_request_secret_scan_only_exempts_exact_schema_section_key_definition():
+    schema_request = {
+        "config": {
+            "response_json_schema": {
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "properties": {
+                            "edits": {
+                                "items": {
+                                    "properties": {"section_key": {"type": "string"}},
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
+    assert _request_payload_contains_secret_key(schema_request) is False
+
+    credential_in_schema = {
+        **schema_request,
+        "config": {
+            "response_json_schema": {
+                "properties": {"topic": {"properties": {"api_key": {"type": "string"}}}},
+            },
+        },
+    }
+    assert _request_payload_contains_secret_key(credential_in_schema) is True
+
+    altered_section_key = {
+        **schema_request,
+        "config": {
+            "response_json_schema": {
+                "properties": {"topic": {"properties": {"section_key": {"type": "string", "api_key": "synthetic"}}}},
+            },
+        },
+    }
+    assert _request_payload_contains_secret_key(altered_section_key) is True
+
+    request_credential = {**schema_request, "config": {**schema_request["config"], "api_key": "synthetic"}}
+    assert _request_payload_contains_secret_key(request_credential) is True
 
 
 FINGERPRINT = "a" * 64
@@ -1205,15 +1253,22 @@ def test_split_reservation_expiry_fails_analysis_but_keeps_verification_fail_ope
     owner = make_user(email=f"split-owner-{uuid4()}@example.com")
     _, analysis, _, _, batch, *_ = _tree(db_session, owner, make_template)
     expires_at = utcnow() + timedelta(seconds=1)
-    analysis_execution, analysis_attempt, _ = queue_split_execution(
-        db_session, owner, analysis=analysis, kind=ConsultationSplitExecutionKind.analysis,
-        reserved_units=10, reservation_valid_until=expires_at,
-    )
     verification_execution, verification_attempt, _ = queue_split_execution(
         db_session, owner, batch=batch, kind=ConsultationSplitExecutionKind.verification,
         reserved_units=10, reservation_valid_until=expires_at,
     )
+    # The lifecycle query sorts equal deadlines by attempt UUID. Make
+    # verification reconcile first, where its populated execution lock used
+    # to refresh and discard the still-unflushed attempt cancellation.
+    verification_attempt.id = UUID(int=1)
+    db_session.flush()
+    analysis_execution, analysis_attempt, _ = queue_split_execution(
+        db_session, owner, analysis=analysis, kind=ConsultationSplitExecutionKind.analysis,
+        reserved_units=10, reservation_valid_until=expires_at,
+    )
     assert process_quota_lifecycle(db_session, now=expires_at + timedelta(seconds=1)) >= 2
+    db_session.refresh(analysis_attempt)
+    db_session.refresh(verification_attempt)
     assert analysis_attempt.status is AttemptStatus.cancelled
     assert analysis_execution.status.value == "failed"
     assert analysis.status.value == "failed"
@@ -1306,6 +1361,10 @@ def test_split_submitted_timeout_terminalizes_attempts_and_preserves_phase_paren
             reserved_units=1, reservation_valid_until=now + timedelta(minutes=10),
         ),
     ]
+    # Make verification reconcile first at the shared deadline, exercising
+    # persistence of unknown settlement before its source is reloaded.
+    executions_and_attempts[-1][1].id = UUID(int=1)
+    db_session.flush()
     deadline = now + timedelta(seconds=1)
     for _, attempt, _ in executions_and_attempts:
         mark_provider_attempt_submitted(
@@ -1314,6 +1373,8 @@ def test_split_submitted_timeout_terminalizes_attempts_and_preserves_phase_paren
     db_session.commit()
 
     assert process_quota_lifecycle(db_session, now=deadline + timedelta(seconds=1)) >= 6
+    for _, attempt, _ in executions_and_attempts:
+        db_session.refresh(attempt)
     assert all(attempt.status is AttemptStatus.settled and attempt.outcome is AttemptOutcome.unknown for _, attempt, _ in executions_and_attempts)
     assert all(execution.status.value == "failed" for execution, _, _ in executions_and_attempts)
     assert analysis.status.value == "failed"

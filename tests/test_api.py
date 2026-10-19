@@ -116,6 +116,10 @@ from app.models import (
     TranscriptStatus,
     Transcript,
     TranscriptIngestionMode,
+    TranscriptStreamSession,
+    TranscriptStreamStatus,
+    TranscriptStreamWindow,
+    TranscriptStreamWindowStatus,
     TranscriptManualPiiEntity,
     TranscriptVersion,
     TranscriptWorkingNoteMode,
@@ -3695,6 +3699,118 @@ def test_transcribe_workspace_stt_health_plain_for_user_diagnostic_for_leader(
     assert leader_health["details"]["status_code"] == 503
     assert leader_health["details"]["provider_error_code"] == "provider_server_error"
     assert leader_health["details"]["health_url"] == "http://127.0.0.1:9100/health"
+
+
+def test_deepgram_streaming_capability_is_server_selected_and_live_only(
+    client,
+    db_session,
+    make_team,
+    make_user,
+    make_stt_config,
+    make_stt_selection,
+):
+    team = make_team(name="Clinic Deepgram live capability")
+    admin = make_user(email="admin-deepgram-live-cap@example.com", password="password-1", is_system_admin=True)
+    owner = make_user(email="owner-deepgram-live-cap@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    config = make_stt_config(
+        team=team,
+        actor=admin,
+        label="Deepgram live",
+        adapter_kind=SttAdapterKind.generic_rest,
+        base_url="https://api.deepgram.com",
+        transcribe_path="/v1/listen",
+        model_name="nova-3",
+    )
+    config.provider_preset = SttProviderPreset.deepgram.value
+    db_session.add(config)
+    db_session.commit()
+    make_stt_selection(config=config, actor=admin, purpose=SttSelectionPurpose.conversation)
+
+    login(client, email=owner.email, password="password-2")
+    live = client.post("/api/v1/transcripts/start", json={"title": "Live streaming", "ingestion_mode": "live_chunked"})
+    assert live.status_code == 201
+    live_workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={live.json()['id']}")
+    assert live_workspace.status_code == 200
+    assert live_workspace.json()["deepgram_live_streaming_available"] is True
+
+    deleted = client.delete(f"/api/v1/transcripts/{live.json()['id']}")
+    assert deleted.status_code == 204
+
+    whole_file = client.post("/api/v1/transcripts/start", json={"title": "Whole file", "ingestion_mode": "whole_file"})
+    assert whole_file.status_code == 201
+    whole_workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={whole_file.json()['id']}")
+    assert whole_workspace.status_code == 200
+    assert whole_workspace.json()["deepgram_live_streaming_available"] is False
+    deleted = client.delete(f"/api/v1/transcripts/{whole_file.json()['id']}")
+    assert deleted.status_code == 204
+
+    config.model_name = "whisper-1"
+    db_session.commit()
+    unsupported = client.post("/api/v1/transcripts/start", json={"title": "Unsupported streaming model", "ingestion_mode": "live_chunked"})
+    assert unsupported.status_code == 201
+    unsupported_workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={unsupported.json()['id']}")
+    assert unsupported_workspace.status_code == 200
+    assert unsupported_workspace.json()["deepgram_live_streaming_available"] is False
+
+
+def test_transcribe_workspace_exposes_only_owner_safe_unresolved_stream_gap(
+    client,
+    db_session,
+    make_team,
+    make_user,
+):
+    team = make_team(name="Clinic live stream recovery workspace")
+    owner = make_user(email="stream-gap-owner@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    colleague = make_user(email="stream-gap-colleague@example.com", password="password-2", team=team, team_role=TeamRole.user)
+    login(client, email=owner.email, password="password-1")
+    started = client.post("/api/v1/transcripts/start", json={"title": "Live recovery", "ingestion_mode": "live_chunked"})
+    assert started.status_code == 201
+    transcript_id = UUID(started.json()["id"])
+    now = utcnow()
+    stream = TranscriptStreamSession(
+        transcript_id=transcript_id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        selection_snapshot_json={},
+        status=TranscriptStreamStatus.failed,
+        lease_expires_at=now,
+        next_source_sample_offset=96000,
+        authorized_sample_count=48000,
+        window_no=2,
+    )
+    db_session.add(stream)
+    db_session.flush()
+    db_session.add(TranscriptStreamWindow(
+        session_id=stream.id,
+        window_no=1,
+        source_start_sample_offset=32000,
+        source_end_sample_offset=96000,
+        forwarded_sample_count=48000,
+        status=TranscriptStreamWindowStatus.failed,
+        recovery_audio_vault_ref="synthetic-vault-reference",
+        recovery_audio_size_bytes=96044,
+        recovery_audio_stored_at=now,
+        recovery_audio_expires_at=now + timedelta(hours=1),
+    ))
+    db_session.commit()
+
+    owner_workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript_id}")
+    assert owner_workspace.status_code == 200
+    gap = owner_workspace.json()["active_transcript_stream_gap"]
+    assert gap["stream_id"] == str(stream.id)
+    assert gap["window_no"] == 1
+    assert gap["source_start_sample_offset"] == 32000
+    assert gap["source_end_sample_offset"] == 96000
+    assert gap["forwarded_sample_count"] == 48000
+    assert gap["recovery_available"] is True
+    assert gap["recovery_in_progress"] is False
+    assert "synthetic-vault-reference" not in json.dumps(gap)
+
+    client.post("/api/v1/auth/logout")
+    login(client, email=colleague.email, password="password-2")
+    colleague_workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript_id}")
+    assert colleague_workspace.status_code == 200
+    assert colleague_workspace.json()["active_transcript_stream_gap"] is None
 
 
 def test_transcribe_stt_health_recheck_bypasses_workspace_cache(
@@ -10310,7 +10426,9 @@ def test_structured_hallucination_check_applies_exact_patch_and_records_debug(
     make_llm_selection,
     make_template,
     db_session,
+    caplog,
 ):
+    caplog.set_level("INFO", logger="openscribe.usage")
     monkeypatch.setenv("HALLUCINATION_CHECK_DEBUG_UI", "1")
     team = make_team(name="Clinic Hallucination Runtime")
     admin = make_user(email="admin-hcheck-runtime@example.com", password="password-1", is_system_admin=True)
@@ -10370,6 +10488,13 @@ def test_structured_hallucination_check_applies_exact_patch_and_records_debug(
     document = db_session.scalar(select(GeneratedDocument).where(GeneratedDocument.transcript_id == UUID(transcript_id)))
     processed = process_generated_document(db_session, document_id=document.id)
     assert processed.hallucination_check_status is HallucinationCheckStatus.checked_corrected
+    checker_logs = [
+        record for record in caplog.records
+        if record.name == "openscribe.usage" and getattr(record, "stage", None) == "checker"
+    ]
+    completed_log = next(record for record in checker_logs if record.event == "llm_hallucination_check_completed")
+    assert completed_log.status == "checked_corrected"
+    assert (completed_log.prompt_tokens, completed_log.completion_tokens, completed_log.total_tokens) == (11, 12, 23)
     assert processed.hallucination_check_applied_edit_count == 2
     assert processed.hallucination_check_llm_config_id == config.id
     assert "Template instructions" not in calls[1]["messages"][1]["content"]
@@ -10525,8 +10650,9 @@ def test_structured_hallucination_check_invalid_response_retries_and_settles_eac
 
 
 def test_structured_hallucination_check_quota_failure_skips_provider_and_preserves_note(
-    client, monkeypatch, make_team, make_user, make_llm_config, make_llm_selection, make_template, db_session,
+    client, monkeypatch, make_team, make_user, make_llm_config, make_llm_selection, make_template, db_session, caplog,
 ):
+    caplog.set_level("INFO", logger="openscribe.usage")
     team = make_team(name="Checker quota metering")
     admin = make_user(email="checker-quota-admin@example.com", password="password-1", is_system_admin=True)
     owner = make_user(email="checker-quota-owner@example.com", password="password-2", team=team, team_role=TeamRole.user)
@@ -10556,6 +10682,13 @@ def test_structured_hallucination_check_quota_failure_skips_provider_and_preserv
     checker_attempts = db_session.scalars(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == document.id, ProviderAttempt.attempt_kind == AttemptKind.llm_hallucination_check)).all()
     assert processed.status is GeneratedDocumentStatus.ready
     assert processed.hallucination_check_status is HallucinationCheckStatus.skipped_quota
+    skipped_log = next(
+        record for record in caplog.records
+        if record.name == "openscribe.usage" and getattr(record, "event", None) == "llm_hallucination_check_skipped"
+    )
+    assert skipped_log.stage == "checker"
+    assert skipped_log.status == "skipped_quota"
+    assert skipped_log.error_code == "quota_exceeded"
     assert len(calls) == 1
     assert checker_attempts == []
     assert decrypt_generated_document_field(db_session, processed, "edited_output_text_encrypted") == "Problem\nCough improving."
@@ -14072,7 +14205,7 @@ def test_process_generated_document_logs_usage_metadata(
     assert processed.output_token_count == 45
     assert processed.total_token_count == 168
     assert processed.duration_ms == 10
-    completed = [record for record in caplog.records if record.name == "openscribe.usage" and record.msg == "llm_generation_completed"]
+    completed = [record for record in caplog.records if record.name == "openscribe.usage" and getattr(record, "event", None) == "llm_generation_completed"]
     assert completed
     record = completed[-1]
     assert record.model_used == "gpt-4o-mini"

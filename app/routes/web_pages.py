@@ -165,6 +165,13 @@ def terms_page(request: Request, db: Session = Depends(get_db)):
     )
 
 
+@app.get("/accessibility", response_class=HTMLResponse, include_in_schema=False)
+def accessibility_page(request: Request, db: Session = Depends(get_db)):
+    return _render_public_legal_document(
+        request, db, kind=LegalDocumentKind.accessibility, title="Accessibility statement"
+    )
+
+
 @app.get("/sitemap.xml", include_in_schema=False)
 def sitemap_xml():
     return Response("Sitemap not published.\n", status_code=status.HTTP_404_NOT_FOUND, media_type="text/plain; charset=utf-8")

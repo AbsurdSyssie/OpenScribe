@@ -6,7 +6,11 @@ from uuid import uuid4
 import pytest
 
 from app.models import AttemptOutcome, AttemptStatus, GeneratedDocumentStatus, HallucinationCheckStatus, TeamRole
-from app.services.generation_presentation import active_retry_presentation, generated_document_status_projection
+from app.services.generation_presentation import (
+    active_retry_presentation,
+    generated_document_status_projection,
+    generation_failure_presentation,
+)
 
 
 class NoContentDatabase:
@@ -100,3 +104,21 @@ def test_active_checker_retry_is_visible_when_main_attempt_remains_submitted():
             return checker if 'llm_hallucination_check' in str(statement.compile(compile_kwargs={'literal_binds': True})) else main
     result = generated_document_status_projection(StageDatabase(), document, actor)
     assert result['active_retry_presentation']['technical_details']['provider_http_status'] == 429
+
+
+@pytest.mark.parametrize('error_code', ['llm_generation_truncated', 'llm_provider_bad_response'])
+def test_incomplete_provider_responses_use_safe_validation_failure_presentation(error_code):
+    reference = uuid4()
+    presentation = generation_failure_presentation(
+        reference=reference,
+        occurred_at=datetime.now(UTC),
+        error_code=error_code,
+        provider_error_code='incomplete_response',
+        include_technical_details=True,
+    )
+
+    assert presentation['category'] == 'input_or_validation'
+    assert presentation['support_reference'] == reference
+    assert presentation['technical_details']['application_code'] == error_code
+    assert presentation['technical_details']['provider_code'] is None
+    assert 'incomplete_response' not in repr(presentation)

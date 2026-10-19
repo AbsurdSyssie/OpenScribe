@@ -238,6 +238,155 @@ def test_templates_frozen_dispatch_uses_saved_request_fields(
     assert all(captured[key] == value for key, value in expected.items())
 
 
+@pytest.mark.parametrize("finish_reason", ["stop", None, "missing"])
+def test_openai_completion_accepts_complete_or_legacy_missing_finish_reason(finish_reason):
+    closed = []
+
+    class Client:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **_kwargs):
+            choice = SimpleNamespace(message=SimpleNamespace(content="complete synthetic note"))
+            if finish_reason != "missing":
+                choice.finish_reason = finish_reason
+            return SimpleNamespace(choices=[choice], usage=None)
+
+        def close(self):
+            closed.append(True)
+
+    text, _ = runtime._invoke_openai_compatible_once(
+        api_key="synthetic", base_url="https://provider.example", request_body={}, client_factory=Client,
+    )
+
+    assert text == "complete synthetic note"
+    assert closed == [True]
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "expected_code"),
+    [
+        ("length", "llm_generation_truncated"),
+        ("content_filter", "llm_provider_bad_response"),
+        ("tool_calls", "llm_provider_bad_response"),
+        ("upstream-secret-detail", "llm_provider_bad_response"),
+        (17, "llm_provider_bad_response"),
+    ],
+)
+def test_openai_completion_rejects_incomplete_or_malformed_finish_reason(finish_reason, expected_code):
+    closed = []
+
+    class Client:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(
+                create=lambda **_ignored: SimpleNamespace(
+                    choices=[SimpleNamespace(
+                        message=SimpleNamespace(content="partial synthetic note"),
+                        finish_reason=finish_reason,
+                    )],
+                    usage=None,
+                ),
+            ))
+
+        def close(self):
+            closed.append(True)
+
+    with pytest.raises(AppError) as caught:
+        runtime._invoke_openai_compatible_once(
+            api_key="synthetic", base_url="https://provider.example", request_body={}, client_factory=Client,
+        )
+
+    assert caught.value.code == expected_code
+    assert "upstream-secret-detail" not in repr(caught.value.details)
+    assert "partial synthetic note" not in str(caught.value)
+    assert closed == [True]
+
+
+class _SyntheticOllamaResponse:
+    headers = {}
+
+    def __init__(self, chunks):
+        self.chunks = chunks
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.closed = True
+
+    def raise_for_status(self):
+        pass
+
+    def iter_raw(self, *, chunk_size):
+        yield from self.chunks
+
+
+@pytest.mark.parametrize(
+    "terminal_frame",
+    [
+        b'{"message":{"content":"complete synthetic note"},"done":true,"done_reason":"stop"}',
+        b'{"message":{"content":"complete synthetic note"},"done":true}',
+        b'{"message":{"content":"complete synthetic note"},"done":true,"done_reason":null}',
+    ],
+)
+def test_ollama_accepts_terminal_stop_frame_with_optional_reason_and_no_final_newline(terminal_frame):
+    response = _SyntheticOllamaResponse([terminal_frame[:20], terminal_frame[20:]])
+
+    text, _ = runtime._invoke_ollama_once(
+        base_url="http://localhost:11434", bearer_token=None, request_body={},
+        stream_factory=lambda *_args, **_kwargs: response,
+    )
+
+    assert text == "complete synthetic note"
+    assert response.closed
+
+
+@pytest.mark.parametrize(
+    ("terminal_frame", "expected_code"),
+    [
+        (b'{"message":{"content":"partial synthetic note"},"done":true,"done_reason":"length"}', "llm_generation_truncated"),
+        (b'{"message":{"content":"partial synthetic note"},"done":true,"done_reason":"content_filter"}', "llm_provider_bad_response"),
+        (b'{"message":{"content":"partial synthetic note"},"done":true,"done_reason":"tool_calls"}', "llm_provider_bad_response"),
+        (b'{"message":{"content":"partial synthetic note"},"done":true,"done_reason":"upstream-secret-detail"}', "llm_provider_bad_response"),
+        (b'{"message":{"content":"partial synthetic note"},"done":true,"done_reason":17}', "llm_provider_bad_response"),
+    ],
+)
+def test_ollama_rejects_incomplete_or_malformed_terminal_reason(terminal_frame, expected_code):
+    response = _SyntheticOllamaResponse([terminal_frame + b"\n"])
+
+    with pytest.raises(AppError) as caught:
+        runtime._invoke_ollama_once(
+            base_url="http://localhost:11434", bearer_token=None, request_body={},
+            stream_factory=lambda *_args, **_kwargs: response,
+        )
+
+    assert caught.value.code == expected_code
+    assert "upstream-secret-detail" not in repr(caught.value.details)
+    assert "partial synthetic note" not in str(caught.value)
+    assert response.closed
+
+
+@pytest.mark.parametrize("chunks", [
+    [b'{"message":{"content":"partial synthetic note"},"done":false}'],
+    [b'{"message":{"content":"partial synthetic note"},"done":false}\n'],
+    [b'{"message":{"content":"partial synthetic note"},', b'"done":false}'],
+])
+def test_ollama_rejects_eof_without_terminal_frame(chunks):
+    response = _SyntheticOllamaResponse(chunks)
+
+    with pytest.raises(AppError) as caught:
+        runtime._invoke_ollama_once(
+            base_url="http://localhost:11434", bearer_token=None, request_body={},
+            stream_factory=lambda *_args, **_kwargs: response,
+        )
+
+    assert caught.value.code == "llm_provider_bad_response"
+    assert caught.value.details == {"provider_error_code": "incomplete_response"}
+    assert "partial synthetic note" not in str(caught.value)
+    assert response.closed
+
+
 def test_invoke_llm_rejects_invalid_snapshot_adapter():
     snapshot = LlmProviderSnapshot(
         llm_config_id=str(_USER_ID), provider_preset="custom", adapter_kind="unsafe",

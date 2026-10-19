@@ -67,6 +67,8 @@ Allowed metadata:
 - applied edit count;
 - timestamps.
 
+The `openscribe.usage` logger emits separate `llm_hallucination_check_started`, `completed`, `failed` and `skipped` events (each uses the `llm_hallucination_check_` prefix). Default messages include `stage=checker`, generator category, document/transcript/owner/team IDs, controlled status and error category; structured fields also carry available numeric usage and safe error codes. Checker failures use warning level. The checker captures an immutable logging context before its transactions, so logging after commit or rollback does not refresh ORM objects. These operational events do not add provider calls, database commits or usage charges. A validation retry can produce a failed attempt followed by another start; a failed attempt does not establish the final document's checker status.
+
 Forbidden in logs, audit, usage, attempt/error metadata:
 
 - transcript/Working-note/dictation/note text;
@@ -127,6 +129,7 @@ or:
 
 Validation rules:
 
+- duplicate JSON object keys at any depth are rejected as ambiguous;
 - status is exactly `unchanged` or `corrected`;
 - corrected requires at least one edit;
 - section key must be an existing output section or the supported title target;
@@ -140,7 +143,7 @@ Validation rules:
 - section order remains unchanged;
 - output is revalidated through the structured-note contract.
 
-Invalid response/schema/patch application gets one bounded retry. Failure after retry preserves the valid first-pass note as unchecked rather than blocking note creation.
+Invalid response/schema/patch application gets one bounded retry. Failure after retry, including duplicate keys, preserves the valid first-pass note unchanged as unchecked rather than blocking note creation or applying an ambiguous patch.
 
 ## Provider and quota lifecycle
 

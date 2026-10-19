@@ -1,5 +1,131 @@
 # Discovered issues
 
+## GENERATION-ADAPTER-RESERVATION-PARITY — 2026-10-16 (resolved)
+
+- Baseline commit: `717d2698a2ac268f830d99548068202a5de3f780`; local working tree includes earlier uncommitted work.
+- Locations: `app/services/consultation_split_generation_queue.py::queue_confirmed_split_generation`, `consultation_split_recovery.py::_queue_recovery`, `consultation_split_verification_queue.py::queue_split_verification_or_mark_unchecked`, and `app/services/template_suggestions.py::queue_template_suggestion` / `process_template_suggestion`.
+- Observed problem: queues reserved nominal completion caps while Gemini requests used the established 30,000-token ceiling. Split verification also used a local character-divided-by-four input estimate instead of the maintained quota estimator. Template suggestions estimated a placeholder excerpt before redaction and did not expand the reservation for a larger final request.
+- Impact: reserved capacity could be below the submitted request estimate; reported/unknown usage settlement still applied.
+- Resolution: derive queue reservations from adapter-specific output caps and the maintained UTF-8 estimator. Template suggestions also check the final redacted request before submission. Keep provider caps, clinical prompts, snapshots and quota settlement contracts. Optional verification remains unchecked when accurate reservation exceeds available quota.
+- Validation: focused queue/attempt regressions cover Gemini, targeted recovery and quota rejection; final results appear in [the stage review](docs/reviews/generation-stage-cost-logging-review-2026-10-16.md).
+
+## GENERATION-SAFE-STAGE-DIAGNOSTICS — 2026-10-16 (resolved)
+
+- Baseline commit: `717d2698a2ac268f830d99548068202a5de3f780` plus local uncommitted work.
+- Locations: `app/services/transcripts.py::process_transcript_ingestion_job`, `app/services/templates.py::_generation_usage_event` / `_run_hallucination_check`, `app/tasks.py` ingestion/generation/template-suggestion task boundaries.
+- Observed problem: ingestion failures lacked operational stage evidence, ordinary checker events lacked separate operational logs, and exceptions outside service-owned catches could reach Celery with database/provider details.
+- Resolution: controlled stage/status/error categories and UUID correlation, with default-message and structured fields; fresh content-free task exceptions suppress original exception rendering. Checker logs use captured immutable IDs to avoid ORM refreshes after commit/rollback. The ingestion task also supplies a fixed redacted Celery kwargs representation before handling legacy audio payloads. Preserve existing task failure state and generation wait/retry behavior. No new database rows, provider calls, or clinical-content logs.
+- Validation: synthetic sensitive sentinels, formatted traceback assertions, checker outcomes and ingestion settlement tests; see [the stage review](docs/reviews/generation-stage-cost-logging-review-2026-10-16.md).
+
+## SPLIT-GEMINI-CHECKER-SCHEMA-SECRET-SCAN — 2026-10-16 (resolved)
+
+- Baseline commit: `717d2698a2ac268f830d99548068202a5de3f780` plus local uncommitted work.
+- Locations: `app/services/consultation_splits.py::queue_split_execution`, `app/services/consultation_split_generation_runtime.py::_finalize`.
+- Observed problem: Gemini embeds its generated response schema in the request. The recursive secret-name guard treated the canonical schema property `section_key` as a credential key, preventing bundled checker queueing. Finalization then mapped the consumed failure to a generic generation-invalid-output code without operational stage evidence.
+- Resolution: exempt only the exact schema property `section_key: {"type": "string"}` inside response-schema properties; continue scanning other keys and values, including altered definitions and nested credentials. Add a fixed-phase, content-free finalization warning while preserving persisted failure/accounting contracts.
+- Validation: Gemini queue and quota-fallback regressions plus negative schema/config credential-injection tests; final results appear in [the stage review](docs/reviews/generation-stage-cost-logging-review-2026-10-16.md).
+
+## LLM-SDK-RESPONSE-SIZE-PARITY — 2026-10-16
+
+- Baseline commit: `717d2698a2ac268f830d99548068202a5de3f780` plus local uncommitted work.
+- Locations: `app/services/llm_adapters/runtime.py::_invoke_openai_once`, `invoke_gemini`; `app/services/llm_adapters/gemini_enterprise.py::generate`.
+- Observed problem: OpenAI-compatible and Gemini SDKs materialize responses without the application stream byte ceiling used by Ollama. Provider output-token caps and later validation do not establish an equivalent transport-memory bound.
+- Impact: an oversized or malformed upstream response could consume memory before local parsing.
+- Not fixed here: a post-read size check would not solve transport allocation; changing SDK transport/streaming needs a separate compatibility assessment. No memory exhaustion was reproduced in this source review.
+- Follow-up: define response-byte limits and enforce them at the transport boundary with synthetic oversized-response tests, safe error codes and preserved usage/attempt settlement.
+
+## SPLIT-RECOVERY-SCHEMA-SCOPE — 2026-10-16
+
+- Baseline commit: `717d2698a2ac268f830d99548068202a5de3f780` plus local uncommitted work.
+- Location: `app/services/consultation_split_generation.py::prepare_split_generation_recovery_request`.
+- Exact excerpt: `recovery_schema = prepared.response_json_schema`.
+- Observed problem: a targeted recovery narrows payload topics and its nominal output cap but retains the initial provider response schema, which permits accepted sibling UUIDs. Runtime validation still enforces the requested failed-topic set.
+- Likely impact: constrained decoding can permit irrelevant sibling output, wasting recovery capacity or requiring local rejection. No extra provider work or clinical validation bypass was demonstrated.
+- Not fixed here: preserve the frozen-request reconstruction contract while addressing diagnostics and quota correctness; assess compatibility for already-queued recovery requests before changing schema reconstruction.
+- Follow-up: build a failed-topic-only provider schema with matching snapshot/runtime reconstruction and synthetic Gemini/recovery regressions. Profile repeated initial-payload serialization before attempting a broader preparation refactor.
+
+## NOTE-OPENAI-INCOMPLETE-OUTPUT — 2026-10-16
+
+- Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
+- Location: `app/services/llm_adapters/runtime.py:300`, `_invoke_openai_compatible_once`; `app/services/templates.py:5689`, `_process_generated_document_impl`.
+- Exact excerpt: `message = completion.choices[0].message if completion.choices else None`.
+- Observed problem: the adapter extracts nonempty text without inspecting the choice's completion reason. A synthetic completion with `finish_reason="length"` returned successfully. Follow-up and Quick Action paths accept this text directly and can mark it ready; parseable Template output can also pass despite an incomplete completion reason.
+- Impact: an incomplete clinical draft can look like an ordinarily completed generation. This is an adapter probe plus worker-path inspection, not an end-to-end patient-data reproduction.
+- Not fixed: the requested work is a review and backlog for later fixes.
+- Follow-up: reject known incomplete completion reasons before output acceptance, using bounded safe codes; define compatibility for gateways that omit the reason. Preserve quota settlement and prevent automatic replay of submitted work. Add synthetic adapter and document-lifecycle regressions for truncated text, parseable JSON, normal completion, and missing reason.
+- Resolution note (2026-10-16; baseline `717d2698a2ac268f830d99548068202a5de3f780`; no commit made): `_invoke_openai_compatible_once` now checks `finish_reason` through `_validate_completion_finish_reason`; `length` maps to `llm_generation_truncated`, other explicit non-completion reasons fail with a bounded generic code, and absent/null reason remains accepted for compatibility. Consumer lifecycle tests confirm a parseable Template response and plain-text follow-up/Quick Action cannot become ready and duplicate task delivery does not make another provider call. Evidence: `tests/test_llm_runtime.py::test_openai_completion_accepts_complete_or_legacy_missing_finish_reason`, `::test_openai_completion_rejects_incomplete_or_malformed_finish_reason`, and `tests/test_generation_unsafe_failures.py::test_explicit_truncation_fails_followup_quick_action_and_parseable_template_without_replay`.
+
+## NOTE-OLLAMA-INCOMPLETE-STREAM — 2026-10-16
+
+- Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
+- Location: `app/services/llm_adapters/runtime.py:401`, `_invoke_ollama_once`; `app/services/templates.py:5689`, `_process_generated_document_impl`.
+- Exact excerpt: `payload = final_payload or {}`.
+- Observed problem: a nonempty stream followed by EOF without a `done: true` frame returns successfully. A synthetic `done: false` content frame reproduced this. The adapter also ignores the terminal `done_reason`.
+- Impact: partial follow-up/Quick Action text can become ready, and usage totals can be unavailable. Template JSON parsing catches malformed JSON but cannot prove transport completion.
+- Not fixed: review-only scope.
+- Follow-up: require terminal completion, classify bounded terminal reasons, and test EOF with/without a trailing newline, partial JSON and text, successful terminal frames, and rejected incomplete terminal reasons. Preserve response-byte limits, submitted-attempt accounting, and no ambiguous automatic replay.
+- Resolution note (2026-10-16; baseline `717d2698a2ac268f830d99548068202a5de3f780`; no commit made): `_invoke_ollama_once` now requires `done: true`, rejects explicit length/other non-completion reasons with safe codes, and accepts absent/null `done_reason` only when a terminal frame exists. EOF without the terminal frame is a generic incomplete-response failure. Context cleanup, no-ready persistence, conservative settlement, and duplicate-delivery no-replay behavior are covered. Evidence: `tests/test_llm_runtime.py::test_ollama_accepts_terminal_stop_frame_with_optional_reason_and_no_final_newline`, `::test_ollama_rejects_incomplete_or_malformed_terminal_reason`, `::test_ollama_rejects_eof_without_terminal_frame`, and `tests/test_generation_ollama_unsafe.py::test_ollama_incomplete_response_fails_ordinary_generation_once`.
+
+## NOTE-AMBIGUOUS-JSON-KEYS — 2026-10-16
+
+- Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
+- Location: `app/services/templates.py:2559`, `_parse_generated_note_json`; `:2603`, `_parse_generated_structured_note_json`; `:2778`, `_parse_hallucination_check_response`; `app/services/consultation_split_verification.py:129`, `apply_split_verification_response`.
+- Exact excerpt: `raw = json.loads(payload_text)`.
+- Observed problem: these paths accept duplicate JSON keys with last-value-wins semantics. Synthetic assertions confirmed duplicate ordinary content, checker status, and split-verifier topic keys pass. Split analysis and generation already reject duplicates.
+- Impact: contradictory provider output can be accepted as an unambiguous note/check result. Existing value, key-set and exact-patch checks still apply; this is a validation gap, not evidence of cross-owner access.
+- Not fixed: review-only scope; preserve the current response shapes.
+- Follow-up: consistently reject duplicate keys at every nesting level without exposing offending keys/values. Add nested/top-level regressions and ensure checker rejection leaves the original validated draft available under the existing unchecked contract.
+- Resolution note (2026-10-16; baseline `717d2698a2ac268f830d99548068202a5de3f780`; no commit made): the shared `app/services/json_validation.py::reject_duplicate_json_keys` hook now rejects duplicate fields at every object depth in ordinary freeform/structured note parsing, checker response parsing, and split-verifier outer parsing. Ordinary fenced and balanced-object compatibility, exact response shapes, optional sections, and existing safe error codes remain. Duplicate checker output continues through the existing failed/unchecked path and leaves the validated encrypted draft ready. Evidence: `tests/test_generation_json_validation.py`, `tests/test_consultation_split_verification.py`, and `tests/test_generation_unsafe_failures.py::test_invalid_checker_response_keeps_original_structured_note_ready_unchecked`. Existing split analysis/generation duplicate-key validation was not changed.
+
+## NOTE-CHECKER-DEEP-JSON — 2026-10-16 (resolved)
+
+- Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
+- Location: `app/services/templates.py::_parse_hallucination_check_response`.
+- Exact excerpt before fix: `payload = json.loads(payload_text.strip())`.
+- Observed problem: a deeply nested JSON response could raise `RecursionError` outside the checker's invalid-response mapping. Since the structured draft is already validated at this point, the uncaught exception could fail the whole generated-document worker rather than leave the original note available as unchecked.
+- Impact: optional checker parsing could interrupt successful generation after a valid draft checkpoint; this did not accept an invalid patch or expose data across owners.
+- Resolution (2026-10-16; no commit made): recursion overflow now maps to the existing content-free `hallucination_check_invalid_response` with `failure_code=invalid_json` and no raw exception cause. The checker retries/falls back under its existing fail-open behavior; the validated draft remains ready and unchecked.
+- Evidence: pure regression `tests/test_generation_json_validation.py::test_hallucination_checker_parser_maps_deep_json_recursion_to_safe_invalid_response`; worker regression `tests/test_generation_unsafe_failures.py::test_invalid_checker_response_keeps_original_structured_note_ready_unchecked[deeply-nested]`. The parent’s final selected lifecycle/API-control run passed 16 tests, including both checker fallback cases.
+- Follow-up: none for this bounded parser failure; preserve the regression tests and current checker fail-open contract.
+
+## NOTE-SPLIT-UNEXPECTED-FAILURE-TELEMETRY — 2026-10-16
+
+- Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
+- Location: `app/tasks.py:94`, `process_consultation_split_execution_task`.
+- Exact excerpt: `except Exception:` followed by `db.rollback()`.
+- Observed problem: unexpected task errors are deliberately swallowed to prevent sensitive exception text reaching Celery. This boundary emits no content-free diagnostic event; lifecycle reconciliation later terminalizes abandoned work.
+- Impact: a local worker defect can look like a delayed timeout, making stage attribution and incident investigation difficult.
+- Resolution (2026-10-16; no commit made): `process_consultation_split_execution_task` now emits the ERROR event `consultation_split_worker_failed` through `openscribe.tasks` with only `execution_id` (parsed UUID), allowlisted `phase` (`session`, `lookup`, `analysis`, `generation`, `verification`, `cleanup`), allowlisted `reason_code` (`unexpected_worker_error`, `session_error`, `rollback_error`), and UTC ISO `occurred_at`. The fields are included in both structured log extras and the normal formatted message, so diagnosis does not depend on database availability. The initial failure is logged before rollback; session factory/enter/exit failures and rollback failures are contained and safely classified. No exception text/type, traceback, provider/source/response content, credentials, or database event row is recorded. The task does not replay provider work or change attempt, quota, queue, or lifecycle state; submitted uncertainty remains with existing reconciliation.
+- Evidence: `tests/test_consultation_split_worker_diagnostics.py` covers synthetic sensitive exceptions, session boundary and rollback failures, success/no-op silence, and absence of retries or mutations. Parent focused run: `APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_consultation_split_worker_diagnostics.py tests/test_consultation_split_runtime.py tests/test_consultation_split_generation_runtime.py tests/test_consultation_split_intent_progress.py tests/test_task_outbox.py` — 142 passed, 1 Starlette/httpx warning.
+
+## NOTE-OLLAMA-OUTPUT-RESERVATION-PARITY — 2026-10-16
+
+- Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
+- Location: `app/services/llm_adapters/runtime.py:87`, `generation_request_snapshot`; `app/services/templates.py:3542`, `_flush_generated_document_with_quota`; `:4626`, `_claim_generated_document_for_dispatch`.
+- Exact excerpt: `if output_token_cap is not None: request_body["options"] = {"num_predict": output_token_cap}`.
+- Observed behavior: follow-ups and Quick Actions pass no output cap, so Ollama receives no `num_predict`, while reservation estimates use a finite nominal output allowance (initially 1600 tokens). A synthetic request assertion confirmed the missing cap; `tests/test_llm_runtime.py` explicitly preserves this existing shape.
+- Impact: the application does not make the provider output ceiling match its reservation assumption. Actual completion length depends on provider configuration; this review did not demonstrate a quota overrun.
+- Not fixed: changing the preserved request shape is a scoped contract decision, and the user requested assessment only.
+- Follow-up: agree an explicit non-Template output ceiling or another reservation policy, then test provider request/reservation/actual usage/unknown settlement together. Keep Template length preferences separate from this decision.
+
+## NOTE-PIPELINE-REASSESSMENT — 2026-10-16
+
+- Review commit: `717d2698a2ac268f830d99548068202a5de3f780`; full assessment: [note generation pipeline review](docs/reviews/note-generation-pipeline-review-2026-10-16.md).
+- `ONE-WORKER-PROVIDER-STALL`: preserve the dated incident. Current `llm_execution.py` and Gemini client configuration now bound provider calls and disable SDK retries. The old missing-timeout observation does not describe current source. Worker isolation/capacity still requires deployment-specific verification; none was performed here.
+- `SPLIT-CREATE-PENDING-TRANSCRIPTION`: current `consultation_split_intents.py`, `_require_source_ready_for_analysis`, rejects recording/transcribing/pending ingestion before preparation and repeats the check afterward. The earlier immediate-incomplete-snapshot concern is now guarded in this path. Split rejects/waits through client behavior rather than accepting ordinary generation's server-side waiting contract; browser timing was not tested in this review.
+- `LLM-UNSUPPORTED-WORKER-PREFLIGHT` and `GEMINI-400-ERROR-CLASSIFICATION` remain relevant source-level follow-ups; no live provider or deployment conclusions were drawn.
+- Additional decisions and opportunities, including empty structured results, response-size parity and safe stage diagnostics, are in the dated review. No runtime fixes, migrations or configuration changes were made.
+
+## SPLIT-DELETED-SLOTS-MERGE — 2026-10-15
+
+- Discovery commit: `78ac327d45a59a34293d3771619f2f267e2cea4e` (`fix(split): hide deleted note slots`), currently on `fix/deleted-split-slots-release`.
+- Location: `app/services/consultation_split_api.py`, `read_workspace_split_batch`; projection field in `app/schemas/consultation_split.py`, `ConsultationSplitBatchDetail`; rendering in `app/static/js/transcribe/app.js`, `buildSplitDisplayDocuments` and `reconcileSplitPlaceholderState`.
+- Exact excerpt: `deleted_topic_uuids=deleted_topic_uuids,`
+- Observed problem: this release-branch change projects independently deleted generated-note topics so the browser omits their old split placeholders. The production checkout was on `fix/deleted-split-slots-release`, while the requested deployment target is `master`; switching to and building `master` leaves this behavior out until commit `78ac327` is integrated.
+- Likely impact: after a clinician independently deletes a generated note, refreshing the workspace on code without this change can display that topic as a failed or phantom split slot, even though generation completed and the note was deliberately deleted.
+- Not merged during the branch switch and build because the requested immediate operation is to deploy `master`; integrating this separate release-branch change requires reconciling its API, browser, tests, and maintained split documentation with current `master`.
+- Follow-up: merge or cherry-pick `78ac327d45a59a34293d3771619f2f267e2cea4e` into `master`, resolve any drift, and run focused consultation-split API, generation-runtime, browser, and JavaScript tests before deployment.
+
 ## XDIST-RANDOM-PARAM-ID — 2026-10-14
 
 - Discovery commit: `c712`.
@@ -169,6 +295,63 @@
 - Not fixed during consultation-flow analysis because the task requests assessment of current versus ideal behavior. Binding an accepted split intent to pending ingestion and changing when its source snapshot is created needs a coherent lifecycle design and focused tests.
 - Follow-up: define a shared server-owned readiness contract for ordinary and split Create, show a persistent waiting-for-transcription stage, and test pending/failing/final live chunks, whole-file ingestion, Working-note/dictation-only sources, duplicate delivery, source freshness, and one-click continuation.
 
+## DEEPGRAM-SDK-PRIVATE-WEBSOCKET-HOOK — 2026-10-17
+
+- Discovery commit: `717d269` (working tree includes the current Deepgram live-stream adapter).
+- Location: `app/services/deepgram_streaming.py::_install_scoped_sdk_websocket_logger`.
+- Observed constraint: pinned `deepgram-sdk==7.13.0` does not expose public per-connection arguments for the underlying WebSocket logger or message/queue bounds. The adapter wraps only the generated Listen V1 connector and passes the scoped disabled logger, `max_size`, and `max_queue` to the pinned `websockets` legacy connector.
+- Likely impact: an SDK upgrade or generated connector change can invalidate these privacy and memory bounds.
+- Not changed now: the pinned connector supports these per-connection options, and a synthetic adapter test checks that the wrapper applies them while preserving other connection options. Replacing the hook would require an SDK-supported public equivalent.
+- Follow-up: prefer a public SDK per-connection connector/logger/buffer configuration if Deepgram exposes one; update the compatibility test when upgrading the SDK.
+
+## PINNED-VAD-STREAM-BUFFER-BOUND — 2026-10-17
+
+- Discovery commit: unavailable (Deepgram live-stream implementation working tree).
+- Location: `app/static/js/transcribe/media.js`, `buildLiveVadInstance`; pinned runtime `app/static/vendor/vad-web/0.0.29/bundle.min.js`, `FrameProcessor.process`.
+- Observed constraint: the pinned `FrameProcessor` emits its `FrameProcessed` callback immediately before appending the frame to its speech accumulator. The streaming callback trims that accumulator to approximately five seconds without resetting VAD state; the implementation and synthetic runtime test depend on that event order and the exposed `frameProcessor.audioBuffer` array.
+- Likely impact: an upstream VAD runtime upgrade that changes callback order or buffer shape could remove the bound or fail closed for streaming capture.
+- Not changed now: the bounded adapter is limited to the Deepgram streaming path; the non-stream chunk behavior remains unchanged.
+- Follow-up: when upgrading the pinned VAD runtime, rerun the synthetic test against the actual vendored bundle and update the adapter only if its memory and speech-boundary behavior remain correct.
+
+## STALE-ACCESSIBLE-GUIDE-UI-EXPECTATIONS — 2026-10-18
+
+- Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
+- Locations: `tests/test_split_review_js.py::test_split_review_workspace_accessibility_hooks_and_cachebusters`; `tests/test_admin_ui.py::test_transcribe_page_contains_accessible_ui_controls`; source `app/templates/transcribe/_head_assets.html` and `app/templates/transcribe/_shell_extras.html`.
+- Evidence: the test expects `transcribe.css?v=20261012-review-problems-layout`, while the template serves `transcribe.css?v=20261016-accessible-manual-guide`. The UI test expects `Quick guide`, while the template now uses `<div class="tour-overlay__eyebrow">Scribe guide</div>` in an accessible dialog.
+- Impact: these two UI expectation failures remain in the broader focused run after dictation work; the source changes are part of the existing accessible-guide worktree diff, not the dictation implementation.
+- Not changed here: changing guide markup or stylesheet versions, or rewriting unrelated UI expectations, would exceed this task’s scope. The dictation-related cache-key assertions were updated separately.
+- Follow-up: have the accessible-guide change owner reconcile the two expectations with the final guide design and rerun the focused UI tests.
+
+## QUICK-ACTION-UTILITY-ATTRIBUTE-ORDER — 2026-10-18
+
+- Discovery commit: `717d269` (working tree includes the current Help page work).
+- Location: `tests/test_settings_quick_actions.py::test_quick_action_io_configures_shared_controller_and_wires_help_adapter`; `app/templates/settings/_quick_action_library.html`, import/export utility group.
+- Exact assertion: `class="template-library-utilities" aria-label="Quick action import and export"`.
+- Observed problem: the current template emits `<div class="template-library-utilities" role="group" aria-label="Quick action import and export">`. The test's exact substring fails because the valid `role="group"` attribute appears between the class and label.
+- Likely impact: the focused settings test fails despite the accessible group label being present; this assertion does not indicate a user-facing defect.
+- Not fixed now: Help work does not change Quick Actions markup, and changing unrelated code would widen scope.
+- Follow-up: make the test assert the class, role, and accessible label independently, then rerun `tests/test_settings_quick_actions.py`.
+
+## SCRIBE-SIDEBAR-RESIZE-ALTERNATIVE — 2026-10-18
+
+- Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
+- Locations: `app/templates/transcribe/_sidebar.html`, `data-sidebar-resize`; `app/templates/transcribe/_shell_extras.html`, sidebar resize handlers.
+- Exact UI hint: `title="Drag to resize. Double-click to collapse or restore."`.
+- Observed constraint: the Scribe-only resizer supports pointer dragging and a double-click collapse/restore action; its resize handler does not implement keyboard adjustment or click-based width steps. Help uses the separate non-Scribe workspace sizing handler, which now has both keyboard and click alternatives.
+- Likely impact: users who cannot drag may not be able to choose an intermediate Scribe sidebar width. This is distinct from the Help sidebar and requires a focused Scribe resizing review.
+- Not changed now: this task's Help accessibility scope did not authorize a broader Scribe layout interaction change.
+- Follow-up: assess and add an equivalent single-pointer alternative and keyboard controls to the Scribe resizer, with focused regression tests; verify collapsed and intermediate-width behavior.
+
+## CONSULTATION-DERIVED-CONTENT-DELETE-CONFIRMATION — 2026-10-18
+
+- Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
+- Locations: `app/static/js/transcribe/actions.js`, bulk delete form submit handler; `app/web/transcribe_workspace.py`, `_transcript_has_content` and `_transcript_content_by_id_for_history_page`.
+- Exact excerpt: `selectedBoxes.some((checkbox) => checkbox.dataset.hasTranscriptContent === 'true')`; the flag is derived from transcript draft and version text.
+- Evidence: static inspection only; this gap was not runtime-reproduced. The confirmation check covers transcript text but does not account for a consultation whose transcript is blank while its Working note, post-consultation dictation, or generated notes contain content.
+- Likely impact: a user can delete such a consultation without the extra confirmation and may accidentally lose its consultation-owned derived content permanently.
+- Not fixed during Help work: changing deletion confirmation and content-presence semantics is outside the Help scope and needs focused lifecycle/privacy review; no deletion or authorization contract was changed here.
+- Follow-up: derive a metadata-only “has consultation content” flag covering transcript text/version and the relevant derived-content records, then add focused synthetic tests for history-page flags and single/bulk confirmation behavior, including blank-transcript Working-note/dictation/generated-note cases. Preserve existing ownership, authorization, retention, and cascade behavior.
+
 
 ## DSPT-RETRY-UI-EXPIRY — 2026-10-14 — resolved
 
@@ -177,3 +360,33 @@
 - Previous selection returned `db.scalar(statement.limit(1))` without checking source expiry. A retained expired failed upload appeared retryable, suppressing API/workspace expiry guidance.
 - Fixed during resilience validation because the correction is bounded and uses the established `ingestion_retry_source_expired` service. The selected earliest failed source now returns no retry when expired; live ingestion never skips that gap to offer a later job.
 - Validation: focused DSPT API/workspace expiry regression passed; existing live-gap retry coverage remains required. No retention or content-access contract changed.
+
+## TEST-CONFIG-GUARD-SECRET-DIAGNOSTICS — 2026-10-18
+
+- Discovery commit: unavailable (documentation review of the current working tree).
+- Location: `tests/db_utils.py`, `ensure_safe_test_database_url` and `ensure_safe_test_rate_limit_storage_url`.
+- Exact excerpt: `f"DATABASE_URL={app_url}\n"`; the Redis guard also interpolates its complete application and test URLs.
+- Observed problem: when an isolation guard rejects equal application/test endpoints, its `RuntimeError` includes complete connection URLs. A URL can contain credentials, so a failed test startup can expose them through terminal or CI output. Static source inspection established the interpolation; no real credentials were printed to reproduce it.
+- Likely impact: diagnostic output can violate the project rule against exposing credentials and DSNs. The guard correctly refuses unsafe infrastructure use; its message needs redaction.
+- Not fixed in this documentation review because changing test infrastructure is separate executable work. The documentation continues to prohibit printing secrets or bypassing isolation guards.
+- Suggested follow-up: preserve the equality checks and refusal, replace URL values with safe labels or bounded host/port metadata, and add synthetic-credential regression cases for both guards.
+
+## TEMPLATE-SUGGESTION-DUPLICATE-JSON-KEY — 2026-10-19
+
+- Discovery commit: `717d269`.
+- Location: `app/services/template_suggestions.py`, `_extract_json`.
+- Exact excerpt: `value = json.loads(encoded)`.
+- Observed problem: duplicate keys in provider JSON are accepted with the last value winning; for example, conflicting `template_id` fields can make the classifier select a candidate while hiding an earlier conflicting value.
+- Likely impact: ambiguous provider output can produce an unreliable template recommendation. This affects reusable-template metadata only, not generated clinical documents.
+- Not fixed now: the current regression fix targets stream readiness boundaries; changing this parser is a separate fail-closed classifier change.
+- Follow-up: use the shared duplicate-key rejecting JSON hook and add synthetic duplicate-key cases for top-level and nested fields.
+
+## SPLIT-QUOTA-LIFECYCLE-REFRESH-ORDER — 2026-10-19 — resolved
+
+- Discovery commit: `717d269` (review of the pending changes on this baseline).
+- Location: `app/services/quota_lifecycle.py`, `process_quota_lifecycle`.
+- Exact sequence: `terminal = _terminalize_locked_attempts(expired, now)`; `db.flush()`; `changed = terminal.cancelled + terminal.settled_unknown + _reconcile_sources(db, expired, now)`.
+- Observed problem: quota cleanup marked expired reservations cancelled or submitted attempts settled in memory, then reconciled their split source. Verification fail-open reacquired execution and attempt rows with `populate_existing=True`, which could reload the old active attempt state before the terminal change flushed.
+- Likely impact: UUID ordering could leave an expired verification reservation active or lose its conservative settlement, producing incorrect quota availability/accounting.
+- Resolution: flush terminal attempt changes before reconciling source rows. A deterministic verification-first expired-reservation regression failed before the flush and passed afterward; a verification-first submitted-timeout regression verifies persisted unknown settlement.
+- Validation: both focused lifecycle regressions passed after the change; the broader focused suite is recorded in [regression review](docs/reviews/regression-review-2026-10-19.md).

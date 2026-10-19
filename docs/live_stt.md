@@ -4,10 +4,13 @@ This document describes the implemented browser and backend behavior for `live_c
 
 ## Implemented behavior
 
-While live recording is active:
+The browser uses the pinned, same-origin `@ricky0123/vad-web` runtime with Silero VAD model `v5`. The capture behavior depends on the server-selected STT configuration:
 
-- the browser captures microphone audio through the pinned, same-origin `@ricky0123/vad-web` runtime;
-- Silero VAD model `v5` detects speech boundaries;
+- eligible Deepgram `live_chunked` sessions use the server-owned streaming path described below;
+- other live STT selections continue to use the existing VAD chunk-upload path.
+
+For the existing chunk-upload path:
+
 - `preSpeechPadMs=800` retains speech onset;
 - `redemptionMs=2000` waits through short pauses before ending a segment;
 - OpenScribe trims approximately the final `1000ms` of a normal pause-ended segment before upload;
@@ -18,11 +21,35 @@ While live recording is active:
 - chunks are converted to mono 16 kHz PCM WAV and sent to the owner-only audio-chunk route;
 - the workspace polls while capture/processing is active so applied text appears without a manual refresh.
 
-The exact boundaries are a practical VAD approximation, not a lossless continuous streaming protocol.
+VAD boundaries are practical approximations, not a lossless continuous stream.
+
+## Deepgram live streaming
+
+The workspace exposes streaming only when its server-derived capability says the active owner transcript is `live_chunked` and the saved eligible selection is Deepgram. The browser cannot grant itself this capability. The server independently verifies the owner, active transcript, frozen selection, Vault credential and same-origin/session/CSRF handshake before accepting audio. Credentials stay server-side.
+
+The existing single microphone/VAD pipeline converts captured 16 kHz mono audio to signed 16-bit little-endian PCM. It initially listens locally and retains a five-second rolling pre-roll in JavaScript memory. On speech, it sends the unsent ring samples once and then new samples over the same-origin WebSocket. Frames carry monotonic source sample offsets; offsets can skip locally discarded audio, but sent intervals never overlap. The VAD speech-end copy is not uploaded a second time.
+
+In this streaming branch, OpenScribe also bounds the pinned VAD runtime's internal speech-frame accumulator to approximately five seconds before each new frame is appended. The VAD's speech and silence counters continue across that trim; the existing chunk-upload branch is unchanged.
+
+After 30 seconds without a voiced frame, the browser stops sending audio, seals the current provider window and continues microphone/VAD capture locally. The five-second ring continues to roll. On speech resumption, only unsent ring samples are sent before new frames. An open provider window may receive server-side KeepAlive messages while briefly quiet. A sealed checkpoint uses Deepgram `CloseStream` and drains its final results/Metadata before committing; later audio opens a new provider connection within the same durable browser stream session and frozen selection. KeepAlive does not consume audio quota; only unique forwarded samples do.
+
+The relay permits at most one audio batch in flight. A `received` message grants transport credit after durable authorization and provider write; it does not mean transcript text is committed. `window_committed` follows the encrypted transcript transaction. Interim text is temporary UI state and is cleared at each committed checkpoint. Provider windows contain at most 30 seconds of forwarded audio.
+
+The browser keeps sent-but-uncommitted audio in bounded tab memory and maintains a separate five-second pre-roll ring. The server-retained source is preferred for recovery. A browser-held fallback is offered only when server-provided source bounds and sample count exactly match the sent-but-uncommitted samples in memory; the server also checks each recovered PCM batch against its persisted owner-keyed digest before accepting it. Unsent outbound and pre-roll samples are never included. Successful audio is discarded after final text commit and is not routinely written to Vault. Retry is never automatic: it uses the dedicated owner route, a fresh accounted ingestion attempt and existing durable outbox; acceptance returns a job to poll, not completed transcript text. If the exact interval is unavailable, the workspace offers explicit discard rather than silently truncating or substituting audio. Refresh, sign-out, tab/browser closure or process loss can remove uncommitted tab audio; the workspace exposes only safe gap identifiers, sample bounds and recovery state. Committed text remains. Unresolved intervals block later live ingestion until recovered or explicitly discarded.
+
+Note generation stays blocked while a stream session is active, finalizing, failed, or recovering; it becomes available after stream completion, successful recovery, or explicit discard.
+
+Stop waits for a bounded provider final drain and durable final-window commit. Backgrounding keeps the capture active while the tab remains open. Page unload performs a best-effort finalize and is not a guarantee against abrupt process/network loss.
+
+All forwarded audio, including silence and resumed pre-roll, is quota-bearing. The server reserves against measured samples before dispatch and settles a successfully drained checkpoint using its exact sample count, rounded to audio-second units once per window. Explicit recovery creates a new paid provider attempt; the capture-hourly safeguard counts the original source interval once. Uncertain submitted audio settles conservatively against its durable authorization.
+
+Crossing a UTC quota day/month while audio remains pending forces a drain and checkpoint before new-period audio is authorized. Completed reservations settle before new-period admission; the existing rule that unfinished reservations remain committed across quota resets is unchanged.
+
+Each relay operation revalidates the full user session and owning transcript. Database transactions are short-lived. The relay reuses the established owning-user content-key cache only within one checkpoint. Cache use expires after 30 wall-clock seconds and is checked before each operation; checkpoint and connection cleanup clear it. This avoids a Vault key unwrap for every audio batch without introducing a global key cache.
 
 ## Browser states
 
-The controller moves through these conceptual states:
+The existing chunk-upload controller moves through these conceptual states:
 
 1. `idle`: no microphone capture;
 2. `arming`: permission, local VAD assets, and `MicVAD` initialize;
@@ -31,6 +58,8 @@ The controller moves through these conceptual states:
 5. `speech_tail`: the VAD waits through the configured silence/redemption window;
 6. `flushing`: audio is normalized in-browser to the expected WAV shape and queued for upload;
 7. `stopped`: local capture ends and the backend is finalized/reconciled.
+
+The Deepgram streaming branch additionally reports `connecting`, `streaming`, `listening` (local VAD with audio paused), `finalizing`, and `failed` states. A failed stream stops capture and requires an explicit recovery or discard action.
 
 The current constants include:
 
@@ -124,7 +153,7 @@ The Scribe workspace provides:
 - a non-blocking inactivity prompt after prolonged VAD silence;
 - a prompt to choose the current or a new consultation when recording into an older ready consultation with existing content.
 
-When the document is backgrounded, OpenScribe pauses/flushes local VAD before browser timer throttling can delay chunking. On unload, it stops local microphone state and sends a best-effort keepalive finalize request. This improves reconciliation but is not a guarantee against abrupt browser/process/network loss.
+For other-provider chunk capture, backgrounding flushes local VAD before browser timer throttling can delay chunking. For Deepgram, backgrounding leaves the local VAD and stream active while the tab remains open. On unload, both paths stop local microphone state and attempt best-effort finalization; this is not a guarantee against abrupt browser/process/network loss.
 
 The inactivity prompt does not upload/finalize/stop capture. Dismissal suppresses only the current silent interval; later detected speech re-arms the timer.
 
@@ -138,6 +167,8 @@ Do not conflate whole-file microphone batch with `live_chunked`; they have diffe
 
 On live upload failure, the open tab retains the unaccepted chunk in JavaScript memory. Network failures, HTTP 429, and HTTP 5xx receive two browser retries, using `Retry-After` capped at ten seconds when provided or bounded two/four-second fallback delays. On exhaustion, and after a non-retryable upload response, the workspace offers a retry for that audio while the originating transcript is active. The same stable idempotency key is used throughout.
 
+Deepgram streaming failures use a different recovery contract: stop capture and require an explicit retry or discard. A no-audio retry uses the server-retained failed interval when available. Browser-held fallback audio is eligible only when it exactly matches the server-reported failed interval; unsent batches and pre-roll are excluded. A retry polls the returned ingestion job and does not automatically replay provider audio or reuse the stream's submitted attempt.
+
 The pending chunk is not stored in Web Storage, IndexedDB, a URL, logs, or audit metadata. Refresh, sign-out, tab/browser closure, or a browser/process crash loses it and can leave a gap. Server-retained source for an accepted failed job is separate, lasts no longer than 24 hours from its original write, and enables owner manual retry only until that deadline. The UI must not imply guaranteed lossless capture.
 
 ## Privacy and security
@@ -146,6 +177,7 @@ The pending chunk is not stored in Web Storage, IndexedDB, a URL, logs, or audit
 - Team leader/system-admin metadata authority does not grant content access.
 - Provider credentials remain Vault-backed and never enter browser payloads.
 - Provider/task/audit metadata excludes transcript text and raw audio.
+- Successful Deepgram stream audio is not routinely retained; the browser's bounded recovery and pre-roll audio are volatile JavaScript memory, never Web Storage.
 - Result text is encrypted before persistence under the owner's content key.
 - Transcript-root retention/deletion owns the chunk jobs and derived content.
 - Runtime assets remain pinned and same-origin under CSP.
@@ -158,7 +190,8 @@ Known tradeoffs:
 - forced 30-second boundaries can cut a sentence and introduce overlap duplication;
 - VAD accuracy depends on microphone/environment/model behavior;
 - background/unload finalization is best-effort;
-- pending unaccepted audio is limited to current-tab memory and does not survive refresh or browser loss.
+- pending upload/stream recovery audio is limited to current-tab memory and does not survive refresh or browser loss;
+- a Deepgram checkpoint seals its provider connection; resuming after a pause opens a new provider connection under the same durable stream session.
 
 Potential follow-up work:
 

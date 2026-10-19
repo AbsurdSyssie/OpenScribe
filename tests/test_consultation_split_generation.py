@@ -14,10 +14,16 @@ from app.services.consultation_split_generation import (
     parse_split_generation_partial,
     parse_split_generation,
     prepare_split_generation_request,
+    prepare_split_generation_recovery_request,
+    split_generation_request_reservation_units,
+    split_generation_request_snapshot,
     split_generation_response_json_schema,
 )
 from app.services.templates import NOTE_GENERATION_LENGTH_TOKEN_CAPS, _structured_section_definitions_snapshot
 from app.schemas.templates import StructuredTemplateConfig
+from app.models import LlmAdapterKind
+from app.services.llm_adapters.runtime import request_output_token_cap
+from app.services.quotas import estimate_token_reservation
 
 
 def _template(*, structured: bool) -> dict[str, object]:
@@ -86,7 +92,6 @@ def test_prepares_one_mixed_mode_request_with_shared_sources_once_and_determinis
     second = prepare_split_generation_request(**deepcopy(snapshots))
 
     assert first.request_body == second.request_body
-    assert first.reservation_units == second.reservation_units
     assert first.output_token_cap == 2 * NOTE_GENERATION_LENGTH_TOKEN_CAPS["normal"] + CONSULTATION_SPLIT_GENERATION_TITLE_OUTPUT_TOKEN_CAP
     user = json.loads(first.request_body["messages"][1]["content"])
     assert set(user) == {"sources", "clinical_nlp_hints", "note_options", "topics", "sibling_boundaries"}
@@ -182,6 +187,61 @@ def test_output_bound_tracks_frozen_note_option():
     prepared = prepare_split_generation_request(**snapshots)
     assert prepared.output_token_cap == 1600 + CONSULTATION_SPLIT_GENERATION_TITLE_OUTPUT_TOKEN_CAP
     assert CONSULTATION_SPLIT_GENERATION_CHARS_PER_OUTPUT_TOKEN * 800 == 3200
+
+
+@pytest.mark.parametrize(
+    ("adapter", "expected_cap"),
+    [
+        (LlmAdapterKind.openai_chat, 2 * NOTE_GENERATION_LENGTH_TOKEN_CAPS["normal"] + 32),
+        (LlmAdapterKind.ollama_chat, 2 * NOTE_GENERATION_LENGTH_TOKEN_CAPS["normal"] + 32),
+        (LlmAdapterKind.gemini_enterprise, 30_000),
+    ],
+)
+def test_initial_generation_reservation_matches_adapter_request_cap(adapter, expected_cap):
+    snapshots = _snapshots()
+    prepared = prepare_split_generation_request(**snapshots)
+    request = split_generation_request_snapshot(
+        prepared, adapter_kind=adapter, model="synthetic-model", user_id=uuid4(),
+    )
+    messages = prepared.request_body["messages"]
+
+    assert request_output_token_cap(request) == expected_cap
+    if adapter is LlmAdapterKind.gemini_enterprise:
+        assert "messages" not in request
+    assert split_generation_request_reservation_units(request, prepared_messages=messages) == estimate_token_reservation(
+        tuple(message["content"] for message in messages), max_completion_tokens=expected_cap,
+    )
+
+
+@pytest.mark.parametrize(
+    ("adapter", "expected_cap"),
+    [
+        (LlmAdapterKind.openai_chat, NOTE_GENERATION_LENGTH_TOKEN_CAPS["normal"] + 32),
+        (LlmAdapterKind.ollama_chat, NOTE_GENERATION_LENGTH_TOKEN_CAPS["normal"] + 32),
+        (LlmAdapterKind.gemini_enterprise, 30_000),
+    ],
+)
+def test_recovery_generation_reservation_matches_narrowed_adapter_request(adapter, expected_cap):
+    snapshots = _snapshots()
+    topics = _topics_from_plan(snapshots["confirmed_plan"])
+    prepared = prepare_split_generation_recovery_request(
+        **snapshots,
+        failed_topic_uuids=[topics[1].topic_uuid],
+        accepted_sibling_outputs={topics[0].topic_uuid: {"mode": "freeform", "content": "Synthetic accepted note"}},
+    )
+    request = split_generation_request_snapshot(
+        prepared, adapter_kind=adapter, model="synthetic-model", user_id=uuid4(),
+    )
+    messages = prepared.request_body["messages"]
+
+    assert request_output_token_cap(request) == expected_cap
+    if adapter is LlmAdapterKind.gemini_enterprise:
+        assert "messages" not in request
+    assert split_generation_request_reservation_units(request, prepared_messages=messages) == estimate_token_reservation(
+        tuple(message["content"] for message in messages), max_completion_tokens=expected_cap,
+    )
+    payload = json.loads(messages[1]["content"])
+    assert [item["topic_uuid"] for item in payload["topics"]] == [str(topics[1].topic_uuid)]
 
 
 def test_parser_applies_total_response_cap_to_mapping_inputs_too():

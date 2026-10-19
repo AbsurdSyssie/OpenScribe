@@ -411,18 +411,19 @@ def test_draft_update_detects_stale_edits_and_published_content_is_immutable(db_
     assert (immutable.value.status_code, immutable.value.code) == (409, "conflict")
 
 
-def test_publish_supersedes_prior_version_and_rollback_creates_new_draft(db_session, make_user):
-    admin = make_user(email="legal-publish-admin@example.test", is_system_admin=True)
+@pytest.mark.parametrize("kind", [LegalDocumentKind.privacy, LegalDocumentKind.accessibility])
+def test_publish_supersedes_prior_version_and_rollback_creates_new_draft(db_session, make_user, kind):
+    admin = make_user(email=f"legal-publish-{kind.value}@example.test", is_system_admin=True)
     first = create_legal_document_draft(
-        db_session, actor=admin, payload=_draft_payload(LegalDocumentKind.privacy, content=_content(text="Version one."))
+        db_session, actor=admin, payload=_draft_payload(kind, content=_content(text="Version one."))
     )
     first = publish_legal_document_draft(db_session, actor=admin, version_id=first.id, expected_revision=first.revision)
     second = create_legal_document_draft(
-        db_session, actor=admin, payload=_draft_payload(LegalDocumentKind.privacy, content=_content(text="Version two."))
+        db_session, actor=admin, payload=_draft_payload(kind, content=_content(text="Version two."))
     )
     second = publish_legal_document_draft(db_session, actor=admin, version_id=second.id, expected_revision=second.revision)
 
-    versions = list_legal_document_versions(db_session, kind=LegalDocumentKind.privacy)
+    versions = list_legal_document_versions(db_session, kind=kind)
     assert [(version.version_no, version.state) for version in versions] == [
         (2, LegalDocumentVersionState.published),
         (1, LegalDocumentVersionState.superseded),
@@ -438,7 +439,7 @@ def test_publish_supersedes_prior_version_and_rollback_creates_new_draft(db_sess
         LegalDocumentVersionState.draft,
         first.blocks_json,
     )
-    refreshed_first = next(version for version in list_legal_document_versions(db_session, kind=LegalDocumentKind.privacy) if version.id == first.id)
+    refreshed_first = next(version for version in list_legal_document_versions(db_session, kind=kind) if version.id == first.id)
     assert refreshed_first.state is LegalDocumentVersionState.superseded
     rollback_event = db_session.scalar(
         select(SecurityAuditEvent).where(
@@ -498,6 +499,7 @@ def test_setup_warnings_and_public_retrieval_validate_persisted_content(db_sessi
         "The security.txt contact is missing.",
         "No privacy notice is published.",
         "No cookie and browser-storage notice is published.",
+        "No accessibility statement is published.",
     )
     assert current_published_legal_document(db_session, kind=LegalDocumentKind.privacy) is None
 
@@ -516,8 +518,14 @@ def test_setup_warnings_and_public_retrieval_validate_persisted_content(db_sessi
 
     privacy = create_legal_document_draft(db_session, actor=admin, payload=_draft_payload(LegalDocumentKind.privacy))
     cookies = create_legal_document_draft(db_session, actor=admin, payload=_draft_payload(LegalDocumentKind.cookie_storage))
+    accessibility = create_legal_document_draft(
+        db_session, actor=admin, payload=_draft_payload(LegalDocumentKind.accessibility)
+    )
     privacy = publish_legal_document_draft(db_session, actor=admin, version_id=privacy.id, expected_revision=privacy.revision)
     cookies = publish_legal_document_draft(db_session, actor=admin, version_id=cookies.id, expected_revision=cookies.revision)
+    publish_legal_document_draft(
+        db_session, actor=admin, version_id=accessibility.id, expected_revision=accessibility.revision
+    )
     assert operator_legal_setup_warnings(db_session) == ()
 
     current = current_published_legal_document(db_session, kind=LegalDocumentKind.privacy)
@@ -538,7 +546,7 @@ def test_unconfigured_public_legal_routes_and_security_txt_are_404_cookie_free(
     raw_client, db_session, monkeypatch
 ):
     _bind_legal_footer_queries_to_test_transaction(db_session, monkeypatch)
-    for path in ("/privacy", "/cookies", "/terms", "/.well-known/security.txt"):
+    for path in ("/privacy", "/cookies", "/terms", "/accessibility", "/.well-known/security.txt"):
         response = raw_client.get(path)
 
         assert response.status_code == 404
@@ -585,6 +593,28 @@ def test_public_legal_document_is_escaped_versioned_no_store_and_cookie_free(
     assert response.headers["Expires"] == "0"
     assert "set-cookie" not in response.headers
     assert "Content-Security-Policy" in response.headers
+
+
+def test_accessibility_statement_uses_versioned_public_legal_workflow(client, db_session, make_user, monkeypatch):
+    _bind_legal_footer_queries_to_test_transaction(db_session, monkeypatch)
+    admin = make_user(email="accessibility-public-admin@example.test", is_system_admin=True)
+    published = _publish(
+        db_session,
+        actor=admin,
+        kind=LegalDocumentKind.accessibility,
+        content=_content(text="Synthetic accessibility statement."),
+    )
+
+    response = client.get("/accessibility")
+    footer = client.get("/login")
+
+    assert response.status_code == 200
+    assert "Accessibility statement" in response.text
+    assert f"Version {published.version_no}" in response.text
+    assert "Synthetic accessibility statement." in response.text
+    assert response.headers["Cache-Control"] == "no-store"
+    assert "set-cookie" not in response.headers
+    assert 'href="/accessibility"' in footer.text
 
 
 def test_legal_markdown_editor_uses_native_full_width_input_and_server_preview():
@@ -735,28 +765,30 @@ def test_admin_legal_writes_require_full_system_admin_session(client, db_session
     assert saved.headers["location"] == "/admin?tab=legal&kind=privacy&notice=profile_saved"
 
 
+@pytest.mark.parametrize("kind", [LegalDocumentKind.privacy, LegalDocumentKind.accessibility])
 def test_system_admin_can_render_legal_content_admin_page(
-    client, db_session, make_user, monkeypatch
+    client, db_session, make_user, monkeypatch, kind
 ):
     _bind_legal_footer_queries_to_test_transaction(db_session, monkeypatch)
     admin = make_user(
-        email="legal-admin-page@example.com",
+        email=f"legal-admin-page-{kind.value}@example.com",
         is_system_admin=True,
         mfa_required=False,
         mfa_enabled=False,
     )
 
     assert _browser_login(client, email=admin.email).status_code == 200
-    legacy = client.get("/admin/legal-content", follow_redirects=False)
-    response = client.get("/admin?tab=legal")
+    legacy = client.get(f"/admin/legal-content?kind={kind.value}", follow_redirects=False)
+    response = client.get(f"/admin?tab=legal&kind={kind.value}")
 
     assert legacy.status_code == 307
-    assert legacy.headers["location"] == "/admin?tab=legal&kind=privacy"
+    assert legacy.headers["location"] == f"/admin?tab=legal&kind={kind.value}"
     assert response.status_code == 200
     assert "Legal content" in response.text
     assert 'class="nav-link active" href="/admin?tab=legal"' in response.text
     assert 'aria-label="Legal document kinds"' in response.text
-    assert 'href="/admin?tab=legal&amp;kind=privacy"' in response.text
+    assert f'href="/admin?tab=legal&amp;kind={kind.value}"' in response.text
+    assert f'<input type="hidden" name="kind" value="{kind.value}"' in response.text
     assert 'name="markdown_source"' in response.text
 
 
@@ -989,6 +1021,7 @@ def test_banner_contract_and_admin_warnings_are_non_blocking(client, db_session,
     assert "Operator legal identity is incomplete." in admin_page.text
     assert "No privacy notice is published." in admin_page.text
     assert "No cookie and browser-storage notice is published." in admin_page.text
+    assert "No accessibility statement is published." in admin_page.text
 
 
 def test_legal_retention_deletes_only_due_unheld_drafts_and_superseded_versions(

@@ -2,11 +2,11 @@ import { attachTranscribeActions } from './actions.js?v=20261006-durable-create'
 import { readTranscribeBootstrap } from './bootstrap.js?v=20261005-multiple-problems';
 import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261014-generation-status';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
-import { createAudioCaptureController } from './media.js?v=20261001-audio-upload-recovery';
+import { createAudioCaptureController } from './media.js?v=20261017-deepgram-live-stream';
 import { createStructuredEditor } from './structured.js?v=20260918-retired-note-workspace';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
-import { createGuidedTour } from './tour.js?v=20260421-pii-refresh';
+import { createGuidedTour } from './tour.js?v=20261016-accessible-manual-guide';
 import { csrfFetch } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
@@ -38,6 +38,10 @@ import {
       let hasDictationSttSelection = bootstrap.hasDictationSttSelection;
       let hasLlmSelection = bootstrap.hasLlmSelection;
       let sttAvailable = bootstrap.sttAvailable;
+      let deepgramLiveStreamingAvailable = Boolean(bootstrap.deepgramLiveStreamingAvailable);
+      let activeTranscriptStreamGap = bootstrap.activeTranscriptStreamGap || null;
+      let activeTranscriptStreamGapRetryAvailable = false;
+      let streamGapActionBusy = false;
       let dictationSttAvailable = bootstrap.dictationSttAvailable;
       let sttStatusMessage = bootstrap.sttStatusMessage;
       let sttHealth = bootstrap.sttHealth || null;
@@ -85,18 +89,23 @@ import {
       let activeWorkingNote = bootstrap.activeWorkingNote || null;
       let dictationPendingAudioBlob = null;
       let dictationPendingAudioFilename = 'dictation.webm';
+      let dictationNeedsExplicitRetry = false;
       let dictationMediaRecorder = null;
       let dictationMediaStream = null;
-      let dictationAudioChunks = [];
-      let dictationDiscardOnStop = false;
+      let dictationCapture = null;
       let dictationRecordingState = 'idle';
+      let dictationCaptureGeneration = 0;
+      let dictationModalGeneration = 0;
+      let dictationCaptureStartPromise = null;
+      let dictationPreviewPromise = null;
+      let dictationActionPromise = null;
+      let dictationGenerationContext = null;
       let dictationRecordingStartedAt = null;
       let dictationRecordedMs = 0;
       let dictationTimerId = null;
       let dictationAudioContext = null;
       let dictationAnalyser = null;
       let dictationVisualizerFrameId = null;
-      let dictationCreatedTranscriptForModal = false;
       let currentDraftText = '';
       let currentPiiEntities = [];
       let workspaceTranscriptPiiEntities = Array.isArray(bootstrap.activeTranscriptPiiEntities) ? [...bootstrap.activeTranscriptPiiEntities] : [];
@@ -125,6 +134,7 @@ import {
       const piiAddValueInput = document.querySelector('[data-pii-add-value]');
       const activeProgress = document.querySelector('[data-session-progress]');
       const micStatus = document.querySelector('[data-mic-status]');
+      const deepgramInterim = document.querySelector('[data-deepgram-interim]');
       const micTimer = document.querySelector('[data-mic-timer]');
       const micVisualizer = document.querySelector('[data-mic-visualizer]');
       const silencePrompt = document.querySelector('[data-vad-silence-prompt]');
@@ -203,6 +213,10 @@ import {
       const pendingAudioRetryMessage = document.querySelector('[data-pending-audio-retry-message]');
       const pendingAudioRetryButton = document.querySelector('[data-pending-audio-retry]');
       const pendingAudioDiscardButton = document.querySelector('[data-pending-audio-discard]');
+      const deepgramGapRegion = document.querySelector('[data-deepgram-gap-region]');
+      const deepgramGapMessage = document.querySelector('[data-deepgram-gap-message]');
+      const deepgramGapRetryButton = document.querySelector('[data-deepgram-gap-retry]');
+      const deepgramGapDiscardButton = document.querySelector('[data-deepgram-gap-discard]');
       const newSessionForm = document.querySelector('#new-session-form');
       const bulkDeleteForm = document.querySelector('#bulk-delete-sessions');
       const titleForm = document.querySelector('[data-transcript-title-form]');
@@ -269,12 +283,6 @@ import {
       const newSessionControls = [newSessionButton].filter(Boolean);
       const guideStartButtons = [...document.querySelectorAll('[data-start-guide]')];
       const tourOverlay = document.querySelector('[data-tour-overlay]');
-      const tourScrims = {
-        top: document.querySelector('[data-tour-scrim="top"]'),
-        right: document.querySelector('[data-tour-scrim="right"]'),
-        bottom: document.querySelector('[data-tour-scrim="bottom"]'),
-        left: document.querySelector('[data-tour-scrim="left"]'),
-      };
       const tourHighlight = document.querySelector('[data-tour-highlight]');
       const tourCard = document.querySelector('[data-tour-card]');
       const tourTitle = document.querySelector('[data-tour-title]');
@@ -359,7 +367,7 @@ let statusDetailsHideTimer = null;
         if (isConsultationCaptureActive() || currentTranscriptStatus === 'recording') {
           return { ready: false, message: 'Stop the consultation recording before suggesting problems.' };
         }
-        if (dictationRecordingState === 'recording' || dictationRecordingState === 'paused' || dictationUiBusy) {
+        if (['starting', 'recording', 'paused', 'transcribing'].includes(dictationRecordingState) || dictationPendingAudioBlob || dictationUiBusy) {
           return { ready: false, message: 'Finish post-consultation dictation before suggesting problems.' };
         }
         if (['queued', 'processing'].includes(latestIngestionJobStatus || '')
@@ -411,7 +419,6 @@ let statusDetailsHideTimer = null;
       let currentAssistantTab = bootstrap.activeTab;
       const paneStorageKey = 'openscribe-glm2-pane-state';
       const splitRatioStorageKey = 'openscribe-glm2-split-ratio';
-      const transcribeTourStorageKey = `openscribe:tour:transcribe:${bootstrap.viewerRole}`;
       const dictationNudgeStoragePrefix = 'openscribe:dictation-nudge:';
       const initialPaneState = window.localStorage.getItem(paneStorageKey) || shell?.dataset.layoutState || 'normal';
       const initialSplitRatio = Number.parseFloat(window.localStorage.getItem(splitRatioStorageKey) || '');
@@ -1334,8 +1341,10 @@ let statusDetailsHideTimer = null;
       const hasUnsavedDictationDraft = () => (
         Boolean(dictationDirty)
         || Boolean(dictationPendingAudioBlob)
+        || dictationRecordingState === 'starting'
         || dictationRecordingState === 'recording'
         || dictationRecordingState === 'paused'
+        || dictationRecordingState === 'transcribing'
       );
 
       const syncDictationCtaState = () => {
@@ -1395,11 +1404,11 @@ let statusDetailsHideTimer = null;
 
       const setDictationModalOpen = (isOpen, { restoreFocus = true } = {}) => {
         if (!dictationModal) return;
+        dictationModalGeneration += 1;
         dictationModal.hidden = !isOpen;
         document.body.classList.toggle('modal-open', isOpen);
         if (isOpen) {
           document.dispatchEvent(new CustomEvent('openscribe:dictation-modal-opening'));
-          dictationCreatedTranscriptForModal = false;
           dictationCombinedInput?.focus({ preventScroll: true });
           refreshIcons(dictationModal);
         } else {
@@ -1410,6 +1419,13 @@ let statusDetailsHideTimer = null;
           }
         }
       };
+
+      const isCurrentDictationContext = (targetTranscriptId, modalGeneration, captureGeneration = null) => (
+        transcriptId === targetTranscriptId
+        && dictationModalGeneration === modalGeneration
+        && Boolean(dictationModal && !dictationModal.hidden)
+        && (captureGeneration === null || dictationCaptureGeneration === captureGeneration)
+      );
 
       const createDictationOnlySession = async () => {
         if (!await waitForGenerationSubmission()) return null;
@@ -1424,7 +1440,6 @@ let statusDetailsHideTimer = null;
         }
         const transcript = await response.json();
         transcriptId = transcript.id;
-        dictationCreatedTranscriptForModal = true;
         const url = new URL(window.location.href);
         url.searchParams.set('transcript_id', transcript.id);
         window.history.pushState({}, '', url.toString());
@@ -1447,6 +1462,7 @@ let statusDetailsHideTimer = null;
           dictationDirty = false;
           dictationPendingAudioBlob = null;
           dictationPendingAudioFilename = 'dictation.webm';
+          dictationNeedsExplicitRetry = false;
           setDictationModalOpen(true);
           syncDictationControls();
           if (highlightRecord && dictationRecordToggleButton && !dictationRecordToggleButton.disabled) {
@@ -1469,15 +1485,21 @@ let statusDetailsHideTimer = null;
             return false;
           }
         }
-        if (dictationRecordingState === 'recording' || dictationRecordingState === 'paused') {
+        if (dictationRecordingState === 'recording' || dictationRecordingState === 'paused' || dictationRecordingState === 'starting') {
           stopDictationRecording({ keepAudio: false });
         }
+        dictationCaptureGeneration += 1;
         dictationPendingAudioBlob = null;
         dictationPendingAudioFilename = 'dictation.webm';
+        dictationNeedsExplicitRetry = false;
         if (dictationCombinedInput) {
           dictationCombinedInput.value = lastSavedDictationText || '';
         }
         dictationDirty = false;
+        dictationRecordingState = 'idle';
+        dictationPreviewPromise = null;
+        dictationActionPromise = null;
+        dictationUiBusy = false;
         setDictationModalOpen(false, { restoreFocus: !force });
         syncDictationControls();
         return true;
@@ -1495,7 +1517,7 @@ let statusDetailsHideTimer = null;
           dictationAudioActionTrigger.title = (!canUseDictationInput() && dictationSttStatusMessage) ? dictationSttStatusMessage : '';
         }
         if (dictationRecordToggleButton) {
-          const busyState = dictationRecordingState === 'stopped' || dictationRecordingState === 'transcribing' || dictationPendingAudioBlob || dictationUiBusy || dictationSaveInFlight !== null;
+          const busyState = dictationRecordingState === 'starting' || Boolean(dictationCaptureStartPromise) || dictationRecordingState === 'transcribing' || dictationPendingAudioBlob || dictationUiBusy || dictationSaveInFlight !== null;
           dictationRecordToggleButton.disabled = !canUseDictationInput() || busyState;
           dictationRecordToggleButton.title = (!canUseDictationInput() && dictationSttStatusMessage) ? dictationSttStatusMessage : '';
         }
@@ -1568,7 +1590,7 @@ let statusDetailsHideTimer = null;
         const data = new Uint8Array(dictationAnalyser.frequencyBinCount);
         const bars = [...dictationMicVisualizer.querySelectorAll('.mic-visualizer__bar')];
         const render = () => {
-          if (!dictationAnalyser || dictationRecordingState === 'idle' || dictationRecordingState === 'stopped') return;
+          if (!dictationAnalyser || dictationRecordingState === 'idle') return;
           dictationAnalyser.getByteTimeDomainData(data);
           let total = 0;
           for (let index = 0; index < data.length; index += 1) {
@@ -1594,14 +1616,14 @@ let statusDetailsHideTimer = null;
       function syncDictationControls() {
         const isRecording = dictationRecordingState === 'recording';
         const isPaused = dictationRecordingState === 'paused';
-        const isStopped = dictationRecordingState === 'stopped';
+        const isStarting = dictationRecordingState === 'starting';
         const isTranscribing = dictationRecordingState === 'transcribing';
         const isBusy = dictationUiBusy || dictationSaveInFlight !== null || noteGenerationBusy;
-        const activeCapture = isRecording || isPaused;
+        const activeCapture = isRecording || isPaused || isStarting;
         const hasRetryableAudio = Boolean(dictationPendingAudioBlob) && !activeCapture && !isTranscribing;
-        const canRecord = canUseDictationInput() && !isBusy && !isTranscribing && !hasRetryableAudio;
+        const canRecord = canUseDictationInput() && !isBusy && !isTranscribing && !dictationCaptureStartPromise && !hasRetryableAudio;
         if (dictationRecordToggleButton) {
-          dictationRecordToggleButton.disabled = (!canRecord && !activeCapture) || isStopped || isTranscribing;
+          dictationRecordToggleButton.disabled = (!canRecord && !activeCapture) || isTranscribing;
           dictationRecordToggleButton.dataset.state = isTranscribing ? 'transcribing' : (activeCapture ? 'recording' : 'idle');
         }
         if (dictationRecordToggleLabel) {
@@ -1611,7 +1633,7 @@ let statusDetailsHideTimer = null;
           dictationRecordToggleIcon.dataset.lucide = isTranscribing ? 'loader-2' : (activeCapture ? 'square' : 'mic');
         }
         if (dictationPauseRecordingButton) {
-          dictationPauseRecordingButton.hidden = !activeCapture;
+          dictationPauseRecordingButton.hidden = !isRecording && !isPaused;
           dictationPauseRecordingButton.disabled = isBusy || isTranscribing;
           dictationPauseRecordingButton.setAttribute('aria-label', isPaused ? 'Resume dictation' : 'Pause dictation');
           dictationPauseRecordingButton.title = isPaused ? 'Resume' : 'Pause';
@@ -1620,23 +1642,23 @@ let statusDetailsHideTimer = null;
           dictationPauseRecordingIcon.dataset.lucide = isPaused ? 'play' : 'pause';
         }
         if (dictationAudioActionTrigger) {
-          dictationAudioActionTrigger.disabled = !canRecord || activeCapture || isStopped || isTranscribing;
+          dictationAudioActionTrigger.disabled = !canRecord || activeCapture || isTranscribing;
         }
         if (dictationRetryTranscriptionButton) {
           dictationRetryTranscriptionButton.hidden = !hasRetryableAudio;
           dictationRetryTranscriptionButton.disabled = !canUseDictationInput() || isBusy || isTranscribing;
         }
         if (dictationFileInput) {
-          dictationFileInput.disabled = !canRecord || activeCapture || isStopped || isTranscribing;
+          dictationFileInput.disabled = !canRecord || activeCapture || isTranscribing;
         }
         if (dictationCombinedInput) {
           dictationCombinedInput.disabled = isBusy || isTranscribing;
         }
         if (dictationSaveButton) {
-          dictationSaveButton.disabled = isBusy || isTranscribing || !transcriptId;
+          dictationSaveButton.disabled = isBusy || !transcriptId;
         }
         if (dictationSaveGenerateButton) {
-          dictationSaveGenerateButton.disabled = isBusy || isTranscribing || multipleProblemsSavePending || !transcriptId || !hasLlmSelection || !hasSelectableOptions(generateOutputTemplateSelect);
+          dictationSaveGenerateButton.disabled = isBusy || multipleProblemsSavePending || !transcriptId || !hasLlmSelection || !hasSelectableOptions(generateOutputTemplateSelect);
         }
         if (dictationTemplateSelect) {
           dictationTemplateSelect.disabled = isBusy || isTranscribing || !hasLlmSelection || !hasSelectableOptions(dictationTemplateSelect);
@@ -1651,49 +1673,118 @@ let statusDetailsHideTimer = null;
           setDictationMicStatus(dictationUnavailableCopy(), 'error');
           return;
         }
+        if (dictationCaptureStartPromise || dictationCapture || dictationRecordingState !== 'idle') return;
         if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
           setDictationMicStatus('Dictation recording is not supported in this browser.', 'error');
           return;
         }
-        try {
-          dictationAudioChunks = [];
-          dictationPendingAudioBlob = null;
-          dictationPendingAudioFilename = 'dictation.webm';
-          dictationMediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          dictationMediaRecorder = new MediaRecorder(dictationMediaStream);
-          dictationMediaRecorder.addEventListener('dataavailable', (event) => {
-            if (event.data && event.data.size > 0) {
-              dictationAudioChunks.push(event.data);
-            }
-          });
-          dictationMediaRecorder.addEventListener('stop', async () => {
-            const type = dictationMediaRecorder?.mimeType || 'audio/webm';
-            dictationPendingAudioBlob = (!dictationDiscardOnStop && dictationAudioChunks.length > 0) ? new Blob(dictationAudioChunks, { type }) : null;
-            dictationDiscardOnStop = false;
-            dictationRecordingStartedAt = null;
-            stopDictationStream();
-            if (!dictationPendingAudioBlob) {
-              dictationRecordingState = 'idle';
-              setDictationMicStatus('No audio was captured.', 'error');
-              syncDictationControls();
+        const captureGeneration = ++dictationCaptureGeneration;
+        const modalGeneration = dictationModalGeneration;
+        const targetTranscriptId = transcriptId;
+        dictationRecordingState = 'starting';
+        setDictationMicStatus('Requesting microphone access...', '');
+        syncDictationControls();
+        const startPromise = (async () => {
+          let stream = null;
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            if (!isCurrentDictationContext(targetTranscriptId, modalGeneration, captureGeneration)) {
+              stream.getTracks?.().forEach((track) => track.stop());
               return;
             }
-            dictationPendingAudioFilename = dictationPendingAudioBlob.type === 'audio/wav' ? 'dictation.wav' : 'dictation.webm';
-            await transcribePendingDictationAudio();
-          });
-          dictationRecordingState = 'recording';
-          dictationRecordingStartedAt = Date.now();
-          dictationRecordedMs = 0;
-          dictationMediaRecorder.start();
-          startDictationVisualizer(dictationMediaStream);
-          dictationTimerId = window.setInterval(renderDictationTimer, 250);
-          setDictationMicStatus('Recording dictation...', 'success');
-          syncDictationControls();
-        } catch (_) {
-          dictationRecordingState = 'idle';
-          stopDictationStream();
-          setDictationMicStatus('Microphone access was denied or unavailable.', 'error');
-          syncDictationControls();
+            dictationPendingAudioBlob = null;
+            dictationPendingAudioFilename = 'dictation.webm';
+            dictationNeedsExplicitRetry = false;
+            const recorder = new MediaRecorder(stream);
+            const chunks = [];
+            let resolveStopped;
+            const stoppedPromise = new Promise((resolve) => { resolveStopped = resolve; });
+            const capture = {
+              generation: captureGeneration,
+              modalGeneration,
+              transcriptId: targetTranscriptId,
+              stream,
+              recorder,
+              chunks,
+              discardOnStop: false,
+              stopPromise: stoppedPromise,
+              resolveStopped,
+            };
+            dictationCapture = capture;
+            dictationMediaStream = stream;
+            dictationMediaRecorder = recorder;
+            recorder.addEventListener('dataavailable', (event) => {
+              if (event.data && event.data.size > 0 && !capture.discardOnStop) {
+                capture.chunks.push(event.data);
+              }
+            });
+            recorder.addEventListener('stop', async () => {
+              const current = isCurrentDictationContext(targetTranscriptId, modalGeneration, captureGeneration)
+                && dictationCapture === capture;
+              const type = recorder.mimeType || 'audio/webm';
+              const blob = (!capture.discardOnStop && capture.chunks.length > 0)
+                ? new Blob(capture.chunks, { type })
+                : null;
+              stream.getTracks?.().forEach((track) => track.stop());
+              if (dictationCapture === capture) {
+                if (dictationTimerId) {
+                  window.clearInterval(dictationTimerId);
+                  dictationTimerId = null;
+                }
+                dictationCapture = null;
+                dictationMediaRecorder = null;
+                dictationMediaStream = null;
+                dictationRecordingStartedAt = null;
+                stopDictationVisualizer();
+              }
+              if (!current) {
+                resolveStopped(null);
+                return;
+              }
+              dictationPendingAudioBlob = blob;
+              dictationPendingAudioFilename = blob?.type === 'audio/wav' ? 'dictation.wav' : 'dictation.webm';
+              if (!blob) {
+                dictationRecordingState = 'idle';
+                setDictationMicStatus('No audio was captured.', 'error');
+                syncDictationControls();
+                resolveStopped(null);
+                return;
+              }
+              dictationRecordingState = 'transcribing';
+              syncDictationControls();
+              const preview = await transcribePendingDictationAudio({
+                targetTranscriptId,
+                modalGeneration,
+                captureGeneration,
+              });
+              resolveStopped(preview);
+            });
+            dictationRecordingState = 'recording';
+            dictationRecordingStartedAt = Date.now();
+            dictationRecordedMs = 0;
+            recorder.start();
+            startDictationVisualizer(stream);
+            dictationTimerId = window.setInterval(renderDictationTimer, 250);
+            setDictationMicStatus('Recording dictation...', 'success');
+            syncDictationControls();
+          } catch (_) {
+            stream?.getTracks?.().forEach((track) => track.stop());
+            if (dictationCaptureGeneration !== captureGeneration) return;
+            if (dictationCapture?.generation === captureGeneration) {
+              dictationCapture = null;
+              dictationMediaRecorder = null;
+              dictationMediaStream = null;
+            }
+            dictationRecordingState = 'idle';
+            setDictationMicStatus('Microphone access was denied or unavailable.', 'error');
+            syncDictationControls();
+          }
+        })();
+        dictationCaptureStartPromise = startPromise;
+        try {
+          await startPromise;
+        } finally {
+          if (dictationCaptureStartPromise === startPromise) dictationCaptureStartPromise = null;
         }
       };
 
@@ -1730,52 +1821,89 @@ let statusDetailsHideTimer = null;
           dictationRecordedMs = currentDictationDurationMs();
         }
         dictationRecordingStartedAt = null;
+        if (dictationRecordingState === 'starting') {
+          dictationCaptureGeneration += 1;
+          dictationRecordingState = 'idle';
+          setDictationMicStatus('Microphone request canceled before recording started.');
+          syncDictationControls();
+          return Promise.resolve(null);
+        }
         if (!keepAudio) {
-          dictationDiscardOnStop = true;
           dictationPendingAudioBlob = null;
           dictationPendingAudioFilename = 'dictation.webm';
-          dictationAudioChunks = [];
         }
-        if (dictationMediaRecorder && dictationMediaRecorder.state !== 'inactive') {
+        const capture = dictationCapture;
+        if (capture && !capture.stopRequested) {
+          capture.discardOnStop = !keepAudio;
+          capture.stopRequested = true;
+          if (!keepAudio) capture.chunks.length = 0;
+          dictationRecordingState = keepAudio ? 'transcribing' : 'idle';
+          syncDictationControls();
           try {
-            if (!keepAudio) {
-              dictationMediaRecorder.ondataavailable = null;
+            if (capture.recorder.state !== 'inactive') {
+              capture.recorder.stop();
             }
-            dictationMediaRecorder.stop();
           } catch (_) {
-            stopDictationStream();
+            capture.discardOnStop = true;
+            dictationCaptureGeneration += 1;
+            if (capture.chunks.length > 0 && keepAudio) {
+              dictationPendingAudioBlob = new Blob(capture.chunks, { type: capture.recorder.mimeType || 'audio/webm' });
+              dictationPendingAudioFilename = dictationPendingAudioBlob.type === 'audio/wav' ? 'dictation.wav' : 'dictation.webm';
+              dictationNeedsExplicitRetry = true;
+            }
+            capture.stream.getTracks?.().forEach((track) => track.stop());
+            if (dictationCapture === capture) {
+              dictationCapture = null;
+              dictationMediaRecorder = null;
+              dictationMediaStream = null;
+            }
             if (keepAudio) {
               dictationRecordingState = 'idle';
-              setDictationMicStatus('Could not stop dictation cleanly. Please try again.', 'error');
+              setDictationMicStatus(dictationPendingAudioBlob
+                ? 'Could not stop cleanly. Captured audio is kept locally for explicit retry.'
+                : 'Could not stop dictation cleanly. Please try again.', 'error');
+              setDictationSessionProgress(dictationPendingAudioBlob
+                ? 'Captured audio is kept locally. Use Retry transcription to preview it.'
+                : 'No preview was created.');
               syncDictationControls();
-              return;
             }
+            capture.resolveStopped(null);
           }
-        } else {
+          return capture.stopPromise;
+        }
+        if (!capture) {
           stopDictationStream();
         }
-        dictationRecordingState = keepAudio ? 'transcribing' : 'idle';
+        if (!keepAudio && capture?.stopPromise) return capture.stopPromise;
+        if (dictationPreviewPromise) return dictationPreviewPromise;
+        if (keepAudio && dictationPendingAudioBlob) return transcribePendingDictationAudio();
+        dictationRecordingState = 'idle';
         syncDictationControls();
+        return Promise.resolve(null);
       }
 
       const appendDictationPreviewText = (text) => {
-        if (!dictationCombinedInput) return;
+        if (!dictationCombinedInput) return false;
         const existing = dictationCombinedInput.value.trimEnd();
         const next = String(text || '').trim();
-        if (!next) return;
+        if (!next) return false;
         dictationCombinedInput.value = existing ? `${existing}\n\n${next}` : next;
         dictationDirty = dictationCombinedInput.value !== lastSavedDictationText;
         dictationCombinedInput.focus();
+        return true;
       };
 
-      const previewDictationAudio = async (blob, filename = 'dictation.webm') => {
-        if (!transcriptId || !blob) return null;
+      const previewDictationAudio = async (blob, filename = 'dictation.webm', context = {}) => {
+        const targetTranscriptId = context.targetTranscriptId || transcriptId;
+        const modalGeneration = context.modalGeneration ?? dictationModalGeneration;
+        const captureGeneration = context.captureGeneration ?? null;
+        if (!targetTranscriptId || !blob || !isCurrentDictationContext(targetTranscriptId, modalGeneration, captureGeneration)) return null;
         const formData = new FormData();
         formData.append('audio', blob, filename);
         setDictationMicStatus('Transcribing dictation preview...');
         setDictationSessionProgress('Sending audio for preview. Nothing is saved until you press Save.');
         syncDictationControls();
-        const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/post-consultation-dictation/preview-audio-file`, {
+        const response = await csrfFetch(`/api/v1/transcripts/${targetTranscriptId}/post-consultation-dictation/preview-audio-file`, {
           method: 'POST',
           body: formData,
           credentials: 'include',
@@ -1784,9 +1912,20 @@ let statusDetailsHideTimer = null;
           throw new Error(await parseErrorMessage(response, 'Could not transcribe dictation.'));
         }
         const payload = await response.json();
-        appendDictationPreviewText(payload.text || '');
-        dictationPendingAudioBlob = null;
-        dictationPendingAudioFilename = 'dictation.webm';
+        if (!isCurrentDictationContext(targetTranscriptId, modalGeneration, captureGeneration)) return null;
+        if (!appendDictationPreviewText(payload.text || '')) {
+          dictationRecordingState = 'idle';
+          dictationNeedsExplicitRetry = true;
+          setDictationMicStatus('No text was returned. The recorded audio is kept for retry.', 'error');
+          setDictationSessionProgress('Recorded audio kept locally. Retry transcription or close to discard it.');
+          syncDictationControls();
+          return null;
+        }
+        if (dictationPendingAudioBlob === blob) {
+          dictationPendingAudioBlob = null;
+          dictationPendingAudioFilename = 'dictation.webm';
+          dictationNeedsExplicitRetry = false;
+        }
         if (dictationFileInput) {
           dictationFileInput.value = '';
         }
@@ -1797,22 +1936,40 @@ let statusDetailsHideTimer = null;
         return payload;
       };
 
-      const transcribePendingDictationAudio = async () => {
+      const transcribePendingDictationAudio = async (context = {}) => {
+        if (dictationPreviewPromise) return dictationPreviewPromise;
         if (!dictationPendingAudioBlob) return null;
+        const targetTranscriptId = context.targetTranscriptId || transcriptId;
+        const modalGeneration = context.modalGeneration ?? dictationModalGeneration;
+        const captureGeneration = context.captureGeneration ?? null;
+        const audioBlob = dictationPendingAudioBlob;
+        const filename = dictationPendingAudioFilename || 'dictation.webm';
+        if (!isCurrentDictationContext(targetTranscriptId, modalGeneration, captureGeneration)) return null;
         dictationRecordingState = 'transcribing';
         setDictationMicStatus('Transcribing dictation preview...');
         syncDictationControls();
+        const previewPromise = (async () => {
         try {
-          return await previewDictationAudio(dictationPendingAudioBlob, dictationPendingAudioFilename || 'dictation.webm');
+          return await previewDictationAudio(audioBlob, filename, { targetTranscriptId, modalGeneration, captureGeneration });
         } catch (error) {
+          if (!isCurrentDictationContext(targetTranscriptId, modalGeneration, captureGeneration)) return null;
           const message = error instanceof Error ? error.message : 'Could not transcribe dictation.';
           dictationRecordingState = 'idle';
+          dictationNeedsExplicitRetry = true;
           showFlash(message, 'error');
           setDictationMicStatus(message, 'error');
           setDictationSessionProgress('Recorded audio kept locally. Retry transcription or close to discard it.');
           syncDictationControls();
           return null;
+        } finally {
+          if (dictationPreviewPromise === previewPromise) {
+            dictationPreviewPromise = null;
+            if (isCurrentDictationContext(targetTranscriptId, modalGeneration, captureGeneration)) syncDictationControls();
+          }
         }
+        })();
+        dictationPreviewPromise = previewPromise;
+        return previewPromise;
       };
 
       const setDictationBusy = (isBusy, label = 'Save & generate note') => {
@@ -1825,55 +1982,91 @@ let statusDetailsHideTimer = null;
 
       const saveDictationAndMaybeGenerate = async ({ generate = false } = {}) => {
         if (!transcriptId) return null;
+        if (dictationActionPromise) return dictationActionPromise;
+        if (dictationNeedsExplicitRetry) {
+          showFlash('Retry dictation transcription before saving.', 'warning');
+          setDictationSessionProgress('Recorded audio is still available locally. Use Retry transcription to preview it before saving.');
+          return null;
+        }
         const dictationTranscriptId = transcriptId;
-        if (dictationPendingAudioBlob) {
-          showFlash('Wait for dictation transcription before saving.', 'warning');
-          return null;
-        }
-        if (dictationRecordingState === 'transcribing') {
-          showFlash('Wait for dictation transcription before saving.', 'warning');
-          return null;
-        }
-        if (dictationRecordingState === 'recording' || dictationRecordingState === 'paused') {
-          showFlash('Stop dictation before saving.', 'warning');
-          return null;
-        }
+        const modalGeneration = dictationModalGeneration;
         chooseTemplateFromDictationModal();
         const templateId = generateOutputTemplateSelect?.value || '';
         if (generate && !templateId) {
           showFlash('Choose a template before generating.', 'error');
           return null;
         }
-        setDictationBusy(true, generate ? 'Queueing...' : 'Saving...');
-        try {
-          if (generate) {
-            return await enqueueTemplateGeneration({
-              transcriptId: dictationTranscriptId,
-              templateId,
-              closeDictationModal: true,
-            });
+        let actionPromise;
+        actionPromise = (async () => {
+          setDictationBusy(true, dictationRecordingState === 'recording' || dictationRecordingState === 'paused' || dictationRecordingState === 'starting'
+            ? 'Transcribing...' : (generate ? 'Queueing...' : 'Saving...'));
+          try {
+            let preview = null;
+            let needsPreview = false;
+            if (dictationRecordingState === 'starting') {
+              // getUserMedia cannot be aborted; invalidate this request so a late
+              // permission grant only stops its tracks and never starts recording.
+              dictationCaptureGeneration += 1;
+              dictationRecordingState = 'idle';
+              setDictationMicStatus('Microphone request canceled before recording started.');
+            } else if (dictationRecordingState === 'recording' || dictationRecordingState === 'paused') {
+              needsPreview = true;
+              preview = await stopDictationRecording({ keepAudio: true });
+            } else if (dictationCapture?.stopPromise && dictationCapture.stopRequested) {
+              needsPreview = true;
+              preview = await dictationCapture.stopPromise;
+            } else if (dictationRecordingState === 'transcribing') {
+              needsPreview = true;
+              preview = await (dictationPreviewPromise || dictationCapture?.stopPromise || Promise.resolve(null));
+            } else if (dictationPendingAudioBlob) {
+              needsPreview = true;
+              preview = await transcribePendingDictationAudio({
+                targetTranscriptId: dictationTranscriptId,
+                modalGeneration,
+              });
+            }
+            if (!isCurrentDictationContext(dictationTranscriptId, modalGeneration)) return null;
+            if (needsPreview && !(typeof preview?.text === 'string' && preview.text.trim())) {
+              return null;
+            }
+            if (dictationPendingAudioBlob) {
+              return null;
+            }
+            setDictationBusy(true, generate ? 'Queueing...' : 'Saving...');
+            if (generate) {
+              return await enqueueTemplateGeneration({
+                transcriptId: dictationTranscriptId,
+                templateId,
+                closeDictationModal: true,
+              });
+            }
+            const saved = await persistDictationExplicitly({ targetTranscriptId: dictationTranscriptId });
+            if (!saved) return null;
+            if (isCurrentDictationContext(dictationTranscriptId, modalGeneration)) {
+              showFlash('Dictation saved.', 'success');
+              await fetchWorkspace(dictationTranscriptId, { guardTranscriptId: dictationTranscriptId });
+              if (isCurrentDictationContext(dictationTranscriptId, modalGeneration)) setDictationModalOpen(false);
+            }
+            return saved;
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : (generate ? 'Could not enqueue note generation.' : 'Could not save dictation.'), 'error');
+            return null;
+          } finally {
+            if (dictationActionPromise === actionPromise) {
+              setDictationBusy(false);
+              dictationActionPromise = null;
+            }
           }
-          const saved = await persistDictationExplicitly({ targetTranscriptId: dictationTranscriptId });
-          if (!saved) return null;
-          if (transcriptId === dictationTranscriptId) {
-            showFlash('Dictation saved.', 'success');
-            await fetchWorkspace(dictationTranscriptId, { guardTranscriptId: dictationTranscriptId });
-            if (transcriptId === dictationTranscriptId) setDictationModalOpen(false);
-          }
-          return saved;
-        } catch (error) {
-          showFlash(error instanceof Error ? error.message : (generate ? 'Could not enqueue note generation.' : 'Could not save dictation.'), 'error');
-          return null;
-        } finally {
-          setDictationBusy(false);
-        }
+        })();
+        dictationActionPromise = actionPromise;
+        return actionPromise;
       };
 
       const saveDictationBeforeGeneration = async (targetTranscriptId = transcriptId) => {
         if (!targetTranscriptId || transcriptId !== targetTranscriptId) {
           throw new Error('Open a consultation before regenerating.');
         }
-        if (dictationPendingAudioBlob || dictationRecordingState === 'stopped' || dictationRecordingState === 'transcribing') {
+        if (dictationPendingAudioBlob || dictationRecordingState === 'transcribing' || dictationRecordingState === 'starting') {
           throw new Error('Wait for dictation transcription before regenerating.');
         }
         if (dictationRecordingState === 'recording' || dictationRecordingState === 'paused') {
@@ -2314,6 +2507,36 @@ let statusDetailsHideTimer = null;
         if (retryIngestionJobIdInput) retryIngestionJobIdInput.value = retryJobId || '';
         if (retryIngestionExpired) {
           retryIngestionExpired.hidden = !retryExpired;
+        }
+      };
+
+      const renderDeepgramStreamGap = (gap, transcript) => {
+        activeTranscriptStreamGap = gap && typeof gap.stream_id === 'string' ? gap : null;
+        activeTranscriptStreamGapRetryAvailable = Boolean(gap?.recovery_job_retry_available);
+        if (!deepgramGapRegion) return;
+        const currentGap = activeTranscriptStreamGap;
+        deepgramGapRegion.hidden = !currentGap;
+        if (!currentGap) return;
+        const ingestionRetryAvailable = activeTranscriptStreamGapRetryAvailable;
+        const recoveryInProgress = Boolean(currentGap.recovery_in_progress);
+        if (deepgramGapMessage) {
+          if (recoveryInProgress) {
+            deepgramGapMessage.textContent = 'A live transcription recovery is queued or processing. This interval remains blocked until it is applied.';
+          } else if (currentGap.recovery_available) {
+            deepgramGapMessage.textContent = `A live audio interval was not committed. Retained audio is available${currentGap.recovery_expires_at ? ` until ${new Date(currentGap.recovery_expires_at).toLocaleString()}` : ''}.`;
+          } else if (ingestionRetryAvailable) {
+            deepgramGapMessage.textContent = 'The stream recovery has a failed transcription job. Use the failed-audio retry action above for its retained source.';
+          } else {
+            deepgramGapMessage.textContent = 'A live audio interval was not committed and no server recovery audio is available. You can discard the unresolved interval.';
+          }
+        }
+        if (deepgramGapRetryButton) {
+          deepgramGapRetryButton.hidden = !currentGap.recovery_available || recoveryInProgress;
+          deepgramGapRetryButton.disabled = streamGapActionBusy;
+        }
+        if (deepgramGapDiscardButton) {
+          deepgramGapDiscardButton.hidden = recoveryInProgress || ingestionRetryAvailable;
+          deepgramGapDiscardButton.disabled = streamGapActionBusy;
         }
       };
 
@@ -2901,6 +3124,7 @@ let statusDetailsHideTimer = null;
           pendingAudioRetryMessage,
           pendingAudioRetryButton,
           pendingAudioDiscardButton,
+          deepgramInterim,
         },
         config: {
           batchUploadSuccessMessage: 'Recording sent to be turned into text.',
@@ -2933,6 +3157,7 @@ let statusDetailsHideTimer = null;
           activeIngestionMode,
           nextLiveChunkSequenceNo,
           latestIngestionJobStatus,
+          deepgramLiveStreamingAvailable,
         }),
         setNextLiveChunkSequenceNo: (value) => {
           nextLiveChunkSequenceNo = value;
@@ -3863,6 +4088,8 @@ let statusDetailsHideTimer = null;
 
        const enqueueTemplateGeneration = ({ templateId, transcriptId: requestedTranscriptId = transcriptId, closeDictationModal = false } = {}) => {
          const generationTranscriptId = requestedTranscriptId;
+         const modalGeneration = closeDictationModal ? dictationModalGeneration : null;
+         const dictationContextIsCurrent = () => !closeDictationModal || isCurrentDictationContext(generationTranscriptId, modalGeneration);
          if (!generationTranscriptId || !templateId) return Promise.resolve(false);
          if (multipleProblemsSavePending) return Promise.resolve(false);
          if (generationSubmissionBarrier?.task) return generationSubmissionBarrier.task;
@@ -3885,6 +4112,8 @@ let statusDetailsHideTimer = null;
          };
          generationSubmissionBarrier = submissionBarrier;
          if (splitCreateEnabled() && splitGenerateController) {
+           const generationContext = closeDictationModal ? { transcriptId: generationTranscriptId, modalGeneration } : null;
+           if (generationContext) dictationGenerationContext = generationContext;
            const splitRequest = dispatchTemplateGeneration({
              capabilityEnabled: splitCreateEnabled(),
              splitController: splitGenerateController,
@@ -3899,8 +4128,14 @@ let statusDetailsHideTimer = null;
            });
            submissionBarrier.task = splitRequest;
            void Promise.resolve(splitRequest).then(
-             () => submissionBarrier.settle(false),
-             () => submissionBarrier.settle(false),
+             () => {
+               submissionBarrier.settle(false);
+               if (dictationGenerationContext === generationContext) dictationGenerationContext = null;
+             },
+             () => {
+               submissionBarrier.settle(false);
+               if (dictationGenerationContext === generationContext) dictationGenerationContext = null;
+             },
            );
            return splitRequest;
          }
@@ -3912,7 +4147,9 @@ let statusDetailsHideTimer = null;
           syncDictationControls();
           try {
             await saveWorkingNoteBeforeGeneration(generationTranscriptId);
+            if (transcriptId !== generationTranscriptId || !dictationContextIsCurrent()) return false;
             await saveDictationBeforeGeneration(generationTranscriptId);
+            if (transcriptId !== generationTranscriptId || !dictationContextIsCurrent()) return false;
             const response = await csrfFetch(`/api/v1/transcripts/${generationTranscriptId}/generate-output`, {
               method: 'POST',
               credentials: 'include',
@@ -4046,7 +4283,12 @@ let statusDetailsHideTimer = null;
 
       const applyWorkspacePayload = (workspace) => {
         if (!workspace || typeof workspace !== 'object') return;
+        const nextDeepgramLiveStreamingAvailable = Boolean(workspace.deepgram_live_streaming_available);
+        if (deepgramLiveStreamingAvailable && !nextDeepgramLiveStreamingAvailable) {
+          captureController?.stopDeepgramCaptureForContextChange?.();
+        }
         const transcript = workspace.active_transcript || null;
+        renderDeepgramStreamGap(workspace.active_transcript_stream_gap || null, transcript);
         const previousTranscriptStatus = currentTranscriptStatus;
         const dictation = workspace.post_consultation_dictation || null;
         const workingNote = workspace.active_working_note || null;
@@ -4057,6 +4299,9 @@ let statusDetailsHideTimer = null;
         const nextTranscriptId = transcript?.id || null;
         const activeTranscriptChanged = nextTranscriptId !== lastRenderedTranscriptId;
         if (activeTranscriptChanged) {
+          if (dictationModal && !dictationModal.hidden) {
+            void closeDictationModal({ force: true });
+          }
           micIssue = null;
           localStatusLabel = null;
           lastRenderedTranscriptId = nextTranscriptId;
@@ -4091,6 +4336,7 @@ let statusDetailsHideTimer = null;
         latestSuccessfulIngestionCompletedAt = transcript?.latest_successful_ingestion_completed_at || null;
         nextLiveChunkSequenceNo = transcript?.next_live_chunk_sequence_no_upload || 1;
         hasSttSelection = Boolean(workspace.stt_selected);
+        deepgramLiveStreamingAvailable = nextDeepgramLiveStreamingAvailable;
         hasDictationSttSelection = Boolean(workspace.dictation_stt_selected);
         sttAvailable = Boolean(workspace.stt_available);
         sttHealth = workspace.stt_health || null;
@@ -4432,8 +4678,15 @@ let statusDetailsHideTimer = null;
          getTranscriptId: () => transcriptId,
          getTemplateId: () => generateOutputTemplateSelect?.value || '',
          saveSources: async ({ transcriptId: sourceTranscriptId } = {}) => {
+           const generationContext = dictationGenerationContext;
+           const contextIsCurrent = () => !generationContext || (
+             generationContext.transcriptId === sourceTranscriptId
+             && isCurrentDictationContext(generationContext.transcriptId, generationContext.modalGeneration)
+           );
            await saveWorkingNoteBeforeGeneration(sourceTranscriptId);
+           if (!contextIsCurrent()) throw new Error('Dictation generation was canceled.');
            await saveDictationBeforeGeneration(sourceTranscriptId);
+           if (!contextIsCurrent()) throw new Error('Dictation generation was canceled.');
          },
          refreshWorkspace: (nextTranscriptId, options) => fetchWorkspace(nextTranscriptId, options),
          reviewController: splitReviewController,
@@ -4538,6 +4791,62 @@ let statusDetailsHideTimer = null;
         dictationDirty = nextValue !== lastSavedDictationText;
         syncDictationControls();
       });
+      deepgramGapRetryButton?.addEventListener('click', async () => {
+        const gap = activeTranscriptStreamGap;
+        const transcriptAtClick = transcriptId;
+        if (!gap?.recovery_available || gap.recovery_in_progress || !transcriptAtClick || streamGapActionBusy) return;
+        streamGapActionBusy = true;
+        deepgramGapRetryButton.disabled = true;
+        if (deepgramGapDiscardButton) deepgramGapDiscardButton.disabled = true;
+        try {
+          const response = await csrfFetch(
+            `/api/v1/transcripts/${encodeURIComponent(transcriptAtClick)}/deepgram-stream/${encodeURIComponent(gap.stream_id)}/retry`,
+            { method: 'POST', credentials: 'include' },
+          );
+          if (!response.ok) throw new Error(await parseErrorMessage(response, 'Could not retry the retained live interval.'));
+          if (transcriptId !== transcriptAtClick) return;
+          activeTranscriptStreamGap = { ...gap, recovery_available: false, recovery_in_progress: true };
+          renderDeepgramStreamGap(activeTranscriptStreamGap, { latest_ingestion_retry_available: false });
+          if (deepgramGapMessage) deepgramGapMessage.textContent = 'Retry queued. Waiting for this transcription interval to be applied.';
+          scheduleWorkspaceRefreshBurst({ attempts: 90, minimumAttempts: 8 });
+        } catch (error) {
+          if (transcriptId === transcriptAtClick && deepgramGapMessage) {
+            deepgramGapMessage.textContent = error instanceof Error ? error.message : 'Could not retry the retained live interval.';
+          }
+          if (deepgramGapRetryButton) deepgramGapRetryButton.disabled = false;
+          if (deepgramGapDiscardButton) deepgramGapDiscardButton.disabled = false;
+        } finally {
+          streamGapActionBusy = false;
+        }
+      });
+      deepgramGapDiscardButton?.addEventListener('click', async () => {
+        const gap = activeTranscriptStreamGap;
+        const transcriptAtClick = transcriptId;
+        if (!gap || gap.recovery_in_progress || activeTranscriptStreamGapRetryAvailable || !transcriptAtClick || streamGapActionBusy) return;
+        if (!window.confirm('Discard this unresolved live audio interval? It cannot be recovered after you discard it.')) return;
+        streamGapActionBusy = true;
+        deepgramGapDiscardButton.disabled = true;
+        if (deepgramGapRetryButton) deepgramGapRetryButton.disabled = true;
+        try {
+          const response = await csrfFetch(
+            `/api/v1/transcripts/${encodeURIComponent(transcriptAtClick)}/deepgram-stream/${encodeURIComponent(gap.stream_id)}/discard`,
+            { method: 'POST', credentials: 'include' },
+          );
+          if (!response.ok) throw new Error(await parseErrorMessage(response, 'Could not discard the unresolved live interval.'));
+          if (transcriptId !== transcriptAtClick) return;
+          renderDeepgramStreamGap(null, null);
+          window.showToast?.('Unresolved live interval discarded', 'success', 3000);
+          void pollWorkspace();
+        } catch (error) {
+          if (transcriptId === transcriptAtClick && deepgramGapMessage) {
+            deepgramGapMessage.textContent = error instanceof Error ? error.message : 'Could not discard the unresolved live interval.';
+          }
+          if (deepgramGapDiscardButton) deepgramGapDiscardButton.disabled = false;
+          if (deepgramGapRetryButton) deepgramGapRetryButton.disabled = false;
+        } finally {
+          streamGapActionBusy = false;
+        }
+      });
       dictationCta?.addEventListener('click', () => {
         if (isConsultationCaptureActive()) {
           showFlash('Stop the consultation recording before adding post-consultation dictation.', 'error');
@@ -4587,6 +4896,7 @@ let statusDetailsHideTimer = null;
         if (!file) return;
         dictationPendingAudioBlob = file;
         dictationPendingAudioFilename = file.name || 'dictation-upload.webm';
+        dictationNeedsExplicitRetry = false;
         const payload = await transcribePendingDictationAudio();
         if (payload) {
           dictationFileInput.value = '';
@@ -4755,43 +5065,94 @@ let statusDetailsHideTimer = null;
       createGuidedTour({
         dom: {
           guideStartButtons,
-          tourOverlay,
-          tourScrims,
+          tourDialog: tourOverlay,
           tourHighlight,
           tourCard,
           tourTitle,
           tourBody,
           tourProgress,
+          tourAnnouncement: document.querySelector('[data-tour-announcement]'),
           tourBackButton,
           tourNextButton,
           tourCloseButtons,
         },
-        storageKey: transcribeTourStorageKey,
+        getCurrentTab: () => currentAssistantTab,
+        setTab,
+        isBlocked: () => {
+          const anotherModalIsOpen = [...document.querySelectorAll('dialog[open], [role="dialog"][aria-modal="true"]')]
+            .some((dialog) => (
+              dialog !== tourOverlay
+              && !dialog.closest('[hidden], [inert]')
+              && dialog.getClientRects().length > 0
+            ));
+          return Boolean(
+            isConsultationCaptureActive()
+            || captureController?.isLiveCaptureUiActive?.()
+            || currentTranscriptStatus === 'recording'
+            || ['recording', 'paused'].includes(dictationRecordingState)
+            || dictationUiBusy
+            || anotherModalIsOpen
+          );
+        },
+        onBlocked: (message) => showFlash(
+          message || 'Finish recording and close any open dialog before opening the guide.',
+          'info',
+        ),
         steps: [
           {
-            target: '[data-tour-target="new-session"]',
-            title: 'Start a new consultation',
-            body: 'Use this button to create a fresh blank consultation that you can title and work in straight away.',
+            target: '[data-tour-target="new-consultation"]',
+            title: 'Start a consultation',
+            body: 'Create a new consultation for a new encounter. Check its title before adding audio or notes.',
           },
           {
-            target: '[data-tour-target="session-list"]',
-            title: 'Find recent consultations',
-            body: 'Your recent consultations stay here so you can jump back in without losing your place.',
+            target: '[data-tour-target="recent-consultations"]',
+            title: 'Return to recent work',
+            body: 'Reopen a consultation only to continue the same encounter.',
           },
           {
             target: '[data-tour-target="record-controls"]',
-            title: 'Add the conversation',
-            body: 'Use these controls to choose live capture or recorded upload, then add the consultation audio in the way that fits best.',
+            title: 'Choose how to add audio',
+            body: 'Confirm the recording mode and consent before starting. Keep the page open while capture is active.',
+          },
+          {
+            target: '[data-tour-target="transcript-tab"]',
+            title: 'Review the transcript',
+            body: 'Check identity, dates, medicines, allergies, key facts, and important omissions. The transcript is draft source material.',
+          },
+          {
+            target: '[data-tour-target="working-note-source"]',
+            tab: 'output',
+            title: 'Keep source notes separate',
+            body: 'Keep clinician-authored context in Working note. Check its save status before creating a draft; editing a generated note does not change this source.',
+          },
+          {
+            target: '[data-tour-target="dictation-source"]',
+            title: 'Post-consultation dictation',
+            body: 'Use this for a separate clinician summary, assessment, or plan. Review the preview and save explicitly; Cancel discards unsaved work.',
+          },
+          {
+            target: '[data-template-picker-button]',
+            tab: 'output',
+            title: 'Create a draft note',
+            body: 'Choose an approved template and create a draft. Generated text does not replace its source material.',
           },
           {
             target: '[data-tour-target="notes-panel"]',
-            title: 'Review notes',
-            body: 'Generated notes appear here. If you regenerate a note, you can switch between versions.',
+            tab: 'output',
+            title: 'Review every section',
+            body: 'Check facts, omissions, invented statements, uncertainty, placement, and versions. Follow Ups and Quick Actions create separate drafts; they are not sent automatically. Correct drafts before copying.',
           },
           {
             target: '[data-tour-target="followups-panel"]',
-            title: 'Review follow-ups',
-            body: 'Follow-ups and quick action outputs appear here. You can switch between earlier versions any time.',
+            tab: 'followups',
+            title: 'Prepare follow-ups carefully',
+            body: 'Choose a Quick Action, add context, then review the resulting draft. OpenScribe does not send follow-ups automatically.',
+          },
+          {
+            target: '[data-copy-structured-lines], [data-copy-structured-section], [data-copy-latest-followup]',
+            tab: 'output',
+            title: 'Copy only verified text',
+            body: 'Confirm the patient, consultation, and destination field. Read the pasted EPR text again; section-copy controls cannot verify the destination.',
           },
         ],
       }).attach();

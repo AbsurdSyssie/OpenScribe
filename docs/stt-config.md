@@ -86,10 +86,11 @@ Preset and adapter are related but not interchangeable: preset is the management
 - the wizard also permits the Global base URL `https://api.deepgram.com`, but requires the administrator to confirm that its use is permitted by applicable data-protection law, controller instructions, contracts, and international-transfer requirements;
 - both supported hosts are recognised as Deepgram and retain the Deepgram-specific request and security rules;
 - credential/catalog inspection uses Deepgram's model endpoint;
-- runtime sends raw audio bytes to `/v1/listen`;
+- prerecorded runtime sends raw audio bytes to `/v1/listen`; eligible live capture uses a server-side Listen V1 WebSocket;
 - model/language/options are query parameters;
 - response extraction uses the saved Deepgram channel/alternative path;
 - `mip_opt_out=true` is mandatory and enforced on save/runtime;
+- live provider responses are bounded to 256 KiB per message and four queued messages; the Docker runtime caps incoming app WebSocket messages at 64 KiB and its receive queue at four messages. Direct server launches must set the same caps; see [docker.md](docker.md);
 - raw keys remain Vault-backed.
 
 Selecting the EU endpoint controls routing but is not, by itself, evidence that a deployment satisfies its controller contract, residency terms, retention obligations, or local law. Deployment owners must verify those matters against the purchased Deepgram service and current DPA/order form.

@@ -50,6 +50,13 @@ def test_runtime_requirements_pin_multipart_idna_and_spacy_model() -> None:
     assert "en_core_web_sm-3.8.0-py3-none-any.whl" in runtime
 
 
+def test_runtime_uvicorn_caps_websocket_message_size_and_queue() -> None:
+    entrypoint = Path("docker/entrypoint.sh").read_text()
+
+    assert "--ws-max-size 65536" in entrypoint
+    assert "--ws-max-queue 4" in entrypoint
+
+
 def test_runtime_image_installs_only_runtime_requirements() -> None:
     dockerfile = Path("Dockerfile").read_text()
 

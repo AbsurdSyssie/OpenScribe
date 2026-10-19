@@ -103,6 +103,20 @@ generation rows carry the batch operation UUID, alongside the execution UUID.
 The page contains no transcript-derived content, topic titles, owner identity,
 provider response, or exception detail.
 
+Unexpected split-worker failures also emit the structured operational log event
+`consultation_split_worker_failed`. Its fields are the parsed execution UUID,
+one allowlisted phase (`session`, `lookup`, `analysis`, `generation`,
+`verification`, or `cleanup`), one allowlisted reason code
+(`unexpected_worker_error`, `session_error`, or `rollback_error`), and a UTC
+ISO timestamp. The event appears in the normal worker log formatter and does
+not depend on a database write, so it can help diagnose failures while the
+database is unavailable. It contains no exception text or type, traceback,
+provider details, source or response content, or credentials. This is an
+operational log event only; it does not add an administrator API, Usage page
+projection, audit event, or task retry. A submitted call without a durable
+response remains uncertain and is handled by existing lifecycle reconciliation
+without provider replay.
+
 Provider quota remains the business limiter. The intent-start route retains its existing transport limits. The database-only review-draft `POST` and `PUT` do not call an LLM and therefore have no dedicated LLM rate limiter.
 
 After **Confirm split**, the Output note selector immediately shows one client-only placeholder pill per confirmed separate-note topic. The primary topic is selected first, and the existing note-generation loading screen reports queued, generating, or checking status. The placeholders create no database rows, cannot be edited or deleted, and do not add a second LLM call. SSE workspace snapshots replace each stable slot with the owner-projected generated document as it becomes ready; the existing bounded polling fallback is used only when SSE is unavailable. A terminal partial result keeps successful slots, marks failed slots unavailable, and leaves the existing Retry missing notes and Keep available notes actions in control. A full failure leaves the topic slots unavailable and re-enables **Create**. Regeneration keeps prior revisions in note history while replacing the current topic slots in place. Switching transcripts discards the browser-only slots.
@@ -110,6 +124,8 @@ After **Confirm split**, the Output note selector immediately shows one client-o
 Deleting a materialized split note independently removes only that topic's current Output note slot. The workspace derives this state from the topic's terminal materialized outcome and the absence of its generated document, and projects only the content-safe topic UUID. A refresh therefore does not recreate the deleted slot as a failed placeholder. Actual failed or still-missing generation topics retain their normal unavailable or in-progress slots, while an explicit later Create may produce a new immutable batch.
 
 ## Partial recovery
+
+Initial and recovery generation queues reserve tokens from the exact adapter-specific request using the established UTF-8 input estimator and the submitted output cap. Gemini retains its 30,000-token ceiling; other adapters retain the nominal per-note cap. Bundled verification uses the same reservation rule with its independent checker request. The larger accurate reservation can reject generation before submission or leave optional verification unchecked when quota is insufficient. Settlement still uses reported usage or the established unknown-outcome policy.
 
 A durably persisted provider response, including a malformed durable response, may retain valid topic outcomes encrypted, mark only failed requested topics, and queue one automatic retry using the initial execution's frozen provider configuration and model. A recovery response is parsed only against its failed-topic request set; retained validated siblings remain immutable context. A submitted attempt with no durable response, including a timeout or uncertain transport failure, never enters automatic recovery.
 
@@ -122,5 +138,7 @@ A durably persisted provider response, including a malformed durable response, m
 Before full materialization, and before **Keep available notes** for a partial survivor set, the service can use the independently configured team hallucination checker. A trusted partial initial response first reaches a terminal automatic-recovery decision. If recovery runs, verification waits for that recovery to complete or fail definitively; it then snapshots the stable complete set or stable survivors. The service never queues verification while a recovery is active. It queues one verification execution with its own reservation and outbox task. Credentials resolve outside the final transaction; the attempt commits as submitted before the one provider call. Duplicate delivery never makes a second call, and a recoverable encrypted response allows local finalization only.
 
 Only an all-structured survivor set is eligible. The checker receives the immutable encrypted batch source, plan, clinical NLP snapshot, and exact survivor UUID set. It may return only the existing exact-substring structured-section edits. The service applies the complete valid envelope in memory and revalidates every corrected output before storing it in `verified_output_encrypted`; it never changes accepted output. Mixed/freeform sets have no patch protocol and are durably `unchecked`.
+
+Gemini requests include that generated patch schema. The split request secret-name scan recognizes only the canonical `section_key: {"type": "string"}` schema property as non-secret metadata; it still rejects credential keys in request configuration, other schema properties or altered definitions. Runtime output validation remains unchanged. Consumed finalization errors emit `consultation_split_finalization_failed` with an execution UUID and fixed phase, without exception details or content.
 
 No selected/valid checker, unavailable credentials or quota, expiry, provider error or timeout, malformed response, or failed patch is fail-open. The batch records only bounded safe verification metadata and original validated outputs still materialize as clinician-review drafts. Workspace REST/SSE and browser status show only lifecycle state and correction count. They do not expose source material, verifier response, edits, provider metadata, or reasoning. Keep and retry controls stay unavailable while the batch is verifying.

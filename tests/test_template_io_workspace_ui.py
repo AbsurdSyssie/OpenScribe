@@ -282,12 +282,16 @@ def test_template_io_help_exposes_ai_prompt_copy_and_manual_fallback_hooks():
     script = read("app/static/js/settings/template-io.js")
 
     assert "Create a template with AI" in markup
-    assert "Templates tell OpenScribe how to organise and write your finished note." in markup
-    assert "You do not need to write any code." in markup
+    assert "Templates tell OpenScribe how to structure a draft note." in markup
+    assert "You can use an AI assistant to create a template for import." in markup
     assert "<strong>Import</strong> adds a template" in markup
     assert "<strong>Export</strong> saves selected templates" in markup
     assert "Copy instructions for AI" in markup
-    assert "you do not need to understand or edit it" in markup
+    assert "JSON is the text format OpenScribe imports; you do not need to edit it." in markup
+    assert "Return to OpenScribe, select <strong>Import</strong>" in markup
+    assert "then select <strong>Submit</strong>" in markup
+    assert "Review the proposed templates and warnings" in markup
+    assert "then select <strong>Import templates</strong>" in markup
     assert "Return to OpenScribe" in markup
     assert "Do not include patient information" in markup
     for hook in (
@@ -312,7 +316,8 @@ def test_template_io_controls_are_bottom_rail_accessible_and_not_inline_scripted
     markup = read("app/templates/settings/_template_library.html")
     css = read("app/static/css/settings.css")
 
-    assert 'class="template-library-utilities" aria-label="Template import and export"' in markup
+    assert 'class="template-library-utilities"' in markup
+    assert 'role="group" aria-label="Template import and export"' in markup
     assert 'aria-label="Close import dialog"' in markup
     assert 'aria-label="Help with importing, exporting, and creating templates"' in markup
     assert 'href="/static/schemas/openscribe-template-bundle-v1.schema.json"' in markup

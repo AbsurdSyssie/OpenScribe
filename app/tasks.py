@@ -1,8 +1,11 @@
 import base64
+import logging
+from datetime import datetime, timezone
 from uuid import UUID
 
 from app.celery_app import celery_app
 from app.db import SessionLocal
+from celery.exceptions import Retry
 from app.models import ConsultationSplitExecution, ConsultationSplitExecutionKind, GeneratedDocument, TemplateSuggestionJob, TranscriptIngestionJob, utcnow
 from app.services.template_suggestions import process_template_suggestion
 from app.services.consultation_split_runtime import process_consultation_split_analysis_execution
@@ -18,6 +21,34 @@ from app.services.task_outbox import publish_pending_task_dispatches
 from app.services.quota_lifecycle import process_quota_lifecycle
 
 
+_consultation_split_worker_logger = logging.getLogger("openscribe.tasks")
+_CONSULTATION_SPLIT_WORKER_FAILURE_EVENT = "consultation_split_worker_failed"
+_GENERATION_TASK_FAILURE_EVENT = "generation_task_boundary_failed"
+
+
+def _log_consultation_split_worker_failure(
+    *, execution_id: UUID, phase: str, reason_code: str,
+) -> None:
+    """Record bounded worker diagnostics without exception or content details."""
+    occurred_at = datetime.now(timezone.utc).isoformat()
+    execution_id_text = str(execution_id)
+    _consultation_split_worker_logger.error(
+        "%s execution_id=%s phase=%s reason_code=%s occurred_at=%s",
+        _CONSULTATION_SPLIT_WORKER_FAILURE_EVENT,
+        execution_id_text,
+        phase,
+        reason_code,
+        occurred_at,
+        extra={
+            "event": _CONSULTATION_SPLIT_WORKER_FAILURE_EVENT,
+            "execution_id": execution_id_text,
+            "phase": phase,
+            "reason_code": reason_code,
+            "occurred_at": occurred_at,
+        },
+    )
+
+
 def _stamp_worker_received(db, *, model_class, record_id: UUID) -> None:
     """Set worker_received_at once on first task execution, not on retries."""
     record = db.get(model_class, record_id)
@@ -27,15 +58,60 @@ def _stamp_worker_received(db, *, model_class, record_id: UUID) -> None:
         db.commit()
 
 
-@celery_app.task(name="openscribe.process_transcript_ingestion_job")
-def process_transcript_ingestion_job_task(*, job_id: str, audio_b64: str | None = None, dispatch_sequence: int | None = None) -> None:
-    legacy_audio_bytes = base64.b64decode(audio_b64.encode("ascii")) if audio_b64 else None
-    with SessionLocal() as db:
-        _stamp_worker_received(db, model_class=TranscriptIngestionJob, record_id=UUID(job_id))
-        kwargs = {"job_id": UUID(job_id), "legacy_audio_bytes": legacy_audio_bytes}
-        if dispatch_sequence is not None:
-            kwargs["dispatch_sequence"] = dispatch_sequence
-        process_transcript_ingestion_job(db, **kwargs)
+def _log_generation_task_failure(*, task: str, record_id: UUID | None, phase: str, reason_code: str) -> None:
+    """Log only bounded task metadata; never pass provider/database exceptions through Celery."""
+    task_name = task if task in {"ingestion", "generation", "template_suggestion"} else "other"
+    phase_name = phase if phase in {"decode", "parse_id", "session", "stamp", "service", "cleanup"} else "other"
+    reason = reason_code if reason_code in {"unexpected_error", "invalid_task_input"} else "unexpected_error"
+    record_id_text = str(record_id) if isinstance(record_id, UUID) else "none"
+    occurred_at = datetime.now(timezone.utc).isoformat()
+    _consultation_split_worker_logger.error(
+        "%s task=%s record_id=%s phase=%s reason_code=%s occurred_at=%s",
+        _GENERATION_TASK_FAILURE_EVENT,
+        task_name,
+        record_id_text,
+        phase_name,
+        reason,
+        occurred_at,
+        extra={
+            "event": _GENERATION_TASK_FAILURE_EVENT,
+            "task": task_name,
+            "record_id": record_id_text,
+            "phase": phase_name,
+            "reason_code": reason,
+            "occurred_at": occurred_at,
+        },
+    )
+
+
+@celery_app.task(name="openscribe.process_transcript_ingestion_job", bind=True)
+def process_transcript_ingestion_job_task(self, *, job_id: str, audio_b64: str | None = None, dispatch_sequence: int | None = None) -> None:
+    # Celery's failure logger includes request.kwargs unless kwargsrepr is set.
+    # Preserve the real payload for execution/retries/signals, but prevent the
+    # legacy base64 audio argument from entering structured worker logs.
+    self.request.kwargsrepr = "{'job_id': '<redacted>', 'audio_b64': '<redacted>', 'dispatch_sequence': '<redacted>'}"
+    parsed_job_id: UUID | None = None
+    phase = "parse_id"
+    try:
+        parsed_job_id = UUID(job_id)
+        phase = "decode"
+        legacy_audio_bytes = base64.b64decode(audio_b64.encode("ascii")) if audio_b64 else None
+        phase = "session"
+        with SessionLocal() as db:
+            phase = "stamp"
+            _stamp_worker_received(db, model_class=TranscriptIngestionJob, record_id=parsed_job_id)
+            kwargs = {"job_id": parsed_job_id, "legacy_audio_bytes": legacy_audio_bytes}
+            if dispatch_sequence is not None:
+                kwargs["dispatch_sequence"] = dispatch_sequence
+            phase = "service"
+            process_transcript_ingestion_job(db, **kwargs)
+            phase = "cleanup"
+    except Exception:
+        _log_generation_task_failure(
+            task="ingestion", record_id=parsed_job_id, phase=phase,
+            reason_code="invalid_task_input" if phase == "parse_id" and parsed_job_id is None else "unexpected_error",
+        )
+        raise RuntimeError("Transcript ingestion task failed.") from None
 
 
 def enqueue_transcript_ingestion_job(*, job_id: UUID):
@@ -44,12 +120,32 @@ def enqueue_transcript_ingestion_job(*, job_id: UUID):
 
 @celery_app.task(name="openscribe.process_generated_document", bind=True, max_retries=None)
 def process_generated_document_task(self, *, document_id: str) -> None:
-    with SessionLocal() as db:
-        _stamp_worker_received(db, model_class=GeneratedDocument, record_id=UUID(document_id))
-        try:
-            process_generated_document(db, document_id=UUID(document_id))
-        except GeneratedDocumentWaitingForTranscript as exc:
-            raise self.retry(exc=exc, countdown=exc.retry_seconds) from exc
+    parsed_document_id: UUID | None = None
+    phase = "parse_id"
+    try:
+        parsed_document_id = UUID(document_id)
+        phase = "session"
+        with SessionLocal() as db:
+            phase = "stamp"
+            _stamp_worker_received(db, model_class=GeneratedDocument, record_id=parsed_document_id)
+            phase = "service"
+            try:
+                process_generated_document(db, document_id=parsed_document_id)
+            except GeneratedDocumentWaitingForTranscript as exc:
+                raise self.retry(exc=exc, countdown=exc.retry_seconds) from exc
+            phase = "cleanup"
+    except Retry:
+        raise
+    except GeneratedDocumentWaitingForTranscript:
+        # Celery re-raises the supplied exception when a task is invoked
+        # directly; preserve that established behavior for synchronous callers.
+        raise
+    except Exception:
+        _log_generation_task_failure(
+            task="generation", record_id=parsed_document_id, phase=phase,
+            reason_code="invalid_task_input" if phase == "parse_id" and parsed_document_id is None else "unexpected_error",
+        )
+        raise RuntimeError("Generated document task failed.") from None
 
 
 def enqueue_generated_document_job(*, document_id: UUID):
@@ -58,9 +154,23 @@ def enqueue_generated_document_job(*, document_id: UUID):
 
 @celery_app.task(name="openscribe.process_template_suggestion")
 def process_template_suggestion_task(*, job_id: str) -> None:
-    with SessionLocal() as db:
-        _stamp_worker_received(db, model_class=TemplateSuggestionJob, record_id=UUID(job_id))
-        process_template_suggestion(db, job_id=UUID(job_id))
+    parsed_job_id: UUID | None = None
+    phase = "parse_id"
+    try:
+        parsed_job_id = UUID(job_id)
+        phase = "session"
+        with SessionLocal() as db:
+            phase = "stamp"
+            _stamp_worker_received(db, model_class=TemplateSuggestionJob, record_id=parsed_job_id)
+            phase = "service"
+            process_template_suggestion(db, job_id=parsed_job_id)
+            phase = "cleanup"
+    except Exception:
+        _log_generation_task_failure(
+            task="template_suggestion", record_id=parsed_job_id, phase=phase,
+            reason_code="invalid_task_input" if phase == "parse_id" and parsed_job_id is None else "unexpected_error",
+        )
+        raise RuntimeError("Template suggestion task failed.") from None
 
 
 @celery_app.task(name="openscribe.process_consultation_split_execution")
@@ -75,29 +185,52 @@ def process_consultation_split_execution_task(*, execution_id: str) -> None:
         parsed_execution_id = UUID(execution_id)
     except (TypeError, ValueError, AttributeError):
         return
-    with SessionLocal() as db:
-        try:
-            execution = db.get(ConsultationSplitExecution, parsed_execution_id)
-            if execution is None:
-                return
-            execution_kind = execution.kind
-            # Both split runtimes require a clean session before credential
-            # resolution.  The task's routing lookup must not leak its read
-            # transaction into that boundary.
-            db.rollback()
-            if execution_kind is ConsultationSplitExecutionKind.analysis:
-                process_consultation_split_analysis_execution(db, execution_id=parsed_execution_id)
-            elif execution_kind is ConsultationSplitExecutionKind.generation:
-                process_consultation_split_generation_execution(db, execution_id=parsed_execution_id)
-            elif execution_kind is ConsultationSplitExecutionKind.verification:
-                process_consultation_split_verification_execution(db, execution_id=parsed_execution_id)
-        except Exception:
-            # The service has terminalized known provider failures itself.  A
-            # truly unexpected worker error must not hand Celery raw exception
-            # text which could contain provider content.  Roll back any local
-            # state and leave submitted/no-response work for conservative quota
-            # lifecycle terminalization rather than retrying a provider call.
-            db.rollback()
+    phase = "session"
+    session_entered = False
+    try:
+        with SessionLocal() as db:
+            session_entered = True
+            phase = "lookup"
+            try:
+                execution = db.get(ConsultationSplitExecution, parsed_execution_id)
+                if execution is None:
+                    return
+                execution_kind = execution.kind
+                # Both split runtimes require a clean session before credential
+                # resolution.  The task's routing lookup must not leak its read
+                # transaction into that boundary.
+                phase = "cleanup"
+                db.rollback()
+                if execution_kind is ConsultationSplitExecutionKind.analysis:
+                    phase = "analysis"
+                    process_consultation_split_analysis_execution(db, execution_id=parsed_execution_id)
+                elif execution_kind is ConsultationSplitExecutionKind.generation:
+                    phase = "generation"
+                    process_consultation_split_generation_execution(db, execution_id=parsed_execution_id)
+                elif execution_kind is ConsultationSplitExecutionKind.verification:
+                    phase = "verification"
+                    process_consultation_split_verification_execution(db, execution_id=parsed_execution_id)
+            except Exception:
+                # Log before cleanup so a failed rollback cannot erase the evidence.
+                # Do not include exception data: providers may attach user content.
+                reason_code = "rollback_error" if phase == "cleanup" else "unexpected_worker_error"
+                _log_consultation_split_worker_failure(
+                    execution_id=parsed_execution_id, phase=phase, reason_code=reason_code,
+                )
+                try:
+                    db.rollback()
+                except Exception:
+                    _log_consultation_split_worker_failure(
+                        execution_id=parsed_execution_id, phase="cleanup", reason_code="rollback_error",
+                    )
+            finally:
+                phase = "cleanup"
+    except Exception:
+        _log_consultation_split_worker_failure(
+            execution_id=parsed_execution_id,
+            phase="cleanup" if session_entered else "session",
+            reason_code="session_error",
+        )
 
 
 @celery_app.task(

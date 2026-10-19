@@ -382,8 +382,9 @@ def test_non_admin_login_redirects_to_workspace_and_leader_sees_review_tools(
     assert workspace_page.status_code == 200
     assert "OpenScribe" in workspace_page.text
     assert "Create new consultation" in workspace_page.text
-    assert 'data-tour-overlay' in workspace_page.text
-    assert 'data-tour-scrim="top"' in workspace_page.text
+    assert '<dialog class="tour-overlay" data-tour-overlay aria-labelledby="scribe-guide-title" aria-describedby="scribe-guide-body"' in workspace_page.text
+    assert 'id="scribe-guide-title" data-tour-title' in workspace_page.text
+    assert 'data-start-guide aria-label="Open workspace guide"' in workspace_page.text
     assert "background: var(--accent);" in Path("app/static/css/components.css").read_text()
 
     review_page = client.get("/workspace/team/account-requests")
@@ -4185,10 +4186,10 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'data-select-structured-selection' in page.text
     assert "Record" in page.text
     assert "Upload" in page.text
-    assert "Quick guide" in page.text
-    assert 'data-tour-overlay' in page.text
-    assert 'data-tour-scrim="top"' in page.text
-    assert 'data-tour-scrim="right"' in page.text
+    assert "Scribe guide" in page.text
+    assert '<dialog class="tour-overlay" data-tour-overlay aria-labelledby="scribe-guide-title" aria-describedby="scribe-guide-body"' in page.text
+    assert 'id="scribe-guide-title" data-tour-title' in page.text
+    assert 'data-start-guide aria-label="Open workspace guide"' in page.text
     assert "background: var(--accent);" in Path("app/static/css/transcribe.css").read_text()
     assert 'src="/static/vendor/lucide/1.8.0/lucide.min.js"' in page.text
     assert 'data-lucide="mic"' in page.text
@@ -4208,7 +4209,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' not in page.text
     assert 'aria-label="Workspace navigation"' in page.text
     assert "My Library" in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20261014-generation-status"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20261018-dictation-save-await"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -4643,7 +4644,7 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
 
     assert page.status_code == 200
     assert "/static/css/tokens.css?v=20260902-control-height" in page.text
-    assert "/static/css/transcribe.css?v=20261012-review-problems-layout" in page.text
+    assert "/static/css/transcribe.css?v=20261016-accessible-manual-guide" in page.text
     assert "/static/css/transcribe-mobile.css" in page.text
     assert "/static/js/workspace/app.js" in page.text
     assert page.text.count("/static/js/transcribe/mobile.js?v=20260823-mobile-toast") == 1
@@ -5067,7 +5068,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20261014-generation-status" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261018-dictation-save-await" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -6277,7 +6278,10 @@ def test_user_transcribe_page_enables_followups_from_structured_note_content(
     assert 'data-quick-action-context-stop' not in page.text
     assert 'data-followup-prompt-input' in page.text
     assert 'data-run-quick-action-trigger\ndisabled' in page.text
-    assert 'data-quick-action-select\nclass="sr-only"\n>' in page.text
+    quick_action_select = page.text.split('<select\nname="quick_action_id"\n', 1)[1].split('>', 1)[0]
+    assert 'data-quick-action-select' in quick_action_select
+    assert 'class="sr-only"' in quick_action_select
+    assert 'aria-label="Quick action"' in quick_action_select
     assert 'data-quick-action-listbox' in page.text
 
 
@@ -6627,7 +6631,8 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "if (noteGenerationCloseDictationAfterCurrentRequest && transcriptId === generationTranscriptId) {" in app_js
     assert "const response = await csrfFetch(`/api/v1/transcripts/${generationTranscriptId}/generate-output`, {" in app_js
     assert "handleTemplateGenerationQueued" not in app_js
-    assert "return await enqueueTemplateGeneration({\n              transcriptId: dictationTranscriptId,\n              templateId,\n              closeDictationModal: true,\n            });" in app_js
+    normalized_app_js = re.sub(r"\s+", " ", app_js)
+    assert "return await enqueueTemplateGeneration({ transcriptId: dictationTranscriptId, templateId, closeDictationModal: true, });" in normalized_app_js
     assert "onNoteGenerationQueued" not in actions_js
     assert "silent: true" not in app_js
     assert "silent = false" not in app_js
@@ -6868,7 +6873,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20261014-generation-status" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261018-dictation-save-await" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

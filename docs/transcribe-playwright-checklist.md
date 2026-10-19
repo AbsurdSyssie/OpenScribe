@@ -140,6 +140,28 @@ Without a configured STT selection:
 - verify the inactivity prompt does not stop/finalize/upload by itself;
 - verify backgrounding/unload sends best-effort local pause/finalize behavior without claiming guaranteed delivery.
 
+## Eligible Deepgram live streaming and recovery
+
+- verify the server-derived capability and owner/session/CSRF checks gate the stream before provider work;
+- verify bounded windows commit final text before the browser receives the committed checkpoint, while interim text remains temporary;
+- verify pause/resume and checkpoint rotation do not replay committed audio or overlap submitted sample intervals;
+- on stream failure, verify capture stops and does not replay audio automatically;
+- verify server-retained audio can be retried only while its original retention window remains valid;
+- verify browser-held recovery audio is offered only when its sample bounds and count exactly match the failed interval; exclude unsent audio and pre-roll;
+- verify refresh/sign-out/tab closure can lose browser-held uncommitted audio, while already committed transcript text remains;
+- verify explicit retry creates a fresh accounted ingestion job and the UI polls for application; verify explicit discard clears the unresolved interval;
+- verify page-unload finalization remains best-effort and no test claims lossless capture.
+
+The existing unit and route coverage includes frame/backpressure and exact browser fallback checks, server-side stream barriers/recovery/discard/retention checks, and route authorization/commit behavior. These tests do not replace a real-browser microphone interruption test or a deployed-provider acceptance check.
+
+## Consultation split review
+
+- verify **Multiple problems** is persisted per consultation and can request manual review even when automatic splitting is off;
+- verify opening **Review problems** is passive and does not save sources, queue analysis, create an intent, or generate notes;
+- verify **Suggest problems**, **Update suggestions**, and **Use these problems** start only their explicit review operation;
+- verify the clinician can edit topics and templates, then choose **Create notes** or **Continue as one note**;
+- verify a restored draft stays passive until the clinician opens it, and failed split generation exposes only the explicit retry/keep actions available for that state.
+
 ## Consultation rail and layout
 
 - verify recent consultation rail open/close and `open_recent=1` URL cleanup;

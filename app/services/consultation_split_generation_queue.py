@@ -16,6 +16,7 @@ from app.errors import AppError
 from app.models import ConsultationSplitBatch, ConsultationSplitBatchStatus, ConsultationSplitExecution, ConsultationSplitExecutionKind, User, utcnow
 from app.services.consultation_split_generation import (
     prepare_split_generation_request,
+    split_generation_request_reservation_units,
     split_generation_request_snapshot,
 )
 from app.services.consultation_splits import queue_split_execution, read_split_batch_json
@@ -81,6 +82,9 @@ def queue_confirmed_split_generation(
     request = split_generation_request_snapshot(
         prepared, adapter_kind=config.adapter_kind, model=model, user_id=owner.id,
     )
+    reservation_units = split_generation_request_reservation_units(
+        request, prepared_messages=prepared.request_body.get("messages"),
+    )
     # Confirmation's provider snapshot is write-once and contains no secret.
     existing_batch_snapshot = read_split_batch_json(db, owner, batch=batch, field="provider_snapshot_encrypted")
     if existing_batch_snapshot != {}:
@@ -92,7 +96,7 @@ def queue_confirmed_split_generation(
     )
     execution, _attempt, dispatch = queue_split_execution(
         db, owner, kind=ConsultationSplitExecutionKind.generation, batch=batch,
-        reserved_units=prepared.reservation_units,
+        reserved_units=reservation_units,
         reservation_valid_until=utcnow() + timedelta(seconds=SPLIT_GENERATION_RESERVATION_SECONDS),
         llm_config_id=config.id, provider_snapshot=snapshot, request_payload=request, expected_model=model,
     )

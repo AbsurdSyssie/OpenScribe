@@ -436,6 +436,8 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
     AuditCase("POST", "/api/v1/transcripts/start", AccessTier.full, json_body=_json(title="Audit Transcript")),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/commit", AccessTier.full, json_body=_json(text_encrypted="ciphertext")),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/finalize-live-capture", AccessTier.full),
+    AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/deepgram-stream/{PLACEHOLDER_UUID_2}/retry", AccessTier.full),
+    AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/deepgram-stream/{PLACEHOLDER_UUID_2}/discard", AccessTier.full),
     AuditCase("PATCH", f"/api/v1/transcripts/{PLACEHOLDER_UUID}", AccessTier.full, json_body=_json(multiple_problems=True)),
     AuditCase("DELETE", f"/api/v1/transcripts/{PLACEHOLDER_UUID}", AccessTier.full),
     AuditCase(

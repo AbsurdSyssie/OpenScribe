@@ -103,6 +103,9 @@ Beat schedules:
 - task-dispatch outbox publication every 1 second;
 - transcript retention cleanup every 10 seconds;
 - transcript-audio cleanup retry every 10 seconds;
+- failed-ingestion source-audio expiry every 10 seconds;
+- security-audit event expiry every 10 seconds;
+- legal-document version expiry every 10 seconds;
 - provider-secret cleanup retry every 10 seconds;
 - quota lifecycle processing every 10 seconds.
 
@@ -187,6 +190,11 @@ APP_HOST=0.0.0.0
 DEV_ALLOW_REMOTE_BIND=true
 DEV_FORWARDED_ALLOW_IPS=<reverse-proxy-ip>
 ```
+
+`start-dev.sh` launches FastAPI's development server without the runtime
+Uvicorn WebSocket message and queue caps. Keep this remote-bind option on a
+trusted development network. For networked live-audio testing, use the capped
+Docker runtime described in [docker.md](docker.md).
 
 PostgreSQL, Redis, and Vault remain loopback-bound unless Compose is deliberately changed and `DEV_ALLOW_REMOTE_SERVICE_EXPOSURE=true` is set. Do not use wildcard forwarded-header trust while the origin is directly reachable.
 

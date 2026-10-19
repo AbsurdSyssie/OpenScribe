@@ -4,9 +4,10 @@
   <title>{{ workspace_page_title|default('Workspace') }} · OpenScribe</title>
   <link rel="stylesheet" href="/static/css/tokens.css?v=20260902-control-height">
   <link rel="stylesheet" href="/static/css/components.css?v=20260902-shared-fields">
-  <link rel="stylesheet" href="/static/css/workspace.css?v=20260821-mobile-scribe-flow">
+  <link rel="stylesheet" href="/static/css/workspace.css?v=20261018-help-pointer-resize">
   {% if active_workspace_section == 'scribe' %}{% include "transcribe/_head_assets.html" %}<link rel="stylesheet" href="/static/css/transcribe-mobile.css?v=20260930-detected-pii-override">{% else %}<link rel="stylesheet" href="/static/css/settings.css?v=20260902-account-dialogs-4">{% endif %}
   {% if active_workspace_section == 'smart-phrases' %}<link rel="stylesheet" href="/static/css/settings-smart-phrases.css?v=20260724-import-celebration">{% endif %}
+  {% if active_workspace_section == 'help' %}<link rel="stylesheet" href="/static/css/workspace-help.css?v=20261018-help-responsive-diagram">{% endif %}
   <script src="/static/vendor/lucide/1.8.0/lucide.min.js"></script>
 </head>
 <body class="workspace-page{% if active_workspace_section == 'scribe' %} workspace-page--scribe h-screen overflow-hidden{% endif %}{% if active_workspace_section in ['templates', 'quick-actions', 'smart-phrases'] %} workspace-page--library{% endif %}" data-workspace-section="{{ active_workspace_section }}" data-active-transcript-id="{{ active_transcript_id or '' }}">
@@ -18,11 +19,12 @@
     data-route-base="{{ transcribe_route_base }}"
     data-layout-state="normal"
     {% endif %}>
+    {% if active_workspace_section == 'help' %}<a class="workspace-help__skip-link" href="#workspace-main">Skip to main content</a>{% endif %}
     {% include "workspace/_sidebar.html" %}{% include "workspace/_mobile_header.html" %}
     {% if active_workspace_section == 'scribe' %}
       {% include "transcribe/_workspace.html" %}
     {% else %}
-      <main class="workspace-main"><div class="workspace-section workspace-section--settings settings-content">
+      <main {% if active_workspace_section == 'help' %}id="workspace-main" tabindex="-1"{% endif %} class="workspace-main"><div class="workspace-section workspace-section--settings settings-content">
         {% if message %}<div class="flash {{ message_kind|default('success') }}">{{ message }}</div>{% endif %}
         {% if recovery_temporary_password %}<section class="settings-recovery panel" data-recovery-modal role="dialog" aria-modal="true" aria-labelledby="recovery-modal-title"><div><h2 id="recovery-modal-title">Temporary password</h2><p>Copy now and share it with the user out of band. It will not display again.</p></div><input value="{{ recovery_temporary_password }}" readonly data-recovery-temp-password aria-label="Temporary password"><button class="btn-primary-sm" type="button" data-recovery-copy>Copy password</button><span data-recovery-copy-status></span></section>{% endif %}
         {% set settings_tab = active_workspace_section %}
@@ -34,12 +36,13 @@
         {% elif active_workspace_section == 'ai-services' %}{% include "settings/_ai_services.html" %}
         {% elif active_workspace_section == 'team-members' %}{% include "settings/_team_members.html" %}
         {% elif active_workspace_section == 'account-requests' %}{% include "settings/_account_requests.html" %}{% endif %}
+        {% if active_workspace_section == 'help' %}{% include "workspace/_help.html" %}{% endif %}
       </div></main>
     {% endif %}
   </div>
   {% if active_workspace_section != 'scribe' %}<form id="new-session-form" method="post" action="{{ new_consultation_url|default('/transcribe/sessions') }}" hidden><input type="hidden" name="ingestion_mode" value="{{ preferred_recording_mode or 'whole_file' }}"></form>{% endif %}
   {% if active_workspace_section == 'scribe' %}{% include "transcribe/_shell_extras.html" %}{% else %}<script src="/static/js/generated-password.js?v=20260712-infield-controls"></script>{% include "_template_editor_script.html" %}{% include "_csrf_script.html" %}{% endif %}
-  <script type="module" src="/static/js/workspace/app.js?v=20260924-dynamic-recording-lock"></script>
+  <script type="module" src="/static/js/workspace/app.js?v=20261018-help-pointer-resize"></script>
   {% if active_workspace_section != 'scribe' %}<script type="module" src="/static/js/settings/app.js?v=20260918-library-help"></script><script type="module" src="/static/js/settings/controls.js?v=20260911-split-preferences"></script>{% endif %}
   {% if active_workspace_section == 'smart-phrases' %}<script type="module" src="/static/js/settings/smart-phrases.js?v=20260718-library-editor"></script>{% endif %}
   {% include "_legal_footer_banner.html" %}

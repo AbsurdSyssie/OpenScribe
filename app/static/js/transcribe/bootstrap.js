@@ -7,6 +7,8 @@ const DEFAULT_BOOTSTRAP = {
   hasDictationSttSelection: false,
   hasLlmSelection: false,
   sttAvailable: false,
+  deepgramLiveStreamingAvailable: false,
+  activeTranscriptStreamGap: null,
   sttHealth: null,
   dictationSttAvailable: false,
   sttStatusMessage: null,

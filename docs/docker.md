@@ -28,6 +28,14 @@ The deployment script accepts only a clean commit available on the current branc
 
 The web application publishes on `127.0.0.1:8080` by default.
 
+The runtime Uvicorn command caps each inbound WebSocket message at 64 KiB and
+the per-connection receive queue at four messages. Direct Uvicorn launches
+outside `docker/entrypoint.sh` should use `--ws-max-size 65536
+--ws-max-queue 4` as well. The live STT route accepts audio frames up to 32,013
+bytes and small JSON controls; configure a reverse proxy to pass WebSocket
+upgrades and allow at least that frame size. Proxy limits are separate from
+Uvicorn's limits.
+
 ```bash
 docker compose --profile runtime ps
 docker compose logs -f openscribe
@@ -280,6 +288,11 @@ Check migrations, Vault bootstrap/unseal, PostgreSQL/Redis connectivity, stable 
 ## Host development remains available
 
 `start-dev.sh` starts only PostgreSQL, Redis, and Vault in Compose, then runs FastAPI/Celery/Beat and optional Brave on the host virtualenv for reload/debugging.
+
+When launching Uvicorn directly for local development, use the same WebSocket
+message and queue caps documented above. `start-dev.sh` launches FastAPI's dev
+server without those caps; keep remote binding on a trusted development
+network. Use the runtime profile for networked live-audio testing.
 
 Do not run it alongside the `runtime` profile.
 

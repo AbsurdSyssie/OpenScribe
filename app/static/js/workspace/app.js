@@ -117,14 +117,35 @@ document.addEventListener('openscribe:recording-navigation-added', (event) => {
 function initDrawer() {
   const drawer = document.querySelector('#workspace-sidebar');
   const toggle = document.querySelector('[data-workspace-drawer-toggle]');
-  const close = document.querySelector('[data-workspace-drawer-close]');
-  if (!shell || !drawer || !toggle || !close) return;
+  const scrim = document.querySelector('[data-workspace-drawer-close]');
+  const drawerClose = document.querySelector('[data-drawer-dismiss]');
+  if (!shell || !drawer || !toggle || !scrim) return;
   const mobile = window.matchMedia('(max-width: 767px)');
+  const inertTargets = [
+    ...shell.children,
+    ...[...document.body.children].filter((element) => (
+      element !== shell && element.tagName !== 'SCRIPT' && !element.matches('[data-tour-overlay]')
+    )),
+  ];
+  const drawerInitiallyInert = drawer.hasAttribute('inert');
+  let inertSnapshot = null;
   const setOpen = (open, restoreFocus = false) => {
     const actual = Boolean(open && mobile.matches);
     document.body.classList.toggle('workspace-drawer-open', actual);
     toggle.setAttribute('aria-expanded', String(actual));
-    drawer.toggleAttribute('inert', mobile.matches && !actual);
+    if (actual) {
+      if (!inertSnapshot) inertSnapshot = new Map(inertTargets.map((element) => [element, element.hasAttribute('inert')]));
+      for (const element of inertTargets) {
+        if (element !== drawer && element !== scrim) element.setAttribute('inert', '');
+      }
+      drawer.removeAttribute('inert');
+    } else if (inertSnapshot) {
+      for (const [element, wasInert] of inertSnapshot) element.toggleAttribute('inert', wasInert);
+      inertSnapshot = null;
+      drawer.toggleAttribute('inert', mobile.matches || drawerInitiallyInert);
+    } else {
+      drawer.toggleAttribute('inert', mobile.matches || drawerInitiallyInert);
+    }
     if (actual) drawer.focus(); else if (restoreFocus) toggle.focus();
   };
   toggle.addEventListener('click', () => {
@@ -132,10 +153,36 @@ function initDrawer() {
     if (opening) document.dispatchEvent(new CustomEvent('workspace:drawer-opening'));
     setOpen(opening);
   });
-  close.addEventListener('click', () => setOpen(false, true));
+  scrim.addEventListener('click', () => setOpen(false, true));
+  drawerClose?.addEventListener('click', () => setOpen(false, true));
   drawer.addEventListener('click', (event) => { if (mobile.matches && event.target.closest('a, button[type="submit"]')) setOpen(false); });
   document.addEventListener('workspace:drawer-close', () => setOpen(false));
-  document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && toggle.getAttribute('aria-expanded') === 'true') setOpen(false, true); });
+  document.addEventListener('keydown', (event) => {
+    if (toggle.getAttribute('aria-expanded') !== 'true') return;
+    // A native modal owns focus and keyboard dismissal while it is open.
+    if (document.querySelector('dialog:modal')) return;
+    if (event.key === 'Escape') {
+      setOpen(false, true);
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = [...drawer.querySelectorAll('a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex]:not([tabindex="-1"])')]
+      .filter((element) => element.tabIndex >= 0 && !element.matches(':disabled') && !element.closest('[hidden], [inert]') && element.getClientRects().length);
+    if (!focusable.length) {
+      event.preventDefault();
+      drawer.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && (document.activeElement === first || document.activeElement === drawer)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (document.activeElement === last || !drawer.contains(document.activeElement))) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
   mobile.addEventListener?.('change', () => setOpen(false));
   setOpen(false);
 }
@@ -145,6 +192,7 @@ function initSidebarSizing() {
   const sidebar = shell.querySelector('[data-primary-sidebar]');
   const resize = shell.querySelector('[data-sidebar-resize]');
   const toggles = shell.querySelectorAll('[data-sidebar-collapse-toggle]');
+  const stepControls = shell.querySelectorAll('[data-sidebar-step]');
   if (!sidebar || !resize) return;
   const desktop = window.matchMedia('(min-width: 768px)');
   const key = 'openscribe:workspace:sidebar-width';
@@ -153,10 +201,24 @@ function initSidebarSizing() {
   let stored = 288; try { stored = Number(localStorage.getItem(key)) || 288; } catch (_) {}
   apply(stored);
   toggles.forEach((button) => button.addEventListener('click', () => apply(sidebar.getBoundingClientRect().width === 64 ? 288 : 64, true)));
+  stepControls.forEach((button) => button.addEventListener('click', () => {
+    const step = Number(button.dataset.sidebarStep);
+    if (Number.isFinite(step)) apply(sidebar.getBoundingClientRect().width + step, true);
+  }));
   let startX = 0; let startWidth = 0;
   resize.addEventListener('pointerdown', (event) => { if (!desktop.matches) return; startX = event.clientX; startWidth = sidebar.getBoundingClientRect().width; resize.setPointerCapture?.(event.pointerId); });
   resize.addEventListener('pointermove', (event) => { if (resize.hasPointerCapture?.(event.pointerId)) apply(startWidth + event.clientX - startX); });
   resize.addEventListener('pointerup', (event) => { if (!resize.hasPointerCapture?.(event.pointerId)) return; apply(sidebar.getBoundingClientRect().width, true); resize.releasePointerCapture?.(event.pointerId); });
+  resize.addEventListener('keydown', (event) => {
+    if (!desktop.matches) return;
+    const current = sidebar.getBoundingClientRect().width;
+    if (event.key === 'ArrowLeft') apply(current <= 192 ? 64 : current - 16, true);
+    else if (event.key === 'ArrowRight') apply(current <= 64 ? 192 : current + 16, true);
+    else if (event.key === 'Home') apply(64, true);
+    else if (event.key === 'End') apply(384, true);
+    else return;
+    event.preventDefault();
+  });
 }
 
 rememberActiveTranscript(); initDrawer(); initSidebarSizing(); setRecordingLock(false);

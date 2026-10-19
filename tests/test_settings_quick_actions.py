@@ -280,8 +280,9 @@ def test_quick_action_io_configures_shared_controller_and_wires_help_adapter():
         "/api/v1/quick-actions/import",
     ):
         assert endpoint in script
-    assert 'class="template-library-utilities" aria-label="Quick action import and export"' in markup
-    assert "Quick actions give OpenScribe a reusable instruction for the current consultation" in markup
+    assert 'class="template-library-utilities"' in markup
+    assert 'role="group" aria-label="Quick action import and export"' in markup
+    assert "Quick Actions contain reusable instructions for draft referrals, summaries, or patient messages." in markup
     assert "initLibraryHelp(library, {" in script
     assert "prefix: 'quick-action'" in script
 

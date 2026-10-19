@@ -9,6 +9,7 @@ Successful full-session login for normal users and team leaders lands directly o
 - `/workspace`
 - `/workspace/account`
 - `/workspace/preferences`
+- `/workspace/help`
 - `/workspace/library/templates`
 - `/workspace/library/quick-actions`
 - `/workspace/library/smart-phrases`
@@ -17,6 +18,8 @@ Successful full-session login for normal users and team leaders lands directly o
 - `/workspace/team/account-requests`
 
 Only the Scribe section loads owner-filtered consultation history. Non-Scribe routes do not query or decrypt transcript history through shell context. Scribe continues to use the owner-authorized workspace resolver for transcript-derived content. Team routes enforce leader access on the server; hiding sidebar links is not an authorization control.
+
+The sidebar links to **Help** from every workspace section. `/workspace/help` renders the user reference in the authenticated workspace shell without loading transcript history. It covers the workspace, capture and source review, preferences, generation, review, copying, privacy, and troubleshooting. Help provides a skip link to main content and a topic list whose activation moves keyboard focus to the selected heading. Its long article keeps the desktop sidebar available while scrolling. The desktop sidebar width can be adjusted by dragging its divider, using the **Make sidebar narrower/wider** buttons, or collapsing and expanding it. On mobile, the shared navigation drawer contains keyboard focus, makes background content inert, and returns focus to its opener when dismissed; desktop resizing controls are hidden because they do not resize the mobile drawer. The Scribe sidebar also keeps the **Guide** button, which opens a manually requested ten-step workflow guide. It does not autostart, change consultation content, or save a completion marker. The guide restores the selected workspace tab and opener focus when it closes; it is blocked while capture or another dialog is active.
 
 System-admin accounts are redirected to `/admin` rather than receiving the user workspace.
 
@@ -31,6 +34,8 @@ Create-new-consultation controls in every workspace section use the signed-in us
 ## Recording navigation lock
 
 The media controller emits recording lifecycle events. Shared workspace code disables only controls marked `data-recording-navigation` while microphone capture is active and installs a `beforeunload` warning. Upload, transcription, generation, and other background states do not emit these events and therefore do not lock navigation.
+
+Post-consultation dictation remains a separate source from the consultation transcript. Save and Save & Generate can be selected while its microphone is recording or paused; the workspace waits for capture to stop and the preview transcription to finish before saving or queueing generation. A failed or empty preview requires an explicit retry.
 
 ## Layout and scrolling
 

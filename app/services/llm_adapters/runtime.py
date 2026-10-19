@@ -297,7 +297,10 @@ def _invoke_openai_compatible_once(
                     close()
                 except Exception:
                     pass
-    message = completion.choices[0].message if completion.choices else None
+    choice = completion.choices[0] if completion.choices else None
+    if choice is not None:
+        _validate_completion_finish_reason(getattr(choice, "finish_reason", None))
+    message = getattr(choice, "message", None) if choice is not None else None
     generated_text = openai_message_content_text(getattr(message, "content", None) if message is not None else None)
     if not generated_text:
         raise AppError(502, "llm_generation_failed", "LLM generation returned no note text")
@@ -307,6 +310,36 @@ def _invoke_openai_compatible_once(
         output_tokens=getattr(usage, "completion_tokens", None) if usage is not None else None,
         total_tokens=getattr(usage, "total_tokens", None) if usage is not None else None,
         duration_ms=int((time.perf_counter() - started) * 1000),
+    )
+
+
+def _normalized_completion_reason(value: object) -> str | None:
+    """Normalize only bounded reason text; never retain or expose provider text."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        value = getattr(value, "value", None)
+    if not isinstance(value, str) or not value or len(value) > 64:
+        return ""
+    return value.casefold()
+
+
+def _validate_completion_finish_reason(value: object) -> None:
+    reason = _normalized_completion_reason(value)
+    if reason is None or reason == "stop":
+        return
+    if reason == "length":
+        raise AppError(
+            502,
+            "llm_generation_truncated",
+            "The LLM provider exhausted its output-token limit before completing the response.",
+            {"provider_finish_reason": "length"},
+        )
+    raise AppError(
+        502,
+        "llm_provider_bad_response",
+        "The LLM provider stopped before completing the response.",
+        {"provider_error_code": "incomplete_response"},
     )
 
 
@@ -368,6 +401,7 @@ def _invoke_ollama_once(
         if isinstance(content, str) and content:
             generated_parts.append(content)
         if payload.get("done") is True:
+            _validate_completion_finish_reason(payload.get("done_reason"))
             final_payload = payload
             return True
         return False
@@ -409,7 +443,14 @@ def _invoke_ollama_once(
             connect_error_cls=connect_error_cls,
             http_status_error_cls=http_status_error_cls,
         ) from exc
-    payload = final_payload or {}
+    if final_payload is None:
+        raise AppError(
+            502,
+            "llm_provider_bad_response",
+            "The LLM provider ended the response before completing generation.",
+            {"provider_error_code": "incomplete_response"},
+        )
+    payload = final_payload
     generated_text = "".join(generated_parts).strip()
     if not generated_text:
         raise AppError(502, "llm_generation_failed", "LLM generation returned no note text")

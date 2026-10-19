@@ -9,6 +9,7 @@ from app.services.provider_transport_telemetry import provider_attempt_execution
 from app.services.llm_execution import ExecutionBudget
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Literal
@@ -53,6 +54,7 @@ from app.services.redaction import reidentify_text
 
 SPLIT_GENERATION_PROVIDER_DEADLINE_SECONDS = 90
 RECOVERABLE_GENERATION_RESPONSE_MAX_CHARS = 2_097_152
+logger = logging.getLogger("openscribe.consultation_split")
 _CONTROLLED_PROVIDER_ERROR_BY_APP_CODE = {
     # Gemini's timeout adapter intentionally omits provider details. This is a
     # finite, provider-bound application classification, not copied text.
@@ -518,6 +520,14 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
         db.add(ProviderUsageEvent(team_id=work.transcript.team_id, owner_user_id=work.owner.id, transcript_id=work.transcript.id, consultation_split_execution_id=work.execution.id, llm_config_id=work.execution.llm_config_id, feature_type=ProviderFeatureType.consultation_split_generation, event_type=ProviderUsageEventType.completed, status="ready", provider_adapter=work.execution.provider_adapter, model_name=work.execution.provider_model, prompt_tokens=usage["input_tokens"], completion_tokens=usage["output_tokens"], total_tokens=usage["total_tokens"]))
         db.commit(); return SplitGenerationRuntimeResult("ready", execution_id)
     except Exception:
+        event = "consultation_split_finalization_failed"
+        logger.warning(
+            "event=%s execution_id=%s phase=%s",
+            event,
+            execution_id,
+            "finalize",
+            extra={"event": event, "execution_id": str(execution_id), "phase": "finalize"},
+        )
         db.rollback(); work=_lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
         if work is None:
             return SplitGenerationRuntimeResult("in_flight", execution_id)

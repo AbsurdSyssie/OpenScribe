@@ -2,6 +2,8 @@
 
 This index distinguishes maintained current references from implemented design history, future roadmaps, and dated evidence. When documentation and implementation disagree, use the repository rules in [`AGENTS.md`](../AGENTS.md): migrations/constraints, implemented services/routes, focused tests, and runtime configuration take precedence over prose.
 
+The [documentation inventory](documentation-inventory.md) lists documents by app area, including local and historical files, and defines the factual and writing review steps. The [18 October documentation review](reviews/documentation-review-2026-10-18.md) records corrections, sources, coverage, and limits.
+
 ## Maintained current references
 
 These documents are maintained as descriptions of implemented behavior or an explicitly identified compatibility boundary.
@@ -19,6 +21,7 @@ These documents are maintained as descriptions of implemented behavior or an exp
 | Database test behavior | [dbtesting.md](dbtesting.md) |
 | Persistence architecture | [DatabasePlan.md](DatabasePlan.md) |
 | Frontend styling architecture | [styling_condensation_plan.md](styling_condensation_plan.md) |
+| Frontend roadmap and current-runtime boundary | [frontend-roadmap.md](frontend-roadmap.md) |
 | Current focused backlog | [feature_todo.md](feature_todo.md) |
 | Contributor rules | [`AGENTS.md`](../AGENTS.md); [`brief.md`](../brief.md) is a contributor brief, not an operational source of truth. |
 
@@ -48,8 +51,7 @@ These documents are maintained as descriptions of implemented behavior or an exp
 | Transcript capture contracts and remaining roadmap | [transcript-capture.md](transcript-capture.md) |
 | Template-suggestion preference | [template-suggestion-preference.md](template-suggestion-preference.md) |
 | Consultation-splitting preference rollout and partial recovery | [consultation-splitting-preference.md](consultation-splitting-preference.md) |
-| Consultation-splitting Phase 10 release evidence (10 September 2026) | [consultation-splitting-release-evidence-2026-09-10.md](consultation-splitting-release-evidence-2026-09-10.md) |
-| Live chunked STT behavior | [live_stt.md](live_stt.md) |
+| Deepgram streaming and live chunked STT | [live_stt.md](live_stt.md) |
 | Working note implementation contract/history | [working_note_implementation.md](working_note_implementation.md) |
 | Structured EMIS notes | [emis-roadmap.md](emis-roadmap.md) |
 | Smart Phrase editor behavior | [editor-smart-phrases.md](editor-smart-phrases.md) |
@@ -81,6 +83,22 @@ These files are retained to explain original sequencing or design reasoning and 
 - [at-rest-encryption-plan.md](at-rest-encryption-plan.md) — implemented encryption rollout history.
 
 Other files whose names contain `roadmap`, `plan`, `brief`, `todo`, or `design` must state their status at the top. The filename alone no longer determines whether the file is current; use this index and its status section.
+
+## Engineering review records
+
+- [Documentation review — 18 October 2026](reviews/documentation-review-2026-10-18.md) records factual corrections, writing review, and verification limits against the [functional inventory](documentation-inventory.md).
+- [Generation-stage logging, efficiency and token review — 16 October 2026](reviews/generation-stage-cost-logging-review-2026-10-16.md) covers STT, source preparation, ordinary and split generation, recovery and checking, with bounded remediation and remaining cost/transport decisions.
+- [Note generation pipeline review — 16 October 2026](reviews/note-generation-pipeline-review-2026-10-16.md) records the generation sequence, information boundaries, logging, failure handling, and a prioritized follow-up backlog at the inspected commit. It is a dated assessment, not an implementation plan or current runtime contract. Actionable findings are also tracked in [`DISCOVERED_ISSUES.md`](../DISCOVERED_ISSUES.md).
+
+## Accessibility evidence
+
+The [human testing guide](accessibility/human-testing-guide.md) is a maintained procedure for accessibility reviewers, not an assessment result.
+
+Dated local records include the [WCAG 2.2 A/AA manual checklist](accessibility/wcag-2.2-manual-checklist-2026-10-15.md), [interactive browser assessment](accessibility/interactive-browser-assessment-2026-10-15.md), [15 October evidence handoff manifest](accessibility/evidence-manifest-2026-10-15.md), [16 October WCAG evidence summary](accessibility/evidence-summary-2026-10-16.md), [16 October Scribe Guide verification](accessibility/scribe-guide-verification-2026-10-16.md), and [18 October Help verification](accessibility/help-verification-2026-10-18.md). These records do not establish current conformance. The 15 October record preserves findings from before remediation alongside separate verification after fixes. Preserve dated reports and add later assessments. The legal documentation destination remains to be confirmed in the manifest.
+
+## Release evidence
+
+The [consultation-splitting Phase 10 release evidence](consultation-splitting-release-evidence-2026-09-10.md) records validation on 10 September 2026. Use [consultation-splitting-preference.md](consultation-splitting-preference.md) for the current contract; preserve the release record as dated evidence.
 
 ## Compliance evidence
 

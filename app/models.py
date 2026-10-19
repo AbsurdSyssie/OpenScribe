@@ -64,6 +64,29 @@ class TranscriptIngestionJobStatus(str, enum.Enum):
     failed = "failed"
 
 
+class TranscriptStreamStatus(str, enum.Enum):
+    active = "active"
+    finalizing = "finalizing"
+    completed = "completed"
+    failed = "failed"
+    recovering = "recovering"
+    discarded = "discarded"
+
+
+class TranscriptStreamWindowStatus(str, enum.Enum):
+    active = "active"
+    committed = "committed"
+    failed = "failed"
+    recovering = "recovering"
+    discarded = "discarded"
+
+
+class TranscriptStreamDeliveryStatus(str, enum.Enum):
+    authorized = "authorized"
+    sent = "sent"
+    ambiguous = "ambiguous"
+
+
 class AccountRequestStatus(str, enum.Enum):
     pending = "pending"
     approved = "approved"
@@ -88,6 +111,7 @@ class LegalDocumentKind(str, enum.Enum):
     privacy = "privacy"
     cookie_storage = "cookie_storage"
     terms = "terms"
+    accessibility = "accessibility"
 
 
 class LegalDocumentVersionState(str, enum.Enum):
@@ -371,6 +395,7 @@ class AttemptKind(str, enum.Enum):
     stt_post_consultation_dictation = "stt_post_consultation_dictation"
     stt_prompt_context = "stt_prompt_context"
     stt_provider_test = "stt_provider_test"
+    stt_deepgram_live_stream = "stt_deepgram_live_stream"
 
 
 class AttemptStatus(str, enum.Enum):
@@ -391,6 +416,8 @@ class ProviderSettlementBasis(str, enum.Enum):
     reported = "reported"
     measured = "measured"
     conservative_unknown = "conservative_unknown"
+    stream_authorized = "stream_authorized"
+    stream_measured = "stream_measured"
 
 
 class TaskDispatchKind(str, enum.Enum):
@@ -1610,6 +1637,124 @@ class Transcript(Base):
         back_populates="transcript",
         passive_deletes="all",
     )
+    transcript_stream_sessions: Mapped[list["TranscriptStreamSession"]] = relationship(
+        back_populates="transcript",
+        cascade="all, delete-orphan",
+    )
+
+
+class TranscriptStreamSession(Base):
+    """Owner-bound metadata for one live Deepgram relay session."""
+
+    __tablename__ = "transcript_stream_sessions"
+    __table_args__ = (
+        CheckConstraint("char_length(failure_code) <= 128 OR failure_code IS NULL", name="ck_transcript_stream_sessions_failure_code_length"),
+        CheckConstraint("connection_fence > 0", name="ck_transcript_stream_sessions_connection_fence_positive"),
+        CheckConstraint("next_source_sample_offset >= 0", name="ck_transcript_stream_sessions_next_offset_nonnegative"),
+        CheckConstraint("received_sample_count >= 0", name="ck_transcript_stream_sessions_received_samples_nonnegative"),
+        CheckConstraint("authorized_sample_count >= 0", name="ck_transcript_stream_sessions_authorized_samples_nonnegative"),
+        CheckConstraint("window_forwarded_sample_count >= 0 AND window_forwarded_sample_count <= 480000", name="ck_transcript_stream_sessions_window_samples_range"),
+        CheckConstraint("window_no >= 0", name="ck_transcript_stream_sessions_window_no_nonnegative"),
+        CheckConstraint("jsonb_typeof(selection_snapshot_json) = 'object'", name="ck_transcript_stream_sessions_snapshot_object"),
+        Index(
+            "uq_transcript_stream_sessions_open_transcript",
+            "transcript_id",
+            unique=True,
+            postgresql_where=text("status IN ('active', 'finalizing', 'failed', 'recovering')"),
+        ),
+        Index("ix_transcript_stream_sessions_owner_state", "owner_user_id", "status", "updated_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    selection_snapshot_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    status: Mapped[TranscriptStreamStatus] = mapped_column(Enum(TranscriptStreamStatus), nullable=False, default=TranscriptStreamStatus.active)
+    connection_fence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    fence_token: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, default=uuid.uuid4)
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    next_source_sample_offset: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    received_sample_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    authorized_sample_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    window_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    window_forwarded_sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    active_provider_attempt_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    failure_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+    transcript: Mapped[Transcript] = relationship(back_populates="transcript_stream_sessions")
+    windows: Mapped[list["TranscriptStreamWindow"]] = relationship(cascade="all, delete-orphan", order_by="TranscriptStreamWindow.window_no")
+    deliveries: Mapped[list["TranscriptStreamDelivery"]] = relationship(cascade="all, delete-orphan")
+
+
+class TranscriptStreamWindow(Base):
+    """A <=30-second finalized text checkpoint and optional failed recovery link."""
+
+    __tablename__ = "transcript_stream_windows"
+    __table_args__ = (
+        CheckConstraint("window_no >= 0", name="ck_transcript_stream_windows_window_no_nonnegative"),
+        CheckConstraint("source_start_sample_offset >= 0", name="ck_transcript_stream_windows_start_nonnegative"),
+        CheckConstraint("source_end_sample_offset >= source_start_sample_offset", name="ck_transcript_stream_windows_offsets_ordered"),
+        CheckConstraint("forwarded_sample_count >= 0 AND forwarded_sample_count <= 480000", name="ck_transcript_stream_windows_forwarded_samples_range"),
+        CheckConstraint("final_segment_count >= 0", name="ck_transcript_stream_windows_final_segment_count_nonnegative"),
+        CheckConstraint("text_digest IS NULL OR text_digest ~ '^[0-9a-f]{64}$'", name="ck_transcript_stream_windows_digest_canonical"),
+        CheckConstraint("recovery_audio_expires_at IS NULL OR recovery_audio_stored_at IS NOT NULL", name="ck_transcript_stream_windows_recovery_expiry_shape"),
+        UniqueConstraint("session_id", "window_no", name="uq_transcript_stream_windows_session_window"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcript_stream_sessions.id", ondelete="CASCADE"), nullable=False)
+    window_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_start_sample_offset: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_end_sample_offset: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    forwarded_sample_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    status: Mapped[TranscriptStreamWindowStatus] = mapped_column(Enum(TranscriptStreamWindowStatus), nullable=False, default=TranscriptStreamWindowStatus.active)
+    final_segment_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    text_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    recovery_audio_vault_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recovery_audio_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    recovery_audio_stored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    recovery_audio_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    session: Mapped[TranscriptStreamSession] = relationship(back_populates="windows")
+
+
+class TranscriptStreamDelivery(Base):
+    """Durable idempotency/dispatch claim for a single forwarded PCM interval."""
+
+    __tablename__ = "transcript_stream_deliveries"
+    __table_args__ = (
+        CheckConstraint("source_sample_offset >= 0", name="ck_transcript_stream_deliveries_offset_nonnegative"),
+        CheckConstraint("sample_count BETWEEN 1 AND 16000", name="ck_transcript_stream_deliveries_sample_count_range"),
+        CheckConstraint("window_no >= 0", name="ck_transcript_stream_deliveries_window_nonnegative"),
+        CheckConstraint("provider_sample_start >= 0 AND provider_sample_end > provider_sample_start", name="ck_transcript_stream_deliveries_provider_offsets_ordered"),
+        CheckConstraint("pcm_digest ~ '^[0-9a-f]{64}$'", name="ck_transcript_stream_deliveries_pcm_digest_canonical"),
+        UniqueConstraint("session_id", "source_sample_offset", name="uq_transcript_stream_deliveries_session_source_offset"),
+        Index("ix_transcript_stream_deliveries_session_window", "session_id", "window_no", "source_sample_offset"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcript_stream_sessions.id", ondelete="CASCADE"), nullable=False)
+    window_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_sample_offset: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    pcm_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_sample_start: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    provider_sample_end: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    provider_attempt_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("provider_attempts.id", ondelete="SET NULL"), nullable=True)
+    status: Mapped[TranscriptStreamDeliveryStatus] = mapped_column(Enum(TranscriptStreamDeliveryStatus), nullable=False, default=TranscriptStreamDeliveryStatus.authorized)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    session: Mapped[TranscriptStreamSession] = relationship(back_populates="deliveries")
 
 
 class PostConsultationDictation(Base):
@@ -1879,6 +2024,9 @@ class TranscriptIngestionJob(Base):
     transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id"), nullable=False)
     owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    transcript_stream_window_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("transcript_stream_windows.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
     job_kind: Mapped[TranscriptIngestionJobKind] = mapped_column(Enum(TranscriptIngestionJobKind), nullable=False)
     chunk_sequence_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_filename: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -2762,6 +2910,8 @@ class ProviderAttempt(Base):
         CheckConstraint("reported_input_tokens IS NULL OR reported_input_tokens >= 0", name="ck_provider_attempts_reported_input_tokens_nonnegative"),
         CheckConstraint("reported_output_tokens IS NULL OR reported_output_tokens >= 0", name="ck_provider_attempts_reported_output_tokens_nonnegative"),
         CheckConstraint("reported_total_tokens IS NULL OR reported_total_tokens >= 0", name="ck_provider_attempts_reported_total_tokens_nonnegative"),
+        CheckConstraint("stream_received_samples IS NULL OR stream_received_samples >= 0", name="ck_provider_attempts_stream_received_samples_nonnegative"),
+        CheckConstraint("stream_authorized_samples IS NULL OR stream_authorized_samples > 0", name="ck_provider_attempts_stream_authorized_samples_positive"),
         CheckConstraint("measured_audio_seconds IS NULL OR measured_audio_seconds > 0", name="ck_provider_attempts_measured_audio_seconds_positive"),
         CheckConstraint("provider_http_status IS NULL OR provider_http_status BETWEEN 100 AND 599", name="ck_provider_attempts_provider_http_status_range"),
         CheckConstraint("error_code IS NULL OR char_length(error_code) <= 128", name="ck_provider_attempts_error_code_length"),
@@ -2786,13 +2936,25 @@ class ProviderAttempt(Base):
             "((settlement_basis = 'reported' AND resource = 'tokens' AND reported_total_tokens = settled_units) OR "
             "(settlement_basis = 'measured' AND resource = 'audio_seconds' AND measured_audio_seconds > 0) OR "
             "(settlement_basis = 'conservative_unknown' AND resource = 'tokens' AND reported_total_tokens IS NULL "
-            "AND settled_units = reserved_units AND outcome = 'unknown') OR settlement_basis IS NULL) IS TRUE",
+            "AND settled_units = reserved_units AND outcome = 'unknown') OR "
+            "(settlement_basis = 'stream_authorized' AND resource = 'audio_seconds' "
+            "AND attempt_kind = 'stt_deepgram_live_stream' AND measured_audio_seconds IS NULL "
+            "AND settled_units = reserved_units AND outcome = 'unknown') OR "
+            "(settlement_basis = 'stream_measured' AND resource = 'audio_seconds' "
+            "AND attempt_kind = 'stt_deepgram_live_stream' AND measured_audio_seconds IS NULL "
+            "AND stream_authorized_samples IS NOT NULL AND settled_units = ((stream_authorized_samples + 15999) / 16000) "
+            "AND outcome = 'succeeded') OR settlement_basis IS NULL) IS TRUE",
             name="ck_provider_attempts_settlement_basis_shape",
         ),
         CheckConstraint(
             "((resource = 'tokens' AND measured_audio_seconds IS NULL) OR "
-            "(resource = 'audio_seconds' AND measured_audio_seconds > 0 AND reported_input_tokens IS NULL "
-            "AND reported_output_tokens IS NULL AND reported_total_tokens IS NULL)) IS TRUE",
+            "(resource = 'audio_seconds' AND reported_input_tokens IS NULL "
+            "AND reported_output_tokens IS NULL AND reported_total_tokens IS NULL AND "
+            "((attempt_kind = 'stt_deepgram_live_stream' AND measured_audio_seconds IS NULL "
+            "AND stream_received_samples IS NOT NULL AND stream_authorized_samples IS NOT NULL "
+            "AND reserved_units = ((stream_authorized_samples + 15999) / 16000)) OR "
+            "(attempt_kind <> 'stt_deepgram_live_stream' AND measured_audio_seconds > 0 "
+            "AND stream_received_samples IS NULL AND stream_authorized_samples IS NULL)))) IS TRUE",
             name="ck_provider_attempts_resource_payload_shape",
         ),
         CheckConstraint(
@@ -2800,12 +2962,21 @@ class ProviderAttempt(Base):
             "(generated_document_id IS NULL AND transcript_ingestion_job_id IS NULL)",
             name="ck_provider_attempts_split_execution_source_shape",
         ),
+        CheckConstraint(
+            "((attempt_kind = 'stt_deepgram_live_stream' AND resource = 'audio_seconds' "
+            "AND transcript_ingestion_job_id IS NULL AND generated_document_id IS NULL "
+            "AND consultation_split_execution_id IS NULL) OR "
+            "(attempt_kind <> 'stt_deepgram_live_stream' AND transcript_stream_session_id IS NULL "
+            "AND stream_received_samples IS NULL AND stream_authorized_samples IS NULL)) IS TRUE",
+            name="ck_provider_attempts_stream_source_shape",
+        ),
         UniqueConstraint("correlation_id", "attempt_number", name="uq_provider_attempts_correlation_attempt"),
         UniqueConstraint("consultation_split_execution_id", name="uq_provider_attempts_split_execution"),
         Index("ix_provider_attempts_owner_resource_authorized", "owner_user_id", "resource", "authorized_at"),
         Index("ix_provider_attempts_active_reservations", "owner_user_id", "resource", "reservation_valid_until", postgresql_where=text("status = 'reserved'")),
         Index("ix_provider_attempts_submitted_deadline", "deadline_at", postgresql_where=text("status = 'submitted'")),
         Index("ix_provider_attempts_split_execution_status", "consultation_split_execution_id", "status"),
+        Index("ix_provider_attempts_stream_session_status", "transcript_stream_session_id", "status"),
         Index("ix_provider_attempts_team_resource_settled", "team_id", "resource", "settled_at", postgresql_where=text("status = 'settled'")),
     )
 
@@ -2814,6 +2985,7 @@ class ProviderAttempt(Base):
     owner_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     transcript_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="SET NULL"), nullable=True)
     transcript_ingestion_job_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("transcript_ingestion_jobs.id", ondelete="SET NULL"), nullable=True)
+    transcript_stream_session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("transcript_stream_sessions.id", ondelete="SET NULL"), nullable=True)
     generated_document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("generated_documents.id", ondelete="SET NULL"), nullable=True)
     consultation_split_execution_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
@@ -2833,6 +3005,8 @@ class ProviderAttempt(Base):
     reported_output_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     reported_total_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     measured_audio_seconds: Mapped[float | None] = mapped_column(Numeric(12, 3), nullable=True)
+    stream_received_samples: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    stream_authorized_samples: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     provider_adapter: Mapped[str | None] = mapped_column(String(64), nullable=True)
     provider_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)

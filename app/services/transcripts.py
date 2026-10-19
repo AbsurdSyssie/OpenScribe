@@ -26,6 +26,10 @@ from app.models import (
     TranscriptManualPiiEntity,
     TemplateSuggestionJob,
     TranscriptStatus,
+    TranscriptStreamSession,
+    TranscriptStreamStatus,
+    TranscriptStreamWindow,
+    TranscriptStreamWindowStatus,
     TranscriptVersion,
     TranscriptWorkingNoteMode,
     User,
@@ -94,8 +98,54 @@ INGESTION_SOURCE_AUDIO_MAX_AGE = timedelta(hours=24)
 INGESTION_AUTOMATIC_RETRY_LIMIT = 2
 INGESTION_RETRY_BASE_SECONDS = 5
 retry_audio_logger = logging.getLogger("openscribe.retry_audio")
+transcript_ingestion_logger = logging.getLogger("openscribe.transcript_ingestion")
 transcript_redaction_logger = logging.getLogger("openscribe.transcript_redaction")
 transcript_retention_logger = logging.getLogger("openscribe.transcript_retention")
+
+_INGESTION_DIAGNOSTIC_ERROR_CODES = frozenset({
+    "audio_duration_probe_failed",
+    "audio_normalization_failed",
+    "business_rule_violation",
+    "ingestion_attempt_conflict",
+    "ingestion_attempt_missing",
+    "ingestion_failed",
+    "ingestion_source_deleted",
+    "ingestion_source_expired",
+    "ingestion_source_unavailable",
+    "stt_config_secret_missing",
+    "stt_request_failed",
+    "stt_timeout",
+    "stt_unavailable",
+    "validation_error",
+})
+
+
+def _safe_ingestion_diagnostic_error_code(code: object) -> str:
+    return code if isinstance(code, str) and code in _INGESTION_DIAGNOSTIC_ERROR_CODES else "ingestion_failed"
+
+
+def _log_ingestion_failure(*, job_id: UUID, stage: str, error_code: str, action: str) -> None:
+    """Log bounded ingestion lifecycle metadata without exception details."""
+    event = "transcript_ingestion_failure"
+    safe_error_code = _safe_ingestion_diagnostic_error_code(error_code)
+    occurred_at = utcnow().isoformat()
+    transcript_ingestion_logger.warning(
+        "event=%s job_id=%s stage=%s error_code=%s action=%s occurred_at=%s",
+        event,
+        job_id,
+        stage,
+        safe_error_code,
+        action,
+        occurred_at,
+        extra={
+            "event": event,
+            "job_id": str(job_id),
+            "stage": stage,
+            "error_code": safe_error_code,
+            "action": action,
+            "occurred_at": occurred_at,
+        },
+    )
 
 
 def active_transcript_condition(*, now: datetime | None = None):
@@ -311,6 +361,14 @@ def queue_retry_source_cleanup_for_transcripts(db: Session, *, transcript_ids: l
         )
         if secret_ref
     }
+    vault_refs.update(
+        ref for ref in db.scalars(
+            select(TranscriptStreamWindow.recovery_audio_vault_ref)
+            .join(TranscriptStreamSession, TranscriptStreamSession.id == TranscriptStreamWindow.session_id)
+            .where(TranscriptStreamSession.transcript_id.in_(transcript_ids),
+                   TranscriptStreamWindow.recovery_audio_vault_ref.is_not(None))
+        ) if ref
+    )
     if not vault_refs:
         return []
     return queue_transcript_audio_cleanup(db, secret_refs=vault_refs)
@@ -322,6 +380,10 @@ def _is_live_transcript_ingestion_source_audio_ref(db: Session, *, secret_ref: s
         select(TranscriptIngestionJob.id)
         .where(TranscriptIngestionJob.source_audio_vault_ref == secret_ref)
         .limit(1)
+    ) is not None or db.scalar(
+        select(TranscriptStreamWindow.id).where(
+            TranscriptStreamWindow.recovery_audio_vault_ref == secret_ref,
+        ).limit(1)
     ) is not None
 
 
@@ -433,6 +495,8 @@ def expire_ingestion_source_audio(
             comparison_now=comparison_now,
         )
         expired_count += 1
+    from app.services.transcript_streaming import expire_stream_recovery_audio
+    expired_count += expire_stream_recovery_audio(db, batch_size=max(1, batch_size - expired_count), now=comparison_now)
     return expired_count
 
 
@@ -468,6 +532,17 @@ def _expire_locked_ingestion_source(
     job.source_audio_blob = None
     job.source_audio_vault_ref = None
     job.source_audio_expired_at = comparison_now
+    if job.transcript_stream_window_id is not None:
+        window = db.get(TranscriptStreamWindow, job.transcript_stream_window_id)
+        if window is not None:
+            session = db.get(TranscriptStreamSession, window.session_id)
+            window.status = TranscriptStreamWindowStatus.failed
+            if session is not None:
+                session.status = TranscriptStreamStatus.failed
+                session.failure_code = "stream_recovery_failed"
+                session.updated_at = comparison_now
+                db.add(session)
+            db.add(window)
     db.add(job)
     if secret_ref:
         cleanup_job_ids = queue_transcript_audio_cleanup(db, secret_refs=[secret_ref])
@@ -1035,6 +1110,19 @@ def _resolved_transcript_status(db: Session, *, transcript: Transcript) -> Trans
         return TranscriptStatus.recording
     if _has_blocking_live_chunk_failure(db, transcript=transcript):
         return TranscriptStatus.failed
+    stream = db.scalar(select(TranscriptStreamSession.status).where(
+        TranscriptStreamSession.transcript_id == transcript.id,
+        TranscriptStreamSession.status.in_((TranscriptStreamStatus.active, TranscriptStreamStatus.finalizing,
+                                             TranscriptStreamStatus.recovering)),
+    ).order_by(TranscriptStreamSession.created_at.desc()).limit(1))
+    if stream is not None:
+        return TranscriptStatus.transcribing
+    failed_stream = db.scalar(select(TranscriptStreamSession.id).where(
+        TranscriptStreamSession.transcript_id == transcript.id,
+        TranscriptStreamSession.status == TranscriptStreamStatus.failed,
+    ).limit(1))
+    if failed_stream is not None:
+        return TranscriptStatus.failed
     if _has_pending_ingestion_jobs(db, transcript_id=transcript.id):
         return TranscriptStatus.transcribing
     latest_job = latest_ingestion_job_for_transcript(db, transcript_id=transcript.id)
@@ -1137,6 +1225,12 @@ def can_switch_transcript_ingestion_mode(
         return transcript, True, None
     if transcript.status is TranscriptStatus.recording:
         return transcript, False, "Stop the active recording before switching input mode"
+    if db.scalar(select(TranscriptStreamSession.id).where(
+        TranscriptStreamSession.transcript_id == transcript.id,
+        TranscriptStreamSession.status.in_((TranscriptStreamStatus.active, TranscriptStreamStatus.finalizing,
+                                            TranscriptStreamStatus.failed, TranscriptStreamStatus.recovering)),
+    ).limit(1)) is not None:
+        return transcript, False, "Resolve live transcription before switching input mode"
     if _has_pending_ingestion_jobs(db, transcript_id=transcript.id):
         return transcript, False, "Wait for the current session transcription to finish before switching input mode"
     return transcript, True, None
@@ -1151,6 +1245,20 @@ def _get_owner_transcript_for_ingestion(db: Session, owner: User, *, transcript_
     if transcript_is_expired(transcript):
         raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
     return transcript
+
+
+def assert_no_unresolved_stream_session(db: Session, *, transcript_id: UUID) -> None:
+    stream_id = db.scalar(
+        select(TranscriptStreamSession.id).where(
+            TranscriptStreamSession.transcript_id == transcript_id,
+            TranscriptStreamSession.status.in_(
+                (TranscriptStreamStatus.active, TranscriptStreamStatus.finalizing,
+                 TranscriptStreamStatus.failed, TranscriptStreamStatus.recovering)
+            ),
+        ).limit(1)
+    )
+    if stream_id is not None:
+        raise AppError(409, "stream_session_unresolved", "Resolve live transcription before continuing")
 
 
 def get_active_owner_transcript(db: Session, owner: User, *, transcript_id: UUID) -> Transcript:
@@ -1254,6 +1362,7 @@ def snapshot_current_transcript_version(
     if scope is None:
         raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript.id)})
     transcript = scope.transcript
+    assert_no_unresolved_stream_session(db, transcript_id=transcript.id)
     current_text = (
         decrypt_text_for_owner(
             db,
@@ -1432,28 +1541,11 @@ def _enforce_live_chunk_hourly_duration_budget(
     owner: User,
     duration_seconds: float,
 ) -> None:
-    if LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS <= 0:
-        return
-    _, used_duration_seconds = ingestion_usage_totals_for_owner(
-        db,
-        owner_user_id=owner.id,
-        since=utcnow() - timedelta(hours=1),
-        job_kinds=(TranscriptIngestionJobKind.live_chunk,),
-        duration_column=TranscriptIngestionJob.declared_duration_seconds,
-    )
-    projected_duration_seconds = used_duration_seconds + duration_seconds
-    if projected_duration_seconds <= LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS:
-        return
-    raise AppError(
-        429,
-        "rate_limited",
-        "Live transcription hourly audio limit exceeded",
-        {
-            "window": "1 hour",
-            "max_seconds": LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS,
-            "used_seconds": round(used_duration_seconds, 2),
-            "requested_seconds": round(duration_seconds, 3),
-        },
+    from app.services.transcript_streaming import enforce_live_stt_hourly_audio_limit, PCM_SAMPLE_RATE
+
+    enforce_live_stt_hourly_audio_limit(
+        db, owner_user_id=owner.id, requested_sample_count=ceil(duration_seconds * PCM_SAMPLE_RATE),
+        limit_seconds=LIVE_CHUNK_HOURLY_DURATION_LIMIT_SECONDS, now=utcnow(),
     )
 
 
@@ -1748,8 +1840,48 @@ def queue_audio_chunk_ingestion(
     chunk_sequence_no: int,
     declared_duration_seconds: float | None,
     request_idempotency_key: str | None = None,
+    _stream_recovery_window_id: UUID | None = None,
 ) -> tuple[Transcript, TranscriptIngestionJob]:
-    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    # Preserve the established 403 owner-scope response, then reacquire the
+    # canonical owner -> root lock before checking the stream barrier/admitting
+    # an upload so stream start and ordinary chunk admission cannot race.
+    _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    scope = lock_consultation_split_source_scope(
+        db, owner_user_id=owner.id, transcript_id=transcript_id,
+    )
+    if scope is None or scope.owner.is_system_admin or scope.owner.team_id is None:
+        raise AppError(404, "not_found", "Transcript not found")
+    owner = scope.owner
+    transcript = scope.transcript
+    if transcript.team_id != scope.owner.team_id or transcript_is_expired(transcript):
+        raise AppError(404, "not_found", "Transcript not found")
+    stream_window = None
+    stream_session = None
+    stream_recovery_deadline = None
+    if _stream_recovery_window_id is None:
+        assert_no_unresolved_stream_session(db, transcript_id=transcript.id)
+    else:
+        stream_window = db.scalar(select(TranscriptStreamWindow).where(
+            TranscriptStreamWindow.id == _stream_recovery_window_id,
+        ).with_for_update())
+        stream_session = None if stream_window is None else db.scalar(select(TranscriptStreamSession).where(
+            TranscriptStreamSession.id == stream_window.session_id,
+            TranscriptStreamSession.transcript_id == transcript.id,
+            TranscriptStreamSession.owner_user_id == owner.id,
+        ).with_for_update())
+        if (stream_window is None or stream_session is None
+                or stream_window.status not in {TranscriptStreamWindowStatus.failed, TranscriptStreamWindowStatus.recovering}
+                or stream_session.status not in {TranscriptStreamStatus.failed, TranscriptStreamStatus.recovering}):
+            raise AppError(409, "stream_recovery_unavailable", "Stream recovery is no longer available")
+        if chunk_sequence_no != transcript.next_live_chunk_sequence_no_applied:
+            raise AppError(409, "stream_recovery_order_conflict", "Stream recovery order conflicts with transcript state")
+        from app.services.transcript_streaming import FAILED_AUDIO_MAX_AGE
+        stream_recovery_deadline = min(
+            stream_window.recovery_audio_expires_at or (stream_window.created_at + FAILED_AUDIO_MAX_AGE),
+            transcript.retention_expires_at,
+        )
+        if stream_recovery_deadline <= utcnow():
+            raise AppError(410, "stream_recovery_expired", "Stored recovery audio has expired")
     if transcript.ingestion_mode is not TranscriptIngestionMode.live_chunked:
         raise AppError(
             409,
@@ -1785,6 +1917,17 @@ def queue_audio_chunk_ingestion(
         )
     _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=transcript.team_id)
     ensure_stt_config_credential_ready(team_id=transcript.team_id, config=config)
+    if stream_window is not None and stream_session is not None:
+        expected = stream_session.selection_snapshot_json
+        current_options = dict(config.extra_form_fields_json or {})
+        current = {
+            "config_id": str(config.id), "provider_preset": config.provider_preset,
+            "adapter_kind": config.adapter_kind.value, "base_url": config.base_url,
+            "model_name": resolved_model_name, "language": resolved_language,
+            "mip_opt_out": True, "extra_query_params": dict(sorted(current_options.items())),
+        }
+        if expected != current:
+            raise AppError(409, "stream_recovery_selection_changed", "Selected transcription options changed; recovery cannot continue")
     try:
         measured_duration_seconds = inspect_audio_duration_seconds(
             audio_bytes=source_audio_bytes,
@@ -1803,11 +1946,10 @@ def queue_audio_chunk_ingestion(
             {"field": "audio", "max_seconds": 30, "duration_seconds": round(measured_duration_seconds, 3)},
         )
 
-    _enforce_live_chunk_hourly_duration_budget(
-        db,
-        owner=owner,
-        duration_seconds=measured_duration_seconds,
-    )
+    if stream_window is None:
+        _enforce_live_chunk_hourly_duration_budget(db, owner=owner, duration_seconds=measured_duration_seconds)
+    elif abs(measured_duration_seconds - stream_window.forwarded_sample_count / 16_000) > 0.1:
+        raise AppError(422, "stream_recovery_duration_mismatch", "Recovery audio does not match the failed interval")
     job_id = uuid4()
     source_audio_vault_ref = None
     try:
@@ -1828,7 +1970,11 @@ def queue_audio_chunk_ingestion(
         source_audio_blob=None,
         source_audio_vault_ref=source_audio_vault_ref,
         source_audio_size_bytes=len(source_audio_bytes),
-        source_audio_expires_at=source_audio_stored_at + INGESTION_SOURCE_AUDIO_MAX_AGE,
+        source_audio_expires_at=min(
+            source_audio_stored_at + INGESTION_SOURCE_AUDIO_MAX_AGE,
+            transcript.retention_expires_at,
+            *([stream_recovery_deadline] if stream_recovery_deadline is not None else []),
+        ),
         declared_duration_seconds=measured_duration_seconds,
         stt_config_id=config.id,
         stt_provider_preset=config.provider_preset,
@@ -1848,7 +1994,18 @@ def queue_audio_chunk_ingestion(
         stt_segment_speaker_field=config.segment_speaker_field,
         stt_extra_form_fields_json=dict(config.extra_form_fields_json or {}),
         status=TranscriptIngestionJobStatus.queued,
+        transcript_stream_window_id=None if stream_window is None else stream_window.id,
     )
+    if stream_window is not None and stream_session is not None:
+        if stream_window.recovery_audio_vault_ref:
+            queue_transcript_audio_cleanup(db, secret_refs=[stream_window.recovery_audio_vault_ref])
+        stream_window.status = TranscriptStreamWindowStatus.recovering
+        stream_session.status = TranscriptStreamStatus.recovering
+        stream_window.recovery_audio_vault_ref = None
+        stream_window.recovery_audio_size_bytes = None
+        stream_window.recovery_audio_expires_at = None
+        db.add(stream_window)
+        db.add(stream_session)
     transcript.status = TranscriptStatus.transcribing
     db.add(job)
     db.add(transcript)
@@ -2486,6 +2643,17 @@ def _mark_job_failed(db: Session, transcript: Transcript, job: TranscriptIngesti
     job.error_code = code
     job.error_message = message[:255]
     job.completed_at = utcnow()
+    if job.transcript_stream_window_id is not None:
+        window = db.get(TranscriptStreamWindow, job.transcript_stream_window_id)
+        if window is not None:
+            session = db.get(TranscriptStreamSession, window.session_id)
+            window.status = TranscriptStreamWindowStatus.failed
+            if session is not None:
+                session.status = TranscriptStreamStatus.failed
+                session.failure_code = "stream_recovery_failed"
+                session.updated_at = utcnow()
+                db.add(session)
+            db.add(window)
     transcript.status = TranscriptStatus.failed
     db.add(job)
     db.add(transcript)
@@ -2567,13 +2735,42 @@ def _apply_completed_live_chunks(db: Session, transcript: Transcript) -> None:
             # can be manually retried; completed later chunks wait until the
             # gap succeeds, so their text cannot be committed out of order.
             break
+        recovered_text = job_result_text(db, transcript=transcript, job=job) or ""
         updated_draft_text = _append_chunk_text(
-            transcript_draft_text(db, transcript=transcript),
-            job_result_text(db, transcript=transcript, job=job) or "",
+            transcript_draft_text(db, transcript=transcript), recovered_text,
         )
         set_transcript_draft_text(db, transcript=transcript, plaintext=updated_draft_text)
         job.status = TranscriptIngestionJobStatus.applied
         job.applied_at = utcnow()
+        if job.transcript_stream_window_id is not None:
+            window = db.scalar(select(TranscriptStreamWindow).where(
+                TranscriptStreamWindow.id == job.transcript_stream_window_id,
+            ).with_for_update())
+            if window is not None:
+                window.status = TranscriptStreamWindowStatus.committed
+                window.committed_at = job.applied_at
+                if recovered_text:
+                    window.text_digest = keyed_digest_for_owner(
+                        db, owner_user_id=transcript.owner_user_id,
+                        purpose="transcript_stream_final_text", value=recovered_text,
+                    )
+                session = db.scalar(select(TranscriptStreamSession).where(
+                    TranscriptStreamSession.id == window.session_id,
+                ).with_for_update())
+                if session is not None:
+                    unresolved = db.scalar(select(TranscriptStreamWindow.id).where(
+                        TranscriptStreamWindow.session_id == session.id,
+                        TranscriptStreamWindow.status.in_((TranscriptStreamWindowStatus.failed,
+                                                           TranscriptStreamWindowStatus.recovering)),
+                        TranscriptStreamWindow.id != window.id,
+                    ).limit(1))
+                    if unresolved is None:
+                        session.status = TranscriptStreamStatus.completed
+                        session.completed_at = job.applied_at
+                        session.lease_expires_at = job.applied_at
+                    session.updated_at = job.applied_at
+                    db.add(session)
+                db.add(window)
         expected_sequence += 1
         advanced_sequence = True
         db.add(job)
@@ -2689,6 +2886,7 @@ def finalize_live_capture(
     transcript_id: UUID,
 ) -> Transcript:
     transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    assert_no_unresolved_stream_session(db, transcript_id=transcript.id)
     if transcript.ingestion_mode is not TranscriptIngestionMode.live_chunked:
         raise AppError(
             409,
@@ -2732,7 +2930,14 @@ def process_transcript_ingestion_job(
     legacy_audio_bytes: bytes | None = None,
     dispatch_sequence: int | None = None,
 ) -> TranscriptIngestionJob | None:
-    preparation_job = _queued_ingestion_job_for_preparation(db, job_id=job_id)
+    stage = "job_lookup"
+    try:
+        preparation_job = _queued_ingestion_job_for_preparation(db, job_id=job_id)
+    except Exception:
+        _log_ingestion_failure(
+            job_id=job_id, stage=stage, error_code="ingestion_failed", action="failure_observed",
+        )
+        raise
     if preparation_job is None:
         return None
     if preparation_job.status is not TranscriptIngestionJobStatus.queued:
@@ -2748,14 +2953,18 @@ def process_transcript_ingestion_job(
         return db.get(TranscriptIngestionJob, job_id)
 
     try:
+        stage = "source_read"
         audio_bytes = _read_queued_source_audio(db, preparation_job, legacy_audio_bytes=legacy_audio_bytes)
+        stage = "audio_normalization"
         normalized_audio = normalize_audio_to_wav_16k_mono(
             audio_bytes=audio_bytes,
             source_filename=preparation_job.source_filename,
         )
         if preparation_job.job_kind is TranscriptIngestionJobKind.audio_file:
+            stage = "duration_validation"
             enforce_whole_file_duration_limit(audio_bytes=normalized_audio.data)
 
+        stage = "credential_resolution"
         try:
             bearer_token = resolve_stt_snapshot_bearer_token(
                 db,
@@ -2769,15 +2978,25 @@ def process_transcript_ingestion_job(
                 response_text_path=preparation_job.stt_response_text_path,
             )
         except AppError as exc:
-            return _terminalize_ingestion_job_with_attempt(
+            error_code = _safe_ingestion_diagnostic_error_code(exc.code)
+            _log_ingestion_failure(job_id=job_id, stage=stage, error_code=error_code, action="failure_observed")
+            failed_job = _terminalize_ingestion_job_with_attempt(
                 db, job_id=job_id, code=exc.code, message=exc.message,
                 outcome=AttemptOutcome.failed, preclaim_only=True,
             )
+            if failed_job is not None and failed_job.status is TranscriptIngestionJobStatus.failed:
+                _log_ingestion_failure(job_id=job_id, stage=stage, error_code=error_code, action="terminalized")
+            return failed_job
         except Exception:
-            return _terminalize_ingestion_job_with_attempt(
+            error_code = "ingestion_failed"
+            _log_ingestion_failure(job_id=job_id, stage=stage, error_code=error_code, action="failure_observed")
+            failed_job = _terminalize_ingestion_job_with_attempt(
                 db, job_id=job_id, code="ingestion_failed", message="Transcript ingestion job failed",
                 outcome=AttemptOutcome.unknown, preclaim_only=True,
             )
+            if failed_job is not None and failed_job.status is TranscriptIngestionJobStatus.failed:
+                _log_ingestion_failure(job_id=job_id, stage=stage, error_code=error_code, action="terminalized")
+            return failed_job
 
         # Conditional claim is immediately before irreversible external STT
         # dispatch. If deletion or expiry commits before this succeeds, no
@@ -2792,6 +3011,7 @@ def process_transcript_ingestion_job(
 
         # Successful queued -> processing claim is irreversible dispatch
         # boundary. Deletion after this point may discard only late results.
+        stage = "stt_dispatch"
         transcript_text = transcribe_with_stt_snapshot(
             db,
             team_id=transcript.team_id,
@@ -2845,11 +3065,13 @@ def process_transcript_ingestion_job(
             return _return_released_ingestion_job(db, job)
         attempt = _ingestion_attempt(db, job_id=job.id, lock=True)
         if attempt is None or attempt.status is not AttemptStatus.submitted:
+            stage = "result_persistence"
             return _terminalize_ingestion_job_with_attempt(
                 db, job_id=job.id, code="ingestion_attempt_conflict",
                 message="Ingestion accounting state conflicts", outcome=AttemptOutcome.unknown,
             )
         now = utcnow()
+        stage = "result_persistence"
         job.result_text_encrypted = encrypt_text_for_owner(
             db,
             owner_user_id=transcript.owner_user_id,
@@ -2917,22 +3139,36 @@ def process_transcript_ingestion_job(
             if transcript.status is TranscriptStatus.ready:
                 _trigger_waiting_generation_dispatches(db, transcript_id=transcript.id)
     except AppError as exc:
+        error_code = _safe_ingestion_diagnostic_error_code(exc.code)
+        _log_ingestion_failure(job_id=job_id, stage=stage, error_code=error_code, action="failure_observed")
         if _is_transient_stt_failure(exc):
             retried = _schedule_ingestion_retry(
                 db, job_id=job_id, code=exc.code, message=exc.message,
                 outcome=_retry_failure_outcome(exc), automatic=True,
             )
             if retried is not None:
+                if retried.status is TranscriptIngestionJobStatus.queued:
+                    _log_ingestion_failure(job_id=job_id, stage=stage, error_code=error_code, action="retry_scheduled")
+                elif retried.status is TranscriptIngestionJobStatus.failed:
+                    _log_ingestion_failure(job_id=job_id, stage=stage, error_code=error_code, action="terminalized")
                 return retried
-        return _terminalize_ingestion_job_with_attempt(
+        failed_job = _terminalize_ingestion_job_with_attempt(
             db, job_id=job_id, code=exc.code, message=exc.message,
             outcome=AttemptOutcome.failed,
         )
+        if failed_job is not None and failed_job.status is TranscriptIngestionJobStatus.failed:
+            _log_ingestion_failure(job_id=job_id, stage=stage, error_code=error_code, action="terminalized")
+        return failed_job
     except Exception:  # pragma: no cover
-        return _terminalize_ingestion_job_with_attempt(
+        error_code = "ingestion_failed"
+        _log_ingestion_failure(job_id=job_id, stage=stage, error_code=error_code, action="failure_observed")
+        failed_job = _terminalize_ingestion_job_with_attempt(
             db, job_id=job_id, code="ingestion_failed", message="Transcript ingestion job failed",
             outcome=AttemptOutcome.unknown,
         )
+        if failed_job is not None and failed_job.status is TranscriptIngestionJobStatus.failed:
+            _log_ingestion_failure(job_id=job_id, stage=stage, error_code=error_code, action="terminalized")
+        return failed_job
 
     return _return_released_ingestion_job(db, job)
 

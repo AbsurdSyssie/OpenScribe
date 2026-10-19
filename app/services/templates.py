@@ -77,6 +77,8 @@ from app.services.llm import active_team_hallucination_check_selection, resolve_
 from app.services.llm_adapters import LlmGenerationRequest
 from app.services.llm_adapters import runtime as llm_runtime
 from app.services.llm_credentials import resolve_generation_credential
+from app.services.provider_errors import safe_provider_error_code
+from app.services.json_validation import DuplicateJsonKeyError, reject_duplicate_json_keys
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
 from app.services.dictations import dictation_effective_text, get_post_consultation_dictation
@@ -97,6 +99,7 @@ from app.services.redaction_primitives import (
 )
 from app.services.security_audit import record_security_event
 from app.services.transcripts import (
+    assert_no_unresolved_stream_session,
     get_active_owner_transcript,
     manual_pii_entity_value,
     freeform_working_note_text,
@@ -1731,6 +1734,7 @@ def _ensure_generation_can_be_queued(db: Session, *, transcript: Transcript) -> 
     if transcript_is_expired(locked_transcript):
         raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript.id)})
     transcript = locked_transcript
+    assert_no_unresolved_stream_session(db, transcript_id=transcript.id)
     if transcript.status is TranscriptStatus.recording:
         raise AppError(409, "conflict", "Stop recording before generating from this transcript")
     return transcript, _has_generation_wait_ingestion_jobs(db, transcript_id=transcript.id, created_at_upper_bound=utcnow())
@@ -1831,11 +1835,25 @@ def _generation_usage_event(
     duration_ms: int | None = None,
     provider_duration_ms: int | None = None,
     status: str | None = None,
-    ) -> None:
+) -> None:
+    generator = _usage_generator_category(document)
+    stage = _usage_stage_category(event)
+    safe_status = _usage_status_category(status or document.status.value)
+    error_category = _usage_error_category(document.error_code)
+    message = _usage_log_message(
+        event=event,
+        stage=stage,
+        document=document,
+        generator=generator,
+        status=safe_status,
+        error_category=error_category,
+    )
     usage_logger.info(
-        event,
+        message,
         extra={
             "event": event,
+            "stage": stage,
+            "generator": generator,
             "generated_document_id": str(document.id),
             "transcript_id": str(document.transcript_id),
             "owner_user_id": str(document.owner_user_id),
@@ -1843,16 +1861,208 @@ def _generation_usage_event(
             "template_version_id": str(document.template_version_id) if document.template_version_id else None,
             "provider_adapter": config.adapter_kind.value if config is not None else None,
             "model_used": document.model_used,
-            "status": status or document.status.value,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
+            "status": safe_status,
+            "prompt_tokens": _usage_token_count(prompt_tokens),
+            "completion_tokens": _usage_token_count(completion_tokens),
+            "total_tokens": _usage_token_count(total_tokens),
             "estimated_cost_usd": document.estimated_cost_usd,
             "duration_ms": duration_ms,
             "provider_duration_ms": provider_duration_ms,
-            "error_code": document.error_code,
-            "provider_error_code": document.provider_error_code,
+            "error_category": error_category,
+            "error_code": _usage_error_code(document.error_code),
+            "provider_error_code": _usage_provider_error_code(
+                document.provider_error_code, status=document.provider_http_status,
+            ),
             "provider_http_status": document.provider_http_status,
+        },
+    )
+
+
+_USAGE_GENERATORS = frozenset({"template", "followup", "quick_action"})
+_USAGE_STAGES = {
+    "llm_generation_queued": "queue",
+    "llm_generation_enqueue_failed": "queue",
+    "llm_generation_started": "generation",
+    "llm_generation_completed": "generation",
+    "llm_generation_failed": "generation",
+    "llm_hallucination_check_started": "checker",
+    "llm_hallucination_check_completed": "checker",
+    "llm_hallucination_check_failed": "checker",
+    "llm_hallucination_check_skipped": "checker",
+}
+_USAGE_STATUSES = frozenset({
+    "queued", "processing", "ready", "failed", "cancelled", "expired",
+    "not_applicable",
+    "checked_unchanged", "checked_corrected", "failed_provider",
+    "failed_invalid_response", "skipped_not_configured", "skipped_config_invalid",
+    "skipped_quota", "skipped",
+})
+_USAGE_ERROR_CATEGORIES = {
+    "llm_generation_truncated": "truncated_output",
+    "llm_generation_invalid_json": "invalid_output",
+    "llm_provider_bad_response": "invalid_output",
+    "llm_provider_timeout": "timeout",
+    "llm_execution_context_unsupported": "worker_configuration",
+    "llm_attempt_inactive": "attempt_inactive",
+    "quota_exceeded": "quota",
+    "quota_disabled": "quota",
+    "credential_unavailable": "credential_preflight",
+    "business_rule_violation": "configuration_or_preflight",
+    "vault_read_failed": "credential_preflight",
+    "generation_snapshot_invalid": "snapshot_validation",
+    "redaction_failed": "redaction_failure",
+    "content_crypto_invalid": "content_decryption_failure",
+    "llm_provider_unreachable": "connection_failure",
+    "llm_generation_failed": "provider_failure",
+    "llm_generation_preparation_failed": "preparation_failure",
+    "hallucination_check_invalid_response": "invalid_output",
+    "hallucination_check_failed": "checker_failure",
+    "hallucination_check_invalid_config": "configuration_or_preflight",
+    "duplicate_json_key": "invalid_output",
+    "invalid_json": "invalid_output",
+    "invalid_json_shape": "invalid_output",
+    "invalid_shape": "invalid_output",
+    "unsupported_keys": "invalid_output",
+    "invalid_status": "invalid_output",
+    "missing_edits": "invalid_output",
+    "too_many_edits": "invalid_output",
+    "invalid_edit_shape": "invalid_output",
+    "invalid_edit_value": "invalid_output",
+    "patch_not_unique": "invalid_output",
+    "empty_title": "invalid_output",
+    "unknown_section": "invalid_output",
+    "quota_estimate_underflow": "quota_accounting",
+}
+_SAFE_USAGE_ERROR_CODES = frozenset({
+    *_USAGE_ERROR_CATEGORIES,
+    "duplicate_json_key", "invalid_json", "invalid_json_shape", "missing_title",
+    "missing_content", "invalid_title", "invalid_content", "invalid_section_key",
+    "invalid_section_value", "invalid_shape", "unsupported_keys", "invalid_status",
+    "missing_edits", "too_many_edits", "invalid_edit_shape", "invalid_edit_value",
+    "patch_not_unique", "empty_title", "unknown_section", "provider_conflict",
+    "provider_server_error", "authentication_error", "bad_request", "connection_error",
+    "invalid_api_key", "invalid_request", "invalid_request_error", "model_not_found",
+    "not_found", "permission_denied", "rate_limit_exceeded", "http_status_error",
+    "timeout", "quota_estimate_underflow", "llm_provider_bad_response",
+})
+
+
+def _usage_generator_category(document: GeneratedDocument) -> str:
+    value = getattr(document.generator_type, "value", document.generator_type)
+    return value if isinstance(value, str) and value in _USAGE_GENERATORS else "other"
+
+
+def _usage_stage_category(event: str) -> str:
+    return _USAGE_STAGES.get(event, "other")
+
+
+def _usage_status_category(value: object) -> str:
+    return value if isinstance(value, str) and value in _USAGE_STATUSES else "other"
+
+
+def _usage_error_category(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return _USAGE_ERROR_CATEGORIES.get(value, "other_error")
+
+
+def _usage_error_code(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return value if value in _SAFE_USAGE_ERROR_CODES else "other_error"
+
+
+def _usage_provider_error_code(value: object, *, status: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    status_code = status if type(status) is int and 100 <= status <= 599 else None
+    return safe_provider_error_code(value, status_code=status_code)
+
+
+def _usage_token_count(value: object) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+@dataclass(frozen=True, slots=True)
+class _CheckerLogContext:
+    generated_document_id: str
+    transcript_id: str
+    owner_user_id: str
+    team_id: str
+    generator: str
+
+
+def _checker_log_context(document: GeneratedDocument) -> _CheckerLogContext:
+    """Snapshot safe identifiers before checker commits can expire ORM state."""
+    return _CheckerLogContext(
+        generated_document_id=str(document.id),
+        transcript_id=str(document.transcript_id),
+        owner_user_id=str(document.owner_user_id),
+        team_id=str(document.team_id),
+        generator=_usage_generator_category(document),
+    )
+
+
+def _usage_log_message(
+    *,
+    event: str,
+    stage: str,
+    document: GeneratedDocument,
+    generator: str,
+    status: str,
+    error_category: str | None,
+) -> str:
+    # Keep the default formatter useful too: deployments often render only
+    # %(message)s and discard LogRecord.extra fields.
+    return (
+        f"llm_usage event={event} stage={stage} generator={generator} "
+        f"generated_document_id={document.id} transcript_id={document.transcript_id} "
+        f"owner_user_id={document.owner_user_id} team_id={document.team_id} "
+        f"status={status} error_category={error_category or 'none'}"
+    )
+
+
+def _checker_usage_event(
+    *,
+    event: str,
+    context: _CheckerLogContext,
+    status: str,
+    usage: GenerationUsage | None = None,
+    error_code: object = None,
+    provider_error_code: object = None,
+    provider_http_status: object = None,
+) -> None:
+    safe_status = _usage_status_category(status)
+    error_category = _usage_error_category(error_code)
+    safe_http_status = provider_http_status if type(provider_http_status) is int and 100 <= provider_http_status <= 599 else None
+    message = (
+        f"llm_usage event={event} stage=checker generator={context.generator} "
+        f"generated_document_id={context.generated_document_id} "
+        f"transcript_id={context.transcript_id} owner_user_id={context.owner_user_id} "
+        f"team_id={context.team_id} status={safe_status} "
+        f"error_category={error_category or 'none'}"
+    )
+    emit = usage_logger.warning if event == "llm_hallucination_check_failed" else usage_logger.info
+    emit(
+        message,
+        extra={
+            "event": event,
+            "stage": "checker",
+            "generator": context.generator,
+            "generated_document_id": context.generated_document_id,
+            "transcript_id": context.transcript_id,
+            "owner_user_id": context.owner_user_id,
+            "team_id": context.team_id,
+            "status": safe_status,
+            "error_category": error_category,
+            "error_code": _usage_error_code(error_code),
+            "provider_error_code": _usage_provider_error_code(provider_error_code, status=safe_http_status),
+            "provider_http_status": safe_http_status,
+            "prompt_tokens": _usage_token_count(usage.get("input_tokens")) if usage else None,
+            "completion_tokens": _usage_token_count(usage.get("output_tokens")) if usage else None,
+            "total_tokens": _usage_token_count(usage.get("total_tokens")) if usage else None,
+            "duration_ms": usage.get("duration_ms") if usage else None,
+            "provider_duration_ms": usage.get("provider_duration_ms") if usage else None,
         },
     )
 
@@ -2560,8 +2770,15 @@ def _parse_generated_note_json(payload_text: str) -> tuple[str, str]:
     payload = None
     for candidate in _generated_note_json_candidates(payload_text):
         try:
-            payload = json.loads(candidate)
+            payload = json.loads(candidate, object_pairs_hook=reject_duplicate_json_keys)
             break
+        except DuplicateJsonKeyError:
+            raise AppError(
+                502,
+                "llm_generation_invalid_json",
+                "LLM generation returned ambiguous JSON for the note output",
+                {"provider_error_code": "duplicate_json_key"},
+            ) from None
         except json.JSONDecodeError:
             continue
     if payload is None:
@@ -2608,8 +2825,15 @@ def _parse_generated_structured_note_json(
     payload = None
     for candidate in _generated_note_json_candidates(payload_text):
         try:
-            payload = json.loads(candidate)
+            payload = json.loads(candidate, object_pairs_hook=reject_duplicate_json_keys)
             break
+        except DuplicateJsonKeyError:
+            raise AppError(
+                502,
+                "llm_generation_invalid_json",
+                "LLM generation returned ambiguous JSON for the structured note output",
+                {"provider_error_code": "duplicate_json_key"},
+            ) from None
         except json.JSONDecodeError:
             continue
     if payload is None:
@@ -2777,7 +3001,21 @@ def _build_hallucination_check_messages(
 
 def _parse_hallucination_check_response(payload_text: str, *, edit_cap: int) -> dict[str, object]:
     try:
-        payload = json.loads(payload_text.strip())
+        payload = json.loads(payload_text.strip(), object_pairs_hook=reject_duplicate_json_keys)
+    except DuplicateJsonKeyError:
+        raise AppError(
+            502,
+            "hallucination_check_invalid_response",
+            "Hallucination checker returned ambiguous JSON",
+            {"failure_code": "duplicate_json_key"},
+        ) from None
+    except RecursionError:
+        raise AppError(
+            502,
+            "hallucination_check_invalid_response",
+            "Hallucination checker returned invalid JSON",
+            {"failure_code": "invalid_json"},
+        ) from None
     except json.JSONDecodeError as exc:
         raise AppError(502, "hallucination_check_invalid_response", "Hallucination checker returned invalid JSON", {"failure_code": "invalid_json"}) from exc
     if not isinstance(payload, dict):
@@ -2944,6 +3182,7 @@ def _run_hallucination_check(
     sections: list[dict[str, str | int]],
     note_generation_options: NoteGenerationOptions,
 ) -> tuple[str, list[dict[str, str | int]], HallucinationCheckStatus, int | None]:
+    log_context = _checker_log_context(document)
     checker_started_at = utcnow()
     selection = active_team_hallucination_check_selection(db, team_id=document.team_id)
     debug_payload: dict[str, object] | None = None
@@ -2961,6 +3200,10 @@ def _run_hallucination_check(
         if debug_payload is not None:
             debug_payload["failure_code"] = "not_configured"
             set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
+        _checker_usage_event(
+            event="llm_hallucination_check_skipped", context=log_context,
+            status=HallucinationCheckStatus.skipped_not_configured.value,
+        )
         return title, sections, HallucinationCheckStatus.skipped_not_configured, None
     config = selection.config
     model_name = selection.model_name_override or config.model_name
@@ -2968,6 +3211,10 @@ def _run_hallucination_check(
         if debug_payload is not None:
             debug_payload["failure_code"] = "config_invalid"
             set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
+        _checker_usage_event(
+            event="llm_hallucination_check_skipped", context=log_context,
+            status=HallucinationCheckStatus.skipped_config_invalid.value,
+        )
         return title, sections, HallucinationCheckStatus.skipped_config_invalid, None
 
     edit_cap = _hallucination_check_edit_cap(note_generation_options)
@@ -2994,6 +3241,13 @@ def _run_hallucination_check(
             event_type=ProviderUsageEventType.failed,
             error_code=exc.code,
         )
+        _checker_usage_event(
+            event="llm_hallucination_check_failed", context=log_context,
+            status=HallucinationCheckStatus.failed_provider.value,
+            error_code=exc.code,
+            provider_error_code=(exc.details or {}).get("provider_error_code"),
+            provider_http_status=(exc.details or {}).get("provider_http_status"),
+        )
         return title, sections, HallucinationCheckStatus.failed_provider, None
     document.hallucination_check_llm_config_id = config.id
     document.hallucination_check_model_name = model_name
@@ -3007,6 +3261,11 @@ def _run_hallucination_check(
     for attempt in range(2):
         if not _lock_live_generation_result(db, document=document) or checker_deadline <= utcnow():
             db.rollback()
+            _checker_usage_event(
+                event="llm_hallucination_check_failed", context=log_context,
+                status=HallucinationCheckStatus.failed_provider.value,
+                error_code="llm_attempt_inactive",
+            )
             return title, sections, HallucinationCheckStatus.failed_provider, None
         system_message, user_message = _build_hallucination_check_messages(
             transcript_text=transcript_text,
@@ -3039,6 +3298,11 @@ def _run_hallucination_check(
                 status="failed_provider", event_type=ProviderUsageEventType.failed,
                 error_code="hallucination_check_invalid_config",
             )
+            _checker_usage_event(
+                event="llm_hallucination_check_failed", context=log_context,
+                status=HallucinationCheckStatus.failed_provider.value,
+                error_code="hallucination_check_invalid_config",
+            )
             return title, sections, HallucinationCheckStatus.failed_provider, None
         if config.adapter_kind not in {
             LlmAdapterKind.openai_chat,
@@ -3051,6 +3315,11 @@ def _run_hallucination_check(
             _record_hallucination_check_usage_event(
                 db, document=document, config=config, model_name=model_name, usage=None,
                 status="failed_provider", event_type=ProviderUsageEventType.failed,
+                error_code="hallucination_check_invalid_config",
+            )
+            _checker_usage_event(
+                event="llm_hallucination_check_failed", context=log_context,
+                status=HallucinationCheckStatus.failed_provider.value,
                 error_code="hallucination_check_invalid_config",
             )
             return title, sections, HallucinationCheckStatus.failed_provider, None
@@ -3089,6 +3358,11 @@ def _run_hallucination_check(
                 debug_payload["failure_code"] = exc.code
                 debug_payload["failure_message"] = exc.message
                 set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
+            _checker_usage_event(
+                event="llm_hallucination_check_skipped", context=log_context,
+                status=HallucinationCheckStatus.skipped_quota.value,
+                error_code=exc.code,
+            )
             return title, sections, HallucinationCheckStatus.skipped_quota, None
         try:
             mark_provider_attempt_submitted(
@@ -3112,6 +3386,10 @@ def _run_hallucination_check(
                     settle_provider_attempt_unknown_tokens(db, attempt_id=persisted.id)
                 db.commit()
             raise
+        _checker_usage_event(
+            event="llm_hallucination_check_started", context=log_context,
+            status="processing",
+        )
         try:
             with provider_attempt_execution(db, attempt_id=checker_attempt.id, maximum_seconds=30, budget=checker_budget):
                 response_text, checker_usage = _invoke_frozen_llm(
@@ -3125,6 +3403,11 @@ def _run_hallucination_check(
         except AppError as exc:
             if not _lock_live_generation_result(db, document=document):
                 db.rollback()
+                _checker_usage_event(
+                    event="llm_hallucination_check_failed", context=log_context,
+                    status=HallucinationCheckStatus.failed_provider.value,
+                    error_code="llm_attempt_inactive",
+                )
                 return title, sections, HallucinationCheckStatus.failed_provider, None
             settled = _settle_hallucination_check_attempt(
                 db,
@@ -3147,10 +3430,22 @@ def _run_hallucination_check(
                 debug_payload["provider_http_status"] = (exc.details or {}).get("provider_http_status")
                 set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
             db.commit()
+            _checker_usage_event(
+                event="llm_hallucination_check_failed", context=log_context,
+                status=HallucinationCheckStatus.failed_provider.value,
+                error_code=exc.code,
+                provider_error_code=(exc.details or {}).get("provider_error_code"),
+                provider_http_status=(exc.details or {}).get("provider_http_status"),
+            )
             return title, sections, HallucinationCheckStatus.failed_provider, None
         except Exception:
             if not _lock_live_generation_result(db, document=document):
                 db.rollback()
+                _checker_usage_event(
+                    event="llm_hallucination_check_failed", context=log_context,
+                    status=HallucinationCheckStatus.failed_provider.value,
+                    error_code="llm_attempt_inactive",
+                )
                 return title, sections, HallucinationCheckStatus.failed_provider, None
             _settle_hallucination_check_attempt(
                 db, attempt=checker_attempt, usage=None, outcome=AttemptOutcome.unknown,
@@ -3162,9 +3457,19 @@ def _run_hallucination_check(
                 error_code="hallucination_check_failed",
             )
             db.commit()
+            _checker_usage_event(
+                event="llm_hallucination_check_failed", context=log_context,
+                status=HallucinationCheckStatus.failed_provider.value,
+                error_code="hallucination_check_failed",
+            )
             return title, sections, HallucinationCheckStatus.failed_provider, None
         if not _lock_live_generation_result(db, document=document):
             db.rollback()
+            _checker_usage_event(
+                event="llm_hallucination_check_failed", context=log_context,
+                status=HallucinationCheckStatus.failed_provider.value,
+                error_code="llm_attempt_inactive",
+            )
             return title, sections, HallucinationCheckStatus.failed_provider, None
         try:
             parsed = _parse_hallucination_check_response(response_text, edit_cap=edit_cap)
@@ -3181,6 +3486,11 @@ def _run_hallucination_check(
                     debug_payload["retry_count"] = attempt
                     set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
                 db.commit()
+                _checker_usage_event(
+                    event="llm_hallucination_check_completed", context=log_context,
+                    status=HallucinationCheckStatus.checked_unchanged.value,
+                    usage=checker_usage,
+                )
                 return title, sections, HallucinationCheckStatus.checked_unchanged, 0
             next_title, next_sections, applied_count = _apply_hallucination_check_edits(title=title, sections=sections, edits=edits)  # type: ignore[arg-type]
             _settle_hallucination_check_attempt(
@@ -3195,6 +3505,11 @@ def _run_hallucination_check(
                 debug_payload["retry_count"] = attempt
                 set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
             db.commit()
+            _checker_usage_event(
+                event="llm_hallucination_check_completed", context=log_context,
+                status=HallucinationCheckStatus.checked_corrected.value,
+                usage=checker_usage,
+            )
             return next_title, next_sections, HallucinationCheckStatus.checked_corrected, applied_count
         except AppError as exc:
             failure_code = str((exc.details or {}).get("failure_code") or exc.code)
@@ -3207,6 +3522,12 @@ def _run_hallucination_check(
                 status="failed_invalid_response", event_type=ProviderUsageEventType.failed, error_code=failure_code,
             )
             db.commit()
+            _checker_usage_event(
+                event="llm_hallucination_check_failed", context=log_context,
+                status=HallucinationCheckStatus.failed_invalid_response.value,
+                usage=checker_usage,
+                error_code=failure_code,
+            )
             if attempt == 0:
                 continue
             if debug_payload is not None:

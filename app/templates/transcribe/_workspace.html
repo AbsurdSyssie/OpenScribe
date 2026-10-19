@@ -20,7 +20,7 @@
 
 <main data-workspace-scribe-main class="flex-1 flex flex-col min-w-0 min-h-0 overflow-visible relative z-30">
 <header class="transcribe-capture-header bg-white border-b border-stone px-4 py-3 flex flex-col gap-3 flex-shrink-0" data-mobile-capture-screen>
-<div class="transcribe-capture-header__title-row flex items-center justify-between gap-4">
+<div class="transcribe-capture-header__title-row flex items-center justify-between gap-4" data-tour-fallback>
 <div class="min-w-0 flex-1">
 {% if active_transcript %}
 <form method="post" action="/transcribe/sessions/{{ active_transcript.id }}/title" data-transcript-title-form>
@@ -120,6 +120,7 @@ title="Change recording mode"
 <select
 class="sr-only"
 data-recording-mode-select
+aria-label="Recording mode"
 {% if not active_transcript %}disabled{% endif %}>
 <option value="whole_file" {% if (active_transcript and active_transcript.ingestion_mode.value == 'whole_file') or (not active_transcript and preferred_recording_mode != 'live_chunked') %}selected{% endif %}>Recorded upload</option>
 <option value="live_chunked" {% if (active_transcript and active_transcript.ingestion_mode.value == 'live_chunked') or (not active_transcript and preferred_recording_mode == 'live_chunked') %}selected{% endif %}>Live capture</option>
@@ -142,8 +143,13 @@ Try transcription again
 <button type="button" class="btn-secondary btn-secondary--compact" data-pending-audio-retry>Retry audio upload</button>
 <button type="button" class="btn-ghost-sm" data-pending-audio-discard>Discard pending audio</button>
 </div>
+<div class="text-sm text-slate" data-deepgram-gap-region{% if not active_transcript_stream_gap %} hidden{% endif %} aria-live="polite">
+<span data-deepgram-gap-message>{% if active_transcript_stream_gap and active_transcript_stream_gap.recovery_in_progress %}A live transcription recovery is queued or processing. The interval remains blocked until it is applied.{% elif active_transcript_stream_gap and active_transcript_stream_gap.recovery_available %}A live audio interval was not committed. The retained audio is available until {{ active_transcript_stream_gap.recovery_expires_at }}.{% elif active_transcript_stream_gap and active_transcript_stream_gap.recovery_job_retry_available %}The stream recovery failed. Use the failed-audio retry action above to retry its retained source.{% elif active_transcript_stream_gap %}A live audio interval was not committed and no server recovery audio is available. You can discard the unresolved interval.{% endif %}</span>
+<button type="button" class="btn-secondary btn-secondary--compact" data-deepgram-gap-retry{% if not active_transcript_stream_gap or not active_transcript_stream_gap.recovery_available %} hidden{% endif %}>Retry retained interval</button>
+<button type="button" class="btn-ghost-sm" data-deepgram-gap-discard{% if not active_transcript_stream_gap or active_transcript_stream_gap.recovery_in_progress or active_transcript_stream_gap.recovery_job_retry_available %} hidden{% endif %}>Discard unresolved interval</button>
+</div>
 
-<button type="button" class="dictation-global-cta" data-dictation-cta data-local-busy-protected {% if active_transcript and (not dictation_stt_selected or not dictation_stt_available) %}title="Recording unavailable. You can type dictation manually."{% endif %}>
+<button type="button" class="dictation-global-cta" data-dictation-cta data-tour-target="dictation-source" data-local-busy-protected {% if active_transcript and (not dictation_stt_selected or not dictation_stt_available) %}title="Recording unavailable. You can type dictation manually."{% endif %}>
 <i class="w-4 h-4" data-lucide="mic-2" aria-hidden="true"></i>
 <span class="mobile-capture-action__label" data-dictation-cta-label>{% if post_consultation_dictation and post_consultation_dictation.effective_text %}Edit dictation{% else %}Add dictation{% endif %}</span>
 <span class="mobile-capture-action__copy">Notes after the consultation</span>
@@ -220,6 +226,7 @@ Ready when you are.
 Create or open a consultation to begin.
 {% endif %}
 </div>
+<p class="mt-2 text-sm text-slate" data-deepgram-interim role="note" aria-label="Temporary live transcription, not saved" hidden></p>
 <div class="sr-only" data-mic-status aria-live="polite">
 {% if not active_transcript %}
 Create or open a consultation to begin.
@@ -254,7 +261,7 @@ Ready to upload a recording or capture one from your microphone.
 <div class="transcribe-tab-list flex gap-1 min-w-0" role="tablist" aria-label="Consultation workspace">
 <button type="button" id="workspace-tab-output" class="main-tab active" role="tab" aria-selected="true" aria-controls="workspace-panel-output" data-tab-trigger="output" data-tour-target="note-tab">Clinical Note</button>
 <button type="button" id="workspace-tab-followups" class="main-tab" role="tab" aria-selected="false" aria-controls="workspace-panel-followups" tabindex="-1" data-tab-trigger="followups" data-tour-target="messages-tab">Follow Ups</button>
-<button type="button" id="workspace-tab-history" class="main-tab" role="tab" aria-selected="false" aria-controls="workspace-panel-history" tabindex="-1" data-tab-trigger="history">Transcript</button>
+<button type="button" id="workspace-tab-history" class="main-tab" role="tab" aria-selected="false" aria-controls="workspace-panel-history" tabindex="-1" data-tab-trigger="history" data-tour-target="transcript-tab">Transcript</button>
 </div>
 
 </div>
@@ -262,7 +269,7 @@ Ready to upload a recording or capture one from your microphone.
 <div class="transcribe-lower-row">
 {% include "transcribe/_session_panel.html" %}
 <div class="transcribe-tab-workspace flex-1 min-w-0 min-h-0 bg-parchment">
-<div id="workspace-panel-output" class="main-panel h-full" role="tabpanel" aria-labelledby="workspace-tab-output" data-tab-panel="output">
+<div id="workspace-panel-output" class="main-panel h-full" role="tabpanel" aria-labelledby="workspace-tab-output" data-tab-panel="output" data-tour-target="notes-panel">
 <div class="structured-workspace">
 <div class="structured-workspace__header workspace-context-header" data-workspace-context-header>
 {% set latest_template = preferred_template if preferred_template is defined and preferred_template else (available_templates[0] if available_templates else none) %}
@@ -338,6 +345,7 @@ data-note-editor-header-toolbar
 name="template_id"
 data-template-select
 class="sr-only"
+aria-label="Note template"
 {% if not active_transcript or not available_templates or not llm_selection %}disabled{% endif %}
 required>
 {% if not available_templates %}
@@ -361,7 +369,7 @@ data-settings-url="/workspace/library/templates?scope={% if template.scope.value
 </div>
 <button type="button" class="mobile-sheet-scrim" data-mobile-note-versions-close aria-label="Close note versions" tabindex="-1" hidden></button>
 <div class="structured-workspace__body">
-<div class="assistant-subsection space-y-2" data-note-selector-wrap{% if not active_transcript %} hidden{% endif %}>
+<div class="assistant-subsection space-y-2" data-note-selector-wrap data-tour-target="working-note-source"{% if not active_transcript %} hidden{% endif %}>
 <div id="mobile-note-selector-sheet" data-mobile-note-selector-sheet>
 <div class="mobile-sheet-heading"><span>Note versions</span><button type="button" data-mobile-note-versions-close aria-label="Close note versions"><i data-lucide="x" aria-hidden="true"></i></button></div>
 <div class="flex items-start justify-between gap-3" data-note-selector-row>
@@ -623,6 +631,7 @@ data-quick-action-description="{{ quick_action.description or '' }}">
 name="quick_action_id"
 data-quick-action-select
 class="sr-only"
+aria-label="Quick action"
 {% if not active_transcript or not available_quick_actions or not llm_selection or not active_quick_action_input_available %}disabled{% endif %}>
 <option value="">No quick action</option>
 {% for quick_action in available_quick_actions %}
@@ -1116,5 +1125,5 @@ Continue as one note
 </footer>
 </section>
 </div>
-<div class="toast-container" data-toast-container aria-label="Notifications"></div>
+<div class="toast-container" data-toast-container></div>
 </main>

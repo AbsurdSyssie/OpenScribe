@@ -44,14 +44,14 @@ A component belongs here only when semantics and layout are consistent across pa
 - `workspace.css` or current workspace-shell assets: permanent user navigation/settings/library/team layout;
 - canonical Admin styles: remain colocated with `admin_mockup.html` pending a focused extraction;
 - `auth.css`: login/request/reset/onboarding/MFA;
-- `home.css`: retained preview-only Home styles; canonical users enter `/workspace`;
+- `home.css` and `home2.css`: retained `/home-restyled` and `/home2` preview styles; `/home` redirects to `/workspace`;
 - `template-editor.css` and other focused assets where still used.
 
 Page-specific workflow selectors should remain local when moving them would risk behavior, accessibility, scroll ownership, or privacy-sensitive rendering.
 
 ## Implemented extraction
 
-The main large inline style blocks were moved into linked same-origin stylesheets for the splash, Scribe assets, Home, auth/recovery pages, Template editor, and Admin workspace. Shared tokens/components now provide base palette, buttons, forms, panels, pills/tabs, modal, feedback, and related primitives where compatible.
+The main style blocks were moved into linked same-origin stylesheets for the splash, Scribe, Home previews, auth/recovery pages, and Template editor. The canonical Admin workspace still keeps its stylesheet in a nonce-bearing `<style>` block in `admin_mockup.html`. Shared tokens/components provide the base palette, buttons, forms, panels, pills/tabs, modals, and feedback where their layouts match.
 
 Templates should not use inline `style="..."` attributes. Dynamic visual values should be represented through escaped/clamped data attributes and applied by nonce-approved JavaScript through direct CSS properties.
 
@@ -127,12 +127,12 @@ Do not combine extraction, redesign, route migration, and behavior refactoring i
 
 Potential focused work:
 
-- identify genuinely shared workspace/admin/settings layout primitives without flattening area-specific scroll behavior;
+- identify shared workspace/admin/settings layout primitives without flattening area-specific scroll behavior;
 - remove unused/empty build artifacts such as Tailwind outputs only after verifying no template references;
 - reduce duplicate status/button/modal declarations that remain byte-for-byte compatible;
 - consolidate responsive breakpoints/tokens where current behavior matches;
 - document/automate visual regression snapshots for canonical `/workspace`, `/admin`, auth, Library, and splash routes;
-- retire `/home` CSS only after the route migration is complete;
+- retire `home.css` and `home2.css` with the `/home-restyled` and `/home2` preview routes;
 - review preview/prototype route assets and remove them with their routes when no longer needed.
 
 ## Verification matrix

@@ -260,7 +260,7 @@ body:not(.h-screen) legend { font-size: 0.82rem; font-weight: 600; color: var(--
 
 .tab-shell__nav { display: none; gap: 2px; align-items: center; width: fit-content; padding: 4px; border-radius: var(--radius-md); background: rgba(255, 255, 255, 0.85); border: 1px solid var(--border); box-shadow: var(--shadow-sm), var(--shadow-inset); backdrop-filter: blur(8px); }
 .tab-shell__nav.is-tabs-ready { display: flex; }
-.tab-shell__tab { border: 1px solid transparent; background: transparent; color: var(--muted); font-size: 0.88rem; min-height: 38px; box-shadow: none; padding: 8px 16px; border-radius: var(--radius-sm); }
+.tab-shell__tab { border: 1px solid transparent; background: transparent; color: var(--slate); font-size: 0.88rem; min-height: 38px; box-shadow: none; padding: 8px 16px; border-radius: var(--radius-sm); }
 .tab-shell__tab:hover { background: rgba(29, 79, 94, 0.05); color: var(--ink); transform: none; }
 .tab-shell__tab[aria-selected="true"] { background: var(--card); color: var(--ink); font-weight: 500; border-color: var(--border); box-shadow: var(--shadow-xs); }
 

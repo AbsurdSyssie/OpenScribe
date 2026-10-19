@@ -41,7 +41,7 @@ Later ordinary database tests reuse the canonical schema. `db_session` uses SQLA
 
 The `client` and `raw_client` fixtures bind request-created sessions to the same connection/savepoint model. This keeps route-side commits isolated without per-test schema recreation.
 
-Pure/static tests that do not resolve database fixtures skip PostgreSQL and Redis reset work.
+Pure/static tests that do not resolve database fixtures skip schema and Redis reset work. The pytest controller still checks or creates the test database during startup, so even these tests need a reachable test PostgreSQL service.
 
 ## Real connection tests
 
@@ -59,6 +59,8 @@ Do not use hand-written untrusted table names for cleanup.
 ## Migration tests
 
 Migration tests own the `public` schema lifecycle and do not use the ordinary pre-test schema path. They exercise Alembic upgrades/downgrades and database constraints against actual migration state.
+
+PostgreSQL enum additions are append-only; the accessibility legal-document label remains after downgrade and re-upgrade.
 
 After a migration test, teardown invalidates the worker's canonical-schema readiness flag even if the test fails. The next ordinary database-backed test rebuilds canonical metadata before opening its rollback-isolated connection.
 
@@ -175,7 +177,7 @@ Database tests should cover the transaction and concurrency boundaries for:
 - `FOR UPDATE SKIP LOCKED` publication without duplicate broker sends;
 - retry/backoff and terminal failure after `TASK_OUTBOX_MAX_ATTEMPTS`;
 - quota reservation, expansion, submission, settlement, cancellation, and stale deadlines;
-- failed split-dispatch reconciliation flushes a reserved-attempt cancellation before verification fail-open reacquires lifecycle rows, so a populated refresh cannot restore reserved quota;
+- failed split-dispatch and reservation-expiry reconciliation flush attempt cancellation or unknown settlement before verification fail-open reacquires lifecycle rows, so a populated refresh cannot restore stale attempt state;
 - retention cleanup every 10 seconds;
 - transcript-audio and provider-secret cleanup jobs, live-reference guards, and rollback compensation;
 - deletion helpers that terminalize attempts/remove dispatch rows before source deletion.
@@ -207,7 +209,7 @@ Use the least powerful fixture/marker that proves the behavior:
 
 ## Recovery after an interrupted run
 
-If a test process is killed while holding the global lock, verify no pytest controller/worker remains, then remove only the stale lock file if necessary. The next database-backed test rebuilds its worker schema.
+The operating system releases the `flock` when the process closes its lock handle or exits. The lock file can remain on disk after a run; its presence does not mean a process still holds the lock. If a run reports contention, check for an active pytest controller or API audit and wait for it to finish. Keep the lock file in place so each process locks the same inode. The next database-backed test rebuilds its worker schema.
 
 Do not repair failures by pointing `TEST_DATABASE_URL` at the application database or by disabling the equality guard.
 

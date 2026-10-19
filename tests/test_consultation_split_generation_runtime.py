@@ -27,6 +27,8 @@ from app.models import (
     ConsultationSplitVerificationStatus,
     GeneratedDocument,
     GeneratedDocumentSection,
+    LlmAdapterKind,
+    LlmAuthMode,
     PromptTemplateVersion,
     ProviderAttempt,
     ProviderUsageEvent,
@@ -50,6 +52,8 @@ from app.schemas.consultation_split import ConsultationSplitDraftConfirmRequest
 from app.services.consultation_split_confirmation import confirm_split_draft
 from app.services.consultation_split_drafts import create_split_draft, create_split_draft_topic
 from app.services.consultation_split_generation_runtime import process_consultation_split_generation_execution
+from app.services.llm_adapters.runtime import request_output_token_cap
+from app.services.quotas import estimate_token_reservation
 from app.services.consultation_split_verification_runtime import (
     fail_open_verification_execution,
     process_consultation_split_verification_execution,
@@ -87,12 +91,29 @@ from app.services.transcripts import (
 from app.services.dictations import update_post_consultation_dictation
 
 
-def _queue(db, owner, make_llm_config, make_llm_selection, make_template, monkeypatch, *, mixed=True, included=False, structured_only=False, source_only=None):
+def _queue(db, owner, make_llm_config, make_llm_selection, make_template, monkeypatch, *, mixed=True, included=False, structured_only=False, source_only=None, adapter_kind=LlmAdapterKind.openai_chat):
     """Build a real confirmed batch; only the provider boundary is faked."""
     monkeypatch.setenv("CONSULTATION_SPLITTING_ENABLED", "true")
     db.add(UserAppPreference(user_id=owner.id, preferences_json={"split_consultations_into_separate_notes": True}))
-    config = make_llm_config(team=owner.team, actor=owner, available_models_json=["gpt-4o-mini"])
-    make_llm_selection(config=config, actor=owner, allowed_models_json=["gpt-4o-mini"])
+    if adapter_kind is LlmAdapterKind.gemini_enterprise:
+        model = "publishers/google/models/gemini-2.5-flash"
+        config = make_llm_config(
+            team=owner.team,
+            actor=owner,
+            provider_preset="gemini_enterprise",
+            adapter_kind=adapter_kind,
+            base_url="https://europe-west2-aiplatform.googleapis.com",
+            model_name=model, available_models_json=[model],
+        )
+        config.auth_mode = LlmAuthMode.google_service_account
+        config.provider_config_json = {
+            "project_id": "synthetic-project", "location": "europe-west2",
+            "api_version": "v1", "capacity_mode": "shared",
+        }
+    else:
+        model = "gpt-4o-mini"
+        config = make_llm_config(team=owner.team, actor=owner, available_models_json=[model])
+    make_llm_selection(config=config, actor=owner, allowed_models_json=[model])
     transcript = Transcript(
         owner_user_id=owner.id, team_id=owner.team_id, title="Synthetic consultation",
         ingestion_mode=TranscriptIngestionMode.whole_file, status=TranscriptStatus.ready,
@@ -205,7 +226,10 @@ def _response(db, execution_id, *, malformed=False):
 
 
 def _provider(monkeypatch, response, calls):
-    monkeypatch.setattr("app.services.consultation_split_generation_runtime.resolve_generation_credential", lambda _config: "token")
+    monkeypatch.setattr(
+        "app.services.consultation_split_generation_runtime.resolve_generation_credential",
+        lambda config: None if config.auth_mode.value in {"none", "google_adc"} else "token",
+    )
     monkeypatch.setattr("app.services.consultation_split_generation_runtime.llm_runtime.invoke_llm",
         lambda **_kwargs: (calls.append(1) or (response, {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18})))
 
@@ -218,12 +242,12 @@ def _run(db, execution_id):
 
 def _queue_selected_verification(
     db, owner, make_llm_config, make_llm_selection, make_template, monkeypatch,
-    *, source_only=None,
+    *, source_only=None, adapter_kind=LlmAdapterKind.openai_chat,
 ):
     """Build one queued verifier with validated originals and no documents yet."""
     transcript, generation_id = _queue(
         db, owner, make_llm_config, make_llm_selection, make_template,
-        monkeypatch, structured_only=True, source_only=source_only,
+        monkeypatch, structured_only=True, source_only=source_only, adapter_kind=adapter_kind,
     )
     config = db.scalar(
         select(TeamLlmSelection).where(TeamLlmSelection.team_id == owner.team_id)
@@ -233,7 +257,8 @@ def _queue_selected_verification(
     ))
     db.commit()
     _provider(monkeypatch, _response(db, generation_id), [])
-    assert _run(db, generation_id).outcome == "ready"
+    result = _run(db, generation_id)
+    assert result.outcome == "ready", result.error_code
     verification = db.scalar(select(ConsultationSplitExecution).where(
         ConsultationSplitExecution.batch_id == db.get(ConsultationSplitExecution, generation_id).batch_id,
         ConsultationSplitExecution.kind == "verification",
@@ -241,6 +266,118 @@ def _queue_selected_verification(
     assert verification is not None
     db.commit()
     return transcript, verification.id
+
+
+def _assert_attempt_reservation_matches_frozen_request(db, owner, execution_id, expected_cap):
+    execution, _batch, attempt, _outcomes = _rows(db, execution_id)
+    request = read_split_execution_json(
+        db, owner, execution=execution, field="request_payload_encrypted",
+    )
+    assert request_output_token_cap(request) == expected_cap
+    if "contents" in request:
+        system_message = request["config"]["system_instruction"]
+        user_message = request["contents"][0]["parts"][0]["text"]
+    else:
+        system_message, user_message = (item["content"] for item in request["messages"])
+    assert attempt.reserved_units == estimate_token_reservation(
+        (system_message, user_message), max_completion_tokens=expected_cap,
+    )
+
+
+def test_gemini_initial_and_targeted_recovery_attempts_reserve_frozen_request_cap(
+    db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch,
+):
+    owner = make_user(email=f"generation-gemini-reservation-{uuid4()}@example.com")
+    transcript, initial_id = _queue(
+        db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch,
+        adapter_kind=LlmAdapterKind.gemini_enterprise,
+    )
+    _assert_attempt_reservation_matches_frozen_request(db_session, owner, initial_id, 30_000)
+
+    monkeypatch.setattr(
+        "app.services.consultation_split_recovery.queue_automatic_split_recovery",
+        lambda *_args, **_kwargs: None,
+    )
+    partial = json.loads(_response(db_session, initial_id))
+    partial["notes"][1]["content"] = {"problem": "", "tasks": ""}
+    _provider(monkeypatch, json.dumps(partial), [])
+    result = _run(db_session, initial_id)
+    assert result.outcome == "ready", result.error_code
+    initial = db_session.get(ConsultationSplitExecution, initial_id)
+    assert initial is not None
+    monkeypatch.setattr("app.services.consultation_split_recovery.try_publish_task_dispatch_safely", lambda *_args: None)
+    recovery = retry_missing_split_notes(
+        db_session, owner, transcript_id=transcript.id, batch_id=initial.batch_id,
+    )
+    assert recovery.replayed is False
+    _assert_attempt_reservation_matches_frozen_request(db_session, owner, recovery.execution_id, 30_000)
+
+
+def test_gemini_verification_attempt_reserves_frozen_request_cap(
+    db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch,
+):
+    owner = make_user(email=f"verification-gemini-reservation-{uuid4()}@example.com")
+    _transcript, verification_id = _queue_selected_verification(
+        db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch,
+        adapter_kind=LlmAdapterKind.gemini_enterprise,
+    )
+    _assert_attempt_reservation_matches_frozen_request(db_session, owner, verification_id, 30_000)
+
+
+def test_gemini_verifier_quota_rejection_remains_fail_open_below_actual_cap(
+    db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch,
+):
+    owner = make_user(email=f"verification-gemini-quota-{uuid4()}@example.com")
+    transcript, generation_id = _queue(
+        db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch,
+        structured_only=True, adapter_kind=LlmAdapterKind.gemini_enterprise,
+    )
+    config = db_session.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == owner.team_id)).config
+    db_session.add(TeamHallucinationCheckSelection(
+        team_id=owner.team_id, llm_config_id=config.id, selected_by_user_id=owner.id,
+    ))
+    db_session.commit()
+
+    from app.services import consultation_split_verification_queue as verification_queue
+
+    original_queue_split_execution = verification_queue.queue_split_execution
+
+    def limit_between_nominal_and_actual(db, actor, **kwargs):
+        request = kwargs["request_payload"]
+        system_message = request["config"]["system_instruction"]
+        user_message = request["contents"][0]["parts"][0]["text"]
+        nominal_reservation = estimate_token_reservation(
+            (system_message, user_message), max_completion_tokens=2_048,
+        )
+        actual_reservation = kwargs["reserved_units"]
+        assert request_output_token_cap(request) == 30_000
+        assert actual_reservation == estimate_token_reservation(
+            (system_message, user_message), max_completion_tokens=30_000,
+        )
+        actor.daily_token_limit = actor.monthly_token_limit = actual_reservation - 1
+        db.flush()
+        # The generated call has settled to 18 synthetic tokens. The old
+        # nominal checker reservation would fit; the actual Gemini cap cannot.
+        assert nominal_reservation + 18 <= actor.daily_token_limit
+        return original_queue_split_execution(db, actor, **kwargs)
+
+    monkeypatch.setattr(verification_queue, "queue_split_execution", limit_between_nominal_and_actual)
+    provider_calls = []
+    _provider(monkeypatch, _response(db_session, generation_id), provider_calls)
+    result = _run(db_session, generation_id)
+    assert result.outcome == "ready", result.error_code
+
+    _initial, batch, _attempt, _outcomes = _rows(db_session, generation_id)
+    assert provider_calls == [1]
+    assert batch.verification_status is ConsultationSplitVerificationStatus.unchecked
+    assert batch.verification_reason == "verification_quota_unavailable"
+    assert db_session.scalars(select(ConsultationSplitExecution.id).where(
+        ConsultationSplitExecution.batch_id == batch.id,
+    )).all() == [generation_id]
+    assert db_session.scalars(select(TaskDispatchOutbox.task_id).where(
+        TaskDispatchOutbox.source_id == generation_id,
+        TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_execution,
+    )).all()
 
 
 def _verification_response(db, execution_id):
@@ -556,13 +693,18 @@ def test_generation_resolves_credential_before_transaction_and_recovers_encrypte
 
 
 @pytest.mark.parametrize("payload", ["not-json", "{}"])
-def test_generation_bad_output_queues_one_safe_automatic_recovery_without_documents(db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch, payload):
+def test_generation_bad_output_queues_one_safe_automatic_recovery_without_documents(db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch, caplog, payload):
     owner = make_user(email=f"generation-invalid-{uuid4()}@example.com")
     _transcript, execution_id = _queue(db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch)
+    caplog.set_level("WARNING", logger="openscribe.consultation_split")
     calls = []; _provider(monkeypatch, payload, calls)
     result = _run(db_session, execution_id)
     execution, batch, attempt, outcomes = _rows(db_session, execution_id)
     assert result.outcome == "failed" and result.error_code == "consultation_split_generation_invalid_output" and calls == [1]
+    diagnostic = next(record for record in caplog.records if getattr(record, "event", None) == "consultation_split_finalization_failed")
+    assert diagnostic.getMessage() == f"event=consultation_split_finalization_failed execution_id={execution_id} phase=finalize"
+    assert diagnostic.execution_id == str(execution_id) and diagnostic.phase == "finalize"
+    assert diagnostic.exc_info is None and payload not in caplog.text
     assert execution.status is ConsultationSplitExecutionStatus.failed and batch.status is ConsultationSplitBatchStatus.partially_ready and attempt.status is AttemptStatus.settled
     assert all(item.status is ConsultationSplitTopicOutcomeStatus.failed and item.error_code == result.error_code for item in outcomes)
     assert db_session.scalars(select(GeneratedDocument).where(GeneratedDocument.transcript_id == execution.transcript_id)).all() == []

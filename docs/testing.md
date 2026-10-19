@@ -4,6 +4,8 @@ This document covers test execution, non-database test boundaries, and focused v
 
 Consultation-split tests must cover durable accepted-intent dispatch and duplicate delivery, queued-analysis waiting, one-note consumption, exact intent-bound review-draft initialization without document creation, safe terminalization for stale/deleted/expired roots, and sanitized retries for unexpected task failures. Verification tests must cover the no-selection and mixed/freeform fail-open paths, the structured exact-patch success and all-or-none rejection paths, durable submitted-before-call and duplicate-delivery behavior, quota settlement, and transcript deletion/retention. Assertions may inspect safe lifecycle metadata and encrypted-envelope presence, but must not print clinical source, provider output, patches, or verifier reasoning.
 
+Generation readiness tests must prove ordinary generation and current-source split analysis stay blocked while a live stream is active, finalizing, failed, or recovering, including the empty-transcript source path, and become available after completion or explicit discard. Workers may continue consuming already committed immutable source snapshots.
+
 ## Install test dependencies
 
 ```bash
@@ -37,6 +39,8 @@ Four workers has been a useful local full-suite setting, but worker count remain
 The sequential pytest process or xdist controller, and the standalone API authorization audit, acquire `/tmp/openscribe_pytest.lock` before creating or resetting test infrastructure. A concurrent pytest invocation or audit exits with status `2` instead of sharing/resetting the same PostgreSQL and Redis test infrastructure.
 
 Xdist workers run under the controller lock. Each worker derives a separate PostgreSQL database from `TEST_DATABASE_URL` and receives an isolated SlowAPI key prefix. See [dbtesting.md](dbtesting.md).
+
+The controller checks or creates the test database at startup, even for a pure/static selection. Those tests skip per-test schema and Redis reset work, but PostgreSQL must still be reachable. The lock file can remain after a run; `flock` ownership ends when the handle closes or the process exits. Do not delete the file to bypass contention.
 
 ## Test categories
 
@@ -90,10 +94,16 @@ Workspace/browser route coverage:
 pytest -q tests/test_workspace_navigation.py tests/test_workspace_frontend_contract.py tests/test_workspace_scribe_layout_contract.py tests/test_settings_quick_actions.py
 ```
 
+Dictation modal actions use a synthetic browser harness to verify that Save and Save & Generate wait for final recorder events and one preview result before acting, while stale modal contexts and explicit retry behavior remain fenced:
+
+```bash
+pytest -q tests/test_dictation_modal_actions.py
+```
+
 Transcript ingestion/generation lifecycle:
 
 ```bash
-pytest -q tests/test_transcripts.py tests/test_transcript_ingestion.py tests/test_task_outbox.py tests/test_quota_lifecycle.py
+pytest -q tests/test_api.py tests/test_transcript_streaming.py tests/test_retention.py tests/test_task_outbox.py tests/test_quota_lifecycle.py
 ```
 
 Provider configuration:
@@ -101,6 +111,22 @@ Provider configuration:
 ```bash
 pytest -q tests/test_stt_config.py tests/test_llm_config.py tests/test_deidentification.py
 ```
+
+Deepgram live-stream browser protocol (synthetic PCM, no database or provider connection):
+
+```bash
+pytest -q tests/test_deepgram_live_stream_frontend.py
+```
+
+This Node-backed test covers the binary PCM header, pause/resume pre-roll offsets, one-way source ordering, bounded backpressure failure, and exact bounded recovery selection that excludes unsent/ring audio. The streaming route, quota ledger, recovery lifecycle, workspace capability and owner authorization are database-backed and belong in the sequential transcript/API test run.
+
+Generation logging and token reservations:
+
+```bash
+APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_generation_usage_logging.py tests/test_generation_task_diagnostics.py tests/test_transcript_ingestion_diagnostics.py tests/test_template_suggestions.py tests/test_consultation_split_generation.py tests/test_consultation_split_verification.py tests/test_consultation_split_generation_runtime.py
+```
+
+These tests cover content-free operational messages and task tracebacks, generation wait/retry compatibility, ingestion settlement, adapter-specific output-cap reservations, suggestion input expansion and duplicate-worker guards, and optional verification quota fallback. Structured checker call-site logging also has focused coverage in `tests/test_api.py`; select the structured hallucination-check success, invalid-response retry and quota-skip tests when changing those branches. Use synthetic provider payloads and inspect both default messages and structured log fields.
 
 Security-remediation focus:
 
@@ -131,6 +157,82 @@ pytest -q tests/test_csrf_browser.py
 ```
 
 Missing Playwright/browser binaries cause this optional test to skip rather than fail the normal suite.
+
+## Opt-in local accessibility audit
+
+`tests/accessibility/` provides a first automated WCAG harness. It uses the
+pinned local `axe-core` bundle and Playwright. It never loads axe from a CDN.
+It starts a disposable localhost app server with the pytest database fixture
+and a new synthetic user. It does not use a running local service or a seeded
+development account.
+
+Install the test-only axe bundle once:
+
+```bash
+cd tests/accessibility
+npm ci --ignore-scripts
+cd ../..
+```
+
+The audit uses the normal browser sign-in form for its synthetic user. The
+fixture does not enable MFA, so this audit does not assess MFA. It creates a
+synthetic owner, synthetic encrypted transcript/draft data for editor states,
+and an empty transcript root for the dictation-dialog path. It never records
+audio or submits provider work. `real_db_connections` tests use the isolated
+pytest database; application tables are truncated after each such test. The
+harness does not use a running local service or seeded account, save browser
+authentication state, or capture screenshots. Service workers are disabled.
+The browser permits only the exact ephemeral server origin, checks redirect
+destinations before each request, and receives a marked synthetic empty
+workspace event stream response. This stub does not exercise live workspace stream updates.
+
+```bash
+source .venv/bin/activate
+APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app \
+  pytest -q --accessibility-audit tests/accessibility
+```
+
+The opt-in suite scans anonymous login, authenticated workspace, Help, empty Scribe,
+synthetic editor/copy-review, edited draft, masked and revealed PII, dialog and
+notification, rejected-login error, and responsive keyboard states. It also
+checks keyboard login and tab activation, editor line add/remove, the existing
+copy review gate, dialog focus entry/cancellation/return, select naming, text
+contrast for selected elements, and no horizontal overflow at a 320 CSS pixel
+viewport. The authenticated Help check adds axe scans for desktop, 320 CSS
+pixel, and open mobile-drawer states; keyboard skip-to-main and focused topic
+navigation; drawer focus containment and return; selected navigation target
+sizes; sidebar resizing; 320/375/740 CSS-pixel reflow; text-spacing overrides;
+and forced-colors focus visibility. These are focused automated checks, not complete keyboard or zoom
+coverage. They do not test 200% zoom, all focus-obscuration cases, screen-reader
+workflows, native microphone permission UI, all error recovery, or exported
+document accessibility; use the criterion-level checklist at
+[accessibility/wcag-2.2-manual-checklist-2026-10-15.md](accessibility/wcag-2.2-manual-checklist-2026-10-15.md).
+The [human testing guide](accessibility/human-testing-guide.md) provides
+isolated setup requirements and step-by-step procedures for screen readers,
+contrast, keyboard/focus, actual browser zoom/reflow, text spacing, microphone
+permission UI, authentication, and exported-document scope. Use its evidence
+template and preserve results in the authorized restricted assessment location.
+The [16 October evidence summary](accessibility/evidence-summary-2026-10-16.md)
+records the next contrast investigation and expanded browser states separately
+from the preserved 15 October records. The [18 October Help verification](accessibility/help-verification-2026-10-18.md)
+records the authenticated Help-page results and remaining human checks.
+
+`OPENSCRIBE_ACCESSIBILITY_REPORT_DIR` defaults to the ignored
+`test-results/accessibility/` directory. Selecting the audit fails clearly if
+Playwright, Chromium, the local axe bundle, or the isolated server are
+unavailable. The audit is serialized and rejects `pytest -n`. Without
+`--accessibility-audit`, browser audit tests are intentionally skipped and do
+not affect the normal suite. Each test writes a separately named report; the
+audit does not overwrite a report from another test state.
+
+Reports contain bounded, redacted rule diagnostics, state coverage, keyboard
+spot-check outcomes, and local axe rule counts for the requested WCAG tags.
+Skipped or unexecuted states remain visible in the report. Axe `incomplete`
+checks are marked for manual review. Reports do not contain DOM HTML,
+screenshots, authentication state, or clinical content. The result is an
+automated test record, not a WCAG conformance certification. Review sanitized
+reports before preserving or transferring them; dated historical reports are
+not overwritten.
 
 ## Consultation-split intent progression
 

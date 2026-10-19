@@ -473,26 +473,23 @@ syncRecordButtonLabel();
 })();
 </script>
 
-<div class="tour-overlay" data-tour-overlay hidden>
-    <div class="tour-overlay__scrim-panel" data-tour-scrim="top" data-tour-close></div>
-    <div class="tour-overlay__scrim-panel" data-tour-scrim="right" data-tour-close></div>
-    <div class="tour-overlay__scrim-panel" data-tour-scrim="bottom" data-tour-close></div>
-    <div class="tour-overlay__scrim-panel" data-tour-scrim="left" data-tour-close></div>
-    <div class="tour-overlay__highlight" data-tour-highlight></div>
-    <div class="tour-overlay__card" data-tour-card>
-      <div class="tour-overlay__eyebrow">Quick guide</div>
-      <div class="tour-overlay__title" data-tour-title></div>
-      <div class="tour-overlay__body" data-tour-body></div>
-      <div class="tour-overlay__actions">
-        <div class="tour-overlay__progress" data-tour-progress></div>
-        <div class="flex items-center gap-2">
-          <button type="button" class="btn-secondary" data-tour-back>Back</button>
-          <button type="button" class="btn-secondary" data-tour-close-button>Close</button>
-          <button type="button" class="btn-primary" data-tour-next>Next</button>
-        </div>
+<dialog class="tour-overlay" data-tour-overlay aria-labelledby="scribe-guide-title" aria-describedby="scribe-guide-body" data-tour-step="0">
+  <div class="tour-overlay__highlight" data-tour-highlight hidden aria-hidden="true"></div>
+  <section class="tour-overlay__card" data-tour-card tabindex="-1">
+    <div class="tour-overlay__eyebrow">Scribe guide</div>
+    <h2 class="tour-overlay__title" id="scribe-guide-title" data-tour-title tabindex="-1"></h2>
+    <p class="tour-overlay__body" id="scribe-guide-body" data-tour-body></p>
+    <div class="tour-overlay__actions">
+      <p class="tour-overlay__progress" data-tour-progress></p>
+      <div class="tour-overlay__buttons">
+        <button type="button" class="btn-secondary" data-tour-back>Back</button>
+        <button type="button" class="btn-secondary" data-tour-close-button>Close</button>
+        <button type="button" class="btn-primary" data-tour-next>Next</button>
       </div>
     </div>
-  </div>
+    <p class="sr-only" data-tour-announcement role="status" aria-live="polite" aria-atomic="true"></p>
+  </section>
+</dialog>
 
   <script id="transcribe-bootstrap" type="application/json" nonce="{{ request.state.csp_nonce }}">
     {{ {
@@ -506,6 +503,8 @@ syncRecordButtonLabel();
       "hasDictationSttSelection": dictation_stt_selected,
       "hasLlmSelection": llm_selection is not none,
       "sttAvailable": stt_available,
+      "deepgramLiveStreamingAvailable": deepgram_live_streaming_available,
+      "activeTranscriptStreamGap": active_transcript_stream_gap,
       "sttHealth": stt_health,
       "dictationSttAvailable": dictation_stt_available,
       "sttStatusMessage": stt_status_message,
@@ -528,6 +527,6 @@ syncRecordButtonLabel();
     } | tojson }}
   </script>
   <script src="/static/vendor/sortable/Sortable.min.js?v=1.15.2"></script>
-    <script type="module" src="/static/js/transcribe/app.js?v=20261014-generation-status"></script>
+    <script type="module" src="/static/js/transcribe/app.js?v=20261018-dictation-save-await"></script>
   <script type="module" src="/static/js/transcribe/mobile.js?v=20260823-mobile-toast"></script>
   {% include "_csrf_script.html" %}

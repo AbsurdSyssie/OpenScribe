@@ -376,6 +376,7 @@ export function createDocumentNavigator({
     if (kind === 'note' && typeof container.addEventListener === 'function' && !container.dataset.scrollControlsBound) {
       container.dataset.scrollControlsBound = 'true';
       container.tabIndex = 0;
+      container.setAttribute('role', 'group');
       container.setAttribute('aria-label', 'Note versions');
       container.addEventListener('scroll', syncScrollButtons, { passive: true });
       container.addEventListener('keydown', (event) => {

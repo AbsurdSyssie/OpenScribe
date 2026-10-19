@@ -42,6 +42,10 @@ The workspace contains:
 
 The Scribe area contains consultation history, recording/upload controls, transcript/history views, working note, generated notes, follow-ups, and quick actions.
 
+Select **Guide** in the Scribe sidebar to open the short, ten-step workflow guide. It does not open automatically. Use **Back** and **Next** to move through the steps; **Finish**, **Close**, or Escape closes it. The guide may be unavailable while recording or another dialog is active. It is a quick reminder, not a substitute for checking the transcript, sources, generated draft, and EPR paste yourself.
+
+Select **Help** in the workspace sidebar for the full reference. It stays available from Scribe, Account, Preferences, Library, and Team pages. The Help page describes workflow controls and settings; the Guide remains the short in-product tour.
+
 ## Create or select the correct consultation
 
 Before adding audio or notes:
@@ -59,7 +63,7 @@ The browser remembers only an untrusted transcript UUID for navigation. The serv
 
 Use live recording when capturing through the browser microphone. During active recording, OpenScribe disables marked workspace navigation and warns before leaving the page.
 
-The browser sends speech chunks while recording. After stop, transcription can continue in the background; you may open another consultation while the prior one finishes.
+With eligible Deepgram configuration, OpenScribe streams audio to the server relay and commits transcript text in bounded windows. Other live STT selections use VAD speech chunks. Interim text is provisional. If a Deepgram stream fails, recording stops and OpenScribe offers an explicit retry or discard for the unresolved interval; it does not replay audio automatically. A retry uses the exact retained interval when available, and browser-held recovery audio can be lost if you refresh or close the tab. Committed transcript text remains available. See [live capture details](../live_stt.md) for the recovery contract. After stop, transcription can continue in the background; you may open another consultation while the prior one finishes.
 
 ### Microphone batch
 
@@ -107,7 +111,8 @@ Use post-consultation dictation for a clinician summary/assessment/plan source s
 
 - Opening the modal does not start recording automatically.
 - Record/upload preview returns editable text without saving a dictation row.
-- Save explicitly after reviewing the preview.
+- Save and Save & Generate during recording or pause stop capture, wait for final audio, preview the transcription, then continue with the selected action. You do not need to press Stop first.
+- If preview fails or returns no text, the action stops and captured audio stays available for an explicit Retry transcription; it is not automatically submitted again.
 - Cancel discards unsaved audio/text.
 - Later saved segments contribute to one transcript-owned dictation aggregate.
 - You can edit the combined text; generation then uses that edited version exactly.
@@ -139,6 +144,10 @@ These settings apply to future note requests. Choose the template in the transcr
 6. review any controlled failure/truncation message rather than repeatedly resubmitting blindly.
 
 A generation may wait briefly for transcript ingestion to finish. Provider failure messages are intentionally sanitized; when requesting support, provide safe metadata such as time, consultation UUID, provider label, status, and error code—not patient content.
+
+## Separate notes for distinct problems
+
+If your team has enabled consultation splitting, **Split a consultation into separate notes** controls automatic suggestions. You can also mark **Multiple problems** on an individual consultation and choose **Review problems**, even when automatic splitting is off. Review the suggested topics, titles, and templates. **Suggest problems** or **Update suggestions** explicitly requests analysis; opening the review does not start it. Save your choices, then choose **Create notes** or **Continue as one note**. If some notes fail, use **Retry missing notes** or **Keep available notes** when offered. Every result remains a draft for clinician review. See [../consultation-splitting-preference.md](../consultation-splitting-preference.md) for the current workflow and rollout gate.
 
 ## Review and edit
 

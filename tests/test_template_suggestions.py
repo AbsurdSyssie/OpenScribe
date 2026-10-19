@@ -7,13 +7,14 @@ from sqlalchemy import select
 
 from app.errors import AppError
 from app.models import (
-    AttemptStatus, ProviderAttempt, TaskDispatchOutbox, TemplateSuggestionJob,
+    AttemptStatus, LlmAdapterKind, ProviderAttempt, TaskDispatchOutbox, TemplateSuggestionJob,
     TemplateSuggestionStatus, Transcript, TranscriptIngestionMode, TranscriptStatus, UserAppPreference,
-    transcript_expiry,
+    transcript_expiry, utcnow,
 )
 from app.services.template_suggestions import (
-    get_template_suggestion, process_template_suggestion, queue_template_suggestion,
+    _messages, get_template_suggestion, process_template_suggestion, queue_template_suggestion,
 )
+from app.services.quotas import estimate_token_reservation
 from app.services.llm import _llm_config_has_in_flight_jobs
 from app.services.task_outbox import publish_task_dispatch
 from app.services.transcripts import delete_transcripts, set_transcript_draft_text
@@ -100,6 +101,39 @@ def test_enabled_template_suggestions_queue_job_and_outbox(
     assert job.status is TemplateSuggestionStatus.queued
     assert db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job.id)) is not None
     assert db_session.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_id == job.id)) is not None
+
+
+@pytest.mark.parametrize(
+    ("adapter_kind", "base_url", "expected_cap"),
+    [
+        (LlmAdapterKind.openai_chat, "https://api.openai.com/v1", 220),
+        (LlmAdapterKind.gemini_enterprise, "https://us-central1-aiplatform.googleapis.com/v1", 30_000),
+    ],
+)
+def test_template_suggestion_reserves_actual_adapter_output_cap(
+    db_session, make_user, make_template, make_llm_config, monkeypatch, adapter_kind, base_url, expected_cap,
+):
+    user = _enabled_user(make_user, email=f"suggest-cap-{uuid4()}@example.com")
+    transcript = _transcript(db_session, user, "x" * 1300)
+    _templates(make_template, user)
+    config = make_llm_config(
+        team=user.team,
+        adapter_kind=adapter_kind,
+        base_url=base_url,
+        model_name="gemini-2.5-flash" if adapter_kind is LlmAdapterKind.gemini_enterprise else "gpt-4o-mini",
+    )
+    monkeypatch.setattr(
+        "app.services.template_suggestions.resolve_user_llm",
+        lambda *_args, **_kwargs: (None, config, config.model_name, None),
+    )
+    monkeypatch.setattr("app.services.template_suggestions.try_publish_task_dispatch_safely", lambda *_: None)
+
+    job = queue_template_suggestion(db_session, user, transcript_id=transcript.id)
+
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job.id))
+    assert attempt is not None
+    messages = _messages(excerpt="x" * 1300, candidates=job.candidates_snapshot_json, selected_template=None)
+    assert attempt.reserved_units == estimate_token_reservation(messages, max_completion_tokens=expected_cap)
 
 
 def test_missing_template_suggestion_preference_defaults_to_enabled(
@@ -248,6 +282,144 @@ def test_valid_result_uses_redacted_text_dispatches_once_and_reads_current_name(
     assert denied.value.status_code == 403
 
 
+def test_dispatch_expands_reservation_for_larger_final_redacted_request(
+    db_session, make_user, make_template, make_llm_config, make_llm_selection, monkeypatch,
+):
+    user = _configured_user(make_user, make_llm_config, make_llm_selection)
+    transcript = _transcript(db_session, user, "x" * 1300)
+    candidates = _templates(make_template, user)
+    monkeypatch.setattr("app.services.template_suggestions.try_publish_task_dispatch_safely", lambda *_: None)
+    job = queue_template_suggestion(db_session, user, transcript_id=transcript.id)
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job.id))
+    initial_reservation = attempt.reserved_units
+    monkeypatch.setattr(
+        "app.services.template_suggestions.redact_transient_text",
+        lambda *_args, **_kwargs: {"redacted_text": "z" * 6000, "phi_index": []},
+    )
+    monkeypatch.setattr(
+        "app.services.template_suggestions._apply_manual_pii_redaction",
+        lambda _db, **kwargs: (kwargs["transcript_text"], "", []),
+    )
+    monkeypatch.setattr("app.services.template_suggestions._resolve_generation_credential", lambda *_: "synthetic-token")
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        lambda **_kwargs: (
+            '{"template_id":"%s","confidence":"high","reason":"Synthetic match"}' % candidates[0].id,
+            {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        ),
+    )
+
+    processed = process_template_suggestion(db_session, job_id=job.id)
+
+    db_session.refresh(attempt)
+    final_messages = _messages(excerpt="z" * 6000, candidates=job.candidates_snapshot_json, selected_template=None)
+    assert processed.status is TemplateSuggestionStatus.completed
+    assert attempt.reserved_units > initial_reservation
+    assert attempt.reserved_units == estimate_token_reservation(final_messages, max_completion_tokens=220)
+
+
+def test_dispatch_reservation_quota_failure_cancels_without_provider_call(
+    db_session, make_user, make_template, make_llm_config, make_llm_selection, monkeypatch,
+):
+    user = _configured_user(make_user, make_llm_config, make_llm_selection)
+    transcript = _transcript(db_session, user, "x" * 1300)
+    _templates(make_template, user)
+    monkeypatch.setattr("app.services.template_suggestions.try_publish_task_dispatch_safely", lambda *_: None)
+    job = queue_template_suggestion(db_session, user, transcript_id=transcript.id)
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job.id))
+    user.daily_token_limit = attempt.reserved_units + 1
+    user.monthly_token_limit = attempt.reserved_units + 1
+    db_session.add(user)
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.services.template_suggestions.redact_transient_text",
+        lambda *_args, **_kwargs: {"redacted_text": "z" * 6000, "phi_index": []},
+    )
+    monkeypatch.setattr(
+        "app.services.template_suggestions._apply_manual_pii_redaction",
+        lambda _db, **kwargs: (kwargs["transcript_text"], "", []),
+    )
+    monkeypatch.setattr("app.services.template_suggestions._resolve_generation_credential", lambda *_: "synthetic-token")
+    provider_calls = []
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        lambda **_kwargs: provider_calls.append(True),
+    )
+
+    failed = process_template_suggestion(db_session, job_id=job.id)
+
+    db_session.refresh(attempt)
+    assert failed.status is TemplateSuggestionStatus.failed
+    assert failed.error_code == "template_suggestion_preparation_failed"
+    assert attempt.status is AttemptStatus.cancelled
+    assert provider_calls == []
+
+
+def test_reservation_failure_does_not_fail_or_cancel_concurrent_submitted_winner(
+    db_session, make_user, make_template, make_llm_config, make_llm_selection, monkeypatch,
+):
+    user = _configured_user(make_user, make_llm_config, make_llm_selection)
+    transcript = _transcript(db_session, user, "x" * 1300)
+    _templates(make_template, user)
+    monkeypatch.setattr("app.services.template_suggestions.try_publish_task_dispatch_safely", lambda *_: None)
+    job = queue_template_suggestion(db_session, user, transcript_id=transcript.id)
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job.id))
+    monkeypatch.setattr(
+        "app.services.template_suggestions.redact_transient_text",
+        lambda *_args, **_kwargs: {"redacted_text": "z" * 6000, "phi_index": []},
+    )
+    monkeypatch.setattr(
+        "app.services.template_suggestions._apply_manual_pii_redaction",
+        lambda _db, **kwargs: (kwargs["transcript_text"], "", []),
+    )
+    monkeypatch.setattr("app.services.template_suggestions._resolve_generation_credential", lambda *_: "synthetic-token")
+    monkeypatch.setattr(
+        "app.services.template_suggestions.increase_provider_attempt_reservation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AppError(429, "quota_exceeded", "Synthetic quota limit")),
+    )
+    provider_calls = []
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        lambda **_kwargs: provider_calls.append(True),
+    )
+
+    real_rollback = db_session.rollback
+    winner_started = False
+
+    def rollback_then_progress_winner():
+        nonlocal winner_started
+        real_rollback()
+        if winner_started:
+            return
+        winner_started = True
+        winning_job = db_session.get(TemplateSuggestionJob, job.id)
+        winning_job.status = TemplateSuggestionStatus.processing
+        winning_job.started_at = utcnow()
+        from app.services.quotas import mark_provider_attempt_submitted
+
+        now = utcnow()
+        mark_provider_attempt_submitted(
+            db_session,
+            attempt_id=attempt.id,
+            deadline_at=now + timedelta(seconds=90),
+            now=now,
+        )
+        db_session.add(winning_job)
+        db_session.commit()
+
+    monkeypatch.setattr(db_session, "rollback", rollback_then_progress_winner)
+
+    returned = process_template_suggestion(db_session, job_id=job.id)
+
+    db_session.refresh(job)
+    db_session.refresh(attempt)
+    assert winner_started
+    assert returned.status is TemplateSuggestionStatus.processing
+    assert job.status is TemplateSuggestionStatus.processing
+    assert attempt.status is AttemptStatus.submitted
+    assert provider_calls == []
+
+
 @pytest.mark.parametrize(
     "output",
     [
@@ -376,7 +548,7 @@ def test_suggestion_lifecycle_logs_transitions_without_content(
     assert process_template_suggestion(db_session, job_id=job.id).status is TemplateSuggestionStatus.completed
     get_template_suggestion(db_session, user, transcript_id=transcript.id)
 
-    events = [record.msg for record in caplog.records if record.name == "openscribe.template_suggestion"]
+    events = [record.event for record in caplog.records if record.name == "openscribe.template_suggestion"]
     assert {
         "template_suggestion_queue_started",
         "template_suggestion_queued",
@@ -386,6 +558,12 @@ def test_suggestion_lifecycle_logs_transitions_without_content(
         "template_suggestion_completed",
         "template_suggestion_status_read",
     } <= set(events)
+    lifecycle_records = [record for record in caplog.records if record.name == "openscribe.template_suggestion"]
+    assert all(f"event={record.event}" in record.getMessage() for record in lifecycle_records)
+    job_record = next(record for record in lifecycle_records if record.event == "template_suggestion_completed")
+    assert f"template_suggestion_job_id={job.id}" in job_record.getMessage()
+    assert f"transcript_id={transcript.id}" in job_record.getMessage()
+    assert "status=completed" in job_record.getMessage()
     logged = "\n".join(f"{record.getMessage()} {record.__dict__}" for record in caplog.records)
     for sensitive_value in (
         "Alice Sensitive Transcript",

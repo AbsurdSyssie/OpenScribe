@@ -2,7 +2,7 @@
 
 This document records the browser-side storage used by the current OpenScribe application. It supports the operator cookie/browser-storage notice and DSPT evidence. It does not describe every cookie or log that a reverse proxy, CDN, identity provider, or modified deployment may add.
 
-Last reviewed: 21 August 2026.
+Last reviewed: 18 October 2026.
 
 ## Scope and method
 
@@ -21,7 +21,7 @@ No application use of IndexedDB, Cache Storage, service workers, advertising sto
 | `openscribe_oidc_state` | One-time random value binding an OIDC callback to the browser, provider, and server-side authorization request. | Up to 10 minutes | Essential only while OIDC sign-in/linking is in progress | `HttpOnly`, provider-specific callback path; `SameSite=None; Secure` for production `form_post`, or `SameSite=Lax` for local query mode; deleted on callback |
 | `openscribe_oidc_verifier` | One-time PKCE verifier. The database stores only its SHA-256 digest. | Up to 10 minutes | Essential only while OIDC sign-in/linking is in progress | Same provider-specific callback protection and deletion rule as `openscribe_oidc_state` |
 
-Published `/privacy`, `/cookies`, and `/terms` pages, public metadata routes, and static assets do not issue OpenScribe CSRF cookies. Public account-request and sign-in pages do issue anonymous CSRF cookies because they contain state-changing forms.
+Published `/privacy`, `/cookies`, `/terms`, and `/accessibility` pages, public metadata routes, and static assets do not issue OpenScribe CSRF cookies. Public account-request and sign-in pages do issue anonymous CSRF cookies because they contain state-changing forms.
 
 ## Application local storage
 
@@ -37,7 +37,7 @@ Published `/privacy`, `/cookies`, and `/terms` pages, public metadata routes, an
 | `openscribe-glm2-split-ratio` | A bounded numeric Scribe pane split ratio. | Interface preference |
 | `openscribe:transcribe:followup-history-open` | Boolean text recording whether follow-up history is expanded. | Interface preference |
 | `openscribe:tour:home:<role>` | `dismissed`; remembers completion/dismissal of the legacy home tour for a user role. | Interface preference |
-| `openscribe:tour:transcribe:<role>` | `done`; remembers completion/dismissal of the Scribe tour for a user role. | Interface preference |
+| `openscribe:tour:transcribe:<role>` | Legacy value `done` written by earlier Scribe tour versions. The current manually opened guide does not read, write, or remove it; any existing value remains until the browser/user clears site data. | Legacy interface preference |
 | `openscribe:dictation-nudge:<transcript UUID>` | `shown`; prevents the same post-consultation dictation nudge being repeated for that transcript. | Transcript-linked metadata |
 | `openscribe-glm2-recording-durations` | JSON map from transcript UUID to elapsed recording milliseconds, used to preserve the displayed timer across page reloads. It does not contain audio or transcript text. | Transcript-linked metadata |
 
@@ -50,6 +50,8 @@ The two transcript-linked entries are not authentication authority and cannot by
 | `openscribe.workspace.lastTranscriptId` | Active transcript UUID used only as an untrusted navigation hint. Every use repeats server-side owner and retention checks. | Current browser tab/session | Transcript-linked navigation metadata |
 
 No session, trusted-device, CSRF, provider credential, audio, transcript text, Working note, generated note, prompt, or PII value is intentionally stored in Web Storage.
+
+During eligible Deepgram live capture, the browser temporarily holds a bounded pre-roll ring and uncommitted recovery audio in JavaScript memory for the open tab. This is volatile capture state, not Web Storage; it is cleared after a committed window or successful explicit recovery and can be lost on refresh, tab closure, or process loss. If a stream window fails before it is committed, OpenScribe can store matching recovery audio in Vault for an owner-requested retry. That audio expires within 24 hours, subject to the transcript's earlier retention deadline. Successful stream windows retain finalized transcript text and metadata, not PCM audio.
 
 ## Cloudflare boundary
 

@@ -125,6 +125,9 @@
         if (!message) return;
         const toast = document.createElement('div');
         toast.className = 'toast error';
+        toast.setAttribute('role', 'alert');
+        toast.setAttribute('aria-live', 'assertive');
+        toast.setAttribute('aria-atomic', 'true');
         toast.textContent = message;
         toastContainer.appendChild(toast);
         window.setTimeout(() => {

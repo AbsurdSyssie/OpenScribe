@@ -75,6 +75,8 @@ def operator_legal_setup_warnings(db: Session) -> tuple[str, ...]:
         warnings.append("No privacy notice is published.")
     if LegalDocumentKind.cookie_storage not in published_kinds:
         warnings.append("No cookie and browser-storage notice is published.")
+    if LegalDocumentKind.accessibility not in published_kinds:
+        warnings.append("No accessibility statement is published.")
     return tuple(warnings)
 
 
@@ -357,6 +359,7 @@ def published_legal_footer_state(
         LegalDocumentKind.privacy: ("Privacy", "/privacy"),
         LegalDocumentKind.cookie_storage: ("Cookies and browser storage", "/cookies"),
         LegalDocumentKind.terms: ("Terms", "/terms"),
+        LegalDocumentKind.accessibility: ("Accessibility", "/accessibility"),
     }
     published_versions = {
         kind: version_no

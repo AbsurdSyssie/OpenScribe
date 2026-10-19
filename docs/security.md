@@ -37,6 +37,7 @@ OpenScribe uses opaque browser tokens with server-side state:
 - Unknown-user login attempts still run Argon2id password verification against a dummy hash before returning the same invalid-credential response.
 
 - Consultation-split verification stores no verifier reasoning, patch text, provider response, or source content in batch metadata, APIs, SSE, or logs. Provider input, recoverable response, accepted output, and any corrected output use the owning user's encrypted fields.
+- Unexpected consultation-split worker failures emit only a parsed execution UUID, allowlisted phase and reason codes, and a UTC timestamp. The event is log-only and excludes exception text/types, tracebacks, provider details, source/response content, and credentials; it does not change task retry or lifecycle behavior.
 - New TOTP seeds are encrypted under the owning user's DEK; recovery codes and auth email tokens are hash-only.
 
 Cookies are `HttpOnly`, `SameSite=Lax`, and use `Secure` according to `COOKIE_SECURE_MODE`. Production startup fails unless `COOKIE_SECURE_MODE=always`.
@@ -80,7 +81,7 @@ Choose exactly one HSTS owner. Set `HSTS_SOURCE=proxy` when the reverse proxy em
 No-store responses include:
 
 - `/`, login, account request, reset, activation, onboarding, MFA, settings/workspace and admin surfaces;
-- public legal routes `/privacy`, `/cookies`, and `/terms` when a matching notice is published;
+- public legal routes `/privacy`, `/cookies`, `/terms`, and `/accessibility` when a matching notice is published;
 - `/api` and `/api/*`;
 - transcript, generated-document, dictation, and preview content routes.
 
@@ -155,7 +156,7 @@ Generation and ingestion creation use a durable metadata-only task-dispatch outb
 - Provider credentials are resolved before a provider attempt is marked submitted.
 - Definite pre-dispatch credential failure cancels quota reservation without consuming provider quota.
 - Duplicate delivery is handled through database claim/idempotency controls.
-- Uploaded source audio needed for asynchronous processing or retry is stored under a bounded Vault reference. Its deadline is fixed at the original Vault write and does not reset on automatic or manual retry. Expired source audio is unavailable for retry immediately, and the API/workspace report that expiry before physical cleanup. Live retry controls do not skip an expired failed chunk to offer a later chunk. Successful processing and transcript deletion clear it sooner; the periodic worker expires every remaining source at 24 hours and uses the durable cleanup queue when Vault deletion fails. Pending unaccepted audio is held only in current-tab JavaScript memory, never Web Storage, IndexedDB, task/audit metadata, URLs, or logs; it is lost when that tab's browser state is destroyed.
+- Uploaded source audio needed for asynchronous processing or retry is stored under a bounded Vault reference. Its deadline is fixed at the original Vault write and does not reset on automatic or manual retry. Expired source audio is unavailable for retry immediately, and the API/workspace report that expiry before physical cleanup. Live retry controls do not skip an expired failed chunk to offer a later chunk. Successful processing and transcript deletion clear it sooner; the periodic worker expires every remaining source at 24 hours and uses the durable cleanup queue when Vault deletion fails. Unsubmitted audio stays in current-tab JavaScript memory, never Web Storage, IndexedDB, task/audit metadata, URLs, or logs; it is lost when the tab's browser state is destroyed. An unresolved failed Deepgram stream window can place matching recovery audio in Vault for up to 24 hours, bounded by transcript retention, until the owner retries or discards the gap.
 - Retention cleanup, failed-ingestion source expiry, transcript-audio cleanup, provider-secret cleanup, audit expiry, legal-document expiry, and quota lifecycle processing run every 10 seconds.
 
 ## Security audit
@@ -174,7 +175,7 @@ Configure a dedicated `AUDIT_SUBJECT_HASH_SECRET` in production where practical.
 
 ## Operator legal content
 
-Each deployment has one optional global operator profile and fixed privacy, cookie/browser-storage and terms document roots. System administrators write a restricted Markdown subset in the Legal content admin tab. The server parses headings, paragraphs, flat bullet lists, bold and italic text, bounded tables, inline or standalone HTTPS links, and inline email links into validated structured blocks before saving. Email links accept one plain address and do not accept query parameters. It removes harmless unsupported presentation marks, keeps their wording and warns the administrator. It rejects HTML, unsafe link schemes and structures that could change meaning, such as numbered or nested lists, block quotes and code blocks. Preview and publication render only validated blocks; they never render parser-produced HTML. Publishing atomically supersedes the previous version; rollback creates a new draft. Each legal change and its sanitized audit row commit in the same transaction. Public routes return 404 until the matching kind is published, and footer links appear only for published kinds.
+Each deployment has one optional global operator profile and fixed privacy, cookie/browser-storage, terms, and accessibility document roots. System administrators write a restricted Markdown subset in the Legal content admin tab. The server parses headings, paragraphs, flat bullet lists, bold and italic text, bounded tables, inline or standalone HTTPS links, and inline email links into validated structured blocks before saving. Email links accept one plain address and do not accept query parameters. It removes harmless unsupported presentation marks, keeps their wording and warns the administrator. It rejects HTML, unsafe link schemes and structures that could change meaning, such as numbered or nested lists, block quotes and code blocks. Preview and publication render only validated blocks; they never render parser-produced HTML. Publishing atomically supersedes the previous version; rollback creates a new draft. Each legal change and its sanitized audit row commit in the same transaction. Public routes return 404 until the matching kind is published, and footer links appear only for published kinds. Accessibility statements follow the same versioning and publishing flow and require no user acceptance step.
 
 The maintained application cookie and Web Storage inventory is in [cookies-browser-storage.md](cookies-browser-storage.md). It separates application behavior from deployment-specific Cloudflare behavior and records the current minimisation finding for persistent transcript-linked browser metadata.
 

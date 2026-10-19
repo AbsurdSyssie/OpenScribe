@@ -4,17 +4,24 @@
       <span class="brand-mark" aria-hidden="true"><i data-lucide="feather"></i></span>
       <span class="brand-name" data-sidebar-full>OpenScribe</span>
     </a>
+    <button type="button" class="workspace-drawer-close" data-drawer-dismiss aria-label="Close workspace navigation"><i data-lucide="x" aria-hidden="true"></i></button>
   </div>
   <div class="workspace-sidebar__account">
     <div class="workspace-sidebar__identity" data-sidebar-full><strong>{{ current_user.full_name or current_user.email }}</strong><small>{{ current_user.email }}</small></div>
-    <button type="button" class="workspace-sidebar__collapse" data-sidebar-collapse-toggle aria-label="Collapse sidebar" title="Collapse sidebar"><i data-sidebar-collapse-icon-expanded data-lucide="panel-left-close" aria-hidden="true"></i><i data-sidebar-collapse-icon-collapsed data-lucide="panel-left-open" aria-hidden="true"></i></button>
+    <div class="workspace-sidebar__resize-controls" role="group" aria-label="Sidebar width controls">
+      {% if active_workspace_section != 'scribe' %}
+      <button type="button" data-sidebar-full data-sidebar-step="-16" aria-label="Make sidebar narrower" title="Make sidebar narrower"><i data-lucide="minus" aria-hidden="true"></i></button>
+      <button type="button" data-sidebar-full data-sidebar-step="16" aria-label="Make sidebar wider" title="Make sidebar wider"><i data-lucide="plus" aria-hidden="true"></i></button>
+      {% endif %}
+      <button type="button" class="workspace-sidebar__collapse" data-sidebar-collapse-toggle aria-label="Collapse sidebar" title="Collapse sidebar"><i data-sidebar-collapse-icon-expanded data-lucide="panel-left-close" aria-hidden="true"></i><i data-sidebar-collapse-icon-collapsed data-lucide="panel-left-open" aria-hidden="true"></i></button>
+    </div>
   </div>
   <div class="workspace-sidebar__top">
-    <button type="submit" form="new-session-form" class="workspace-new-consultation" data-new-session-button data-recording-navigation aria-label="Create new consultation" title="Create new consultation">
+    <button type="submit" form="new-session-form" class="workspace-new-consultation" data-new-session-button data-recording-navigation data-tour-target="new-consultation" aria-label="Create new consultation" title="Create new consultation">
       <i data-lucide="plus" aria-hidden="true"></i><span data-sidebar-full>Create new consultation</span>
     </button>
     {% if active_workspace_section == 'scribe' %}
-    <button type="button" class="workspace-recent-toggle" data-session-panel-toggle aria-expanded="false" aria-controls="session-panel" aria-label="Recent consultations" title="Recent consultations">
+    <button type="button" class="workspace-recent-toggle" data-session-panel-toggle data-tour-target="recent-consultations" aria-expanded="false" aria-controls="session-panel" aria-label="Recent consultations" title="Recent consultations">
       <i data-lucide="list-checks" aria-hidden="true"></i><span data-sidebar-full>Recent consultations</span>
     </button>
     {% else %}
@@ -48,6 +55,7 @@
   </nav>
   <div class="workspace-sidebar__footer">
     {% if active_workspace_section == 'scribe' %}<button type="button" data-start-guide aria-label="Open workspace guide"><i class="workspace-nav__icon" data-lucide="circle-help" aria-hidden="true"></i><span data-sidebar-full>Guide</span></button>{% endif %}
+    <a class="workspace-nav__link workspace-help-link" href="/workspace/help" aria-label="Help" data-recording-navigation {% if active_workspace_section == 'help' %}aria-current="page"{% endif %}><i class="workspace-nav__icon" data-lucide="book-open-text" aria-hidden="true"></i><span data-sidebar-full>Help</span></a>
     {% if active_workspace_section == 'scribe' %}<details class="workspace-sidebar__legal"><summary>Legal information</summary><div>{% set workspace_legal_links = request.state.legal_footer_links if request.state.legal_footer_links is defined else () %}{% for link in workspace_legal_links %}<a href="{{ link.href }}">{{ link.label }}</a>{% endfor %}<a href="{{ source_code_url() }}">Source code</a></div></details>{% endif %}
     <form method="post" action="/logout"><button type="submit" aria-label="Sign out"><i class="workspace-nav__icon" data-lucide="log-out" aria-hidden="true"></i><span data-sidebar-full>Sign out</span></button></form>
   </div>

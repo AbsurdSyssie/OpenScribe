@@ -35,6 +35,10 @@ from ..models import (
     TranscriptIngestionMode,
     TranscriptManualPiiEntity,
     TranscriptStatus,
+    TranscriptStreamSession,
+    TranscriptStreamStatus,
+    TranscriptStreamWindow,
+    TranscriptStreamWindowStatus,
     TranscriptVersion,
     User,
     UserSession,
@@ -68,6 +72,7 @@ from ..services.generation_presentation import generated_document_status_project
 from ..services.dictations import dictation_detail_response, dictation_effective_text, get_post_consultation_dictation
 from ..services.stt import active_team_stt_selection as active_team_stt_selection_service
 from ..services.stt import check_selected_stt_health as check_selected_stt_health_service
+from ..services.stt import resolve_selected_team_stt as resolve_selected_team_stt_service
 from ..services.templates import (
     generated_document_text as generated_document_text_service,
     list_available_quick_actions_for_user as list_available_quick_actions_for_user_service,
@@ -128,6 +133,106 @@ def _earliest_retryable_ingestion_job(db: Session, *, transcript: Transcript) ->
         statement = statement.order_by(TranscriptIngestionJob.created_at.desc())
     job = db.scalar(statement.limit(1))
     return job if job is not None and not ingestion_retry_source_expired_service(job) else None
+
+
+def _active_transcript_stream_gap(
+    db: Session,
+    *,
+    transcript: Transcript | None,
+    owner_user_id: UUID,
+    retry_job: TranscriptIngestionJob | None,
+) -> dict[str, object] | None:
+    if transcript is None or transcript.owner_user_id != owner_user_id:
+        return None
+    row = db.execute(
+        select(TranscriptStreamSession, TranscriptStreamWindow, TranscriptIngestionJob)
+        .join(TranscriptStreamWindow, TranscriptStreamWindow.session_id == TranscriptStreamSession.id)
+        .outerjoin(TranscriptIngestionJob, TranscriptIngestionJob.transcript_stream_window_id == TranscriptStreamWindow.id)
+        .where(
+            TranscriptStreamSession.transcript_id == transcript.id,
+            TranscriptStreamSession.owner_user_id == owner_user_id,
+            TranscriptStreamSession.status.in_((TranscriptStreamStatus.failed, TranscriptStreamStatus.recovering)),
+            TranscriptStreamWindow.status.in_((TranscriptStreamWindowStatus.failed, TranscriptStreamWindowStatus.recovering)),
+            TranscriptStreamWindow.forwarded_sample_count > 0,
+        )
+        .order_by(TranscriptStreamSession.created_at.desc(), TranscriptStreamWindow.window_no.asc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    session, window, ingestion_job = row
+    now = utcnow()
+    recovery_in_progress = bool(
+        ingestion_job is not None
+        and ingestion_job.status in {
+            TranscriptIngestionJobStatus.queued,
+            TranscriptIngestionJobStatus.processing,
+            TranscriptIngestionJobStatus.completed,
+        }
+    )
+    recovery_available = bool(
+        window.recovery_audio_vault_ref
+        and window.recovery_audio_expires_at is not None
+        and window.recovery_audio_expires_at > now
+        and ingestion_job is None
+        and not recovery_in_progress
+    )
+    return {
+        "stream_id": str(session.id),
+        "window_no": window.window_no,
+        "source_start_sample_offset": window.source_start_sample_offset,
+        "source_end_sample_offset": window.source_end_sample_offset,
+        "forwarded_sample_count": window.forwarded_sample_count,
+        "recovery_available": recovery_available,
+        "recovery_in_progress": recovery_in_progress,
+        "recovery_job_retry_available": bool(
+            ingestion_job is not None
+            and retry_job is not None
+            and ingestion_job.id == retry_job.id
+            and ingestion_job.status is TranscriptIngestionJobStatus.failed
+            and not ingestion_retry_source_expired_service(ingestion_job)
+        ),
+        "recovery_expires_at": window.recovery_audio_expires_at.isoformat() if recovery_available else None,
+    }
+
+
+def _deepgram_stream_capable(
+    db: Session,
+    *,
+    transcript: Transcript | None,
+    current_user: User,
+    stt_available: bool,
+    stt_selection: object | None,
+) -> bool:
+    adapter_kind = None if stt_selection is None else getattr(stt_selection.config, "adapter_kind", None)
+    if (
+        transcript is None
+        or transcript.owner_user_id != current_user.id
+        or current_user.is_system_admin
+        or transcript.ingestion_mode is not TranscriptIngestionMode.live_chunked
+        or not stt_available
+        or stt_selection is None
+        or getattr(stt_selection.config, "provider_preset", None) != "deepgram"
+        or getattr(adapter_kind, "value", adapter_kind) != "generic_rest"
+    ):
+        return False
+    try:
+        from ..services.deepgram_streaming import DeepgramStreamConfig, DeepgramStreamError, validate_stream_config
+
+        _selection, config, model_name, language = resolve_selected_team_stt_service(
+            db, team_id=current_user.team_id, purpose=SttSelectionPurpose.conversation,
+        )
+        validate_stream_config(DeepgramStreamConfig(
+            base_url=config.base_url,
+            model_name=model_name,
+            language=language,
+            extra_query_params=dict(config.extra_form_fields_json or {}),
+        ))
+    except DeepgramStreamError:
+        return False
+    except AppError:
+        return False
+    return True
 
 
 def _missing_stt_selection_message(*, team_leader_email: str | None) -> str:
@@ -785,6 +890,10 @@ def resolve_transcribe_workspace(
         and active_transcript_latest_job.status is TranscriptIngestionJobStatus.failed
         and ingestion_retry_source_expired_service(active_transcript_latest_job)
     )
+    active_transcript_stream_gap = _active_transcript_stream_gap(
+        db, transcript=active_transcript, owner_user_id=current_user.id,
+        retry_job=active_transcript_retry_job,
+    )
     active_transcript_next_live_chunk_sequence_no_upload = (
         next_live_chunk_sequence_no_for_transcript_service(db, transcript_id=active_transcript.id)
         if active_transcript is not None and active_transcript.ingestion_mode is TranscriptIngestionMode.live_chunked
@@ -933,11 +1042,16 @@ def resolve_transcribe_workspace(
         "active_transcript_latest_job": active_transcript_latest_job,
         "active_transcript_retry_job": active_transcript_retry_job,
         "active_transcript_retry_expired": active_transcript_retry_expired,
+        "active_transcript_stream_gap": active_transcript_stream_gap,
         "active_transcript_next_live_chunk_sequence_no_upload": active_transcript_next_live_chunk_sequence_no_upload,
         "active_transcript_id": str(active_transcript.id) if active_transcript is not None else None,
         "post_consultation_dictation": post_consultation_dictation,
         "stt_selection": stt_selection,
         "stt_available": stt_available,
+        "deepgram_live_streaming_available": _deepgram_stream_capable(
+            db, transcript=active_transcript, current_user=current_user,
+            stt_available=stt_available, stt_selection=stt_selection,
+        ),
         "stt_status_message": stt_status_message,
         "stt_health": stt_health,
         "dictation_stt_selection": dictation_stt_selection,
@@ -1160,6 +1274,8 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, 
         active_template_generation_input_available=bool(workspace.get("active_template_generation_input_available")),
         stt_selected=bool(workspace.get("stt_selection")),
         stt_available=bool(workspace.get("stt_available")),
+        deepgram_live_streaming_available=bool(workspace.get("deepgram_live_streaming_available")),
+        active_transcript_stream_gap=workspace.get("active_transcript_stream_gap"),
         stt_status_message=workspace.get("stt_status_message"),
         stt_health=workspace.get("stt_health"),
         dictation_stt_selected=bool(workspace.get("dictation_stt_selection")),

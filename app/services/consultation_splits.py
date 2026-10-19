@@ -68,6 +68,41 @@ from app.services.transcripts import get_active_owner_transcript, transcript_is_
 
 
 _FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _request_payload_contains_secret_key(request_payload: dict[str, Any]) -> bool:
+    """Check request fields while allowing the exact non-secret schema field.
+
+    Gemini's generated checker schema has a ``section_key`` output property,
+    which the general credential-name detector also matches. Exempt only that
+    property name with its exact canonical string definition in a schema
+    ``properties`` mapping; altered definitions and every other key still pass
+    through the recursive secret scanner.
+    """
+    def sanitize(value: Any, *, in_schema: bool = False, properties_mapping: bool = False) -> Any:
+        if isinstance(value, list):
+            return [sanitize(item, in_schema=in_schema) for item in value]
+        if not isinstance(value, dict):
+            return value
+        result: dict[Any, Any] = {}
+        for key, item in value.items():
+            if (
+                in_schema
+                and properties_mapping
+                and key == "section_key"
+                and item == {"type": "string"}
+            ):
+                continue
+            child_in_schema = in_schema or key in {"response_json_schema", "response_schema"}
+            child_is_properties_mapping = child_in_schema and key == "properties" and isinstance(item, dict)
+            result[key] = sanitize(
+                item,
+                in_schema=child_in_schema,
+                properties_mapping=child_is_properties_mapping,
+            )
+        return result
+
+    return snapshot_contains_secret_key(sanitize(request_payload))
 _TABLE_ANALYSIS = "consultation_split_analyses"
 _TABLE_DRAFT_TOPIC = "consultation_split_draft_topics"
 _TABLE_BATCH = "consultation_split_batches"
@@ -635,7 +670,7 @@ def queue_split_execution(
         raise AppError(422, "consultation_split_provider_snapshot_metadata_mismatch", "Split provider metadata does not match its snapshot")
     if provider_model is not None and provider_model != snapshot_model:
         raise AppError(422, "consultation_split_provider_snapshot_metadata_mismatch", "Split provider metadata does not match its snapshot")
-    if not isinstance(request_payload, dict) or not request_payload or snapshot_contains_secret_key(request_payload):
+    if not isinstance(request_payload, dict) or not request_payload or _request_payload_contains_secret_key(request_payload):
         raise AppError(422, "consultation_split_request_payload_required", "A consultation split request payload is required")
     request_model = request_payload.get("model")
     request_cap = request_output_token_cap(request_payload)

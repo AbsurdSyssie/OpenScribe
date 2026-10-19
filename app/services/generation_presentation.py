@@ -36,6 +36,8 @@ _TEMPORARY_APP_CODES = frozenset(
 _VALIDATION_APP_CODES = frozenset(
     {
         "llm_generation_invalid_json",
+        "llm_generation_truncated",
+        "llm_provider_bad_response",
         "consultation_split_analysis_invalid_output",
         "consultation_split_generation_invalid_output",
         "verification_invalid_output",
@@ -49,6 +51,8 @@ _SAFE_APP_CODES = frozenset(
         "generation_enqueue_failed",
         "generation_snapshot_invalid",
         "llm_generation_invalid_json",
+        "llm_generation_truncated",
+        "llm_provider_bad_response",
         "llm_generation_preparation_failed",
         "hallucination_check_failed",
         "hallucination_check_invalid_response",

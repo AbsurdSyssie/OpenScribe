@@ -4,7 +4,7 @@
 
 The canonical consultation workspace is `/workspace`, not `/transcribe`. `/transcribe` is a temporary compatibility redirect that preserves only a validated `transcript_id`. The former `/transcriber_col_changes`, `/transcribe-glm-2`, and `/transcribe-claude` prototype routes have been removed; they are not alternate content-access paths or compatibility routes.
 
-Detailed behavior is maintained in [workspace.md](workspace.md), [transcript-capture.md](transcript-capture.md), [live_stt.md](live_stt.md), and [api.md](api.md).
+Detailed behavior is maintained in [workspace.md](workspace.md), [transcript-capture.md](transcript-capture.md), [live_stt.md](live_stt.md), [consultation-splitting-preference.md](consultation-splitting-preference.md), and [api.md](api.md).
 
 ## Audience and authorization
 
@@ -51,7 +51,7 @@ User actions can include:
 
 - upload an approved audio file;
 - record a microphone batch with automatic rollover before server limits;
-- record live VAD chunks;
+- record live audio through the VAD-based workflow, which uses chunk uploads or the eligible Deepgram stream;
 - stop/finalize capture;
 - retry whole-file ingestion only while a bounded retry audio reference exists;
 - choose current versus new consultation when attempting to record into an older ready consultation with existing content.
@@ -61,6 +61,8 @@ Capture controls show safe provider/configuration status and bounded errors, nev
 During microphone recording, marked workspace navigation is disabled and unload is warned. Background transcription/generation does not itself lock navigation.
 
 See [transcript-capture.md](transcript-capture.md) and [live_stt.md](live_stt.md).
+
+Eligible Deepgram selections use server-relayed streaming for live capture. On failure, OpenScribe stops recording and offers an explicit retry or discard for the unresolved interval; it does not replay audio automatically. Other live STT selections continue to use VAD chunk uploads.
 
 ## Transcript
 
@@ -128,6 +130,10 @@ Structured note lines can be reordered and selected for copying. Freeform/struct
 
 Copying is a convenience, not verification. The clinician remains responsible for reviewing the content and destination EPR field.
 
+## Consultation splitting
+
+When enabled, the owner can request separate-note suggestions automatically or mark a consultation **Multiple problems** and open **Review problems** for manual review. Opening the review does not start analysis; the clinician explicitly requests suggestions, edits the proposal, then chooses **Create notes** or **Continue as one note**. Split results remain drafts and offer explicit recovery actions when only some notes succeed. See [consultation-splitting-preference.md](consultation-splitting-preference.md).
+
 ## Follow-ups and Quick Actions
 
 Owners can:
@@ -165,7 +171,7 @@ The workspace exposes minimized owner-only PII/redaction state.
 
 - `/transcribe` redirects to `/workspace`.
 - `/settings` redirects through a closed tab map to `/workspace/*`.
-- `/home` remains the current normal-user post-login compatibility landing.
+- `GET /home` is a temporary compatibility redirect for allowlisted legacy links; full normal-user and team-leader login goes directly to `/workspace`.
 - New links/redirects should target canonical workspace routes.
 - Preview routes should not be treated as production contracts without an explicit promotion decision and regression coverage.
 

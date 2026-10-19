@@ -111,7 +111,7 @@ The old “one fixed transcription/pseudonymisation provider” description is o
 ## Browser and API boundaries
 
 - Canonical user workspace: `/workspace`.
-- `/home` remains the current normal-user post-login compatibility landing until migration completes.
+- Full-session normal users and team leaders land at `/workspace`; `GET /home` redirects allowlisted legacy links into the workspace.
 - `/transcribe` and `/settings` redirect to canonical workspace routes.
 - Canonical system-admin workspace: `/admin`.
 - `/api/v1` is the JSON boundary and every route must appear in `app/api_route_audit.py`.

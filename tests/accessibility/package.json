@@ -1,0 +1,9 @@
+{
+  "name": "openscribe-accessibility-audit-tools",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Test-only local axe-core bundle for the opt-in accessibility audit.",
+  "dependencies": {
+    "axe-core": "4.10.3"
+  }
+}

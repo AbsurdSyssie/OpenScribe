@@ -407,7 +407,7 @@ padding: 0.2rem 0;
 .statement-row,
 .statement {
 display: grid;
-grid-template-columns: 0.75rem 1.2rem minmax(0, 1fr);
+grid-template-columns: 1.5rem 1.5rem minmax(0, 1fr);
 align-items: flex-start;
 gap: 0.35rem;
 width: 100%;
@@ -419,8 +419,12 @@ transition: background-color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ea
 cursor: pointer;
 }
 
+.transcribe-capture-status [data-active-status].text-coral {
+color: #8a3b20;
+}
+
 .statement-drag-handle {
-width: 0.75rem;
+width: 1.5rem;
 height: 1.6rem;
 display: inline-flex;
 align-items: center;
@@ -429,7 +433,7 @@ padding: 0;
 border: 0;
 border-radius: 0.35rem;
 background: transparent;
-color: rgba(113, 128, 150, 0.78);
+color: var(--slate);
 font-size: 0.92rem;
 line-height: 1;
 cursor: grab;
@@ -553,7 +557,7 @@ box-shadow: inset 3px 0 0 var(--accent);
 .statement-row.unchecked,
 .statement.is-unchecked,
 .statement.unchecked {
-opacity: 0.58;
+opacity: 0.7;
 background: rgba(245, 241, 235, 0.36);
 }
 
@@ -567,8 +571,8 @@ padding-top: 0.25rem;
 
 .statement-checkbox input {
 accent-color: var(--accent);
-width: 0.95rem;
-height: 0.95rem;
+width: 1.5rem;
+height: 1.5rem;
 margin: 0;
 cursor: pointer;
 }
@@ -3527,6 +3531,11 @@ opacity: 0.5;
 cursor: not-allowed;
 }
 
+.transcribe-capture-controls:has(> [data-recording-mode-select]:focus-visible) [data-record-mode-dropdown] {
+outline: 2px solid #000;
+outline-offset: 2px;
+}
+
 .record-split-button__menu {
 position: absolute;
 top: 100%;
@@ -3578,76 +3587,70 @@ font-size: 0.75rem;
 color: var(--muted);
 }
 
-.tour-overlay[hidden] {
-display: none;
-}
-
+.tour-overlay:not([open]) { display: none; }
 .tour-overlay {
 position: fixed;
 inset: 0;
-z-index: 220;
-pointer-events: auto;
+width: 100vw;
+height: 100dvh;
+max-width: none;
+max-height: none;
+margin: 0;
+padding: 0;
+overflow: hidden;
+border: 0;
+background: transparent;
+color: inherit;
 }
-
-.tour-overlay__scrim-panel {
-position: absolute;
-background: rgba(20, 32, 43, 0.38);
-backdrop-filter: blur(4px);
--webkit-backdrop-filter: blur(4px);
+.tour-overlay::backdrop {
+background: rgba(20, 32, 43, 0.58);
+backdrop-filter: blur(2px);
+-webkit-backdrop-filter: blur(2px);
 }
-
 .tour-overlay__highlight {
-position: absolute;
-border-radius: 1.25rem;
-border: 2px solid rgba(224, 242, 245, 0.96);
-box-shadow: 0 0 0 9999px rgba(20, 32, 43, 0.18);
-transition: top 0.18s ease, left 0.18s ease, width 0.18s ease, height 0.18s ease;
+position: fixed;
+z-index: 1;
+border: 2px solid #fff;
+border-radius: 0.85rem;
+box-shadow: 0 0 0 3px #1a202c, 0 8px 24px rgba(20, 32, 43, 0.3);
 pointer-events: none;
 }
-
+.tour-overlay__highlight[hidden] { display: none; }
 .tour-overlay__card {
-position: absolute;
-max-width: min(24rem, calc(100vw - 2rem));
-padding: 1rem 1rem 0.95rem;
-border-radius: 1.1rem;
-border: 1px solid rgba(224, 242, 245, 0.24);
+position: fixed;
+z-index: 2;
+width: min(26rem, calc(100vw - 1.5rem));
+max-height: calc(100dvh - 1.5rem);
+overflow-y: auto;
+overscroll-behavior: contain;
+padding: 1rem;
+border: 1px solid rgba(224, 242, 245, 0.45);
+border-radius: 1rem;
 background: var(--accent);
-box-shadow: 0 18px 50px rgba(20, 32, 43, 0.18);
+box-shadow: 0 18px 50px rgba(20, 32, 43, 0.3);
 color: #fff;
 }
-
+.tour-overlay__card:focus { outline: none; }
 .tour-overlay__eyebrow {
 font-size: 0.72rem;
 font-weight: 700;
 letter-spacing: 0.14em;
 text-transform: uppercase;
-color: rgba(224, 242, 245, 0.82);
+color: #fff;
 }
-
-.tour-overlay__title {
-margin-top: 0.4rem;
-font-size: 1rem;
-font-weight: 700;
+.tour-overlay__title { margin-top: 0.4rem; font-size: 1.1rem; font-weight: 700; line-height: 1.3; }
+.tour-overlay__title:focus { outline: 3px solid #fff; outline-offset: 4px; border-radius: 0.15rem; box-shadow: 0 0 0 6px #1a202c; }
+.tour-overlay__body { margin-top: 0.45rem; font-size: 0.9rem; line-height: 1.55; color: #fff; }
+.tour-overlay__actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.95rem; }
+.tour-overlay__progress { margin: 0; font-size: 0.78rem; color: #fff; }
+.tour-overlay__buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.tour-overlay__buttons button:focus-visible {
+outline: 3px solid #fff;
+outline-offset: 2px;
+box-shadow: 0 0 0 5px #1a202c;
 }
-
-.tour-overlay__body {
-margin-top: 0.45rem;
-font-size: 0.9rem;
-line-height: 1.55;
-color: rgba(255, 255, 255, 0.88);
-}
-
-.tour-overlay__actions {
-display: flex;
-align-items: center;
-justify-content: space-between;
-gap: 0.75rem;
-margin-top: 0.95rem;
-}
-
-.tour-overlay__progress {
-font-size: 0.78rem;
-color: rgba(255, 255, 255, 0.72);
+@media (prefers-reduced-motion: reduce) {
+  .tour-overlay::backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
 
 .structured-section-block {

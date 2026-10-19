@@ -526,8 +526,41 @@ def test_runtime_normalizes_incoherent_usage_to_conservative_settlement(
 
 def test_split_task_swallows_unexpected_exception_without_raw_text(monkeypatch, caplog):
     from app import tasks
+    from app.models import ConsultationSplitExecutionKind
 
     secret = "provider response must not be logged"
-    monkeypatch.setattr("app.tasks.process_consultation_split_analysis_execution", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError(secret)))
-    tasks.process_consultation_split_execution_task(execution_id=str(uuid4()))
+    execution_id = uuid4()
+
+    class FakeSession:
+        def get(self, *_args):
+            return type("Execution", (), {"kind": ConsultationSplitExecutionKind.analysis})()
+
+        def rollback(self):
+            return None
+
+    class FakeSessionContext:
+        def __enter__(self):
+            return FakeSession()
+
+        def __exit__(self, *_args):
+            return False
+
+    runtime_calls = []
+
+    def fail(*_args, **_kwargs):
+        runtime_calls.append(True)
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(tasks, "SessionLocal", FakeSessionContext)
+    monkeypatch.setattr("app.tasks.process_consultation_split_analysis_execution", fail)
+    caplog.set_level("ERROR", logger="openscribe.tasks")
+    tasks.process_consultation_split_execution_task(execution_id=str(execution_id))
+
+    assert runtime_calls == [True]
     assert secret not in caplog.text
+    assert any(
+        record.name == "openscribe.tasks"
+        and getattr(record, "event", None) == "consultation_split_worker_failed"
+        and getattr(record, "execution_id", None) == str(execution_id)
+        for record in caplog.records
+    )

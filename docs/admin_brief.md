@@ -54,7 +54,7 @@ System administrators provision and inspect credential-bearing configurations fo
 Important rules:
 
 - provider policy selection is separate from credential provisioning;
-- secrets are Vault-backed or supplied through deployment identity;
+- provider secrets are Vault-backed; Gemini can use the deployment's runtime identity;
 - responses show bounded status/`has_secret`, never the secret/reference;
 - required-auth drafts/revisions copy inherited credentials into draft-owned unique versioned Vault paths—they do not alias the active root's secret reference;
 - replacement/removal/deletion/cancel/promotion use durable cleanup intent, retries, and live-reference guards;
@@ -91,7 +91,8 @@ Global areas:
 - Global defaults;
 - De-identification providers;
 - Usage;
-- Audit.
+- Audit;
+- Legal content.
 
 Selected-team tabs:
 

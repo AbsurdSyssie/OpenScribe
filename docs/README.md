@@ -86,6 +86,7 @@ Other files whose names contain `roadmap`, `plan`, `brief`, `todo`, or `design` 
 
 ## Engineering review records
 
+- [Discovered issues remediation and regression review — 19 October 2026](reviews/discovered-issues-remediation-2026-10-19.md) records issue dispositions, bounded fixes, regression verification, and remaining policy/deployment work.
 - [Documentation review — 18 October 2026](reviews/documentation-review-2026-10-18.md) records factual corrections, writing review, and verification limits against the [functional inventory](documentation-inventory.md).
 - [Generation-stage logging, efficiency and token review — 16 October 2026](reviews/generation-stage-cost-logging-review-2026-10-16.md) covers STT, source preparation, ordinary and split generation, recovery and checking, with bounded remediation and remaining cost/transport decisions.
 - [Note generation pipeline review — 16 October 2026](reviews/note-generation-pipeline-review-2026-10-16.md) records the generation sequence, information boundaries, logging, failure handling, and a prioritized follow-up backlog at the inspected commit. It is a dated assessment, not an implementation plan or current runtime contract. Actionable findings are also tracked in [`DISCOVERED_ISSUES.md`](../DISCOVERED_ISSUES.md).

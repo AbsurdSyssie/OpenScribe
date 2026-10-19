@@ -138,10 +138,8 @@ def ensure_safe_test_database_url() -> str:
     if app_url in {base_test_url, test_url}:
         raise RuntimeError(
             "Unsafe test database configuration: DATABASE_URL must not match the base or worker TEST_DATABASE_URL.\n"
-            "Refusing to run tests against the application database.\n"
-            f"DATABASE_URL={app_url}\n"
-            f"TEST_DATABASE_URL={base_test_url}\n"
-            f"DERIVED_TEST_DATABASE_URL={test_url}"
+            "Refusing to run tests against the application database. Check the configured URLs locally; "
+            "their values are omitted to avoid exposing credentials or connection details."
         )
 
     return test_url
@@ -154,9 +152,8 @@ def ensure_safe_test_rate_limit_storage_url() -> str:
     if app_url == test_url:
         raise RuntimeError(
             "Unsafe test rate-limit configuration: TEST_RATE_LIMIT_STORAGE_URL must not match RATE_LIMIT_STORAGE_URL.\n"
-            "Refusing to run tests against the application rate-limit store.\n"
-            f"RATE_LIMIT_STORAGE_URL={app_url}\n"
-            f"TEST_RATE_LIMIT_STORAGE_URL={test_url}"
+            "Refusing to run tests against the application rate-limit store. Check the configured URLs locally; "
+            "their values are omitted to avoid exposing credentials or connection details."
         )
 
     return test_url

@@ -12,6 +12,7 @@ from email.utils import parsedate_to_datetime
 import math
 import random
 import signal
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -68,10 +69,50 @@ class _WallDeadline(BaseException):
 
 
 def require_supported_execution_context() -> None:
-    if threading.current_thread() is not threading.main_thread() or not hasattr(signal, "setitimer"):
-        raise AppError(503, "llm_execution_context_unsupported", "LLM execution requires a supported worker")
-    if signal.getitimer(signal.ITIMER_REAL)[0] > 0:
-        raise AppError(503, "llm_execution_context_unsupported", "LLM execution requires an available worker timer")
+    def unsupported() -> AppError:
+        return AppError(503, "llm_execution_context_unsupported", "LLM execution requires a supported worker")
+
+    if threading.current_thread() is not threading.main_thread():
+        raise unsupported()
+    if not all(hasattr(signal, name) for name in ("setitimer", "getitimer", "SIGALRM", "ITIMER_REAL")):
+        raise unsupported()
+
+    # Signal timers cannot safely interrupt greenlet/eventlet workers, even
+    # when monkey-patching makes them look like the process main thread.
+    greenlet_module = sys.modules.get("greenlet")
+    if greenlet_module is not None:
+        getcurrent = getattr(greenlet_module, "getcurrent", None)
+        if callable(getcurrent):
+            try:
+                if getattr(getcurrent(), "parent", None) is not None:
+                    raise unsupported()
+            except AppError:
+                raise
+            except Exception:
+                raise unsupported() from None
+
+    for module_name, probe_name, patched_names in (
+        ("eventlet.patcher", "is_monkey_patched", ("thread", "threading", "signal")),
+        ("gevent.monkey", "is_module_patched", ("thread", "threading", "signal")),
+    ):
+        patcher = sys.modules.get(module_name)
+        probe = getattr(patcher, probe_name, None) if patcher is not None else None
+        if callable(probe):
+            try:
+                if any(probe(name) for name in patched_names):
+                    raise unsupported()
+            except AppError:
+                raise
+            except Exception:
+                raise unsupported() from None
+
+    try:
+        if signal.getitimer(signal.ITIMER_REAL)[0] > 0:
+            raise AppError(503, "llm_execution_context_unsupported", "LLM execution requires an available worker timer")
+    except AppError:
+        raise
+    except Exception:
+        raise unsupported() from None
 
 
 @contextmanager

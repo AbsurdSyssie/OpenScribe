@@ -3,6 +3,7 @@ from __future__ import annotations
 import signal
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -81,6 +82,40 @@ def test_thread_context_never_dispatches():
     thread = threading.Thread(target=run)
     thread.start(); thread.join()
     assert codes == ["llm_execution_context_unsupported"]
+
+
+@pytest.mark.parametrize(
+    ("module_name", "probe_name", "patched_names"),
+    [
+        ("eventlet.patcher", "is_monkey_patched", {"thread", "threading", "signal"}),
+        ("gevent.monkey", "is_module_patched", {"thread", "threading", "signal"}),
+    ],
+)
+def test_monkey_patched_worker_context_is_rejected_before_submission(
+    monkeypatch, module_name, probe_name, patched_names,
+):
+    patcher = SimpleNamespace(**{probe_name: lambda name: name in patched_names})
+    monkeypatch.setitem(__import__("sys").modules, module_name, patcher)
+
+    with pytest.raises(AppError) as caught:
+        execution.require_supported_execution_context()
+
+    assert caught.value.code == "llm_execution_context_unsupported"
+    assert "eventlet" not in caught.value.message.lower()
+    assert "gevent" not in caught.value.message.lower()
+
+
+def test_greenlet_worker_context_is_rejected_before_submission(monkeypatch):
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "greenlet",
+        SimpleNamespace(getcurrent=lambda: SimpleNamespace(parent=object())),
+    )
+
+    with pytest.raises(AppError) as caught:
+        execution.require_supported_execution_context()
+
+    assert caught.value.code == "llm_execution_context_unsupported"
 
 
 def test_lost_claim_stops_before_first_dispatch():

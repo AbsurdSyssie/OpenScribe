@@ -715,10 +715,10 @@ export function attachTranscribeActions({
       ].filter((checkbox) => checkbox.checked);
       const selectedIds = selectedBoxes.map((checkbox) => checkbox.value);
       if (selectedIds.length === 0) return;
-      if (selectedBoxes.some((checkbox) => checkbox.dataset.hasTranscriptContent === 'true')) {
+      if (selectedBoxes.some((checkbox) => checkbox.dataset.hasSavedContent === 'true')) {
         const message = selectedIds.length === 1
-          ? 'This consultation has transcript text. Delete it permanently?'
-          : 'One or more selected consultations have transcript text. Delete them permanently?';
+          ? 'This consultation has saved content. Delete it permanently?'
+          : 'One or more selected consultations have saved content. Delete them permanently?';
         if (!window.confirm(message)) return;
       }
       try {

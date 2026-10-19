@@ -240,6 +240,37 @@ def _run(db, execution_id):
     return process_consultation_split_generation_execution(db, execution_id=execution_id)
 
 
+def test_unsupported_worker_cancels_split_generation_before_submission(
+    db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch,
+):
+    owner = make_user(email=f"generation-unsupported-{uuid4()}@example.com")
+    _transcript, execution_id = _queue(
+        db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch,
+    )
+    provider_calls = []
+    monkeypatch.setattr(
+        "app.services.consultation_split_generation_runtime.resolve_generation_credential",
+        lambda _config: "synthetic-token",
+    )
+    monkeypatch.setattr(
+        "app.services.consultation_split_generation_runtime.require_supported_execution_context",
+        lambda: (_ for _ in ()).throw(AppError(503, "llm_execution_context_unsupported", "synthetic")),
+    )
+    monkeypatch.setattr(
+        "app.services.consultation_split_generation_runtime.llm_runtime.invoke_llm",
+        lambda **_kwargs: provider_calls.append(True),
+    )
+
+    result = _run(db_session, execution_id)
+
+    execution, _batch, attempt, _outcomes = _rows(db_session, execution_id)
+    assert result.outcome == "failed"
+    assert result.error_code == "llm_execution_context_unsupported"
+    assert execution.status is ConsultationSplitExecutionStatus.failed
+    assert attempt.status is AttemptStatus.cancelled
+    assert provider_calls == []
+
+
 def _queue_selected_verification(
     db, owner, make_llm_config, make_llm_selection, make_template, monkeypatch,
     *, source_only=None, adapter_kind=LlmAdapterKind.openai_chat,
@@ -266,6 +297,47 @@ def _queue_selected_verification(
     assert verification is not None
     db.commit()
     return transcript, verification.id
+
+
+def test_unsupported_worker_fails_open_split_verification_before_submission(
+    db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch,
+):
+    owner = make_user(email=f"verification-unsupported-{uuid4()}@example.com")
+    transcript, execution_id = _queue_selected_verification(
+        db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch,
+    )
+    provider_calls = []
+    preflight_calls = []
+    monkeypatch.setattr(
+        "app.services.consultation_split_verification_runtime.resolve_generation_credential",
+        lambda _config: "synthetic-token",
+    )
+    monkeypatch.setattr(
+        "app.services.consultation_split_verification_runtime.require_supported_execution_context",
+        lambda: (preflight_calls.append(True), (_ for _ in ()).throw(
+            AppError(503, "llm_execution_context_unsupported", "synthetic")
+        ))[1],
+    )
+    monkeypatch.setattr(
+        "app.services.consultation_split_verification_runtime.llm_runtime.invoke_llm",
+        lambda **_kwargs: provider_calls.append(True),
+    )
+
+    # Worker entrypoints require an idle SQLAlchemy session.
+    db_session.rollback()
+    process_consultation_split_verification_execution(db_session, execution_id=execution_id)
+
+    execution, batch, attempt, outcomes = _rows(db_session, execution_id)
+    assert execution.status is ConsultationSplitExecutionStatus.failed
+    assert execution.error_code == "llm_execution_context_unsupported"
+    assert attempt.status is AttemptStatus.cancelled
+    assert batch.verification_status is ConsultationSplitVerificationStatus.unchecked
+    assert all(outcome.status is ConsultationSplitTopicOutcomeStatus.ready for outcome in outcomes)
+    assert db_session.scalars(select(GeneratedDocument).where(
+        GeneratedDocument.transcript_id == transcript.id,
+    )).all()
+    assert provider_calls == []
+    assert preflight_calls == [True]
 
 
 def _assert_attempt_reservation_matches_frozen_request(db, owner, execution_id, expected_cap):
@@ -2042,6 +2114,13 @@ def test_verifier_deadline_wins_over_late_provider_response_without_a_second_cal
         "app.services.consultation_split_verification_runtime.resolve_generation_credential",
         lambda _config: "token",
     )
+    # This test exercises database claim/replay and late-response lifecycle
+    # races from a native helper thread. The unsupported-context branch has its
+    # own test; this seam keeps the provider dispatch synthetic here.
+    monkeypatch.setattr(
+        "app.services.consultation_split_verification_runtime.require_supported_execution_context",
+        lambda: None,
+    )
 
     def provider(**_kwargs):
         calls.append(1)
@@ -2191,3 +2270,110 @@ def test_verifier_recoverable_response_is_cascaded_by_expired_transcript_without
     process_consultation_split_verification_execution(db_session, execution_id=execution_id)
     assert calls == []
     assert response_marker not in caplog.text
+
+
+@pytest.mark.parametrize("snapshot_schema", ["legacy_exact", "tampered"])
+def test_recovery_reconstructs_only_exact_legacy_schema_and_rejects_tampering(
+    db_session, make_user, make_llm_config, make_llm_selection, make_template,
+    monkeypatch, snapshot_schema,
+):
+    owner = make_user(email=f"generation-recovery-schema-{snapshot_schema}-{uuid4()}@example.com")
+    transcript, initial_id = _queue(
+        db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch,
+        adapter_kind=LlmAdapterKind.gemini_enterprise,
+    )
+    monkeypatch.setattr(
+        "app.services.consultation_split_recovery.queue_automatic_split_recovery",
+        lambda *_args, **_kwargs: None,
+    )
+    partial = json.loads(_response(db_session, initial_id))
+    partial["notes"][1]["content"] = {"problem": "", "tasks": ""}
+    _provider(monkeypatch, json.dumps(partial), [])
+    assert _run(db_session, initial_id).outcome == "ready"
+
+    initial = db_session.get(ConsultationSplitExecution, initial_id)
+    monkeypatch.setattr(
+        "app.services.consultation_split_recovery.try_publish_task_dispatch_safely",
+        lambda *_args, **_kwargs: None,
+    )
+    recovery = retry_missing_split_notes(
+        db_session, owner, transcript_id=transcript.id, batch_id=initial.batch_id,
+    )
+    execution = db_session.get(ConsultationSplitExecution, recovery.execution_id)
+    request = read_split_execution_json(
+        db_session, owner, execution=execution, field="request_payload_encrypted",
+    )
+    if snapshot_schema == "legacy_exact":
+        from app.services.consultation_split_generation import (
+            prepare_split_generation_recovery_request,
+            split_generation_request_snapshot,
+        )
+        from app.services.consultation_splits import read_split_batch_json
+
+        _execution, batch, _attempt, outcomes = _rows(db_session, execution.id)
+        batch_topics = db_session.scalars(select(ConsultationSplitBatchTopic).where(
+            ConsultationSplitBatchTopic.batch_id == batch.id,
+        )).all()
+        outcomes_by_topic = {outcome.batch_topic_id: outcome for outcome in outcomes}
+        failed_topics = [
+            topic for topic in batch_topics
+            if outcomes_by_topic[topic.id].status is ConsultationSplitTopicOutcomeStatus.failed
+        ]
+        accepted_siblings = {
+            topic.topic_uuid: read_split_topic_outcome_output(
+                db_session, owner, outcome=outcomes_by_topic[topic.id],
+            )
+            for topic in batch_topics
+            if outcomes_by_topic[topic.id].status is ConsultationSplitTopicOutcomeStatus.validated
+        }
+        legacy_prepared = prepare_split_generation_recovery_request(
+            source_snapshot=read_split_batch_json(db_session, owner, batch=batch, field="source_snapshot_encrypted"),
+            clinical_snapshot=read_split_batch_json(db_session, owner, batch=batch, field="clinical_snapshot_encrypted"),
+            confirmed_plan=read_split_batch_json(db_session, owner, batch=batch, field="confirmed_plan_encrypted"),
+            note_options_snapshot=read_split_batch_json(db_session, owner, batch=batch, field="note_options_snapshot_encrypted"),
+            failed_topic_uuids=[topic.topic_uuid for topic in failed_topics],
+            accepted_sibling_outputs=accepted_siblings,
+            legacy_provider_schema=True,
+        )
+        request = split_generation_request_snapshot(
+            legacy_prepared, adapter_kind=LlmAdapterKind.gemini_enterprise,
+            model=execution.provider_model, user_id=owner.id,
+        )
+    else:
+        request["config"]["response_json_schema"] = {"type": "object", "properties": {"tampered": True}}
+    execution.request_payload_encrypted = encrypt_json_for_owner(
+        db_session, owner_user_id=owner.id, table="consultation_split_executions",
+        field="request_payload_encrypted", record_id=execution.id, plaintext=request,
+    )
+    db_session.commit()
+
+    provider_calls = []
+    if snapshot_schema == "legacy_exact":
+        _execution, batch, _attempt, outcomes = _rows(db_session, execution.id)
+        from app.services.consultation_splits import read_split_batch_topic_template_snapshot
+
+        failed = next(
+            outcome for outcome in outcomes
+            if outcome.batch_topic_id in {
+                topic.id for topic in db_session.scalars(select(ConsultationSplitBatchTopic).where(
+                    ConsultationSplitBatchTopic.batch_id == batch.id,
+                )).all()
+            } and outcome.status is ConsultationSplitTopicOutcomeStatus.failed
+        )
+        topic = db_session.get(ConsultationSplitBatchTopic, failed.batch_topic_id)
+        mode = read_split_batch_topic_template_snapshot(db_session, owner, topic=topic)["mode"]
+        content = {"problem": "Synthetic problem", "tasks": "Synthetic task"} if mode == "structured" else "Synthetic recovered note"
+        response = json.dumps({"title": "Overall consultation", "notes": [{
+            "topic_uuid": str(topic.topic_uuid), "mode": mode, "content": content,
+        }]})
+        _provider(monkeypatch, response, provider_calls)
+        result = _run(db_session, execution.id)
+        assert result.outcome == "ready", result.error_code
+        assert provider_calls == [1]
+    else:
+        _provider(monkeypatch, _response(db_session, execution.id), provider_calls)
+        result = _run(db_session, execution.id)
+        refreshed = db_session.get(ConsultationSplitExecution, execution.id)
+        assert result.outcome == "failed"
+        assert refreshed.error_code == "consultation_split_provider_binding_invalid"
+        assert provider_calls == []

@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
+from app.errors import AppError
 from app.models import (
     AttemptKind,
     AttemptOutcome,
@@ -14,6 +15,7 @@ from app.models import (
     GeneratedDocumentSection,
     HallucinationCheckStatus,
     ProviderAttempt,
+    ProviderUsageEvent,
     ProviderSettlementBasis,
     TeamHallucinationCheckSelection,
     TeamRole,
@@ -84,6 +86,104 @@ def _fake_openai_factory(responses, calls):
             return None
 
     return FakeClient
+
+
+def test_unsupported_worker_cancels_generated_note_before_provider_submission(
+    db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch,
+):
+    _team, _admin, owner, _config, transcript = _source_graph(
+        db_session, make_team, make_user, make_llm_config, make_llm_selection,
+    )
+    template = make_template(
+        scope=TemplateScope.user, owner=owner, actor=owner,
+        name="Synthetic template", prompt_text="Write a synthetic note.",
+    )
+    document = queue_document_generation_from_template(
+        db_session, owner, transcript_id=transcript.id, template_id=template.id,
+    )
+    provider_calls = []
+    monkeypatch.setattr(
+        templates, "require_supported_execution_context",
+        lambda: (_ for _ in ()).throw(AppError(503, "llm_execution_context_unsupported", "synthetic")),
+    )
+    monkeypatch.setattr(templates, "_invoke_frozen_llm", lambda **_kwargs: provider_calls.append(True))
+
+    result = process_generated_document(db_session, document_id=document.id)
+
+    db_session.refresh(document)
+    attempt = db_session.scalar(select(ProviderAttempt).where(
+        ProviderAttempt.generated_document_id == document.id,
+        ProviderAttempt.attempt_kind == AttemptKind.llm_generation,
+    ))
+    assert result.status is GeneratedDocumentStatus.failed
+    assert result.error_code == "llm_execution_context_unsupported"
+    assert document.status is GeneratedDocumentStatus.failed
+    assert attempt is not None
+    assert attempt.status is AttemptStatus.cancelled
+    assert attempt.submitted_at is None
+    assert attempt.settled_units is None
+    assert provider_calls == []
+
+
+def test_unsupported_checker_leaves_validated_note_ready_and_unchecked_without_usage(
+    db_session, make_team, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch,
+):
+    team, admin, owner, _config, transcript = _source_graph(
+        db_session, make_team, make_user, make_llm_config, make_llm_selection,
+    )
+    checker_config = make_llm_config(team=team, actor=admin, label="Synthetic checker", has_secret=False)
+    db_session.add(TeamHallucinationCheckSelection(
+        team_id=team.id, llm_config_id=checker_config.id,
+        model_name_override=checker_config.model_name, selected_by_user_id=admin.id,
+    ))
+    db_session.commit()
+    template = make_template(
+        scope=TemplateScope.user, owner=owner, actor=owner,
+        name="Synthetic structured template", prompt_text="Use only synthetic source evidence.",
+        mode=TemplateMode.structured,
+        config_json={"profile": "emis", "sections": [{
+            "section_key": "problem", "instruction": "Summarise the problem.", "section_order": 0,
+        }]},
+    )
+    document = queue_document_generation_from_template(
+        db_session, owner, transcript_id=transcript.id, template_id=template.id,
+    )
+    provider_calls = []
+    monkeypatch.setattr(templates, "OpenAI", _fake_openai_factory(iter((
+        ('{"title":"Synthetic visit","content":{"problem":"Supported original note."}}', "stop"),
+    )), provider_calls))
+    monkeypatch.setattr(templates, "_resolve_generation_credential", lambda _config: None)
+    preflight_calls = 0
+
+    def preflight():
+        nonlocal preflight_calls
+        preflight_calls += 1
+        if preflight_calls == 2:
+            raise AppError(503, "llm_execution_context_unsupported", "synthetic")
+
+    monkeypatch.setattr(templates, "require_supported_execution_context", preflight)
+    monkeypatch.setenv("HALLUCINATION_CHECK_DEBUG_UI", "0")
+
+    result = process_generated_document(db_session, document_id=document.id)
+
+    assert result.status is GeneratedDocumentStatus.ready
+    assert result.hallucination_check_status is HallucinationCheckStatus.failed_provider
+    assert generated_document_text(db_session, document=result, field="edited_output_text_encrypted") == "Problem\nSupported original note."
+    assert result.hallucination_check_llm_config_id == checker_config.id
+    assert result.hallucination_check_model_name == checker_config.model_name
+    assert result.hallucination_check_provider_snapshot_json
+    checker_attempt = db_session.scalar(select(ProviderAttempt).where(
+        ProviderAttempt.generated_document_id == document.id,
+        ProviderAttempt.attempt_kind == AttemptKind.llm_hallucination_check,
+    ))
+    assert checker_attempt is None or checker_attempt.status is AttemptStatus.cancelled
+    assert checker_attempt is None or checker_attempt.submitted_at is None
+    assert checker_attempt is None or checker_attempt.settled_units is None
+    assert db_session.scalars(select(ProviderUsageEvent).where(
+        ProviderUsageEvent.generated_document_id == document.id,
+        ProviderUsageEvent.llm_config_id == checker_config.id,
+    )).all() == []
+    assert len(provider_calls) == 1
 
 
 def test_explicit_truncation_fails_followup_quick_action_and_parseable_template_without_replay(

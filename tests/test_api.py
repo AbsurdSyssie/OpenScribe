@@ -9111,6 +9111,10 @@ def test_working_note_routes_enforce_owner_mode_lock_and_clear(client, db_sessio
         json={"mode": "freeform", "freeform_text": "  Clinician plan: review BP next week.  "},
     )
     assert saved.status_code == 200
+    workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript_id}")
+    assert workspace.status_code == 200
+    assert workspace.json()["active_transcript"]["has_saved_content"] is True
+    assert workspace.json()["active_transcript"]["has_transcript_content"] is False
     assert saved.json()["mode"] == "freeform"
     assert saved.json()["freeform_text"] == "Clinician plan: review BP next week."
     assert saved.json()["updated_at"] is not None
@@ -16434,7 +16438,11 @@ def test_transcript_history_page_batches_blank_draft_content_fallbacks(
         return transcript
 
     def add_version(transcript: Transcript, *, version_no: int, text: str | None):
-        version = TranscriptVersion(transcript_id=transcript.id, version_no=version_no, text_encrypted="corrupt" if text is None else "")
+        version = TranscriptVersion(
+            transcript_id=transcript.id,
+            version_no=version_no,
+            text_encrypted="corrupt" if text is None else "",
+        )
         db_session.add(version)
         db_session.flush()
         if text is not None:
@@ -16480,13 +16488,11 @@ def test_transcript_history_page_batches_blank_draft_content_fallbacks(
     version_reads: list[UUID] = []
 
     def draft_reader(*args, **kwargs):
-        transcript = kwargs["transcript"]
-        draft_reads.append(transcript.id)
+        draft_reads.append(kwargs["transcript"].id)
         return original_draft_reader(*args, **kwargs)
 
     def version_reader(*args, **kwargs):
-        version = kwargs["transcript_version"]
-        version_reads.append(version.transcript_id)
+        version_reads.append(kwargs["transcript_version"].transcript_id)
         return original_version_reader(*args, **kwargs)
 
     monkeypatch.setattr(transcribe_workspace, "transcript_draft_text_service", draft_reader)
@@ -16531,6 +16537,129 @@ def test_transcript_history_page_batches_blank_draft_content_fallbacks(
         "All blank": False,
         "No versions": False,
         "Appended active": True,
+    }
+
+
+def test_transcript_history_content_presence_uses_owner_scoped_saved_records_without_decryption(
+    db_session,
+    make_team,
+    make_user,
+    monkeypatch,
+):
+    team = make_team(name="History content-presence records")
+    owner = make_user(email="history-presence-owner@example.com", password="password-1", team=team)
+    other = make_user(email="history-presence-other@example.com", password="password-2", team=team)
+    now = utcnow()
+
+    def make_root(user: User, title: str, expires_at=None) -> Transcript:
+        root = Transcript(
+            owner_user_id=user.id,
+            team_id=team.id,
+            title=title,
+            current_draft_text_encrypted=None,
+            ingestion_mode=TranscriptIngestionMode.whole_file,
+            status=TranscriptStatus.ready,
+            retention_days_applied=30,
+            retention_expires_at=expires_at or now + timedelta(days=30),
+        )
+        db_session.add(root)
+        db_session.flush()
+        return root
+
+    empty = make_root(owner, "Empty root")
+    dictation_root = make_root(owner, "Retained dictation segment")
+    generated_root = make_root(owner, "Generated note only")
+    foreign = make_root(other, "Foreign root")
+    expired = make_root(owner, "Expired root", now - timedelta(seconds=1))
+
+    dictation = PostConsultationDictation(
+        transcript_id=dictation_root.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        combined_edited_text_encrypted=None,
+        is_combined_text_user_edited=True,
+    )
+    db_session.add(dictation)
+    db_session.flush()
+    segment_id = uuid4()
+    db_session.add(PostConsultationDictationSegment(
+        id=segment_id,
+        post_consultation_dictation_id=dictation.id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        sequence_no=1,
+        asr_text_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="post_consultation_dictation_segments",
+            field="asr_text_encrypted",
+            record_id=segment_id,
+            plaintext="Retained synthetic source segment.",
+        ) or "",
+    ))
+    version_id = uuid4()
+    version = TranscriptVersion(
+        id=version_id,
+        transcript_id=generated_root.id,
+        version_no=1,
+        text_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="transcript_versions",
+            field="text_encrypted",
+            record_id=version_id,
+            plaintext="",
+        ) or "",
+    )
+    db_session.add(version)
+    db_session.flush()
+    document_id = uuid4()
+    db_session.add(GeneratedDocument(
+        id=document_id,
+        owner_user_id=owner.id,
+        team_id=team.id,
+        transcript_id=generated_root.id,
+        transcript_version_id=version.id,
+        generator_type=GeneratedDocumentGeneratorType.template,
+        source_template_name="Synthetic note",
+        status=GeneratedDocumentStatus.ready,
+        title="Synthetic generated note",
+        document_mode=TemplateMode.freeform,
+        original_output_text_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="generated_documents",
+            field="original_output_text_encrypted",
+            record_id=document_id,
+            plaintext="Synthetic generated content.",
+        ) or "",
+        edited_output_text_encrypted=encrypt_text_for_owner(
+            db_session,
+            owner_user_id=owner.id,
+            table="generated_documents",
+            field="edited_output_text_encrypted",
+            record_id=document_id,
+            plaintext="Synthetic generated content.",
+        ) or "",
+        retention_expires_at=generated_root.retention_expires_at,
+    ))
+    db_session.flush()
+
+    monkeypatch.setattr(
+        transcribe_workspace,
+        "generated_document_text_service",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("generated content must not be decrypted")),
+    )
+    page = transcribe_workspace.list_transcript_history_page(db_session, owner, limit=10)
+    assert {item.title: item.has_saved_content for item in page["items"]} == {
+        "Empty root": False,
+        "Retained dictation segment": True,
+        "Generated note only": True,
+    }
+    assert {item.title: item.has_transcript_content for item in page["items"]} == {
+        "Empty root": False,
+        "Retained dictation segment": False,
+        "Generated note only": False,
     }
 
 
@@ -16955,6 +17084,10 @@ def test_working_note_only_session_allows_new_session(
         json={"mode": "freeform", "freeform_text": "Clinician-only plan exists."},
     )
     assert saved.status_code == 200
+    workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript_id}")
+    assert workspace.status_code == 200
+    assert workspace.json()["active_transcript"]["has_saved_content"] is True
+    assert workspace.json()["active_transcript"]["has_transcript_content"] is False
 
     next_session = client.post("/api/v1/transcripts/start", json={"title": "Next session", "ingestion_mode": "whole_file"})
     assert next_session.status_code == 201
@@ -16983,6 +17116,8 @@ def test_dictation_only_session_allows_new_session(
     workspace = client.get(f"/api/v1/transcribe/workspace?transcript_id={transcript_id}")
     assert workspace.status_code == 200
     assert workspace.json()["can_create_new_session"] is True
+    assert workspace.json()["active_transcript"]["has_saved_content"] is True
+    assert workspace.json()["active_transcript"]["has_transcript_content"] is False
 
     next_session = client.post("/api/v1/transcripts/start", json={"title": "Next session", "ingestion_mode": "whole_file"})
     assert next_session.status_code == 201

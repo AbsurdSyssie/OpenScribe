@@ -1,7 +1,7 @@
 {% macro consultation_item(transcript) -%}
 <div class="session-item rounded-lg px-3 py-2.5 {% if active_transcript_id == transcript.id|string %}active{% endif %}">
   <div class="flex items-start gap-2">
-    <input class="mt-1" type="checkbox" name="transcript_ids" form="bulk-delete-sessions" value="{{ transcript.id }}" data-has-transcript-content="{{ 'true' if transcript.has_transcript_content else 'false' }}" data-session-select>
+    <input class="mt-1" type="checkbox" name="transcript_ids" form="bulk-delete-sessions" value="{{ transcript.id }}" data-has-saved-content="{{ 'true' if transcript.has_saved_content else 'false' }}" data-session-select>
     <a class="flex-1 min-w-0" href="{{ transcribe_route_base }}?transcript_id={{ transcript.id }}" data-session-link data-recording-navigation data-transcript-id="{{ transcript.id }}">
       <div class="flex items-start justify-between gap-2"><div class="flex-1 min-w-0"><div class="font-medium text-sm text-ink truncate session-title">{{ transcript.title or "Untitled session" }}</div></div>
         {% set sidebar_state = transcript.status.value %}

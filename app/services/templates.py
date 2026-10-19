@@ -1,5 +1,5 @@
 from app.services.provider_transport_telemetry import provider_attempt_execution
-from app.services.llm_execution import ExecutionBudget
+from app.services.llm_execution import ExecutionBudget, require_supported_execution_context
 
 import json
 import logging
@@ -3365,6 +3365,26 @@ def _run_hallucination_check(
             )
             return title, sections, HallucinationCheckStatus.skipped_quota, None
         try:
+            require_supported_execution_context()
+        except AppError as exc:
+            # This is a known pre-dispatch worker limitation. Preserve the
+            # validated draft as unchecked and release the reservation; there
+            # is no provider outcome to settle or record as usage.
+            db.rollback()
+            persisted = db.get(ProviderAttempt, checker_attempt.id)
+            if persisted is not None and persisted.status is AttemptStatus.reserved:
+                cancel_provider_attempt(db, attempt_id=persisted.id)
+                db.commit()
+            document.hallucination_check_llm_config_id = config.id
+            document.hallucination_check_model_name = model_name
+            document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
+            _checker_usage_event(
+                event="llm_hallucination_check_failed", context=log_context,
+                status=HallucinationCheckStatus.failed_provider.value,
+                error_code=exc.code,
+            )
+            return title, sections, HallucinationCheckStatus.failed_provider, None
+        try:
             mark_provider_attempt_submitted(
                 db,
                 attempt_id=checker_attempt.id,
@@ -4988,6 +5008,7 @@ def _claim_generated_document_for_dispatch(
     except Exception:
         db.rollback()
         raise
+    require_supported_execution_context()
     now = utcnow()
     set_generated_document_llm_request_payload(db, document=document, plaintext=llm_request_payload)
     document.status = GeneratedDocumentStatus.processing

@@ -25,6 +25,8 @@ Enforcement lives in:
 
 Before any destructive test setup, the helper resolves both application and test URLs. If the selected test URL matches `DATABASE_URL`, pytest fails immediately.
 
+Unsafe database and Redis configuration errors state which safety check failed and refuse to continue. They omit configured URLs, credentials, hosts, and other connection details; inspect the environment locally when diagnosing a mismatch.
+
 The test helper may create missing test databases and reset their `public` schemas. It must never drop or recreate the application database.
 
 A global `/tmp/openscribe_pytest.lock` prevents a sequential run, an xdist controller, or the standalone API authorization audit from sharing/resetting the same local PostgreSQL or Redis infrastructure concurrently. The audit acquires it before ensuring the test database exists and holds it through final Redis cleanup. Xdist workers inherit the controller's protected run.

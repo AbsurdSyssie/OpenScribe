@@ -1,4 +1,4 @@
-import { attachTranscribeActions } from './actions.js?v=20261006-durable-create';
+import { attachTranscribeActions } from './actions.js?v=20261019-delete-confirmation-content';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20261005-multiple-problems';
 import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261014-generation-status';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
@@ -3277,7 +3277,7 @@ let statusDetailsHideTimer = null;
         checkbox.name = 'transcript_ids';
         checkbox.setAttribute('form', 'bulk-delete-sessions');
         checkbox.value = item.id;
-        checkbox.dataset.hasTranscriptContent = item.has_transcript_content ? 'true' : 'false';
+        checkbox.dataset.hasSavedContent = item.has_saved_content ? 'true' : 'false';
         checkbox.setAttribute('data-session-select', '');
 
         const link = document.createElement('a');
@@ -4406,9 +4406,9 @@ let statusDetailsHideTimer = null;
           const nextTitle = item.title || 'Untitled session';
           if (titleNode && titleNode.textContent !== nextTitle) titleNode.textContent = nextTitle;
           const checkbox = currentSelectionBoxes().find((input) => input.value === item.id);
-          const nextHasTranscriptContent = item.has_transcript_content ? 'true' : 'false';
-          if (checkbox && checkbox.dataset.hasTranscriptContent !== nextHasTranscriptContent) {
-            checkbox.dataset.hasTranscriptContent = nextHasTranscriptContent;
+          const nextHasSavedContent = item.has_saved_content ? 'true' : 'false';
+          if (checkbox && checkbox.dataset.hasSavedContent !== nextHasSavedContent) {
+            checkbox.dataset.hasSavedContent = nextHasSavedContent;
           }
         });
 

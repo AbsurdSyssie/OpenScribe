@@ -6,7 +6,7 @@ separate from analysis runtime because generation persists ordinary documents.
 from __future__ import annotations
 
 from app.services.provider_transport_telemetry import provider_attempt_execution
-from app.services.llm_execution import ExecutionBudget
+from app.services.llm_execution import ExecutionBudget, require_supported_execution_context
 
 import json
 import logging
@@ -300,7 +300,25 @@ def _prepared(db: Session, execution_id: UUID) -> tuple[_Work, LlmProviderSnapsh
         request = split_generation_request_snapshot(
             prepared, adapter_kind=config.adapter_kind, model=provider.model, user_id=work.owner.id,
         )
-        if request != read_split_execution_json(db, work.owner, execution=work.execution, field="request_payload_encrypted"): raise AppError(422, "invalid", "invalid")
+        stored_request = read_split_execution_json(db, work.owner, execution=work.execution, field="request_payload_encrypted")
+        if request != stored_request and work.execution.attempt_no > 1:
+            # Jobs queued before the recovery-schema tightening froze the
+            # initial broad schema. Reconstruct that one exact legacy request
+            # from the immutable batch snapshots; never trust its stored schema
+            # as input. New queue winners always use the narrowed schema.
+            legacy_prepared = prepare_split_generation_recovery_request(
+                source_snapshot=source, clinical_snapshot=clinical,
+                confirmed_plan=plan, note_options_snapshot=options,
+                failed_topic_uuids=failed, accepted_sibling_outputs=siblings,
+                legacy_provider_schema=True,
+            )
+            legacy_request = split_generation_request_snapshot(
+                legacy_prepared, adapter_kind=config.adapter_kind,
+                model=provider.model, user_id=work.owner.id,
+            )
+            if legacy_request == stored_request:
+                request = legacy_request
+        if request != stored_request: raise AppError(422, "invalid", "invalid")
     except (AppError, UnicodeDecodeError, KeyError, TypeError):
         return _terminal(db, work, "consultation_split_provider_binding_invalid", submitted=False)
     if not _credential_ok(config, credential): return _terminal(db, work, "consultation_split_credential_unavailable", submitted=False)
@@ -310,6 +328,11 @@ def _submit(db: Session, work: _Work) -> bool:
     now = utcnow()
     allowed_batch_statuses = {ConsultationSplitBatchStatus.generation_queued, ConsultationSplitBatchStatus.partially_ready}
     if work.batch.status not in allowed_batch_statuses or work.attempt.status is not AttemptStatus.reserved: db.rollback(); return False
+    try:
+        require_supported_execution_context()
+    except AppError as exc:
+        _terminal(db, work, exc.code, submitted=False)
+        return False
     mark_provider_attempt_submitted(db, attempt_id=work.attempt.id, now=now, deadline_at=now + timedelta(seconds=SPLIT_GENERATION_PROVIDER_DEADLINE_SECONDS))
     work.execution.status = ConsultationSplitExecutionStatus.processing
     work.execution.started_at = now
@@ -564,7 +587,12 @@ def process_consultation_split_generation_execution(db: Session, *, execution_id
     prepared=_prepared(db, execution_id)
     if not isinstance(prepared, tuple): return prepared or SplitGenerationRuntimeResult("noop", execution_id)
     work, provider, request, credential=prepared
-    if not _submit(db, work): return SplitGenerationRuntimeResult("noop", execution_id)
+    if not _submit(db, work):
+        db.rollback()
+        current = db.get(ConsultationSplitExecution, execution_id)
+        if current is not None and current.status is ConsultationSplitExecutionStatus.failed:
+            return SplitGenerationRuntimeResult("failed", execution_id, current.error_code)
+        return SplitGenerationRuntimeResult("noop", execution_id)
     try:
         with provider_attempt_execution(db, attempt_id=work.attempt.id, maximum_seconds=90):
             text, raw_usage=llm_runtime.invoke_llm(snapshot=provider, credential=credential, request_body=request)

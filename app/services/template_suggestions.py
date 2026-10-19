@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.services.provider_transport_telemetry import provider_attempt_execution
-from app.services.llm_execution import ExecutionBudget
+from app.services.llm_execution import ExecutionBudget, require_supported_execution_context
 
 import json
 import logging
@@ -24,6 +24,7 @@ from app.models import (
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
 from app.services.llm import resolve_user_llm
 from app.services.llm_adapters import runtime as llm_runtime
+from app.services.json_validation import reject_duplicate_json_keys
 from app.services.preferences import template_suggestions_enabled
 from app.services.quotas import (
     cancel_provider_attempt, estimate_token_reservation, increase_provider_attempt_reservation, mark_provider_attempt_submitted,
@@ -406,7 +407,7 @@ def _extract_json(text: str) -> dict:
     encoded = _extract_first_balanced_json_object(text)
     if encoded is None:
         raise ValueError("missing JSON object")
-    value = json.loads(encoded)
+    value = json.loads(encoded, object_pairs_hook=reject_duplicate_json_keys)
     if not isinstance(value, dict):
         raise ValueError("response is not an object")
     return value
@@ -501,6 +502,11 @@ def process_template_suggestion(db: Session, *, job_id: UUID) -> TemplateSuggest
         db.rollback()
         _log("template_suggestion_preparation_failed", job=locked, reason_code="reservation_unavailable")
         return _fail_pre_submit(db, job_id=locked.id, code="template_suggestion_preparation_failed")
+    try:
+        require_supported_execution_context()
+    except AppError as exc:
+        db.rollback()
+        return _fail_pre_submit(db, job_id=locked.id, code=exc.code)
     locked.status = TemplateSuggestionStatus.processing
     locked.started_at = utcnow()
     mark_provider_attempt_submitted(

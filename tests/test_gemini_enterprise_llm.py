@@ -2,8 +2,11 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+import httpx
+from google import genai
 from google.auth import exceptions as google_auth_exceptions
 from google.genai import errors as genai_errors
+from google.genai import types
 
 from app.errors import AppError
 from app.models import LlmAdapterKind
@@ -450,7 +453,7 @@ def test_provider_failure_is_translated_and_client_closes(monkeypatch):
         (genai_errors.ClientError(403, {"error": {"details": [{"reason": "SERVICE_DISABLED"}]}}), "model_discovery", "llm_provider_api_disabled"),
         (genai_errors.ClientError(403, {"error": {"message": "private"}}), "generation", "llm_permission_denied"),
         (genai_errors.ClientError(404, {"error": {}}), "model_discovery", "llm_model_discovery_unavailable"),
-        (genai_errors.ClientError(400, {"error": {}}), "model_discovery", "llm_location_unavailable"),
+        (genai_errors.ClientError(400, {"error": {}}), "model_discovery", "llm_provider_bad_request"),
         (genai_errors.ClientError(404, {"error": {}}), "model_validation", "llm_model_unavailable"),
         (genai_errors.ServerError(504, {"error": {}}), "generation", "llm_provider_timeout"),
         (ConnectionError("credential=SECRET"), "generation", "llm_provider_unreachable"),
@@ -463,6 +466,69 @@ def test_error_translation_is_deterministic_and_content_safe(error, operation, c
     assert translated.code == code
     assert "SECRET" not in translated.message
     assert "private" not in translated.message
+
+
+@pytest.mark.parametrize(
+    ("payload", "operation", "expected_code"),
+    [
+        ({"error": {"details": [{"reason": "MODEL_NOT_FOUND"}]}}, "generation", "llm_model_unavailable"),
+        ({"error": {"details": [{"reason": "UNSUPPORTED_PARAMETER"}]}}, "generation", "llm_provider_bad_request"),
+        ({"error": {"details": [{"reason": "LOCATION_UNAVAILABLE"}]}}, "model_discovery", "llm_location_unavailable"),
+        ({"error": {"details": [{"reason": "LOCATION_NOT_FOUND"}]}}, "generation", "llm_location_unavailable"),
+    ],
+)
+def test_gemini_400_uses_structured_reason_or_safe_bad_request(payload, operation, expected_code):
+    translated = adapter.translate_gemini_error(genai_errors.ClientError(400, payload), operation=operation)
+
+    assert translated.code == expected_code
+    assert translated.details == {"provider_http_status": 400}
+
+
+def test_real_gemini_sdk_stops_after_one_oversized_response(monkeypatch):
+    from app.services.llm_adapters import bounded_transport
+    from app.services.llm_adapters.bounded_transport import DEFAULT_PROVIDER_RESPONSE_MAX_BYTES
+
+    consumed_bytes = 0
+    closed = []
+    requests = []
+
+    class Chunks(httpx.SyncByteStream):
+        def __iter__(self):
+            nonlocal consumed_bytes
+            for size in (3 * 1024 * 1024, 3 * 1024 * 1024, 2 * 1024 * 1024, 1):
+                consumed_bytes += size
+                yield b"x" * size
+
+        def close(self):
+            closed.append(True)
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, stream=Chunks())
+
+    sdk_client = genai.Client(
+        api_key="synthetic",
+        http_options=types.HttpOptions(
+            retry_options=types.HttpRetryOptions(attempts=1),
+            client_args={
+                "transport": httpx.MockTransport(respond),
+                "event_hooks": bounded_transport.bounded_event_hooks(),
+            },
+        ),
+    )
+    monkeypatch.setattr(adapter, "build_gemini_client", lambda **_kwargs: sdk_client)
+
+    with pytest.raises(AppError) as caught:
+        adapter.generate_gemini_text(
+            project_id="synthetic-project", location="europe-west2",
+            credentials=None, request=_request(),
+        )
+
+    assert caught.value.code == "llm_provider_bad_response"
+    assert caught.value.details == {"provider_error_code": "response_too_large"}
+    assert len(requests) == 1
+    assert consumed_bytes == DEFAULT_PROVIDER_RESPONSE_MAX_BYTES + 1
+    assert closed == [True]
 
 
 def test_request_snapshot_matches_gemini_shape_without_credentials():

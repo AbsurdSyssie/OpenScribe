@@ -116,6 +116,39 @@ def test_prepares_six_topics_and_counts_shared_input_once():
     assert len(json.loads(user_message)["topics"]) == 6
 
 
+@pytest.mark.parametrize(("failed_index", "accepted_index"), [(0, 1), (1, 0)])
+def test_recovery_provider_schema_allows_only_failed_topic_uuids(failed_index, accepted_index):
+    snapshots = _snapshots()
+    initial = prepare_split_generation_request(**snapshots)
+    payload = json.loads(initial.request_body["messages"][1]["content"])
+    failed_uuid = UUID(payload["topics"][failed_index]["topic_uuid"])
+    accepted_uuid = UUID(payload["topics"][accepted_index]["topic_uuid"])
+
+    recovery = prepare_split_generation_recovery_request(
+        **snapshots,
+        failed_topic_uuids=[failed_uuid],
+        accepted_sibling_outputs={accepted_uuid: {
+            "mode": "freeform" if accepted_index == 0 else "structured",
+            "content": "Synthetic accepted note" if accepted_index == 0 else {"problem": "Synthetic problem", "tasks": "Synthetic task"},
+        }},
+    )
+
+    variants = recovery.response_json_schema["properties"]["notes"]["items"]["anyOf"]
+    assert [variant["properties"]["topic_uuid"]["const"] for variant in variants] == [str(failed_uuid)]
+    assert recovery.request_body["response_json_schema"] == recovery.response_json_schema
+
+    legacy = prepare_split_generation_recovery_request(
+        **snapshots,
+        failed_topic_uuids=[failed_uuid],
+        accepted_sibling_outputs={accepted_uuid: {
+            "mode": "freeform" if accepted_index == 0 else "structured",
+            "content": "Synthetic accepted note" if accepted_index == 0 else {"problem": "Synthetic problem", "tasks": "Synthetic task"},
+        }},
+        legacy_provider_schema=True,
+    )
+    assert legacy.response_json_schema == initial.response_json_schema
+
+
 def test_parser_accepts_exact_mixed_modes_in_confirmed_order_and_emis_contract_keys():
     snapshots = _snapshots()
     topics = _topics_from_plan(snapshots["confirmed_plan"])

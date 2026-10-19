@@ -347,6 +347,8 @@ Structured EMIS templates use only: `problem`, `history`, `family_history`, `soc
 
 ## Transcript, workspace, and generated-content routes
 
+Transcript history items expose two separate booleans. `has_transcript_content` reports non-blank transcript draft/version text and continues to drive transcription status and generation readiness. `has_saved_content` reports whether deletion confirmation is required; it includes that transcript text plus saved Working-note, post-consultation dictation, or ready generated-note records. The latter is a presence flag only: it does not disclose content, and derived-source checks use owner-scoped record/envelope metadata without decrypting those sources.
+
 Full-user owner-scoped routes include:
 
 - `POST /api/v1/transcripts`

@@ -4209,7 +4209,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' not in page.text
     assert 'aria-label="Workspace navigation"' in page.text
     assert "My Library" in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20261018-dictation-save-await"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20261019-delete-confirmation-content"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -5068,7 +5068,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20261018-dictation-save-await" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261019-delete-confirmation-content" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -5953,8 +5953,8 @@ def test_user_transcribe_page_marks_non_empty_sessions_for_delete_confirmation(
     page = client.get(f"/transcribe?transcript_id={empty.id}")
 
     assert page.status_code == 200
-    assert page.text.count('data-has-transcript-content="true"') == 2
-    assert page.text.count('data-has-transcript-content="false"') == 2
+    assert page.text.count('data-has-saved-content="true"') == 2
+    assert page.text.count('data-has-saved-content="false"') == 2
     assert "Private transcript detail" not in page.text
     assert "Saved transcript text" not in page.text
 
@@ -6578,7 +6578,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "runQuickActionTrigger.disabled = !canUsePrimaryFollowupAction;" in app_js
     assert "if (!dom.quickActionContextInput?.value?.trim()) {" in actions_js
     assert "showFlash('Choose a quick action or add context.', 'warning');" in actions_js
-    assert "./actions.js?v=20261006-durable-create" in app_js
+    assert "./actions.js?v=20261019-delete-confirmation-content" in app_js
     assert "const isDiscardableEmptyWorkingNoteDraft = () => (" in app_js
     assert "return { kind: 'working_note_empty_draft_discarded' };" in app_js
     assert "Empty working-note draft ignored." in app_js
@@ -6601,9 +6601,9 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const deleteSelectedNote = async () => {" in actions_js
     assert "void deleteSelectedNote();" in actions_js
     assert "Delete this note permanently?" in actions_js
-    assert "This consultation has transcript text. Delete it permanently?" in actions_js
-    assert "One or more selected consultations have transcript text. Delete them permanently?" in actions_js
-    assert "checkbox.dataset.hasTranscriptContent" in app_js
+    assert "This consultation has saved content. Delete it permanently?" in actions_js
+    assert "One or more selected consultations have saved content. Delete them permanently?" in actions_js
+    assert "checkbox.dataset.hasSavedContent" in app_js
     assert "Could not delete the note." in actions_js
     assert "const buildNoteSaveRequest = ({ workingNoteTranscriptId = transcriptId } = {}) => {" in app_js
     assert "endpoint: `/api/v1/transcripts/${workingNoteTranscriptId}/working-note`" in app_js
@@ -6873,7 +6873,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20261018-dictation-save-await" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261019-delete-confirmation-content" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

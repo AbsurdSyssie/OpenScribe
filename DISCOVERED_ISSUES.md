@@ -1,31 +1,23 @@
 # Discovered issues
 
-## GENERATION-ADAPTER-RESERVATION-PARITY — 2026-10-16 (resolved)
+Reconciled on 19 October 2026 against `97da191926db1da74fdf741e01f4f8490d60f6c8` and the remediation working tree; final verification was completed on 20 October 2026. This is a work log, not an architectural source of truth. Current status notes take precedence over the original dated observations retained beneath them. See the [remediation and regression review](docs/reviews/discovered-issues-remediation-2026-10-19.md) for changes, verification and limits.
 
-- Baseline commit: `717d2698a2ac268f830d99548068202a5de3f780`; local working tree includes earlier uncommitted work.
-- Locations: `app/services/consultation_split_generation_queue.py::queue_confirmed_split_generation`, `consultation_split_recovery.py::_queue_recovery`, `consultation_split_verification_queue.py::queue_split_verification_or_mark_unchecked`, and `app/services/template_suggestions.py::queue_template_suggestion` / `process_template_suggestion`.
-- Observed problem: queues reserved nominal completion caps while Gemini requests used the established 30,000-token ceiling. Split verification also used a local character-divided-by-four input estimate instead of the maintained quota estimator. Template suggestions estimated a placeholder excerpt before redaction and did not expand the reservation for a larger final request.
-- Impact: reserved capacity could be below the submitted request estimate; reported/unknown usage settlement still applied.
-- Resolution: derive queue reservations from adapter-specific output caps and the maintained UTF-8 estimator. Template suggestions also check the final redacted request before submission. Keep provider caps, clinical prompts, snapshots and quota settlement contracts. Optional verification remains unchecked when accurate reservation exceeds available quota.
-- Validation: focused queue/attempt regressions cover Gemini, targeted recovery and quota rejection; final results appear in [the stage review](docs/reviews/generation-stage-cost-logging-review-2026-10-16.md).
+| Disposition | Entries |
+| --- | ---: |
+| Open code defects | 0 |
+| Resolved in this pass | 8 |
+| Policy decision | 1 |
+| Deployment follow-ups | 3 |
+| Upgrade watchpoints | 2 |
+| Resolved and superseded history | 25 |
 
-## GENERATION-SAFE-STAGE-DIAGNOSTICS — 2026-10-16 (resolved)
+## Resolved in this pass
 
-- Baseline commit: `717d2698a2ac268f830d99548068202a5de3f780` plus local uncommitted work.
-- Locations: `app/services/transcripts.py::process_transcript_ingestion_job`, `app/services/templates.py::_generation_usage_event` / `_run_hallucination_check`, `app/tasks.py` ingestion/generation/template-suggestion task boundaries.
-- Observed problem: ingestion failures lacked operational stage evidence, ordinary checker events lacked separate operational logs, and exceptions outside service-owned catches could reach Celery with database/provider details.
-- Resolution: controlled stage/status/error categories and UUID correlation, with default-message and structured fields; fresh content-free task exceptions suppress original exception rendering. Checker logs use captured immutable IDs to avoid ORM refreshes after commit/rollback. The ingestion task also supplies a fixed redacted Celery kwargs representation before handling legacy audio payloads. Preserve existing task failure state and generation wait/retry behavior. No new database rows, provider calls, or clinical-content logs.
-- Validation: synthetic sensitive sentinels, formatted traceback assertions, checker outcomes and ingestion settlement tests; see [the stage review](docs/reviews/generation-stage-cost-logging-review-2026-10-16.md).
+### LLM-SDK-RESPONSE-SIZE-PARITY — 2026-10-16
 
-## SPLIT-GEMINI-CHECKER-SCHEMA-SECRET-SCAN — 2026-10-16 (resolved)
-
-- Baseline commit: `717d2698a2ac268f830d99548068202a5de3f780` plus local uncommitted work.
-- Locations: `app/services/consultation_splits.py::queue_split_execution`, `app/services/consultation_split_generation_runtime.py::_finalize`.
-- Observed problem: Gemini embeds its generated response schema in the request. The recursive secret-name guard treated the canonical schema property `section_key` as a credential key, preventing bundled checker queueing. Finalization then mapped the consumed failure to a generic generation-invalid-output code without operational stage evidence.
-- Resolution: exempt only the exact schema property `section_key: {"type": "string"}` inside response-schema properties; continue scanning other keys and values, including altered definitions and nested credentials. Add a fixed-phase, content-free finalization warning while preserving persisted failure/accounting contracts.
-- Validation: Gemini queue and quota-fallback regressions plus negative schema/config credential-injection tests; final results appear in [the stage review](docs/reviews/generation-stage-cost-logging-review-2026-10-16.md).
-
-## LLM-SDK-RESPONSE-SIZE-PARITY — 2026-10-16
+- Current status: Resolved 2026-10-19; focused regression verification passed.
+- Reconciliation/resolution (2026-10-19): OpenAI-compatible and Gemini SDK response hooks stop reads at 8 MiB and reject compressed bodies before decompression, while retaining proxy/TLS behavior. Real SDKs with synthetic mock streams, early Content-Length rejection, exact-boundary and closure tests pass.
+- Verification and review: [19 October remediation record](docs/reviews/discovered-issues-remediation-2026-10-19.md). Prepared for commit; not deployed (status at final verification, 20 October 2026).
 
 - Baseline commit: `717d2698a2ac268f830d99548068202a5de3f780` plus local uncommitted work.
 - Locations: `app/services/llm_adapters/runtime.py::_invoke_openai_once`, `invoke_gemini`; `app/services/llm_adapters/gemini_enterprise.py::generate`.
@@ -34,7 +26,11 @@
 - Not fixed here: a post-read size check would not solve transport allocation; changing SDK transport/streaming needs a separate compatibility assessment. No memory exhaustion was reproduced in this source review.
 - Follow-up: define response-byte limits and enforce them at the transport boundary with synthetic oversized-response tests, safe error codes and preserved usage/attempt settlement.
 
-## SPLIT-RECOVERY-SCHEMA-SCOPE — 2026-10-16
+### SPLIT-RECOVERY-SCHEMA-SCOPE — 2026-10-16
+
+- Current status: Resolved 2026-10-19; focused regression verification passed.
+- Reconciliation/resolution (2026-10-19): New recovery provider schemas contain only failed UUIDs. Exact legacy queued requests are reconstructed from immutable snapshots and accepted only by full-request equality; arbitrary altered schemas fail before submission. Mixed-mode preparation and legacy/current/tampered runtime regressions pass.
+- Verification and review: [19 October remediation record](docs/reviews/discovered-issues-remediation-2026-10-19.md). Prepared for commit; not deployed (status at final verification, 20 October 2026).
 
 - Baseline commit: `717d2698a2ac268f830d99548068202a5de3f780` plus local uncommitted work.
 - Location: `app/services/consultation_split_generation.py::prepare_split_generation_recovery_request`.
@@ -44,7 +40,205 @@
 - Not fixed here: preserve the frozen-request reconstruction contract while addressing diagnostics and quota correctness; assess compatibility for already-queued recovery requests before changing schema reconstruction.
 - Follow-up: build a failed-topic-only provider schema with matching snapshot/runtime reconstruction and synthetic Gemini/recovery regressions. Profile repeated initial-payload serialization before attempting a broader preparation refactor.
 
-## NOTE-OPENAI-INCOMPLETE-OUTPUT — 2026-10-16
+### GEMINI-400-ERROR-CLASSIFICATION — 2026-10-14
+
+- Current status: Resolved 2026-10-19; focused regression verification passed.
+- Reconciliation/resolution (2026-10-19): Only allowlisted structured model/location reasons map to those classifications. Other HTTP 400 failures use the content-free llm_provider_bad_request code. Structured-reason and fallback tests pass.
+- Verification and review: [19 October remediation record](docs/reviews/discovered-issues-remediation-2026-10-19.md). Prepared for commit; not deployed (status at final verification, 20 October 2026).
+
+- Discovery commits: working tree `dcdc3b7`; deployed `78ac327`.
+- Location: `app/services/llm_adapters/gemini_enterprise.py`, `translate_gemini_error`.
+- Exact excerpt: `if status_code == 400 and operation in {"model_validation", "generation"}: return AppError(422, "llm_model_unavailable", ...)`.
+- Observed problem: every Gemini generation HTTP 400 is classified as `llm_model_unavailable`, including a valid model request rejected because its thinking level is unsupported.
+- Likely impact: operators and clinicians can receive misleading model-availability guidance for malformed or model-option-specific requests, slowing diagnosis.
+- Not fixed during the Gemini 3.8 Flash thinking-level repair because changing the error taxonomy requires a bounded, content-safe interpretation of Google's structured error reasons across validation and generation. Broadening this patch could alter existing provider failure contracts.
+- Follow-up: inventory synthetic Gemini 400 response shapes, identify stable structured reason fields without persisting provider messages, and add focused translation tests before refining the classifier.
+
+### LLM-UNSUPPORTED-WORKER-PREFLIGHT — 2026-10-14
+
+- Current status: Resolved 2026-10-19; focused regression verification passed.
+- Reconciliation/resolution (2026-10-19): All six main/checker/suggestion/split submission boundaries check worker capability before the submitted transition. Definite local failures cancel reservations; optional checkers preserve validated drafts as unchecked. Helper and workflow lifecycle regressions pass.
+- Verification and review: [19 October remediation record](docs/reviews/discovered-issues-remediation-2026-10-19.md). Prepared for commit; not deployed (status at final verification, 20 October 2026).
+
+- Discovery commit: `c712ba5b9db00e5008951bc3ff585a78e711c93f` (resilience working tree).
+- Location: `app/services/llm_execution.py`, `bounded_request`; provider submission boundaries in ordinary, split and suggestion workers.
+- Observed problem: an unsupported thread/eventlet/gevent worker or occupied Unix timer is rejected before HTTP dispatch, but its durable attempt may already have been marked submitted. Existing terminalization then settles conservatively as unknown.
+- Safe example: a synthetic generation executed in a background thread reaches `llm_execution_context_unsupported` without calling the provider. It emits no HTTP transport event.
+- Impact: misconfigured workers can reserve and conservatively settle quota without an HTTP request. Maintained launchers pin prefork and ordinary credential preflight remains unchanged.
+- Not expanded now: moving capability checks across every durable submission boundary would broaden worker lifecycle contracts and concurrent fault-test setup beyond the maintained prefork runtime mode.
+- Follow-up: add a shared capability preflight before submission with focused pre-dispatch cancellation, duplicate-claim and concurrency tests.
+
+### SCRIBE-SIDEBAR-RESIZE-ALTERNATIVE — 2026-10-18
+
+- Current status: Resolved 2026-10-19; focused regression verification passed.
+- Reconciliation/resolution (2026-10-19): Added narrower/wider click buttons using existing resize bounds and persistence. Keyboard controls were already present; ArrowRight now expands correctly from collapsed width. Node behavioral tests cover pointer/keyboard/click bounds, collapse and persistence.
+- Verification and review: [19 October remediation record](docs/reviews/discovered-issues-remediation-2026-10-19.md). Prepared for commit; not deployed (status at final verification, 20 October 2026).
+
+- Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
+- Locations: `app/templates/transcribe/_sidebar.html`, `data-sidebar-resize`; `app/templates/transcribe/_shell_extras.html`, sidebar resize handlers.
+- Exact UI hint: `title="Drag to resize. Double-click to collapse or restore."`.
+- Observed constraint: the Scribe-only resizer supports pointer dragging and a double-click collapse/restore action; its resize handler does not implement keyboard adjustment or click-based width steps. Help uses the separate non-Scribe workspace sizing handler, which now has both keyboard and click alternatives.
+- Likely impact: users who cannot drag may not be able to choose an intermediate Scribe sidebar width. This is distinct from the Help sidebar and requires a focused Scribe resizing review.
+- Not changed now: this task's Help accessibility scope did not authorize a broader Scribe layout interaction change.
+- Follow-up: assess and add an equivalent single-pointer alternative and keyboard controls to the Scribe resizer, with focused regression tests; verify collapsed and intermediate-width behavior.
+
+### CONSULTATION-DERIVED-CONTENT-DELETE-CONFIRMATION — 2026-10-18
+
+- Current status: Resolved 2026-10-19; focused regression verification passed.
+- Reconciliation/resolution (2026-10-19): Added the owner-scoped has_saved_content flag for deletion confirmation, covering transcript text plus Working-note, retained dictation and ready generated-note record presence. Derived-source checks are batched and metadata-only. Existing has_transcript_content status/readiness behavior is preserved. API/history and single/bulk cancel/proceed tests pass.
+- Verification and review: [19 October remediation record](docs/reviews/discovered-issues-remediation-2026-10-19.md). Prepared for commit; not deployed (status at final verification, 20 October 2026).
+
+- Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
+- Locations: `app/static/js/transcribe/actions.js`, bulk delete form submit handler; `app/web/transcribe_workspace.py`, `_transcript_has_content` and `_transcript_content_by_id_for_history_page`.
+- Exact excerpt: `selectedBoxes.some((checkbox) => checkbox.dataset.hasTranscriptContent === 'true')`; the flag is derived from transcript draft and version text.
+- Evidence: static inspection only; this gap was not runtime-reproduced. The confirmation check covers transcript text but does not account for a consultation whose transcript is blank while its Working note, post-consultation dictation, or generated notes contain content.
+- Likely impact: a user can delete such a consultation without the extra confirmation and may accidentally lose its consultation-owned derived content permanently.
+- Not fixed during Help work: changing deletion confirmation and content-presence semantics is outside the Help scope and needs focused lifecycle/privacy review; no deletion or authorization contract was changed here.
+- Follow-up: derive a metadata-only “has consultation content” flag covering transcript text/version and the relevant derived-content records, then add focused synthetic tests for history-page flags and single/bulk confirmation behavior, including blank-transcript Working-note/dictation/generated-note cases. Preserve existing ownership, authorization, retention, and cascade behavior.
+
+### TEST-CONFIG-GUARD-SECRET-DIAGNOSTICS — 2026-10-18
+
+- Current status: Resolved 2026-10-19; focused regression verification passed.
+- Reconciliation/resolution (2026-10-19): Database/Redis isolation guard refusals omit connection URLs and credentials while retaining refusal checks. Synthetic credential regressions pass; infrastructure isolation was not weakened.
+- Verification and review: [19 October remediation record](docs/reviews/discovered-issues-remediation-2026-10-19.md). Prepared for commit; not deployed (status at final verification, 20 October 2026).
+
+- Discovery commit: unavailable (documentation review of the current working tree).
+- Location: `tests/db_utils.py`, `ensure_safe_test_database_url` and `ensure_safe_test_rate_limit_storage_url`.
+- Exact excerpt: `f"DATABASE_URL={app_url}\n"`; the Redis guard also interpolates its complete application and test URLs.
+- Observed problem: when an isolation guard rejects equal application/test endpoints, its `RuntimeError` includes complete connection URLs. A URL can contain credentials, so a failed test startup can expose them through terminal or CI output. Static source inspection established the interpolation; no real credentials were printed to reproduce it.
+- Likely impact: diagnostic output can violate the project rule against exposing credentials and DSNs. The guard correctly refuses unsafe infrastructure use; its message needs redaction.
+- Not fixed in this documentation review because changing test infrastructure is separate executable work. The documentation continues to prohibit printing secrets or bypassing isolation guards.
+- Suggested follow-up: preserve the equality checks and refusal, replace URL values with safe labels or bounded host/port metadata, and add synthetic-credential regression cases for both guards.
+
+### TEMPLATE-SUGGESTION-DUPLICATE-JSON-KEY — 2026-10-19
+
+- Current status: Resolved 2026-10-19; focused regression verification passed.
+- Reconciliation/resolution (2026-10-19): Template suggestions now use the shared duplicate-key rejection hook at every object depth before validation. Duplicate and unambiguous JSON regressions pass.
+- Verification and review: [19 October remediation record](docs/reviews/discovered-issues-remediation-2026-10-19.md). Prepared for commit; not deployed (status at final verification, 20 October 2026).
+
+- Discovery commit: `717d269`.
+- Location: `app/services/template_suggestions.py`, `_extract_json`.
+- Exact excerpt: `value = json.loads(encoded)`.
+- Observed problem: duplicate keys in provider JSON are accepted with the last value winning; for example, conflicting `template_id` fields can make the classifier select a candidate while hiding an earlier conflicting value.
+- Likely impact: ambiguous provider output can produce an unreliable template recommendation. This affects reusable-template metadata only, not generated clinical documents.
+- Not fixed now: the current regression fix targets stream readiness boundaries; changing this parser is a separate fail-closed classifier change.
+- Follow-up: use the shared duplicate-key rejecting JSON hook and add synthetic duplicate-key cases for top-level and nested fields.
+
+## Policy decision
+
+### NOTE-OLLAMA-OUTPUT-RESERVATION-PARITY — 2026-10-16
+
+- Current status: Decision required; existing output-ceiling policy is preserved.
+- Reconciliation/resolution (2026-10-19): The proposed remedy is a 1,600-token Ollama num_predict ceiling for follow-ups/Quick Actions, matching the existing nominal reservation and retaining truncation rejection. The user has been asked for the policy choice required by AGENTS.md. No unanswered choice is treated as approval.
+
+- Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
+- Location: `app/services/llm_adapters/runtime.py:87`, `generation_request_snapshot`; `app/services/templates.py:3542`, `_flush_generated_document_with_quota`; `:4626`, `_claim_generated_document_for_dispatch`.
+- Exact excerpt: `if output_token_cap is not None: request_body["options"] = {"num_predict": output_token_cap}`.
+- Observed behavior: follow-ups and Quick Actions pass no output cap, so Ollama receives no `num_predict`, while reservation estimates use a finite nominal output allowance (initially 1600 tokens). A synthetic request assertion confirmed the missing cap; `tests/test_llm_runtime.py` explicitly preserves this existing shape.
+- Impact: the application does not make the provider output ceiling match its reservation assumption. Actual completion length depends on provider configuration; this review did not demonstrate a quota overrun.
+- Not fixed: changing the preserved request shape is a scoped contract decision, and the user requested assessment only.
+- Follow-up: agree an explicit non-Template output ceiling or another reservation policy, then test provider request/reservation/actual usage/unknown settlement together. Keep Template length preferences separate from this decision.
+
+## Deployment follow-ups
+
+### ONE-WORKER-PROVIDER-STALL — 2026-10-14
+
+- Current status: Operational follow-up; historical observations are not current deployment verification.
+- Reconciliation/resolution (2026-10-19): Request deadlines/SDK retry controls and opt-in isolated prefork workers exist in current code. Deployment capacity and queue progress remain operational verification; preserve the original incident below.
+
+- Discovery commit: deployed `78ac327`.
+- Location: `docker/entrypoint.sh`, runtime Celery worker command; `app/services/llm_adapters/gemini_enterprise.py`, `build_gemini_client`.
+- Exact excerpts: `-Q control,generation,ingestion` and `--concurrency "${CELERY_WORKER_CONCURRENCY:-1}"`; `types.HttpOptions(api_version=api_version, headers=headers or None)`.
+- Observed problem: metadata-only production review showed one Gemini 3.5 consultation-split generation submitted at 14:06:07 UTC and terminalized at 14:16:05 with HTTP 503 / `provider_server_error` (about 598 seconds). A separate ordinary note had been queued and published at 14:07:43, but its worker had not received it until 14:16:05; it started at 14:16:08 and failed at 14:16:34 with HTTP 429. Afterward the worker was idle, queues were empty, and there were no active attempts, unfinished documents, or database blockers. The team had no checker selection and there were no checker or consultation-split verification attempts in the inspected 24-hour metadata window; the checker was not the observed cause.
+- Likely impact: a slow synchronous provider call occupies the single worker slot and delays other queued generation. The Gemini client supplies no explicit HTTP timeout; the installed SDK's request timeout is unset by this configuration. Provider capacity/rate limits can also turn delayed requests into failed generations. The observation establishes queue starvation during a slow provider request, not a persistent provider outage or a database lock.
+- Not fixed during production diagnosis because changing worker topology, request deadlines, and provider-capacity/429 policy together needs a scoped plan that preserves submitted-attempt idempotency, quota settlement, and durable outbox semantics. No database state, queue, worker, or deployment configuration was changed.
+- Follow-up: isolate the control worker as recommended by [docker.md](docs/docker.md), give generation work sufficient isolated capacity, and define explicit provider request timeouts that fit the durable attempt deadlines. Review rate-limit/capacity handling separately; do not reset or replay submitted attempts to recover this incident. Validate queue progress under a synthetic slow-provider scenario, timeout-to-terminal-settlement behavior, duplicate delivery, and the provider 429 failure path.
+
+### GEMINI-25-FLASH-RETIREMENT-AND-LONDON-CAPACITY — 2026-10-13
+
+- Current status: Operational follow-up; historical observations are not current deployment verification.
+- Reconciliation/resolution (2026-10-19): Google still lists 20 October 2026 retirement for Gemini 2.5 Flash; see the [current model lifecycle](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-versions). Approved deployment model/region selection and capacity/clinical validation remain required; no live provider/configuration change was made.
+
+- Discovery commit: deployed `78ac327`.
+- Location: `app/models.py`, `TeamLlmConfig.model_name`; Google Cloud's [Gemini 2.5 Flash lifecycle and availability page](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/2-5-flash).
+- Observed problem: deployed metadata shows the active Gemini configuration defaults to `gemini-2.5-flash` in `europe-west2` (London), with no purchased Provisioned Throughput and PayGo-only capacity. The current Google model page lists an October 20, 2026 retirement date for Gemini 2.5 Flash. Recent attempts frequently override the default with `gemini-3.5-flash`; both synthetic London probes for 2.5 Flash and 3.5 Flash succeeded. Therefore, the retirement is approaching, but these observations do not establish a persistent London 3.5 Flash capacity outage or that the default is responsible for the reported 429.
+- Likely impact: configurations that continue to select the retiring default may lose supported generation after retirement; London capacity behavior for PayGo remains subject to Google's model/location support and current shared capacity.
+- Not changed during the capacity investigation because provider/model selection must account for approved London residency, capacity availability, and clinical review; changing the model or location would exceed a diagnostic metadata-only action.
+- Follow-up: plan and validate migration to a model explicitly approved for the deployment's residency and capacity requirements before the published retirement date. Reconfirm Google's current lifecycle and London availability at that time; do not infer a persistent outage from isolated 429s or successful synthetic probes.
+
+### OPENSCRIBE-CONTAINER-UNHEALTHY — 2026-10-12
+
+- Current status: Operational follow-up; historical observations are not current deployment verification.
+- Reconciliation/resolution (2026-10-19): The local Docker inventory has healthy OpenScribe PostgreSQL/Redis/Vault containers but no running OpenScribe application container. The dated deployed health failure cannot be reproduced or cleared from this environment. No services were started or restarted.
+
+- Discovery commit: `2d7bfcb`.
+- Location: deployed `openscribe-openscribe-1` container healthcheck.
+- Exact observation: `openscribe-openscribe-1` was `Up 2h (unhealthy)` while PostgreSQL, Redis, and Vault were healthy.
+- Observed problem: the deployed application container is reporting an unhealthy healthcheck state.
+- Likely impact: orchestration or operational monitoring may treat the application as unavailable even while supporting services remain healthy.
+- Not fixed during the consultation-split provider-binding repair because this is unrelated to the deterministic pre-submit request mismatch. No healthcheck logs, environment, or container state beyond the reported status were inspected.
+- Follow-up: inspect the healthcheck command, recent healthcheck output, and relevant safe operational logs; then reproduce and repair the specific healthcheck failure without exposing sensitive configuration or content.
+
+## Upgrade watchpoints
+
+### DEEPGRAM-SDK-PRIVATE-WEBSOCKET-HOOK — 2026-10-17
+
+- Current status: Compatibility watchpoint; pinned implementation and regression coverage remain.
+
+- Discovery commit: `717d269` (working tree includes the current Deepgram live-stream adapter).
+- Location: `app/services/deepgram_streaming.py::_install_scoped_sdk_websocket_logger`.
+- Observed constraint: pinned `deepgram-sdk==7.13.0` does not expose public per-connection arguments for the underlying WebSocket logger or message/queue bounds. The adapter wraps only the generated Listen V1 connector and passes the scoped disabled logger, `max_size`, and `max_queue` to the pinned `websockets` legacy connector.
+- Likely impact: an SDK upgrade or generated connector change can invalidate these privacy and memory bounds.
+- Not changed now: the pinned connector supports these per-connection options, and a synthetic adapter test checks that the wrapper applies them while preserving other connection options. Replacing the hook would require an SDK-supported public equivalent.
+- Follow-up: prefer a public SDK per-connection connector/logger/buffer configuration if Deepgram exposes one; update the compatibility test when upgrading the SDK.
+
+### PINNED-VAD-STREAM-BUFFER-BOUND — 2026-10-17
+
+- Current status: Compatibility watchpoint; pinned implementation and regression coverage remain.
+
+- Discovery commit: unavailable (Deepgram live-stream implementation working tree).
+- Location: `app/static/js/transcribe/media.js`, `buildLiveVadInstance`; pinned runtime `app/static/vendor/vad-web/0.0.29/bundle.min.js`, `FrameProcessor.process`.
+- Observed constraint: the pinned `FrameProcessor` emits its `FrameProcessed` callback immediately before appending the frame to its speech accumulator. The streaming callback trims that accumulator to approximately five seconds without resetting VAD state; the implementation and synthetic runtime test depend on that event order and the exposed `frameProcessor.audioBuffer` array.
+- Likely impact: an upstream VAD runtime upgrade that changes callback order or buffer shape could remove the bound or fail closed for streaming capture.
+- Not changed now: the bounded adapter is limited to the Deepgram streaming path; the non-stream chunk behavior remains unchanged.
+- Follow-up: when upgrading the pinned VAD runtime, rerun the synthetic test against the actual vendored bundle and update the adapter only if its memory and speech-boundary behavior remain correct.
+
+## Resolved and superseded history
+
+### GENERATION-ADAPTER-RESERVATION-PARITY — 2026-10-16
+
+- Current status: Resolved as recorded below.
+
+- Baseline commit: `717d2698a2ac268f830d99548068202a5de3f780`; local working tree includes earlier uncommitted work.
+- Locations: `app/services/consultation_split_generation_queue.py::queue_confirmed_split_generation`, `consultation_split_recovery.py::_queue_recovery`, `consultation_split_verification_queue.py::queue_split_verification_or_mark_unchecked`, and `app/services/template_suggestions.py::queue_template_suggestion` / `process_template_suggestion`.
+- Observed problem: queues reserved nominal completion caps while Gemini requests used the established 30,000-token ceiling. Split verification also used a local character-divided-by-four input estimate instead of the maintained quota estimator. Template suggestions estimated a placeholder excerpt before redaction and did not expand the reservation for a larger final request.
+- Impact: reserved capacity could be below the submitted request estimate; reported/unknown usage settlement still applied.
+- Resolution: derive queue reservations from adapter-specific output caps and the maintained UTF-8 estimator. Template suggestions also check the final redacted request before submission. Keep provider caps, clinical prompts, snapshots and quota settlement contracts. Optional verification remains unchecked when accurate reservation exceeds available quota.
+- Validation: focused queue/attempt regressions cover Gemini, targeted recovery and quota rejection; final results appear in [the stage review](docs/reviews/generation-stage-cost-logging-review-2026-10-16.md).
+
+### GENERATION-SAFE-STAGE-DIAGNOSTICS — 2026-10-16
+
+- Current status: Resolved as recorded below.
+
+- Baseline commit: `717d2698a2ac268f830d99548068202a5de3f780` plus local uncommitted work.
+- Locations: `app/services/transcripts.py::process_transcript_ingestion_job`, `app/services/templates.py::_generation_usage_event` / `_run_hallucination_check`, `app/tasks.py` ingestion/generation/template-suggestion task boundaries.
+- Observed problem: ingestion failures lacked operational stage evidence, ordinary checker events lacked separate operational logs, and exceptions outside service-owned catches could reach Celery with database/provider details.
+- Resolution: controlled stage/status/error categories and UUID correlation, with default-message and structured fields; fresh content-free task exceptions suppress original exception rendering. Checker logs use captured immutable IDs to avoid ORM refreshes after commit/rollback. The ingestion task also supplies a fixed redacted Celery kwargs representation before handling legacy audio payloads. Preserve existing task failure state and generation wait/retry behavior. No new database rows, provider calls, or clinical-content logs.
+- Validation: synthetic sensitive sentinels, formatted traceback assertions, checker outcomes and ingestion settlement tests; see [the stage review](docs/reviews/generation-stage-cost-logging-review-2026-10-16.md).
+
+### SPLIT-GEMINI-CHECKER-SCHEMA-SECRET-SCAN — 2026-10-16
+
+- Current status: Resolved as recorded below.
+
+- Baseline commit: `717d2698a2ac268f830d99548068202a5de3f780` plus local uncommitted work.
+- Locations: `app/services/consultation_splits.py::queue_split_execution`, `app/services/consultation_split_generation_runtime.py::_finalize`.
+- Observed problem: Gemini embeds its generated response schema in the request. The recursive secret-name guard treated the canonical schema property `section_key` as a credential key, preventing bundled checker queueing. Finalization then mapped the consumed failure to a generic generation-invalid-output code without operational stage evidence.
+- Resolution: exempt only the exact schema property `section_key: {"type": "string"}` inside response-schema properties; continue scanning other keys and values, including altered definitions and nested credentials. Add a fixed-phase, content-free finalization warning while preserving persisted failure/accounting contracts.
+- Validation: Gemini queue and quota-fallback regressions plus negative schema/config credential-injection tests; final results appear in [the stage review](docs/reviews/generation-stage-cost-logging-review-2026-10-16.md).
+
+### NOTE-OPENAI-INCOMPLETE-OUTPUT — 2026-10-16
+
+- Current status: Resolved as recorded below.
 
 - Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
 - Location: `app/services/llm_adapters/runtime.py:300`, `_invoke_openai_compatible_once`; `app/services/templates.py:5689`, `_process_generated_document_impl`.
@@ -55,7 +249,9 @@
 - Follow-up: reject known incomplete completion reasons before output acceptance, using bounded safe codes; define compatibility for gateways that omit the reason. Preserve quota settlement and prevent automatic replay of submitted work. Add synthetic adapter and document-lifecycle regressions for truncated text, parseable JSON, normal completion, and missing reason.
 - Resolution note (2026-10-16; baseline `717d2698a2ac268f830d99548068202a5de3f780`; no commit made): `_invoke_openai_compatible_once` now checks `finish_reason` through `_validate_completion_finish_reason`; `length` maps to `llm_generation_truncated`, other explicit non-completion reasons fail with a bounded generic code, and absent/null reason remains accepted for compatibility. Consumer lifecycle tests confirm a parseable Template response and plain-text follow-up/Quick Action cannot become ready and duplicate task delivery does not make another provider call. Evidence: `tests/test_llm_runtime.py::test_openai_completion_accepts_complete_or_legacy_missing_finish_reason`, `::test_openai_completion_rejects_incomplete_or_malformed_finish_reason`, and `tests/test_generation_unsafe_failures.py::test_explicit_truncation_fails_followup_quick_action_and_parseable_template_without_replay`.
 
-## NOTE-OLLAMA-INCOMPLETE-STREAM — 2026-10-16
+### NOTE-OLLAMA-INCOMPLETE-STREAM — 2026-10-16
+
+- Current status: Resolved as recorded below.
 
 - Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
 - Location: `app/services/llm_adapters/runtime.py:401`, `_invoke_ollama_once`; `app/services/templates.py:5689`, `_process_generated_document_impl`.
@@ -66,7 +262,9 @@
 - Follow-up: require terminal completion, classify bounded terminal reasons, and test EOF with/without a trailing newline, partial JSON and text, successful terminal frames, and rejected incomplete terminal reasons. Preserve response-byte limits, submitted-attempt accounting, and no ambiguous automatic replay.
 - Resolution note (2026-10-16; baseline `717d2698a2ac268f830d99548068202a5de3f780`; no commit made): `_invoke_ollama_once` now requires `done: true`, rejects explicit length/other non-completion reasons with safe codes, and accepts absent/null `done_reason` only when a terminal frame exists. EOF without the terminal frame is a generic incomplete-response failure. Context cleanup, no-ready persistence, conservative settlement, and duplicate-delivery no-replay behavior are covered. Evidence: `tests/test_llm_runtime.py::test_ollama_accepts_terminal_stop_frame_with_optional_reason_and_no_final_newline`, `::test_ollama_rejects_incomplete_or_malformed_terminal_reason`, `::test_ollama_rejects_eof_without_terminal_frame`, and `tests/test_generation_ollama_unsafe.py::test_ollama_incomplete_response_fails_ordinary_generation_once`.
 
-## NOTE-AMBIGUOUS-JSON-KEYS — 2026-10-16
+### NOTE-AMBIGUOUS-JSON-KEYS — 2026-10-16
+
+- Current status: Resolved as recorded below.
 
 - Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
 - Location: `app/services/templates.py:2559`, `_parse_generated_note_json`; `:2603`, `_parse_generated_structured_note_json`; `:2778`, `_parse_hallucination_check_response`; `app/services/consultation_split_verification.py:129`, `apply_split_verification_response`.
@@ -77,7 +275,9 @@
 - Follow-up: consistently reject duplicate keys at every nesting level without exposing offending keys/values. Add nested/top-level regressions and ensure checker rejection leaves the original validated draft available under the existing unchecked contract.
 - Resolution note (2026-10-16; baseline `717d2698a2ac268f830d99548068202a5de3f780`; no commit made): the shared `app/services/json_validation.py::reject_duplicate_json_keys` hook now rejects duplicate fields at every object depth in ordinary freeform/structured note parsing, checker response parsing, and split-verifier outer parsing. Ordinary fenced and balanced-object compatibility, exact response shapes, optional sections, and existing safe error codes remain. Duplicate checker output continues through the existing failed/unchecked path and leaves the validated encrypted draft ready. Evidence: `tests/test_generation_json_validation.py`, `tests/test_consultation_split_verification.py`, and `tests/test_generation_unsafe_failures.py::test_invalid_checker_response_keeps_original_structured_note_ready_unchecked`. Existing split analysis/generation duplicate-key validation was not changed.
 
-## NOTE-CHECKER-DEEP-JSON — 2026-10-16 (resolved)
+### NOTE-CHECKER-DEEP-JSON — 2026-10-16
+
+- Current status: Resolved as recorded below.
 
 - Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
 - Location: `app/services/templates.py::_parse_hallucination_check_response`.
@@ -88,7 +288,9 @@
 - Evidence: pure regression `tests/test_generation_json_validation.py::test_hallucination_checker_parser_maps_deep_json_recursion_to_safe_invalid_response`; worker regression `tests/test_generation_unsafe_failures.py::test_invalid_checker_response_keeps_original_structured_note_ready_unchecked[deeply-nested]`. The parent’s final selected lifecycle/API-control run passed 16 tests, including both checker fallback cases.
 - Follow-up: none for this bounded parser failure; preserve the regression tests and current checker fail-open contract.
 
-## NOTE-SPLIT-UNEXPECTED-FAILURE-TELEMETRY — 2026-10-16
+### NOTE-SPLIT-UNEXPECTED-FAILURE-TELEMETRY — 2026-10-16
+
+- Current status: Resolved as recorded below.
 
 - Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
 - Location: `app/tasks.py:94`, `process_consultation_split_execution_task`.
@@ -98,17 +300,9 @@
 - Resolution (2026-10-16; no commit made): `process_consultation_split_execution_task` now emits the ERROR event `consultation_split_worker_failed` through `openscribe.tasks` with only `execution_id` (parsed UUID), allowlisted `phase` (`session`, `lookup`, `analysis`, `generation`, `verification`, `cleanup`), allowlisted `reason_code` (`unexpected_worker_error`, `session_error`, `rollback_error`), and UTC ISO `occurred_at`. The fields are included in both structured log extras and the normal formatted message, so diagnosis does not depend on database availability. The initial failure is logged before rollback; session factory/enter/exit failures and rollback failures are contained and safely classified. No exception text/type, traceback, provider/source/response content, credentials, or database event row is recorded. The task does not replay provider work or change attempt, quota, queue, or lifecycle state; submitted uncertainty remains with existing reconciliation.
 - Evidence: `tests/test_consultation_split_worker_diagnostics.py` covers synthetic sensitive exceptions, session boundary and rollback failures, success/no-op silence, and absence of retries or mutations. Parent focused run: `APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_consultation_split_worker_diagnostics.py tests/test_consultation_split_runtime.py tests/test_consultation_split_generation_runtime.py tests/test_consultation_split_intent_progress.py tests/test_task_outbox.py` — 142 passed, 1 Starlette/httpx warning.
 
-## NOTE-OLLAMA-OUTPUT-RESERVATION-PARITY — 2026-10-16
+### NOTE-PIPELINE-REASSESSMENT — 2026-10-16
 
-- Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
-- Location: `app/services/llm_adapters/runtime.py:87`, `generation_request_snapshot`; `app/services/templates.py:3542`, `_flush_generated_document_with_quota`; `:4626`, `_claim_generated_document_for_dispatch`.
-- Exact excerpt: `if output_token_cap is not None: request_body["options"] = {"num_predict": output_token_cap}`.
-- Observed behavior: follow-ups and Quick Actions pass no output cap, so Ollama receives no `num_predict`, while reservation estimates use a finite nominal output allowance (initially 1600 tokens). A synthetic request assertion confirmed the missing cap; `tests/test_llm_runtime.py` explicitly preserves this existing shape.
-- Impact: the application does not make the provider output ceiling match its reservation assumption. Actual completion length depends on provider configuration; this review did not demonstrate a quota overrun.
-- Not fixed: changing the preserved request shape is a scoped contract decision, and the user requested assessment only.
-- Follow-up: agree an explicit non-Template output ceiling or another reservation policy, then test provider request/reservation/actual usage/unknown settlement together. Keep Template length preferences separate from this decision.
-
-## NOTE-PIPELINE-REASSESSMENT — 2026-10-16
+- Current status: Superseded or reconciled with current source; see dated notes.
 
 - Review commit: `717d2698a2ac268f830d99548068202a5de3f780`; full assessment: [note generation pipeline review](docs/reviews/note-generation-pipeline-review-2026-10-16.md).
 - `ONE-WORKER-PROVIDER-STALL`: preserve the dated incident. Current `llm_execution.py` and Gemini client configuration now bound provider calls and disable SDK retries. The old missing-timeout observation does not describe current source. Worker isolation/capacity still requires deployment-specific verification; none was performed here.
@@ -116,7 +310,10 @@
 - `LLM-UNSUPPORTED-WORKER-PREFLIGHT` and `GEMINI-400-ERROR-CLASSIFICATION` remain relevant source-level follow-ups; no live provider or deployment conclusions were drawn.
 - Additional decisions and opportunities, including empty structured results, response-size parity and safe stage diagnostics, are in the dated review. No runtime fixes, migrations or configuration changes were made.
 
-## SPLIT-DELETED-SLOTS-MERGE — 2026-10-15
+### SPLIT-DELETED-SLOTS-MERGE — 2026-10-15
+
+- Current status: Superseded or reconciled with current source; see dated notes.
+- Reconciliation/resolution (2026-10-19): Current 97da191 includes the deleted-topic projection and browser filtering, with API/runtime/JavaScript regressions. The old branch-integration instruction is superseded; deployment state is not inferred from this checkout.
 
 - Discovery commit: `78ac327d45a59a34293d3771619f2f267e2cea4e` (`fix(split): hide deleted note slots`), currently on `fix/deleted-split-slots-release`.
 - Location: `app/services/consultation_split_api.py`, `read_workspace_split_batch`; projection field in `app/schemas/consultation_split.py`, `ConsultationSplitBatchDetail`; rendering in `app/static/js/transcribe/app.js`, `buildSplitDisplayDocuments` and `reconcileSplitPlaceholderState`.
@@ -126,7 +323,9 @@
 - Not merged during the branch switch and build because the requested immediate operation is to deploy `master`; integrating this separate release-branch change requires reconciling its API, browser, tests, and maintained split documentation with current `master`.
 - Follow-up: merge or cherry-pick `78ac327d45a59a34293d3771619f2f267e2cea4e` into `master`, resolve any drift, and run focused consultation-split API, generation-runtime, browser, and JavaScript tests before deployment.
 
-## XDIST-RANDOM-PARAM-ID — 2026-10-14
+### XDIST-RANDOM-PARAM-ID — 2026-10-14
+
+- Current status: Resolved as recorded below.
 
 - Discovery commit: `c712`.
 - Location: `tests/test_consultation_split_runtime.py`, parameterization for `test_runtime_rejects_invalid_or_unavailable_provider_output_once`.
@@ -134,27 +333,9 @@
 - Resolution: assigned stable explicit IDs to all three cases while retaining the original generated synthetic values and assertions.
 - Verification: rerun the full xdist suite after the metadata-only fix.
 
-## ONE-WORKER-PROVIDER-STALL — 2026-10-14
+### GEMINI-3-THINKING-FALLBACK — 2026-10-14
 
-- Discovery commit: deployed `78ac327`.
-- Location: `docker/entrypoint.sh`, runtime Celery worker command; `app/services/llm_adapters/gemini_enterprise.py`, `build_gemini_client`.
-- Exact excerpts: `-Q control,generation,ingestion` and `--concurrency "${CELERY_WORKER_CONCURRENCY:-1}"`; `types.HttpOptions(api_version=api_version, headers=headers or None)`.
-- Observed problem: metadata-only production review showed one Gemini 3.5 consultation-split generation submitted at 14:06:07 UTC and terminalized at 14:16:05 with HTTP 503 / `provider_server_error` (about 598 seconds). A separate ordinary note had been queued and published at 14:07:43, but its worker had not received it until 14:16:05; it started at 14:16:08 and failed at 14:16:34 with HTTP 429. Afterward the worker was idle, queues were empty, and there were no active attempts, unfinished documents, or database blockers. The team had no checker selection and there were no checker or consultation-split verification attempts in the inspected 24-hour metadata window; the checker was not the observed cause.
-- Likely impact: a slow synchronous provider call occupies the single worker slot and delays other queued generation. The Gemini client supplies no explicit HTTP timeout; the installed SDK's request timeout is unset by this configuration. Provider capacity/rate limits can also turn delayed requests into failed generations. The observation establishes queue starvation during a slow provider request, not a persistent provider outage or a database lock.
-- Not fixed during production diagnosis because changing worker topology, request deadlines, and provider-capacity/429 policy together needs a scoped plan that preserves submitted-attempt idempotency, quota settlement, and durable outbox semantics. No database state, queue, worker, or deployment configuration was changed.
-- Follow-up: isolate the control worker as recommended by [docker.md](docs/docker.md), give generation work sufficient isolated capacity, and define explicit provider request timeouts that fit the durable attempt deadlines. Review rate-limit/capacity handling separately; do not reset or replay submitted attempts to recover this incident. Validate queue progress under a synthetic slow-provider scenario, timeout-to-terminal-settlement behavior, duplicate delivery, and the provider 429 failure path.
-
-## GEMINI-400-ERROR-CLASSIFICATION — 2026-10-14
-
-- Discovery commits: working tree `dcdc3b7`; deployed `78ac327`.
-- Location: `app/services/llm_adapters/gemini_enterprise.py`, `translate_gemini_error`.
-- Exact excerpt: `if status_code == 400 and operation in {"model_validation", "generation"}: return AppError(422, "llm_model_unavailable", ...)`.
-- Observed problem: every Gemini generation HTTP 400 is classified as `llm_model_unavailable`, including a valid model request rejected because its thinking level is unsupported.
-- Likely impact: operators and clinicians can receive misleading model-availability guidance for malformed or model-option-specific requests, slowing diagnosis.
-- Not fixed during the Gemini 3.8 Flash thinking-level repair because changing the error taxonomy requires a bounded, content-safe interpretation of Google's structured error reasons across validation and generation. Broadening this patch could alter existing provider failure contracts.
-- Follow-up: inventory synthetic Gemini 400 response shapes, identify stable structured reason fields without persisting provider messages, and add focused translation tests before refining the classifier.
-
-## GEMINI-3-THINKING-FALLBACK — 2026-10-14
+- Current status: Resolved as recorded below.
 
 - Discovery commit: `c712ba5`.
 - Location: `app/services/llm_adapters/gemini_enterprise.py`, `_gemini_thinking_config`.
@@ -169,26 +350,9 @@
 - Follow-up: add model-specific `LOW` handling for Gemini 3.7 Flash and 3.8 Flash Cyber with adapter request regressions. Preserve supported `MINIMAL` for Gemini 3.5 Flash-Lite and the existing Gemini 2.5 `thinking_budget` behavior, and verify structured-output and quota behavior remain intact.
 - Resolved 2026-10-14: `_gemini_thinking_config` now assigns `LOW` only to the exact normalized Gemini 3.7 Flash and Gemini 3.8 Flash Cyber IDs alongside the existing Gemini 3.8 Flash rule. Request-seam regressions cover bare and publisher paths, structured JSON configuration, prior Gemini 3 thinking levels, Gemini 2.5 budgets, and unknown-model fallback behavior.
 
-## GEMINI-25-FLASH-RETIREMENT-AND-LONDON-CAPACITY — 2026-10-13
+### API-AUDIT-SHARED-INFRASTRUCTURE-LOCK — 2026-10-05
 
-- Discovery commit: deployed `78ac327`.
-- Location: `app/models.py`, `TeamLlmConfig.model_name`; Google Cloud's [Gemini 2.5 Flash lifecycle and availability page](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/2-5-flash).
-- Observed problem: deployed metadata shows the active Gemini configuration defaults to `gemini-2.5-flash` in `europe-west2` (London), with no purchased Provisioned Throughput and PayGo-only capacity. The current Google model page lists an October 20, 2026 retirement date for Gemini 2.5 Flash. Recent attempts frequently override the default with `gemini-3.5-flash`; both synthetic London probes for 2.5 Flash and 3.5 Flash succeeded. Therefore, the retirement is approaching, but these observations do not establish a persistent London 3.5 Flash capacity outage or that the default is responsible for the reported 429.
-- Likely impact: configurations that continue to select the retiring default may lose supported generation after retirement; London capacity behavior for PayGo remains subject to Google's model/location support and current shared capacity.
-- Not changed during the capacity investigation because provider/model selection must account for approved London residency, capacity availability, and clinical review; changing the model or location would exceed a diagnostic metadata-only action.
-- Follow-up: plan and validate migration to a model explicitly approved for the deployment's residency and capacity requirements before the published retirement date. Reconfirm Google's current lifecycle and London availability at that time; do not infer a persistent outage from isolated 429s or successful synthetic probes.
-
-## OPENSCRIBE-CONTAINER-UNHEALTHY — 2026-10-12
-
-- Discovery commit: `2d7bfcb`.
-- Location: deployed `openscribe-openscribe-1` container healthcheck.
-- Exact observation: `openscribe-openscribe-1` was `Up 2h (unhealthy)` while PostgreSQL, Redis, and Vault were healthy.
-- Observed problem: the deployed application container is reporting an unhealthy healthcheck state.
-- Likely impact: orchestration or operational monitoring may treat the application as unavailable even while supporting services remain healthy.
-- Not fixed during the consultation-split provider-binding repair because this is unrelated to the deterministic pre-submit request mismatch. No healthcheck logs, environment, or container state beyond the reported status were inspected.
-- Follow-up: inspect the healthcheck command, recent healthcheck output, and relevant safe operational logs; then reproduce and repair the specific healthcheck failure without exposing sensitive configuration or content.
-
-## API-AUDIT-SHARED-INFRASTRUCTURE-LOCK — 2026-10-05
+- Current status: Resolved as recorded below.
 
 - Discovery commit: unavailable (working tree investigation).
 - Location: `scripts/audit_api_auth.py`, `main` and `reset_public_schema`.
@@ -199,7 +363,9 @@
 - Follow-up: share the existing test-run lock with the audit before any infrastructure initialization or reset, then add an isolated contention regression.
 - Resolved 2026-10-07: pytest and the API audit share the nonblocking lock helpers in `tests/db_utils.py`. Both acquire the lock before database creation; the audit holds it through final Redis cleanup and exits with code `2` when busy. An isolated subprocess regression verifies that contention causes no database initialization, schema reset, or Redis flush.
 
-## SPLIT-GENERATION-STATUS-HIDDEN — 2026-10-05
+### SPLIT-GENERATION-STATUS-HIDDEN — 2026-10-05
+
+- Current status: Resolved as recorded below.
 
 - Discovery commit: unavailable (working tree investigation).
 - Location: `app/static/js/transcribe/app.js`, `createSplitGenerateController` setup.
@@ -210,7 +376,9 @@
 - Follow-up: define a visible, accessible, non-noisy status surface for terminal split-generation failures and add browser coverage for rejected continuation feedback.
 - Resolved 2026-10-07: the workspace now forwards split-generation `warning` and `error` statuses to the existing accessible flash banner via `showFlash`; controller coverage continues to assert safe terminal guidance and rejected continuation feedback.
 
-## SPLIT-PREFERENCE-BROWSER-CHECKBOX-CLICK — 2026-10-01
+### SPLIT-PREFERENCE-BROWSER-CHECKBOX-CLICK — 2026-10-01
+
+- Current status: Resolved as recorded below.
 
 - Discovery commit: `32eaf7caf2f6a26929195ee1d06e8f9b2dab97d7`.
 - Location: `tests/test_consultation_split_browser.py:252`, `test_browser_team_leader_split_preference_persists_across_workspace_navigation`; `app/static/css/components.css:208-209`, compact switch styling.
@@ -221,7 +389,9 @@
 - Follow-up: test the accessible switch through its visible label or adjust the control's hit target, then rerun this browser regression.
 - Resolved 2026-10-07: inspection at `fd599225` confirms the browser regression now clicks the visible preference label instead of calling `.check()` on the hidden checkbox. Browser execution is recorded separately from this code verification.
 
-## Stale Scribe stylesheet cache key assertion — 2026-09-24 (resolved 2026-09-29)
+### Stale Scribe stylesheet cache key assertion — 2026-09-24
+
+- Current status: Resolved as recorded below.
 
 - Discovery commit: `118ed37`.
 - Location: `tests/test_workspace_scribe_layout_contract.py`, `test_scribe_mobile_dictation_modal_owns_the_top_layer_and_safe_viewport`.
@@ -231,7 +401,9 @@
 - Not fixed during the recording navigation lock change because stylesheet cache-key maintenance was outside its scope.
 - Resolved by updating the assertion to match the maintained asset key in `tests/test_workspace_scribe_layout_contract.py`.
 
-## SPLIT-SOURCE-ONLY-MATERIALIZATION — 2026-09-26 (resolved 2026-09-27)
+### SPLIT-SOURCE-ONLY-MATERIALIZATION — 2026-09-26
+
+- Current status: Resolved as recorded below.
 
 - Discovery commit: `118ed375caefb73e42617412b00a8e001622602c` (inspected current working tree).
 - Location: `app/services/consultation_split_partial.py:167-169`, `_materialize_available_split_notes_locked`.
@@ -240,7 +412,9 @@
 - Likely impact: inserting a source-only child document violates the non-null `GeneratedDocument.transcript_version_id` constraint and rolls back materialization. Established by static tracing; not reproduced in a test during this inspection.
 - Resolved by `consultation_split_materialization.require_batch_materialization_version`, used before all split document materialization. Verification now terminalizes a missing or wrong-root binding with existing failed/unchecked states after settling or cancelling its attempt, instead of rolling back and retrying finalization. Working-note-only and dictation-only Keep Available and verification-finalization regressions prove the confirmation-bound version is used.
 
-## SPLIT-INTENT-PREFERENCE-OPTOUT-VISIBILITY — 2026-10-06
+### SPLIT-INTENT-PREFERENCE-OPTOUT-VISIBILITY — 2026-10-06
+
+- Current status: Resolved as recorded below.
 
 - Discovery commit: unavailable (working tree review).
 - Location: `app/services/consultation_split_gates.py`, `analysis_split_enabled` and `intent_split_enabled`; `app/services/consultation_split_api.py`, `read_workspace_split_analysis`/`read_workspace_split_intent`; `app/services/consultation_split_drafts.py`, `read_split_draft`; `app/services/consultation_split_confirmation.py`, `confirm_split_draft`.
@@ -250,7 +424,9 @@
 - Follow-up: decide whether an exact accepted intent should retain workspace visibility and clinician confirmation authority after preference opt-out, then update the gate helpers and focused authorization/workspace tests together.
 - Resolved 2026-10-07 under the supplied plan: preference opt-out blocks new unmarked automatic intents but preserves the exact accepted intent through analysis, draft review, confirmation, and batch access. Deployment availability, owner/team scope, source freshness, and retention still apply. A real-runtime regression reproduces the old rejection and verifies the accepted-work flow after opt-out; focused progress, runtime, and Multiple problems tests pass.
 
-## TRANSCRIPT-COMBINED-PATCH-DROPS-EARLY-FIELDS — 2026-10-07
+### TRANSCRIPT-COMBINED-PATCH-DROPS-EARLY-FIELDS — 2026-10-07
+
+- Current status: Resolved as recorded below.
 
 - Discovery commit: `88e487718e627643d9c3f8a99609f137bacd0a54`.
 - Location: `app/services/transcripts.py`, `update_transcript`.
@@ -261,7 +437,9 @@
 - Follow-up: preserve validated title and ingestion-mode changes across the source-writer reload, then add focused combined-PATCH regressions for each field.
 - Resolved 2026-10-07: `update_transcript` acquires the source-writer lock before applying metadata for structured-context requests. Independent title and ingestion-mode PATCH regressions reproduce the dropped fields on the old ordering and pass with the fix; metadata-only requests retain the lighter owner lookup.
 
-## SPLIT-VERIFIER-PREFERENCE-RECOVERY-EXPECTATION — 2026-10-08
+### SPLIT-VERIFIER-PREFERENCE-RECOVERY-EXPECTATION — 2026-10-08
+
+- Current status: Resolved as recorded below.
 
 - Discovery commit: `23fa441591064d7d2b4d47c8acfd51d86992a4cf`.
 - Location: `tests/test_consultation_split_generation_runtime.py`, preference cases in `test_submitted_verifier_finishes_after_gate_flip_without_reopening_manual_actions`, `test_submitted_verifier_fail_open_materializes_originals_after_gate_flip`, and `test_verifier_deadline_wins_over_late_provider_response_without_a_second_call_or_settlement`; `app/services/consultation_split_gates.py`, `batch_split_enabled`.
@@ -274,17 +452,10 @@
 
 - Resolution — 2026-10-14, working tree based on `c712ba5b9db00e5008951bc3ff585a78e711c93f`: corrected only the four stale preference error expectations to `consultation_split_batch_unavailable`. The unchanged committed `batch_split_enabled` and maintained split documentation both preserve exact confirmed-intent eligibility after opt-out. Deployment-off assertions and verifier success/fail-open/late-result protections remain unchanged. Focused verification is reported separately.
 
-## LLM-UNSUPPORTED-WORKER-PREFLIGHT — 2026-10-14
+### SPLIT-CREATE-PENDING-TRANSCRIPTION — 2026-10-08
 
-- Discovery commit: `c712ba5b9db00e5008951bc3ff585a78e711c93f` (resilience working tree).
-- Location: `app/services/llm_execution.py`, `bounded_request`; provider submission boundaries in ordinary, split and suggestion workers.
-- Observed problem: an unsupported thread/eventlet/gevent worker or occupied Unix timer is rejected before HTTP dispatch, but its durable attempt may already have been marked submitted. Existing terminalization then settles conservatively as unknown.
-- Safe example: a synthetic generation executed in a background thread reaches `llm_execution_context_unsupported` without calling the provider. It emits no HTTP transport event.
-- Impact: misconfigured workers can reserve and conservatively settle quota without an HTTP request. Maintained launchers pin prefork and ordinary credential preflight remains unchanged.
-- Not expanded now: moving capability checks across every durable submission boundary would broaden worker lifecycle contracts and concurrent fault-test setup beyond the maintained prefork runtime mode.
-- Follow-up: add a shared capability preflight before submission with focused pre-dispatch cancellation, duplicate-claim and concurrency tests.
-
-## SPLIT-CREATE-PENDING-TRANSCRIPTION — 2026-10-08
+- Current status: Superseded or reconciled with current source; see dated notes.
+- Reconciliation/resolution (2026-10-19): _require_source_ready_for_analysis checks before preparation and again under the source lock. The 16 October reassessment supersedes the original missing-readiness-guard claim. A unified server-side waiting workflow remains a separate product design, not an open snapshot-safety defect.
 
 - Discovery commit: unavailable (consultation-flow review of current working tree).
 - Location: `app/services/consultation_split_intents.py`, `create_or_replay_consultation_split_intent`; `app/services/consultation_split_sources.py`, `prepare_source_bound_consultation_split_analysis`; contrast `app/services/templates.py`, `_ensure_generation_can_be_queued` and transcript-wait handling.
@@ -295,25 +466,10 @@
 - Not fixed during consultation-flow analysis because the task requests assessment of current versus ideal behavior. Binding an accepted split intent to pending ingestion and changing when its source snapshot is created needs a coherent lifecycle design and focused tests.
 - Follow-up: define a shared server-owned readiness contract for ordinary and split Create, show a persistent waiting-for-transcription stage, and test pending/failing/final live chunks, whole-file ingestion, Working-note/dictation-only sources, duplicate delivery, source freshness, and one-click continuation.
 
-## DEEPGRAM-SDK-PRIVATE-WEBSOCKET-HOOK — 2026-10-17
+### STALE-ACCESSIBLE-GUIDE-UI-EXPECTATIONS — 2026-10-18
 
-- Discovery commit: `717d269` (working tree includes the current Deepgram live-stream adapter).
-- Location: `app/services/deepgram_streaming.py::_install_scoped_sdk_websocket_logger`.
-- Observed constraint: pinned `deepgram-sdk==7.13.0` does not expose public per-connection arguments for the underlying WebSocket logger or message/queue bounds. The adapter wraps only the generated Listen V1 connector and passes the scoped disabled logger, `max_size`, and `max_queue` to the pinned `websockets` legacy connector.
-- Likely impact: an SDK upgrade or generated connector change can invalidate these privacy and memory bounds.
-- Not changed now: the pinned connector supports these per-connection options, and a synthetic adapter test checks that the wrapper applies them while preserving other connection options. Replacing the hook would require an SDK-supported public equivalent.
-- Follow-up: prefer a public SDK per-connection connector/logger/buffer configuration if Deepgram exposes one; update the compatibility test when upgrading the SDK.
-
-## PINNED-VAD-STREAM-BUFFER-BOUND — 2026-10-17
-
-- Discovery commit: unavailable (Deepgram live-stream implementation working tree).
-- Location: `app/static/js/transcribe/media.js`, `buildLiveVadInstance`; pinned runtime `app/static/vendor/vad-web/0.0.29/bundle.min.js`, `FrameProcessor.process`.
-- Observed constraint: the pinned `FrameProcessor` emits its `FrameProcessed` callback immediately before appending the frame to its speech accumulator. The streaming callback trims that accumulator to approximately five seconds without resetting VAD state; the implementation and synthetic runtime test depend on that event order and the exposed `frameProcessor.audioBuffer` array.
-- Likely impact: an upstream VAD runtime upgrade that changes callback order or buffer shape could remove the bound or fail closed for streaming capture.
-- Not changed now: the bounded adapter is limited to the Deepgram streaming path; the non-stream chunk behavior remains unchanged.
-- Follow-up: when upgrading the pinned VAD runtime, rerun the synthetic test against the actual vendored bundle and update the adapter only if its memory and speech-boundary behavior remain correct.
-
-## STALE-ACCESSIBLE-GUIDE-UI-EXPECTATIONS — 2026-10-18
+- Current status: Resolved as recorded below.
+- Reconciliation/resolution (2026-10-19): The current baseline already uses the Scribe guide wording and accessible-guide asset expectations. This pass updated app-module cache expectations for deletion confirmation; focused UI checks pass.
 
 - Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
 - Locations: `tests/test_split_review_js.py::test_split_review_workspace_accessibility_hooks_and_cachebusters`; `tests/test_admin_ui.py::test_transcribe_page_contains_accessible_ui_controls`; source `app/templates/transcribe/_head_assets.html` and `app/templates/transcribe/_shell_extras.html`.
@@ -322,7 +478,10 @@
 - Not changed here: changing guide markup or stylesheet versions, or rewriting unrelated UI expectations, would exceed this task’s scope. The dictation-related cache-key assertions were updated separately.
 - Follow-up: have the accessible-guide change owner reconcile the two expectations with the final guide design and rerun the focused UI tests.
 
-## QUICK-ACTION-UTILITY-ATTRIBUTE-ORDER — 2026-10-18
+### QUICK-ACTION-UTILITY-ATTRIBUTE-ORDER — 2026-10-18
+
+- Current status: Resolved as recorded below.
+- Reconciliation/resolution (2026-10-19): The current baseline already checks class, role and accessible label independently. Focused settings tests pass; no further markup change was needed.
 
 - Discovery commit: `717d269` (working tree includes the current Help page work).
 - Location: `tests/test_settings_quick_actions.py::test_quick_action_io_configures_shared_controller_and_wires_help_adapter`; `app/templates/settings/_quick_action_library.html`, import/export utility group.
@@ -332,28 +491,9 @@
 - Not fixed now: Help work does not change Quick Actions markup, and changing unrelated code would widen scope.
 - Follow-up: make the test assert the class, role, and accessible label independently, then rerun `tests/test_settings_quick_actions.py`.
 
-## SCRIBE-SIDEBAR-RESIZE-ALTERNATIVE — 2026-10-18
+### DSPT-RETRY-UI-EXPIRY — 2026-10-14
 
-- Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
-- Locations: `app/templates/transcribe/_sidebar.html`, `data-sidebar-resize`; `app/templates/transcribe/_shell_extras.html`, sidebar resize handlers.
-- Exact UI hint: `title="Drag to resize. Double-click to collapse or restore."`.
-- Observed constraint: the Scribe-only resizer supports pointer dragging and a double-click collapse/restore action; its resize handler does not implement keyboard adjustment or click-based width steps. Help uses the separate non-Scribe workspace sizing handler, which now has both keyboard and click alternatives.
-- Likely impact: users who cannot drag may not be able to choose an intermediate Scribe sidebar width. This is distinct from the Help sidebar and requires a focused Scribe resizing review.
-- Not changed now: this task's Help accessibility scope did not authorize a broader Scribe layout interaction change.
-- Follow-up: assess and add an equivalent single-pointer alternative and keyboard controls to the Scribe resizer, with focused regression tests; verify collapsed and intermediate-width behavior.
-
-## CONSULTATION-DERIVED-CONTENT-DELETE-CONFIRMATION — 2026-10-18
-
-- Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
-- Locations: `app/static/js/transcribe/actions.js`, bulk delete form submit handler; `app/web/transcribe_workspace.py`, `_transcript_has_content` and `_transcript_content_by_id_for_history_page`.
-- Exact excerpt: `selectedBoxes.some((checkbox) => checkbox.dataset.hasTranscriptContent === 'true')`; the flag is derived from transcript draft and version text.
-- Evidence: static inspection only; this gap was not runtime-reproduced. The confirmation check covers transcript text but does not account for a consultation whose transcript is blank while its Working note, post-consultation dictation, or generated notes contain content.
-- Likely impact: a user can delete such a consultation without the extra confirmation and may accidentally lose its consultation-owned derived content permanently.
-- Not fixed during Help work: changing deletion confirmation and content-presence semantics is outside the Help scope and needs focused lifecycle/privacy review; no deletion or authorization contract was changed here.
-- Follow-up: derive a metadata-only “has consultation content” flag covering transcript text/version and the relevant derived-content records, then add focused synthetic tests for history-page flags and single/bulk confirmation behavior, including blank-transcript Working-note/dictation/generated-note cases. Preserve existing ownership, authorization, retention, and cascade behavior.
-
-
-## DSPT-RETRY-UI-EXPIRY — 2026-10-14 — resolved
+- Current status: Resolved as recorded below.
 
 - Discovery commit: `c712ba5`.
 - Location: `app/web/transcribe_workspace.py`, `_earliest_retryable_ingestion_job`.
@@ -361,27 +501,9 @@
 - Fixed during resilience validation because the correction is bounded and uses the established `ingestion_retry_source_expired` service. The selected earliest failed source now returns no retry when expired; live ingestion never skips that gap to offer a later job.
 - Validation: focused DSPT API/workspace expiry regression passed; existing live-gap retry coverage remains required. No retention or content-access contract changed.
 
-## TEST-CONFIG-GUARD-SECRET-DIAGNOSTICS — 2026-10-18
+### SPLIT-QUOTA-LIFECYCLE-REFRESH-ORDER — 2026-10-19
 
-- Discovery commit: unavailable (documentation review of the current working tree).
-- Location: `tests/db_utils.py`, `ensure_safe_test_database_url` and `ensure_safe_test_rate_limit_storage_url`.
-- Exact excerpt: `f"DATABASE_URL={app_url}\n"`; the Redis guard also interpolates its complete application and test URLs.
-- Observed problem: when an isolation guard rejects equal application/test endpoints, its `RuntimeError` includes complete connection URLs. A URL can contain credentials, so a failed test startup can expose them through terminal or CI output. Static source inspection established the interpolation; no real credentials were printed to reproduce it.
-- Likely impact: diagnostic output can violate the project rule against exposing credentials and DSNs. The guard correctly refuses unsafe infrastructure use; its message needs redaction.
-- Not fixed in this documentation review because changing test infrastructure is separate executable work. The documentation continues to prohibit printing secrets or bypassing isolation guards.
-- Suggested follow-up: preserve the equality checks and refusal, replace URL values with safe labels or bounded host/port metadata, and add synthetic-credential regression cases for both guards.
-
-## TEMPLATE-SUGGESTION-DUPLICATE-JSON-KEY — 2026-10-19
-
-- Discovery commit: `717d269`.
-- Location: `app/services/template_suggestions.py`, `_extract_json`.
-- Exact excerpt: `value = json.loads(encoded)`.
-- Observed problem: duplicate keys in provider JSON are accepted with the last value winning; for example, conflicting `template_id` fields can make the classifier select a candidate while hiding an earlier conflicting value.
-- Likely impact: ambiguous provider output can produce an unreliable template recommendation. This affects reusable-template metadata only, not generated clinical documents.
-- Not fixed now: the current regression fix targets stream readiness boundaries; changing this parser is a separate fail-closed classifier change.
-- Follow-up: use the shared duplicate-key rejecting JSON hook and add synthetic duplicate-key cases for top-level and nested fields.
-
-## SPLIT-QUOTA-LIFECYCLE-REFRESH-ORDER — 2026-10-19 — resolved
+- Current status: Resolved as recorded below.
 
 - Discovery commit: `717d269` (review of the pending changes on this baseline).
 - Location: `app/services/quota_lifecycle.py`, `process_quota_lifecycle`.

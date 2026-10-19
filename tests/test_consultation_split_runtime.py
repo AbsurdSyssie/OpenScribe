@@ -164,6 +164,35 @@ def test_runtime_commits_valid_zero_single_or_multiple_topic_response_once(
     assert calls == [1]
 
 
+def test_unsupported_worker_cancels_split_analysis_before_provider_submission(
+    db_session, make_user, make_llm_config, make_llm_selection, make_user_app_preference, monkeypatch,
+):
+    owner = make_user(email=f"split-runtime-unsupported-{uuid4()}@example.com")
+    _transcript_id, execution_id, _preference_id = _queued_work(
+        db_session, owner, make_llm_config, make_llm_selection, make_user_app_preference, monkeypatch,
+    )
+    calls = []
+    monkeypatch.setattr("app.services.consultation_split_pre_submit.resolve_generation_credential", lambda _config: "token")
+    monkeypatch.setattr(
+        "app.services.consultation_split_runtime.require_supported_execution_context",
+        lambda: (_ for _ in ()).throw(AppError(503, "llm_execution_context_unsupported", "synthetic")),
+    )
+    monkeypatch.setattr(
+        "app.services.consultation_split_runtime.llm_runtime.invoke_llm",
+        lambda **_kwargs: calls.append(True),
+    )
+
+    result = process_consultation_split_analysis_execution(db_session, execution_id=execution_id)
+
+    analysis, execution, attempt, _dispatch = _rows(db_session, execution_id)
+    assert result.outcome == "failed"
+    assert result.error_code == "llm_execution_context_unsupported"
+    assert analysis.status is ConsultationSplitAnalysisStatus.failed
+    assert execution.status is ConsultationSplitExecutionStatus.failed
+    assert attempt.status is AttemptStatus.cancelled
+    assert calls == []
+
+
 @pytest.mark.parametrize(
     "response",
     ["not json", "x" * (CONSULTATION_SPLIT_MAX_RESPONSE_CHARS * 8 + 1), json.dumps({"topics": [{"title": "Unknown", "is_primary": True, "disposition": "separate_note", "template_id": str(uuid4())}]})],

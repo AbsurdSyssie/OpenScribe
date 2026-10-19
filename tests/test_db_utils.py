@@ -58,6 +58,31 @@ def test_database_guard_rejects_application_url_matching_derived_worker_url(monk
     importlib.reload(db_utils)
 
 
+def test_database_guard_does_not_echo_configured_urls_or_credentials(monkeypatch):
+    with monkeypatch.context() as environment:
+        environment.setenv("DATABASE_URL", "postgresql://synthetic-user:synthetic-password@db.example/app")
+        environment.setenv("TEST_DATABASE_URL", "postgresql://synthetic-user:synthetic-password@db.example/app")
+        importlib.reload(db_utils)
+        with pytest.raises(RuntimeError) as error:
+            db_utils.ensure_safe_test_database_url()
+        assert "synthetic-password" not in str(error.value)
+        assert "db.example" not in str(error.value)
+        assert "Refusing to run tests against the application database" in str(error.value)
+    importlib.reload(db_utils)
+
+
+def test_rate_limit_guard_does_not_echo_configured_urls_or_credentials(monkeypatch):
+    with monkeypatch.context() as environment:
+        environment.delenv(db_utils.ORIGINAL_RATE_LIMIT_STORAGE_URL_ENV, raising=False)
+        environment.setenv("RATE_LIMIT_STORAGE_URL", "redis://synthetic-user:synthetic-password@redis.example/0")
+        environment.setenv("TEST_RATE_LIMIT_STORAGE_URL", "redis://synthetic-user:synthetic-password@redis.example/0")
+        with pytest.raises(RuntimeError) as error:
+            db_utils.ensure_safe_test_rate_limit_storage_url()
+        assert "synthetic-password" not in str(error.value)
+        assert "redis.example" not in str(error.value)
+        assert "Refusing to run tests against the application rate-limit store" in str(error.value)
+
+
 class FakeRedis:
     def __init__(self, keys):
         self.keys = set(keys)

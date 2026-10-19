@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from app.services.provider_transport_telemetry import provider_attempt_execution
-from app.services.llm_execution import ExecutionBudget
+from app.services.llm_execution import ExecutionBudget, require_supported_execution_context
 
 from datetime import datetime, timedelta
 from uuid import UUID
@@ -355,6 +355,11 @@ def process_consultation_split_verification_execution(db: Session, *, execution_
         return
     execution, _batch, _owner, _transcript, attempt, _dispatch, _topics, _outcomes = work
     request, credential = request_and_credential
+    try:
+        require_supported_execution_context()
+    except AppError as exc:
+        _finish(db, work, reason=exc.code, verified=False, submitted=False)
+        return
     mark_provider_attempt_submitted(db, attempt_id=attempt.id, now=utcnow(), deadline_at=utcnow() + timedelta(seconds=_DEADLINE_SECONDS))
     execution.status = ConsultationSplitExecutionStatus.processing; execution.started_at = utcnow(); db.commit()
     try:

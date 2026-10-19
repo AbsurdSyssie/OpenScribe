@@ -180,11 +180,19 @@ OpenScribe uses the `v1beta1` publisher-model catalog for this step. Check API a
 - Try `global` only if global processing is acceptable.
 - Confirm model-specific access and capacity requirements with the Google account team when the published model page is insufficient.
 
+**Lifecycle check (2026-10-19):** Google's [model versions page](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-versions) lists Gemini 2.5 Flash retirement on 2026-10-20. Review and validate an approved replacement before retirement while preserving the deployment's approved model, residency, region, and capacity requirements.
+
+**Lifecycle check (2026-10-19):** Google's [model versions page](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-versions) lists Gemini 2.5 Flash retirement on 2026-10-20. Review and validate an approved replacement before retirement, preserving the deployment's approved model, residency, region, and capacity requirements.
+
 ### “Gemini location is unavailable”
 
 - Check spelling: `europe-west2`, not `eu-west2`.
 - Confirm the selected model supports that endpoint.
 - Confirm the project has access to the selected location and a supported consumption option.
+
+### “Gemini rejected the request as invalid”
+
+An HTTP 400 without a structured model- or location-unavailable reason is classified as an invalid request. Check the saved model options and request compatibility; provider message text is not retained in the classification.
 
 ### `429` or “Gemini capacity is temporarily unavailable”
 

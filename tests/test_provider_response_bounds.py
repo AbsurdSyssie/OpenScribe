@@ -5,6 +5,139 @@ import pytest
 
 from app.errors import AppError
 from app.services import deidentification, llm, provider_inspection, redaction, stt, templates
+from app.services.llm_adapters.bounded_transport import (
+    bounded_event_hooks,
+    ProviderResponseEncodingUnsupported,
+    ProviderResponseTooLarge,
+)
+
+
+def test_sdk_transport_stops_reading_at_response_byte_ceiling():
+    consumed = []
+
+    class Chunks(httpx.SyncByteStream):
+        def __iter__(self):
+            for chunk in (b"1234", b"5678", b"never read"):
+                consumed.append(chunk)
+                yield chunk
+
+        def close(self):
+            return None
+
+    inner = httpx.MockTransport(lambda request: httpx.Response(200, stream=Chunks()))
+    client = httpx.Client(transport=inner, event_hooks=bounded_event_hooks(max_bytes=5))
+    try:
+        with pytest.raises(ProviderResponseTooLarge):
+            client.get("https://provider.example/generate")
+    finally:
+        client.close()
+
+    assert consumed == [b"1234", b"5678"]
+
+
+def test_sdk_response_hook_accepts_exact_byte_limit():
+    client = httpx.Client(
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, content=b"12345")),
+        event_hooks=bounded_event_hooks(max_bytes=5),
+    )
+    try:
+        assert client.get("https://provider.example/generate").content == b"12345"
+    finally:
+        client.close()
+
+
+def test_sdk_response_hook_rejects_content_length_before_consuming_body():
+    consumed = []
+
+    class Chunks(httpx.SyncByteStream):
+        def __iter__(self):
+            consumed.append(True)
+            yield b"123456"
+
+        def close(self):
+            return None
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(lambda _request: httpx.Response(
+            200, headers={"content-length": "6"}, stream=Chunks(),
+        )),
+        event_hooks=bounded_event_hooks(max_bytes=5),
+    )
+    try:
+        with pytest.raises(ProviderResponseTooLarge):
+            client.get("https://provider.example/generate")
+    finally:
+        client.close()
+    assert consumed == []
+
+
+def test_real_openai_sdk_stops_after_one_oversized_response(monkeypatch):
+    from app.services.llm_adapters import runtime
+    from app.services.llm_adapters.bounded_transport import DEFAULT_PROVIDER_RESPONSE_MAX_BYTES
+
+    consumed_bytes = 0
+    closed = []
+
+    class Chunks(httpx.SyncByteStream):
+        def __iter__(self):
+            nonlocal consumed_bytes
+            for size in (3 * 1024 * 1024, 3 * 1024 * 1024, 2 * 1024 * 1024, 1):
+                consumed_bytes += size
+                yield b"x" * size
+
+        def close(self):
+            closed.append(True)
+
+    requests = []
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, stream=Chunks())
+
+    mock_transport = httpx.MockTransport(respond)
+
+    def bounded_client(**kwargs):
+        return httpx.Client(
+            transport=mock_transport,
+            event_hooks=kwargs["event_hooks"],
+            timeout=kwargs.get("timeout"),
+        )
+
+    monkeypatch.setattr(runtime, "DefaultHttpxClient", bounded_client)
+    with pytest.raises(AppError) as caught:
+        runtime._invoke_openai_compatible_once(
+            api_key="synthetic", base_url="https://provider.example/v1",
+            request_body={"model": "synthetic", "messages": []},
+        )
+
+    assert caught.value.code == "llm_provider_bad_response"
+    assert caught.value.details == {"provider_error_code": "response_too_large"}
+    assert len(requests) == 1
+    assert consumed_bytes == DEFAULT_PROVIDER_RESPONSE_MAX_BYTES + 1
+    assert closed == [True]
+
+
+def test_sdk_response_hook_rejects_compressed_body_before_reading():
+    consumed = []
+
+    class Chunks(httpx.SyncByteStream):
+        def __iter__(self):
+            consumed.append(True)
+            yield b"compressed"
+
+        def close(self):
+            return None
+
+    inner = httpx.MockTransport(lambda request: httpx.Response(
+        200, headers={"content-encoding": "gzip"}, stream=Chunks(),
+    ))
+    client = httpx.Client(transport=inner, event_hooks=bounded_event_hooks())
+    try:
+        with pytest.raises(ProviderResponseEncodingUnsupported):
+            client.get("https://provider.example/generate")
+    finally:
+        client.close()
+
+    assert consumed == []
 
 
 class FakeStreamResponse:

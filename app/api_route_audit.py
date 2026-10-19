@@ -492,7 +492,8 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         AccessTier.full,
         files=_file("context.wav"),
     ),
-    # REST/SSE include owner-only durable split-intent metadata; projection is read-only.
+    # REST/SSE include owner-only durable split-intent metadata and consultation
+    # saved-content presence for deletion confirmation; projection is read-only.
     AuditCase("GET", "/api/v1/transcribe/workspace", AccessTier.full),
     AuditCase("POST", "/api/v1/transcribe/stt-health/recheck", AccessTier.full),
     AuditCase("GET", "/api/v1/transcribe/workspace/stream", AccessTier.full),

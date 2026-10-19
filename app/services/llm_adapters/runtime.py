@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, TypedDict
 from uuid import UUID
 
 import httpx
-from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, DefaultHttpxClient, OpenAI
 
 from app.errors import AppError
 from app.models import LlmAdapterKind
@@ -25,6 +25,11 @@ from app.services.llm_adapters.gemini_enterprise import (
     generate_gemini_text,
 )
 from app.services.llm_adapters.types import LlmGenerationRequest, LlmProviderSnapshot
+from app.services.llm_adapters.bounded_transport import (
+    bounded_event_hooks,
+    is_provider_response_encoding_unsupported,
+    is_provider_response_too_large,
+)
 from app.services.llm_execution import bounded_request, current_budget, retry_after_seconds
 from app.services.provider_errors import safe_provider_error_code
 from app.services.provider_inspection import response_content_length_exceeds
@@ -279,8 +284,11 @@ def _invoke_openai_compatible_once(
     require_safe_provider_url(base_url)
     started = time.perf_counter()
     client = None
+    bounded_http_client = None
     try:
-        client = client_factory(api_key=api_key, base_url=base_url, max_retries=0, timeout=current_budget().timeout())
+        bounded_http_client = DefaultHttpxClient(event_hooks=bounded_event_hooks())
+        client = client_factory(api_key=api_key, base_url=base_url, max_retries=0,
+                                timeout=current_budget().timeout(), http_client=bounded_http_client)
         completion = client.chat.completions.create(**request_body)
     except Exception as exc:  # pragma: no cover - provider transport is isolated by unit tests
         raise translate_openai_generation_error(
@@ -297,6 +305,11 @@ def _invoke_openai_compatible_once(
                     close()
                 except Exception:
                     pass
+        if bounded_http_client is not None:
+            try:
+                bounded_http_client.close()
+            except Exception:
+                pass
     choice = completion.choices[0] if completion.choices else None
     if choice is not None:
         _validate_completion_finish_reason(getattr(choice, "finish_reason", None))
@@ -503,6 +516,10 @@ def translate_openai_generation_error(
 ) -> AppError:
     if isinstance(exc, timeout_error_cls):
         return AppError(504, "llm_provider_timeout", "The LLM provider timed out", {"provider_error_code": "timeout"})
+    if is_provider_response_too_large(exc):
+        return AppError(502, "llm_provider_bad_response", "The LLM provider response exceeded the permitted size", {"provider_error_code": "response_too_large"})
+    if is_provider_response_encoding_unsupported(exc):
+        return AppError(502, "llm_provider_bad_response", "The LLM provider used an unsupported response encoding", {"provider_error_code": "unsupported_content_encoding"})
     if isinstance(exc, connection_error_cls):
         return AppError(502, "llm_provider_unreachable", "Could not reach the LLM provider", {"provider_error_code": "connection_error"})
     if isinstance(exc, status_error_cls):

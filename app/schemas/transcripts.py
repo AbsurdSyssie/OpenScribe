@@ -54,6 +54,7 @@ class TranscriptListItem(BaseModel):
     ingestion_mode: TranscriptIngestionMode
     status: TranscriptStatus
     has_transcript_content: bool = False
+    has_saved_content: bool = False
     working_note_mode: TranscriptWorkingNoteMode | None = None
     has_working_note: bool = False
     latest_successful_ingestion_completed_at: datetime | None = None

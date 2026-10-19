@@ -239,6 +239,7 @@ syncRecordButtonLabel();
   var primarySidebar = document.querySelector('[data-primary-sidebar]');
   var sidebarResize = document.querySelector('[data-sidebar-resize]');
   var sidebarCollapseToggles = document.querySelectorAll('[data-sidebar-collapse-toggle]');
+  var sidebarWidthStepButtons = document.querySelectorAll('[data-sidebar-step]');
   var sidebarWidthStorageKey = 'openscribe:transcribe:sidebar-width';
   var sidebarCollapsedWidth = 64;
   var sidebarRestoreWidth = 288;
@@ -328,8 +329,8 @@ syncRecordButtonLabel();
     sidebarResize.addEventListener('keydown', function(event) {
       if (!desktopSidebarMedia.matches) return;
       var width = primarySidebar.getBoundingClientRect().width;
-      if (event.key === 'ArrowLeft') width -= 16;
-      else if (event.key === 'ArrowRight') width += 16;
+      if (event.key === 'ArrowLeft') width = width === sidebarCollapsedWidth ? sidebarCollapsedWidth : width - 16;
+      else if (event.key === 'ArrowRight') width = width === sidebarCollapsedWidth ? sidebarMinWidth : width + 16;
       else if (event.key === 'Home') width = sidebarCollapsedWidth;
       else if (event.key === 'End') width = sidebarMaxWidth;
       else return;
@@ -342,6 +343,15 @@ syncRecordButtonLabel();
       if (!desktopSidebarMedia.matches || !primarySidebar) return;
       var width = primarySidebar.getBoundingClientRect().width;
       applySidebarWidth(width === sidebarCollapsedWidth ? sidebarRestoreWidth : sidebarCollapsedWidth, true);
+    });
+  });
+  sidebarWidthStepButtons.forEach(function(button) {
+    button.addEventListener('click', function() {
+      if (!desktopSidebarMedia.matches || !primarySidebar) return;
+      var width = primarySidebar.getBoundingClientRect().width;
+      var step = Number.parseFloat(button.getAttribute('data-sidebar-step'));
+      if (!Number.isFinite(step)) return;
+      applySidebarWidth(width + step, true);
     });
   });
   desktopSidebarMedia.addEventListener('change', syncSidebarViewport);
@@ -527,6 +537,6 @@ syncRecordButtonLabel();
     } | tojson }}
   </script>
   <script src="/static/vendor/sortable/Sortable.min.js?v=1.15.2"></script>
-    <script type="module" src="/static/js/transcribe/app.js?v=20261018-dictation-save-await"></script>
+    <script type="module" src="/static/js/transcribe/app.js?v=20261019-delete-confirmation-content"></script>
   <script type="module" src="/static/js/transcribe/mobile.js?v=20260823-mobile-toast"></script>
   {% include "_csrf_script.html" %}

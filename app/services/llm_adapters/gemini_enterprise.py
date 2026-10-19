@@ -20,6 +20,11 @@ from google.oauth2 import service_account
 from app.errors import AppError
 from app.services.llm_execution import current_budget, retry_after_seconds
 from app.services.llm_adapters.types import LlmGenerationRequest, LlmGenerationResult
+from app.services.llm_adapters.bounded_transport import (
+    bounded_event_hooks,
+    is_provider_response_encoding_unsupported,
+    is_provider_response_too_large,
+)
 
 
 _CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
@@ -71,7 +76,7 @@ def build_gemini_client(
     http_options = types.HttpOptions(api_version=api_version, headers=headers or None,
         timeout=max(1, round(current_budget().remaining() * 1000)),
         retry_options=types.HttpRetryOptions(attempts=1),
-        client_args={"timeout": current_budget().timeout()})
+        client_args={"timeout": current_budget().timeout(), "event_hooks": bounded_event_hooks()})
     return genai.Client(
         enterprise=True,
         project=project_id,
@@ -290,6 +295,10 @@ def _gemini_thinking_config(model: str) -> types.ThinkingConfig | None:
 
 def translate_gemini_error(exc: Exception, *, operation: str = "generation") -> AppError:
     """Translate Google/transport exceptions to controlled, content-safe errors."""
+    if is_provider_response_too_large(exc):
+        return AppError(502, "llm_provider_bad_response", "The LLM provider response exceeded the permitted size.", {"provider_error_code": "response_too_large"})
+    if is_provider_response_encoding_unsupported(exc):
+        return AppError(502, "llm_provider_bad_response", "The LLM provider used an unsupported response encoding.", {"provider_error_code": "unsupported_content_encoding"})
     if isinstance(exc, (google_auth_exceptions.DefaultCredentialsError, google_auth_exceptions.RefreshError)):
         return AppError(401, "llm_invalid_credential", "Google credentials could not be loaded or refreshed.")
     if isinstance(exc, (TimeoutError, httpx.TimeoutException, requests.Timeout)):
@@ -343,10 +352,12 @@ def translate_gemini_error(exc: Exception, *, operation: str = "generation") -> 
                 details,
             )
         return AppError(422, "llm_location_unavailable", "The Gemini location is unavailable.", details)
-    if status_code == 400 and operation in {"model_validation", "generation"}:
-        return AppError(422, "llm_model_unavailable", "The Gemini model is unavailable.", details)
-    if status_code == 400 and operation == "model_discovery":
-        return AppError(422, "llm_location_unavailable", "The Gemini location is unavailable.", details)
+    if status_code == 400:
+        if reason_codes & {"MODEL_NOT_FOUND", "MODEL_UNAVAILABLE"}:
+            return AppError(422, "llm_model_unavailable", "The Gemini model is unavailable.", details)
+        if reason_codes & {"LOCATION_NOT_FOUND", "LOCATION_UNAVAILABLE"}:
+            return AppError(422, "llm_location_unavailable", "The Gemini location is unavailable.", details)
+        return AppError(422, "llm_provider_bad_request", "Gemini rejected the request as invalid.", details)
     return AppError(502, "llm_generation_failed", "Gemini could not complete the request.", details)
 
 

@@ -15,7 +15,7 @@ with PostgreSQL, so at-most-once submission wins over an uncertain retry.
 from __future__ import annotations
 
 from app.services.provider_transport_telemetry import provider_attempt_execution
-from app.services.llm_execution import ExecutionBudget
+from app.services.llm_execution import ExecutionBudget, require_supported_execution_context
 
 from dataclasses import dataclass
 from datetime import timedelta
@@ -363,6 +363,10 @@ def _submit_prepared(
         db, work.owner, transcript=work.transcript, analysis=work.analysis
     ):
         return _cancel_queued_locked(db, work=work, code="consultation_split_source_stale", stale=True), False
+    try:
+        require_supported_execution_context()
+    except AppError as exc:
+        return _cancel_queued_locked(db, work=work, code=exc.code), False
     # The prepared values came from the same locked transaction.  This check
     # prevents a future caller from passing content or a credential for another
     # execution into this private transition.

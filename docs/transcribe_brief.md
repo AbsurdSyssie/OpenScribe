@@ -33,6 +33,7 @@ Implemented behavior includes:
 - grouping by date and time of day;
 - accessible status icons/tooltips;
 - bulk deletion where offered by the current UI;
+- an additional bulk-delete confirmation when a selected transcript root has transcript text, a Working note, retained dictation, or a ready generated note; this uses the separate `has_saved_content` presence flag, while `has_transcript_content` keeps its transcript-only meaning;
 - preservation of loaded rail state during polling/selection;
 - a remembered active transcript UUID in `sessionStorage` as an untrusted navigation hint only.
 

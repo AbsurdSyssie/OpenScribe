@@ -19,3 +19,5 @@ A suggestion already shown in the browser remains visible. A completed suggestio
 ## Privacy and logging
 
 The preference is owner-scoped. The existing suggestion flow stores transcript snapshots encrypted for the owner and sends only the established redacted source to an eligible provider. Lifecycle logs contain identifiers, states, counts, and reason codes only. They do not contain transcript text, prompts, provider responses, PII, or credentials.
+
+Provider output is parsed as JSON with duplicate object keys rejected at every nesting level before the suggestion schema is validated. Ambiguous output fails closed and is not persisted as a suggestion.

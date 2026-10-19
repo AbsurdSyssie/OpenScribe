@@ -56,6 +56,34 @@ def _assert_target_sizes(page) -> None:
     assert not undersized, f"Help navigation has pointer targets below 24 CSS px: {undersized}"
 
 
+def test_scribe_sidebar_resize_controls(audit_report, audit_browser, synthetic_audit_user):
+    page, _blocked = audit_browser
+    page.set_viewport_size({"width": 1280, "height": 800})
+    login(page, synthetic_audit_user, audit_report)
+    response = page.goto("/workspace", wait_until="domcontentloaded")
+    assert response is not None and response.ok
+    resize = page.locator("[data-sidebar-resize]")
+    narrower = page.get_by_role("button", name="Make sidebar narrower")
+    wider = page.get_by_role("button", name="Make sidebar wider")
+    assert resize.get_attribute("aria-valuenow") == "288"
+    narrower.click()
+    assert resize.get_attribute("aria-valuenow") == "272"
+    wider.click()
+    assert resize.get_attribute("aria-valuenow") == "288"
+    resize.focus()
+    page.keyboard.press("End")
+    assert resize.get_attribute("aria-valuenow") == "384"
+    wider.click()
+    assert resize.get_attribute("aria-valuenow") == "384", "Width controls exceeded the maximum"
+    resize.focus()
+    page.keyboard.press("Home")
+    assert resize.get_attribute("aria-valuenow") == "64"
+    assert not narrower.is_visible() and not wider.is_visible()
+    page.get_by_role("button", name="Expand sidebar").click()
+    assert resize.get_attribute("aria-valuenow") == "288"
+    assert narrower.is_visible() and wider.is_visible()
+
+
 @pytest.mark.accessibility_states({state: "executed" for state in HELP_STATES})
 def test_authenticated_help_accessibility_and_navigation(
     audit_report,

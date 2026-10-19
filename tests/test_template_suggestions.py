@@ -12,12 +12,32 @@ from app.models import (
     transcript_expiry, utcnow,
 )
 from app.services.template_suggestions import (
-    _messages, get_template_suggestion, process_template_suggestion, queue_template_suggestion,
+    _extract_json, _messages, get_template_suggestion, process_template_suggestion, queue_template_suggestion,
 )
 from app.services.quotas import estimate_token_reservation
 from app.services.llm import _llm_config_has_in_flight_jobs
 from app.services.task_outbox import publish_task_dispatch
 from app.services.transcripts import delete_transcripts, set_transcript_draft_text
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"template_id":"first","template_id":"second","confidence":"high","reason":"Synthetic"}',
+        '{"template_id":"first","confidence":"high","reason":{"text":"one","text":"two"}}',
+    ],
+)
+def test_template_suggestion_json_rejects_duplicate_keys_at_every_depth(payload):
+    with pytest.raises(ValueError):
+        _extract_json(payload)
+
+
+def test_template_suggestion_json_accepts_unambiguous_object():
+    assert _extract_json('{"template_id":"synthetic","confidence":"high","reason":"Synthetic"}') == {
+        "template_id": "synthetic",
+        "confidence": "high",
+        "reason": "Synthetic",
+    }
 
 
 def _transcript(db, owner, text):
@@ -101,6 +121,34 @@ def test_enabled_template_suggestions_queue_job_and_outbox(
     assert job.status is TemplateSuggestionStatus.queued
     assert db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job.id)) is not None
     assert db_session.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_id == job.id)) is not None
+
+
+def test_unsupported_worker_cancels_suggestion_before_submitted_or_provider_call(
+    db_session, make_user, make_template, make_llm_config, make_llm_selection, monkeypatch,
+):
+    user = _configured_user(make_user, make_llm_config, make_llm_selection)
+    transcript = _transcript(db_session, user, "x" * 1300)
+    _templates(make_template, user)
+    monkeypatch.setattr("app.services.template_suggestions.try_publish_task_dispatch_safely", lambda *_: None)
+    job = queue_template_suggestion(db_session, user, transcript_id=transcript.id)
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job.id))
+    provider_calls = []
+    monkeypatch.setattr(
+        "app.services.template_suggestions.require_supported_execution_context",
+        lambda: (_ for _ in ()).throw(AppError(503, "llm_execution_context_unsupported", "synthetic")),
+    )
+    monkeypatch.setattr(
+        "app.services.templates._generate_freeform_output_openai",
+        lambda **_kwargs: provider_calls.append(True),
+    )
+
+    failed = process_template_suggestion(db_session, job_id=job.id)
+
+    db_session.refresh(attempt)
+    assert failed.status is TemplateSuggestionStatus.failed
+    assert failed.error_code == "llm_execution_context_unsupported"
+    assert attempt.status is AttemptStatus.cancelled
+    assert provider_calls == []
 
 
 @pytest.mark.parametrize(

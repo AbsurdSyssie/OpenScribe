@@ -100,6 +100,22 @@ Dictation modal actions use a synthetic browser harness to verify that Save and 
 pytest -q tests/test_dictation_modal_actions.py
 ```
 
+Consultation deletion confirmation and Scribe sidebar resizing have synthetic
+Node-backed behavioral tests:
+
+```bash
+pytest -q tests/test_transcribe_delete_actions_js.py tests/test_transcribe_sidebar_resize_js.py
+```
+
+They cover single/bulk confirmation cancellation and submission, empty-root
+deletion, and pointer/keyboard/click width bounds, collapse and persistence.
+The opt-in browser check below also verifies the controls in the rendered
+workspace, rather than relying on legacy template or source-string assertions:
+
+```bash
+pytest -q --accessibility-audit tests/accessibility/test_help.py::test_scribe_sidebar_resize_controls
+```
+
 Transcript ingestion/generation lifecycle:
 
 ```bash
@@ -317,6 +333,8 @@ Use `down --volumes` only for a deliberately disposable instance.
 
 ### Provider behavior
 
+- unsupported worker contexts fail before the provider-attempt submitted transition, and reserved quota is cancelled without provider dispatch;
+- native worker-thread, greenlet/eventlet/gevent, and occupied timer contexts fail closed with content-free diagnostics;
 - ready/pending setup states;
 - credential replacement/removal and cleanup;
 - discovered/manual model validation;

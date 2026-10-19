@@ -13,6 +13,9 @@ from ..db import SessionLocal
 from ..errors import AppError
 from ..models import (
     GeneratedDocument,
+    GeneratedDocumentSection,
+    PostConsultationDictation,
+    PostConsultationDictationSegment,
     ClinicalEntityRun,
     AttemptKind,
     AttemptOutcome,
@@ -69,7 +72,11 @@ from ..services.preferences import (
 )
 from ..services.consultation_split_gates import consultation_splitting_available as consultation_splitting_available_service, transcript_split_enabled
 from ..services.generation_presentation import generated_document_status_projection
-from ..services.dictations import dictation_detail_response, dictation_effective_text, get_post_consultation_dictation
+from ..services.dictations import (
+    dictation_detail_response,
+    dictation_effective_text,
+    get_post_consultation_dictation,
+)
 from ..services.stt import active_team_stt_selection as active_team_stt_selection_service
 from ..services.stt import check_selected_stt_health as check_selected_stt_health_service
 from ..services.stt import resolve_selected_team_stt as resolve_selected_team_stt_service
@@ -480,6 +487,86 @@ def _transcript_has_content(db: Session, transcript: Transcript) -> bool:
     return any((transcript_version_text_service(db, transcript_version=version) or "").strip() for version in versions)
 
 
+def _derived_content_by_transcript_id(
+    db: Session,
+    transcripts: list[Transcript],
+    *,
+    owner_user_id: UUID,
+) -> dict[UUID, bool]:
+    """Batch owner-scoped presence checks for transcript-derived sources."""
+    transcript_ids = [row.id for row in transcripts if row.owner_user_id == owner_user_id]
+    content_by_id: dict[UUID, bool] = {row.id: False for row in transcripts}
+    if not transcript_ids:
+        return content_by_id
+
+    for transcript in transcripts:
+        if transcript.id not in transcript_ids:
+            continue
+        # Presence only: saved envelopes and structured working-note metadata
+        # are enough to require confirmation; these sources are never opened.
+        content_by_id[transcript.id] = bool(
+            transcript.working_note_mode is not None
+            or (transcript.freeform_working_note_encrypted or "").strip()
+            or transcript.structured_context_json
+        )
+
+    dictation_rows = db.execute(
+        select(
+            PostConsultationDictation.transcript_id,
+            PostConsultationDictation.id,
+            PostConsultationDictation.combined_edited_text_encrypted,
+        ).where(
+            PostConsultationDictation.owner_user_id == owner_user_id,
+            PostConsultationDictation.transcript_id.in_(transcript_ids),
+        )
+    )
+    dictation_ids: set[UUID] = set()
+    dictation_transcript_by_id: dict[UUID, tuple[UUID, str | None]] = {}
+    for transcript_id, dictation_id, combined_envelope in dictation_rows:
+        dictation_transcript_by_id[dictation_id] = (transcript_id, combined_envelope)
+        dictation_ids.add(dictation_id)
+    if dictation_ids:
+        transcripts_with_segments = set(db.scalars(
+            select(PostConsultationDictation.transcript_id)
+            .join(
+                PostConsultationDictationSegment,
+                PostConsultationDictationSegment.post_consultation_dictation_id == PostConsultationDictation.id,
+            )
+            .where(
+                PostConsultationDictation.owner_user_id == owner_user_id,
+                PostConsultationDictation.id.in_(dictation_ids),
+            )
+        ))
+        for dictation_id, (transcript_id, combined_envelope) in dictation_transcript_by_id.items():
+            if (combined_envelope or "").strip() or transcript_id in transcripts_with_segments:
+                content_by_id[transcript_id] = True
+
+    ready_documents = db.scalars(
+        select(GeneratedDocument.transcript_id).where(
+            GeneratedDocument.owner_user_id == owner_user_id,
+            GeneratedDocument.transcript_id.in_(transcript_ids),
+            GeneratedDocument.status == GeneratedDocumentStatus.ready,
+            GeneratedDocument.edited_output_text_encrypted.is_not(None),
+            GeneratedDocument.edited_output_text_encrypted != "",
+        )
+    )
+    for transcript_id in ready_documents:
+        content_by_id[transcript_id] = True
+    for transcript_id in db.scalars(
+        select(GeneratedDocument.transcript_id)
+        .join(GeneratedDocumentSection, GeneratedDocumentSection.generated_document_id == GeneratedDocument.id)
+        .where(
+            GeneratedDocument.owner_user_id == owner_user_id,
+            GeneratedDocument.transcript_id.in_(transcript_ids),
+            GeneratedDocument.status == GeneratedDocumentStatus.ready,
+            GeneratedDocumentSection.edited_text_encrypted.is_not(None),
+            GeneratedDocumentSection.edited_text_encrypted != "",
+        )
+    ):
+        content_by_id[transcript_id] = True
+    return content_by_id
+
+
 def _transcript_content_by_id_for_history_page(
     db: Session,
     transcripts: list[Transcript],
@@ -521,12 +608,23 @@ def transcript_list_item_response(
     *,
     ingestion_completion_times: dict[UUID, datetime] | None = None,
     has_transcript_content_by_id: dict[UUID, bool] | None = None,
+    has_saved_content_by_id: dict[UUID, bool] | None = None,
 ) -> TranscriptListItem:
     payload = TranscriptListItem.model_validate(transcript, from_attributes=True).model_dump()
     if has_transcript_content_by_id is None:
-        payload["has_transcript_content"] = _transcript_has_content(db, transcript)
+        has_transcript_content = _transcript_has_content(db, transcript)
     else:
-        payload["has_transcript_content"] = has_transcript_content_by_id.get(transcript.id, False)
+        has_transcript_content = has_transcript_content_by_id.get(transcript.id, False)
+    payload["has_transcript_content"] = has_transcript_content
+    if has_saved_content_by_id is None:
+        has_derived_content = _derived_content_by_transcript_id(
+            db,
+            [transcript],
+            owner_user_id=transcript.owner_user_id,
+        ).get(transcript.id, False)
+        payload["has_saved_content"] = has_transcript_content or has_derived_content
+    else:
+        payload["has_saved_content"] = has_saved_content_by_id.get(transcript.id, False)
     if ingestion_completion_times is None:
         payload["latest_successful_ingestion_completed_at"] = latest_successful_ingestion_completed_at_service(
             db,
@@ -612,7 +710,18 @@ def list_transcript_history_page(
         db,
         transcript_ids=[transcript.id for transcript in page_rows],
     )
-    has_transcript_content_by_id = _transcript_content_by_id_for_history_page(db, page_rows)
+    has_transcript_content_by_id = _transcript_content_by_id_for_history_page(
+        db,
+        page_rows,
+    )
+    saved_content_by_id = dict(has_transcript_content_by_id)
+    derived_content_by_id = _derived_content_by_transcript_id(
+        db,
+        page_rows,
+        owner_user_id=current_user.id,
+    )
+    for transcript_id, has_content in derived_content_by_id.items():
+        saved_content_by_id[transcript_id] = saved_content_by_id.get(transcript_id, False) or has_content
     return {
         "items": [
             transcript_list_item_response(
@@ -620,6 +729,7 @@ def list_transcript_history_page(
                 transcript,
                 ingestion_completion_times=ingestion_completion_times,
                 has_transcript_content_by_id=has_transcript_content_by_id,
+                has_saved_content_by_id=saved_content_by_id,
             )
             for transcript in page_rows
         ],

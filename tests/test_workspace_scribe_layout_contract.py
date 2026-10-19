@@ -13,6 +13,25 @@ def compact_css(css: str) -> str:
     return " ".join(css.split())
 
 
+def test_scribe_sidebar_exposes_click_keyboard_and_pointer_resize_controls():
+    sidebar = read("app/templates/workspace/_sidebar.html")
+    extras = read("app/templates/transcribe/_shell_extras.html")
+    css = compact_css(read("app/static/css/workspace.css"))
+
+    assert 'data-sidebar-resize' in sidebar
+    assert 'data-sidebar-step="-16" aria-label="Make sidebar narrower"' in sidebar
+    assert 'data-sidebar-step="16" aria-label="Make sidebar wider"' in sidebar
+    assert "sidebarWidthStepButtons.forEach" in extras
+    assert "event.key === 'ArrowLeft'" in extras
+    assert "event.key === 'ArrowRight'" in extras
+    assert "event.key === 'Home'" in extras
+    assert "event.key === 'End'" in extras
+    assert "addEventListener('pointerdown'" in extras
+    assert "addEventListener('pointermove'" in extras
+    assert ".workspace-sidebar__resize-controls { display: flex;" in css
+    assert ".workspace-sidebar__resize-controls { display: none; }" in css
+
+
 def test_scribe_workspace_owns_a_bounded_viewport_and_not_document_scroll():
     """Permanent shell must not let tall Scribe content grow document viewport."""
     css = compact_css(read("app/static/css/workspace.css"))
@@ -165,7 +184,7 @@ def test_scribe_mobile_flow_assets_have_current_cache_keys():
     legacy_transcribe = read("app/templates/transcribe.html")
 
     assert 'workspace/app.js?v=20261018-help-pointer-resize' in workspace
-    assert 'transcribe/app.js?v=20261018-dictation-save-await' in shell_extras
+    assert 'transcribe/app.js?v=20261019-delete-confirmation-content' in shell_extras
     assert 'transcribe/mobile.js?v=20260823-mobile-toast' in shell_extras
     assert 'documents.js?v=20261014-generation-status' in read("app/static/js/transcribe/app.js")
     assert 'transcribe-mobile.css?v=20260930-detected-pii-override' in legacy_transcribe

@@ -9,10 +9,8 @@
   <div class="workspace-sidebar__account">
     <div class="workspace-sidebar__identity" data-sidebar-full><strong>{{ current_user.full_name or current_user.email }}</strong><small>{{ current_user.email }}</small></div>
     <div class="workspace-sidebar__resize-controls" role="group" aria-label="Sidebar width controls">
-      {% if active_workspace_section != 'scribe' %}
       <button type="button" data-sidebar-full data-sidebar-step="-16" aria-label="Make sidebar narrower" title="Make sidebar narrower"><i data-lucide="minus" aria-hidden="true"></i></button>
       <button type="button" data-sidebar-full data-sidebar-step="16" aria-label="Make sidebar wider" title="Make sidebar wider"><i data-lucide="plus" aria-hidden="true"></i></button>
-      {% endif %}
       <button type="button" class="workspace-sidebar__collapse" data-sidebar-collapse-toggle aria-label="Collapse sidebar" title="Collapse sidebar"><i data-sidebar-collapse-icon-expanded data-lucide="panel-left-close" aria-hidden="true"></i><i data-sidebar-collapse-icon-collapsed data-lucide="panel-left-open" aria-hidden="true"></i></button>
     </div>
   </div>

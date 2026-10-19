@@ -26,7 +26,7 @@ def test_split_review_workspace_accessibility_hooks_and_cachebusters():
     assert 'data-split-review-create' in workspace
     assert 'splitReview.js?v=20261014-generation-status' in app_js
     assert 'splitReviewController?.applyWorkspaceState' in app_js
-    assert 'app.js?v=20261018-dictation-save-await' in shell
+    assert 'app.js?v=20261019-delete-confirmation-content' in shell
     assert 'transcribe.css?v=20261016-accessible-manual-guide' in head
     assert 'data-split-continue-one-note hidden' in workspace
     assert 'data-split-review-confirm' not in workspace

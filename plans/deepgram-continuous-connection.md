@@ -4,9 +4,9 @@ Status: implemented on 22 October 2026; independent review and verification reco
 
 ## Goal
 
-Keep one Deepgram Listen V1 WebSocket open for the lifetime of an active live recording, including while the browser is paused or no audio is being sent. Keep the existing bounded transcript, quota, and recovery checkpoint contracts. Close the provider connection on explicit Stop or when the stream fails. This work is limited to Deepgram live connection lifecycle.
+Keep one Deepgram Listen V1 WebSocket open for the lifetime of an active live recording, including while the browser is paused or no audio is being sent. Keep the existing bounded transcript, quota, and recovery checkpoint contracts. Close the provider connection on explicit Stop or when the stream fails. This work is limited to Deepgram live connection lifecycle; diarisation configuration, speaker parsing, transcript presentation, and generation prompting remain separate work.
 
-The user approved KeepAlive through silence while recording is active and approved an exceptional CloseStream/drain followed by a fresh connection when a checkpoint cannot be proven finalized. It is an exception path, not a scheduled 30-second rotation.
+The user approved KeepAlive through silence while recording is active and approved an exceptional CloseStream/drain followed by a fresh connection when a checkpoint cannot be proven finalized. This fallback can reset speaker identity in that exceptional case. It is an exception path, not a scheduled 30-second rotation.
 
 ## Baseline current behavior before implementation
 
@@ -31,7 +31,7 @@ Relevant maintained contracts are in `docs/live_stt.md`, `docs/testing.md`, `doc
 
 ## User-visible behavior and limits
 
-Routine checkpointing must not close the Deepgram socket, including during a pause or silence. An exceptional unprovable checkpoint may close and reopen it under the user's decision.
+Routine checkpointing must not close the Deepgram socket, including during a pause or silence. An exceptional unprovable checkpoint may close and reopen it under the user's decision. Speaker continuity is expected across normal checkpoints and silence, but cannot be promised across that exceptional fallback or an upstream/network failure. This task does not add diarisation or persist speaker labels.
 
 Deepgram's official documentation describes `is_final` as a finalized transcript segment and `Finalize` as a flush control whose completion marker is not guaranteed for insignificant buffered audio. The design must not treat no response as proof. See [Finalize](https://developers.deepgram.com/docs/finalize), [endpointing and interim results](https://developers.deepgram.com/docs/understand-endpointing-interim-results/), and [KeepAlive](https://developers.deepgram.com/docs/audio-keep-alive).
 
@@ -41,7 +41,7 @@ Deepgram's official documentation describes `is_final` as a finalized transcript
 - Adapter control behavior only if needed: `app/services/deepgram_streaming.py`.
 - Durable accounting/lifecycle service should remain unchanged unless code proves it cannot represent a valid bounded checkpoint: `app/services/transcript_streaming.py`.
 - Replace route tests that assert routine connection rotation with tests for same-socket checkpointing, KeepAlive during silence/pause, cumulative provider timestamps, quota-boundary checkpoints, explicit Stop drain, uncertain-finalization fallback, and no replay. Extend adapter fakes/tests for Finalize and CloseStream ordering.
-- Update maintained live-STT behavior and focused verification instructions/checklist.
+- Update maintained live-STT behavior and focused verification instructions/checklist. Do not edit diarisation-owned files.
 - Use synthetic provider events and audio only. Do not make real provider calls.
 
 ## Acceptance criteria
@@ -72,4 +72,4 @@ Implemented on 22 October 2026. No migration or runtime configuration change was
 - `APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/python scripts/audit_api_auth.py`: exit 0.
 - `.venv/bin/python .github/scripts/check-operational-docs.py`: checked 54 maintained documentation files successfully.
 - `git diff --check`: passed.
-Repository tests use synthetic provider events and do not replace an acceptance check against the deployed Deepgram service.
+Repository tests use synthetic provider events and do not replace an acceptance check against the deployed Deepgram service. An exceptional unproven checkpoint may reset provider speaker identities; this work does not add diarisation.

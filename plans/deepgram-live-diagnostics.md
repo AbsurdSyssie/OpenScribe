@@ -6,7 +6,7 @@ Status: implemented on 22 October 2026; independent review and verification reco
 
 Make failures in Deepgram live transcription diagnosable in host development and Docker deployments, while keeping clinical content, credentials, and provider payloads out of logs. Scope is the Deepgram live route, its provider adapter, the `start-dev.sh` launch path, bounded local log retrieval, and the applicable operational documentation. This is an observability change; it must not alter stream, transcript, quota, recovery, or ownership behavior.
 
-The user confirmed that failures occur under `start-dev.sh` and similar errors have occurred in production running Docker.
+The user confirmed that failures occur under `start-dev.sh` and similar errors have occurred in production running Docker. User has separately assigned diarisation work elsewhere; this plan does not include it.
 
 ## Current behavior
 

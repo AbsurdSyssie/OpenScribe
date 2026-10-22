@@ -134,7 +134,15 @@ Deepgram live-stream browser protocol (synthetic PCM, no database or provider co
 pytest -q tests/test_deepgram_live_stream_frontend.py
 ```
 
-This Node-backed test covers the binary PCM header, pause/resume pre-roll offsets, one-way source ordering, bounded backpressure failure, and exact bounded recovery selection that excludes unsent/ring audio. The streaming route, quota ledger, recovery lifecycle, workspace capability and owner authorization are database-backed and belong in the sequential transcript/API test run.
+This Node-backed test covers the binary PCM header, pause/resume pre-roll offsets, one-way source ordering, the unchanged five-second pre-roll ring, the separate ten-second outbound backlog bound, and exact bounded recovery selection that excludes unsent/ring audio.
+
+Deepgram streaming lifecycle, accounting, recovery and generation barriers (synthetic provider events only):
+
+```bash
+APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_deepgram_diagnostics.py tests/test_deepgram_streaming.py tests/test_deepgram_live_route.py tests/test_transcript_streaming.py tests/test_deepgram_live_stream_frontend.py tests/test_deepgram_recovery_wav.py tests/test_stream_generation_barrier.py
+```
+
+These checks cover content-free diagnostics, safe local rotation and failure handling, continuous provider-clock mapping, same-socket checkpoints, KeepAlive, bounded Finalize/CloseStream fallback, no audio replay, existing quota settlement, exact recovery, owner authorization and generation barriers. They use synthetic provider events only. Keep this run sequential with the API authorization audit because both use the shared test database and Redis.
 
 Generation logging and token reservations:
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from datetime import timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -170,12 +169,12 @@ def test_authorization_commits_before_provider_media_and_quota_failure_sends_not
     asyncio.run(scenario())
 
 
-def test_short_pause_checkpoint_drains_then_commits_before_ack(monkeypatch):
+def test_short_pause_checkpoint_finalizes_and_reuses_socket_before_ack(monkeypatch):
     async def scenario():
         socket = _FakeSocket()
         relay = live._Relay(socket, uuid4(), _started())
         order: list[str] = []
-        provider = _FakeProvider([_result(duration=1.0), _metadata()], order=order)
+        provider = _FakeProvider([_result(duration=1.0, text=""), _metadata()], order=order)
         relay.provider = provider
         relay.provider_context = provider
         relay.audio.extend(b"\x00\x00" * 16_000)
@@ -193,10 +192,11 @@ def test_short_pause_checkpoint_drains_then_commits_before_ack(monkeypatch):
 
         await relay.checkpoint()
 
-        assert order.index("close_stream") < order.index("commit_stream_window")
+        assert order.index("finalize") < order.index("commit_stream_window")
         assert socket.sent[-1] == {"type": "window_committed", "window_no": 0, "next_sample_offset": 16_000}
         assert relay.audio == bytearray()
-        assert relay.provider is None
+        assert relay.provider is provider
+        assert "close_stream" not in provider.controls
         await relay.close()
 
     asyncio.run(scenario())
@@ -206,7 +206,12 @@ def test_silent_window_closes_and_commits_empty_text_without_transcript_span(mon
     async def scenario():
         socket = _FakeSocket()
         relay = live._Relay(socket, uuid4(), _started())
-        provider = _FakeProvider([_metadata()])
+        class SilentProvider(_FakeProvider):
+            async def send_close_stream(self):
+                await super().send_close_stream()
+                self.events.put_nowait(_metadata())
+
+        provider = SilentProvider()
         relay.provider = provider
         relay.provider_context = provider
         relay.audio.extend(b"\x00\x00" * 32)
@@ -233,14 +238,113 @@ def test_silent_window_closes_and_commits_empty_text_without_transcript_span(mon
     asyncio.run(scenario())
 
 
-def test_checkpoint_rotates_connection_without_replaying_committed_pcm(monkeypatch):
+def test_stop_with_idle_provider_closes_once_without_phantom_commit(monkeypatch):
+    async def scenario():
+        relay = live._Relay(_FakeSocket(), uuid4(), _started())
+        exits = []
+        commits = []
+
+        class ProviderContext:
+            async def __aexit__(self, *_exc):
+                exits.append("closed")
+
+        provider_context = ProviderContext()
+
+        class IdleProvider(_FakeProvider):
+            async def send_close_stream(self):
+                await super().send_close_stream()
+                self.events.put_nowait(_metadata())
+
+        provider = IdleProvider()
+        relay.provider = provider
+        relay.provider_context = provider_context
+        relay.provider_task = asyncio.create_task(provider.receive(timeout_seconds=60))
+
+        async def service(name, **_kwargs):
+            if name == "commit_stream_window":
+                commits.append(name)
+                raise AssertionError("idle Stop must not commit a window")
+            return None
+
+        relay.service = service
+        await relay.checkpoint(closing=True)
+
+        assert provider.controls == ["close_stream"]
+        assert exits == ["closed"]
+        assert commits == []
+        assert relay.provider is None
+        await relay.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("is_final,duration", [(False, 2 / live.SAMPLE_RATE), (True, 0.0)])
+def test_nonfinal_or_zero_length_finalize_marker_uses_close_drain_fallback(monkeypatch, is_final, duration):
+    from app.services.deepgram_streaming import DeepgramResultEvent
+
+    async def scenario():
+        relay = live._Relay(_FakeSocket(), uuid4(), _started())
+        provider = _FakeProvider([DeepgramResultEvent(
+            text="synthetic marker", is_final=is_final, speech_final=False,
+            from_finalize=True, start=0.0, duration=duration,
+        )])
+
+        async def close_with_metadata():
+            await _FakeProvider.send_close_stream(provider)
+            provider.events.put_nowait(_metadata())
+
+        provider.send_close_stream = close_with_metadata
+        relay.provider = provider
+        relay.provider_context = provider
+        relay.audio.extend(b"\x00\x00" * 2)
+        relay.media_samples = 2
+        relay.source_end = 2
+        committed = {}
+
+        async def service(name, **kwargs):
+            assert name == "commit_stream_window"
+            committed.update(kwargs)
+            return StreamWindowCommitted(0, 2, 2)
+
+        relay.service = service
+        monkeypatch.setattr(live, "_owner_call", _async_noop_owner_call)
+        monkeypatch.setattr(live, "CONTROL_WRITE_TIMEOUT_SECONDS", 0.02)
+        monkeypatch.setattr(live, "FINALIZE_ACK_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(live, "CLOSE_DRAIN_TIMEOUT_SECONDS", 0.02)
+        monkeypatch.setattr(live, "PROVIDER_KEEPALIVE_INTERVAL_SECONDS", 0.003)
+        relay._receive_provider()
+
+        await relay.checkpoint()
+
+        assert provider.controls[-1] == "close_stream"
+        assert committed["finalized_text"] == ""
+        assert committed["final_segment_count"] == 0
+        assert relay.provider is None
+        await relay.close()
+
+    asyncio.run(scenario())
+
+
+def test_checkpoint_reuses_connection_and_keeps_cumulative_provider_clock(monkeypatch):
     async def scenario():
         socket = _FakeSocket()
         relay = live._Relay(socket, uuid4(), _started())
         providers = []
 
         def make_provider(*_args, **_kwargs):
-            provider = _FakeProvider([_metadata()])
+            provider = _FakeProvider()
+
+            async def finalize_with_delayed_markers():
+                await _FakeProvider.send_finalize(provider)
+                provider.events.put_nowait(_result(
+                    start=0, duration=2 / live.SAMPLE_RATE, text="stale finalize marker", final=True,
+                ))
+                provider.events.put_nowait(_result(
+                    start=2 / live.SAMPLE_RATE, duration=2 / live.SAMPLE_RATE,
+                    text="second window", final=True,
+                ))
+
+            provider.send_finalize = finalize_with_delayed_markers
             providers.append(provider)
             return provider
 
@@ -260,6 +364,7 @@ def test_checkpoint_rotates_connection_without_replaying_committed_pcm(monkeypat
         )
         monkeypatch.setattr(live, "_owner_call", _async_noop_owner_call)
         total = 0
+        committed_text = []
 
         async def service(name, **kwargs):
             nonlocal total
@@ -275,6 +380,7 @@ def test_checkpoint_rotates_connection_without_replaying_committed_pcm(monkeypat
             if name == "record_stream_batch_sent":
                 return None
             if name == "commit_stream_window":
+                committed_text.append(kwargs["finalized_text"])
                 return StreamWindowCommitted(relay.window_no, kwargs["source_end_sample_offset"], kwargs["forwarded_sample_count"])
             raise AssertionError(name)
 
@@ -284,20 +390,116 @@ def test_checkpoint_rotates_connection_without_replaying_committed_pcm(monkeypat
         second_pcm = b"\x20\x00\x21\x00"
 
         await relay.audio_frame(live.FRAME_HEADER.pack(1, 0, 2) + first_pcm, preflight)
+        providers[0].events.put_nowait(_result(duration=2 / live.SAMPLE_RATE, text="first window", final=True))
+        first_event = await relay.provider_event()
+        assert first_event.start == 0
         await relay.checkpoint()
         await relay.audio_frame(live.FRAME_HEADER.pack(1, 2, 2) + second_pcm, preflight)
+        await relay.checkpoint()
 
-        assert len(providers) == 2
-        assert providers[0].media == [first_pcm]
-        assert providers[1].media == [second_pcm]
-        assert first_pcm not in providers[1].media
-        assert second_pcm not in providers[0].media
+        assert len(providers) == 1
+        assert providers[0].media == [first_pcm, second_pcm]
+        assert providers[0].controls == ["finalize"]
+        assert committed_text == ["first window", "second window"]
         await relay.close()
 
     asyncio.run(scenario())
 
 
-def test_pause_and_stop_drain_windows_rotate_provider_and_commit_before_receipt(monkeypatch):
+def test_unconfirmed_finalize_drains_fallback_socket_and_reopens_without_replay(monkeypatch):
+    async def scenario():
+        socket = _FakeSocket()
+        relay = live._Relay(socket, uuid4(), _started())
+        providers = []
+        exits = []
+
+        class ProviderContext:
+            def __init__(self, provider):
+                self.provider = provider
+
+            async def __aenter__(self):
+                return self.provider
+
+            async def __aexit__(self, *_exc):
+                exits.append(self.provider)
+
+        def provider_factory(*_args, **_kwargs):
+            provider = _FakeProvider()
+            index = len(providers)
+            if index == 1:
+                async def finalize_with_current_marker():
+                    await _FakeProvider.send_finalize(provider)
+                    provider.events.put_nowait(_result(
+                        start=0, duration=2 / live.SAMPLE_RATE, text="current marker",
+                    ))
+
+                provider.send_finalize = finalize_with_current_marker
+
+            async def close_with_metadata():
+                await _FakeProvider.send_close_stream(provider)
+                provider.events.put_nowait(_metadata())
+
+            provider.send_close_stream = close_with_metadata
+            providers.append(provider)
+            return ProviderContext(provider)
+
+        monkeypatch.setattr("app.services.deepgram_streaming.DeepgramLiveStream", provider_factory)
+        monkeypatch.setattr(live, "_owner_call", _async_noop_owner_call)
+        monkeypatch.setattr(live, "CONTROL_WRITE_TIMEOUT_SECONDS", 0.02)
+        monkeypatch.setattr(live, "FINALIZE_ACK_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(live, "CLOSE_DRAIN_TIMEOUT_SECONDS", 0.02)
+        monkeypatch.setattr(live, "PROVIDER_KEEPALIVE_INTERVAL_SECONDS", 0.003)
+
+        total = 0
+        commits = []
+
+        async def service(name, **kwargs):
+            nonlocal total
+            if name == "authorize_stream_batch":
+                first = kwargs["first_sample_offset"]
+                count = kwargs["sample_count"]
+                start = total
+                total += count
+                return StreamBatchAuthorization(
+                    uuid4(), uuid4(), True, relay.window_no, start, total,
+                    first + count, total, total - relay.committed_samples,
+                )
+            if name == "record_stream_batch_sent":
+                return None
+            if name == "commit_stream_window":
+                commits.append(kwargs["finalized_text"])
+                return StreamWindowCommitted(
+                    relay.window_no, kwargs["source_end_sample_offset"], kwargs["forwarded_sample_count"],
+                )
+            raise AssertionError(name)
+
+        relay.service = service
+        preflight = live._Preflight(config=object(), snapshot={}, api_key="synthetic")
+        first_pcm, second_pcm = b"\x10\x00\x11\x00", b"\x20\x00\x21\x00"
+
+        await relay.audio_frame(live.FRAME_HEADER.pack(1, 0, 2) + first_pcm, preflight)
+        await relay.checkpoint()
+        assert relay.provider is None
+        assert providers[0].controls[0] == "finalize"
+        assert "keep_alive" in providers[0].controls
+        assert providers[0].controls[-1] == "close_stream"
+        assert exits == [providers[0]]
+
+        await relay.audio_frame(live.FRAME_HEADER.pack(1, 2, 2) + second_pcm, preflight)
+        await relay.checkpoint()
+
+        assert len(providers) == 2
+        assert providers[0].media == [first_pcm]
+        assert providers[1].media == [second_pcm]
+        assert providers[1].controls == ["finalize"]
+        assert relay.connection_base_samples == 2
+        assert commits == ["", "current marker"]
+        await relay.close()
+
+    asyncio.run(scenario())
+
+
+def test_pause_and_stop_keep_socket_and_commit_before_receipt(monkeypatch):
     async def scenario():
         order: list[str] = []
         providers = []
@@ -313,7 +515,13 @@ def test_pause_and_stop_drain_windows_rotate_provider_and_commit_before_receipt(
                 await self.provider.__aexit__(*_exc)
 
         def provider_factory(*_args, **_kwargs):
-            provider = _FakeProvider([_result(duration=0.000125), _metadata()], order=order)
+            provider = _FakeProvider([_result(duration=0.000125)], order=order)
+
+            async def close_with_metadata():
+                await _FakeProvider.send_close_stream(provider)
+                provider.events.put_nowait(_metadata())
+
+            provider.send_close_stream = close_with_metadata
             providers.append(provider)
             return ProviderContext(provider)
 
@@ -375,18 +583,19 @@ def test_pause_and_stop_drain_windows_rotate_provider_and_commit_before_receipt(
         relay.service = service
         await relay.run(live._Preflight(config=object(), snapshot={}, api_key="synthetic"))
 
-        assert len(providers) == 2
-        assert providers[0].media == [pcm1]
-        assert providers[1].media == [pcm2]
-        assert all(provider.controls == ["close_stream"] for provider in providers)
+        assert len(providers) == 1
+        assert providers[0].media == [pcm1, pcm2]
+        assert providers[0].controls == ["close_stream"]
         assert len(commits) == 2
         assert order.count("finish") == 1
         assert order.count("ack") == 2
-        assert order.index("close_stream") < order.index("commit") < order.index("ack")
-        second_drain = order.index("close_stream", order.index("ack") + 1)
-        second_commit = order.index("commit", order.index("ack") + 1)
-        second_ack = order.index("ack", order.index("ack") + 1)
-        assert second_drain < second_commit < second_ack < order.index("finish") < order.index("final_ack")
+        first_commit = order.index("commit")
+        first_ack = order.index("ack")
+        close_index = order.index("close_stream")
+        second_commit = order.index("commit", first_commit + 1)
+        second_ack = order.index("ack", first_ack + 1)
+        assert first_commit < first_ack < close_index < second_commit < second_ack
+        assert second_ack < order.index("finish") < order.index("final_ack")
         assert socket.sent[-1] == {"type": "finalized"}
         assert relay.completed
         await relay.close()
@@ -459,13 +668,12 @@ def test_websocket_rejects_anonymous_even_with_valid_origin(db_session, make_tea
     assert raised.value.code == 1008
 
 
-def test_route_logs_only_fixed_outcome_when_session_service_raises_sensitive_error(monkeypatch, caplog):
+def test_route_logs_only_fixed_outcome_when_session_service_raises_sensitive_error(monkeypatch, capsys):
     from app.main import app
 
     route_path = "/api/v1/transcripts/{transcript_id}/deepgram-stream"
     if not any(getattr(route, "path", None) == route_path for route in app.routes):
         app.include_router(live.router)
-    caplog.set_level(logging.INFO, logger=live.logger.name)
 
     def fail_with_sensitive_text(*_args, **_kwargs):
         raise RuntimeError("SYNTHETIC_PRIVATE_SENTINEL")
@@ -479,9 +687,176 @@ def test_route_logs_only_fixed_outcome_when_session_service_raises_sensitive_err
             ):
                 pass
 
-    assert "SYNTHETIC_PRIVATE_SENTINEL" not in caplog.text
-    assert "deepgram_stream_closed" in caplog.text
-    assert all(record.exc_info is None for record in caplog.records)
+    output = capsys.readouterr().out
+    assert "SYNTHETIC_PRIVATE_SENTINEL" not in output
+    records = [json.loads(line) for line in output.splitlines() if line.startswith("{")]
+    assert any(record.get("event") == "phase" and record.get("phase") == "owner_check" for record in records)
+
+
+@pytest.mark.parametrize(
+    ("failure_kind", "public_code", "persisted_code", "provider_category"),
+    [
+        ("provider", "stream_failed", "stream_provider_failed", "provider_error"),
+        ("provider_closed", "stream_failed", "stream_provider_failed", "none"),
+        ("protocol", "stream_result_invalid", "stream_protocol_invalid", "none"),
+        ("finalization", "stream_finalization_failed", "stream_finalization_timeout", "none"),
+        ("session_expired", "stream_session_expired", "stream_session_expired", "none"),
+        ("disconnect", None, "stream_transport_failed", "none"),
+        ("unknown", "stream_failed", "stream_failed", "none"),
+    ],
+)
+def test_stream_failure_diagnostics_are_safe_visible_and_bounded(
+    monkeypatch, capsys, tmp_path, failure_kind, public_code, persisted_code, provider_category,
+):
+    diagnostic_path = tmp_path / "logs" / "deepgram-live.jsonl"
+    live.deepgram_diagnostics.configure_file_sink(str(diagnostic_path))
+    from app.errors import AppError
+    from app.services.deepgram_streaming import DeepgramStreamError
+
+    class SyntheticSocket(_FakeSocket):
+        def __init__(self):
+            super().__init__()
+            self.url = SimpleNamespace(scheme="http")
+            self.headers = {"host": "testserver", "origin": "http://testserver"}
+            self.cookies = {SESSION_COOKIE_NAME: "synthetic-session"}
+            self.messages = [
+                {"text": '{"type":"start","csrf_token":"synthetic-csrf"}'},
+                {"type": "websocket.receive", "bytes": live.FRAME_HEADER.pack(1, 0, 2) + bytes((1, 0, 2, 0))},
+            ]
+            self.closed = []
+
+        async def accept(self):
+            return None
+
+        async def receive(self):
+            if self.messages:
+                return self.messages.pop(0)
+            await asyncio.Event().wait()
+
+        async def close(self, code=1000):
+            self.closed.append(code)
+
+    socket = SyntheticSocket()
+    started = _started()
+    preflight = live._Preflight(config=SimpleNamespace(), snapshot={}, api_key="synthetic-key")
+    owner_calls = 0
+
+    async def fake_owner_call(_socket, _transcript_id, _operation):
+        nonlocal owner_calls
+        owner_calls += 1
+        if owner_calls == 2:
+            return preflight
+        if owner_calls == 3:
+            return started
+        if owner_calls >= 6:
+            return {}
+        return None
+
+    class ProviderContext:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def send_media(self, _pcm):
+            return None
+
+        async def receive(self, *, timeout_seconds=None):
+            if failure_kind == "provider":
+                raise DeepgramStreamError("provider_error")
+            if failure_kind == "provider_closed":
+                raise AppError(502, "stream_provider_closed", "Synthetic provider close")
+            if failure_kind == "protocol":
+                raise AppError(502, "stream_result_invalid", "Synthetic invalid interval")
+            if failure_kind == "finalization":
+                raise AppError(502, "stream_finalization_failed", "Synthetic finalization failure")
+            if failure_kind == "session_expired":
+                raise AppError(409, "stream_session_expired", "Synthetic session expiry")
+            if failure_kind == "disconnect":
+                raise WebSocketDisconnect(1001)
+            raise RuntimeError("SYNTHETIC_PRIVATE_SENTINEL")
+
+    failure_call = {}
+
+    async def fake_service(self, name, **kwargs):
+        if name == "authorize_stream_batch":
+            return StreamBatchAuthorization(
+                uuid4(), uuid4(), True, self.window_no, 0, 2, 2, 2, 2,
+            )
+        if name == "fail_transcript_stream":
+            failure_call.update(kwargs)
+            return SimpleNamespace(
+                recovery_available=False,
+                next_source_sample_offset=2,
+                status=SimpleNamespace(value="failed"),
+            )
+        return None
+
+    monkeypatch.setattr(live, "_same_origin", lambda _socket: True)
+    monkeypatch.setattr(live, "_owner_call", fake_owner_call)
+    monkeypatch.setattr(live, "verify_csrf_token", lambda **_kwargs: True)
+    monkeypatch.setattr(live._Relay, "service", fake_service)
+    monkeypatch.setattr("app.services.deepgram_streaming.DeepgramLiveStream", lambda *_a, **_k: ProviderContext())
+    asyncio.run(live.deepgram_live(socket, uuid4()))
+
+    error_messages = [message for message in socket.sent if message.get("type") == "error"]
+    if public_code is None:
+        assert not error_messages
+    else:
+        assert error_messages and error_messages[0]["code"] == public_code
+    assert failure_call["error_code"] == persisted_code
+    output = capsys.readouterr().out
+    records = [json.loads(line) for line in output.splitlines() if line.startswith("{")]
+    failure_records = [record for record in records if record.get("event") == "recording_failed"]
+    assert failure_records
+    assert failure_records[0]["failure"] == persisted_code
+    assert failure_records[0]["provider_category"] == provider_category
+    assert failure_records[0]["diagnostic_id"]
+    file_records = [json.loads(line) for line in diagnostic_path.read_text().splitlines()]
+    file_failure_records = [record for record in file_records if record.get("event") == "recording_failed"]
+    assert file_failure_records == failure_records
+    if failure_kind == "unknown":
+        assert "SYNTHETIC_PRIVATE_SENTINEL" not in output
+    live.deepgram_diagnostics.reset_for_tests()
+
+
+def test_checkpoint_wait_expiry_uses_safe_finalization_error(monkeypatch):
+    from app.errors import AppError
+
+    class ClosingProvider:
+        def __init__(self):
+            self.events = asyncio.Queue()
+
+        async def receive(self, *, timeout_seconds=None):
+            return await asyncio.wait_for(self.events.get(), timeout_seconds)
+
+        async def send_finalize(self):
+            return None
+
+        async def send_keep_alive(self):
+            return None
+
+        async def send_close_stream(self):
+            return None
+
+    relay = live._Relay(_FakeSocket(), uuid4(), _started())
+    relay.provider = ClosingProvider()
+    relay.audio.extend(b"\x00\x00")
+    relay.media_samples = 1
+    monkeypatch.setattr(live, "CONTROL_WRITE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "FINALIZE_ACK_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "CLOSE_DRAIN_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "PROVIDER_KEEPALIVE_INTERVAL_SECONDS", 0.005)
+
+    async def scenario():
+        relay.provider_task = asyncio.create_task(relay.provider.receive(timeout_seconds=60))
+        with pytest.raises(AppError) as raised:
+            await relay.checkpoint()
+        assert raised.value.code == "stream_finalization_failed"
+        await relay.close()
+
+    asyncio.run(scenario())
 
 
 def test_websocket_rejects_cross_owner_transcript(client, db_session, make_team, make_user):

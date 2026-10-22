@@ -3,6 +3,7 @@ const FRAME_HEADER_BYTES = 13;
 const MAX_BATCH_SAMPLES = 16000;
 const BATCH_TARGET_SAMPLES = 8000;
 const RING_LIMIT_SAMPLES = 5 * 16000;
+const OUTBOUND_LIMIT_SAMPLES = 10 * 16000;
 const RECOVERY_LIMIT_SAMPLES = 30 * 16000;
 const SOCKET_BUFFER_LIMIT_BYTES = 128 * 1024;
 
@@ -338,7 +339,7 @@ export class DeepgramLiveStream {
     this.outbound.push(record.samples);
     this.outboundSamples += record.samples.length;
     this.lastQueuedOffset = record.offset + record.samples.length;
-    if (this.outboundSamples > RING_LIMIT_SAMPLES) {
+    if (this.outboundSamples > OUTBOUND_LIMIT_SAMPLES) {
       throw protocolError('Live transcription is receiving audio too slowly.');
     }
     this._flushOutbound();

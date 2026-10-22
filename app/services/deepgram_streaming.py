@@ -35,6 +35,7 @@ MAX_LANGUAGE_CHARS = 64
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 15.0
 DEFAULT_OPERATION_TIMEOUT_SECONDS = 10.0
 MAX_OPERATION_TIMEOUT_SECONDS = 60.0
+MAX_CLEANUP_TIMEOUT_SECONDS = 2.0
 
 # Deepgram's generated Listen V1 connector doesn't expose websockets' per-
 # connection logger argument. Keep protocol frame logging disabled on an
@@ -116,6 +117,11 @@ _ERROR_CATEGORIES = frozenset(
         "timeout",
     }
 )
+_CLOSE_CLASSES = {
+    1000: "normal", 1001: "going_away", 1002: "protocol_error",
+    1003: "unsupported_data", 1006: "abnormal", 1008: "policy_violation",
+    1011: "internal_error", 1012: "service_restart", 1013: "try_again_later",
+}
 _LISTEN_V1_MODEL = re.compile(r"^(?:nova|enhanced|base)(?:-[a-z0-9]+)*$", re.IGNORECASE)
 
 
@@ -154,8 +160,9 @@ DeepgramStreamEvent = DeepgramResultEvent | DeepgramMetadataEvent
 class DeepgramStreamError(Exception):
     """A provider-stream failure with a controlled, content-free category."""
 
-    def __init__(self, category: str):
+    def __init__(self, category: str, *, close_class: str = "none"):
         self.category = category if category in _ERROR_CATEGORIES else "provider_error"
+        self.close_class = close_class if close_class in set(_CLOSE_CLASSES.values()) | {"unknown", "none"} else "unknown"
         super().__init__(self.category)
 
 
@@ -330,7 +337,12 @@ def _safe_sdk_error(exc: BaseException) -> DeepgramStreamError:
         if safe_code == "provider_server_error":
             return DeepgramStreamError("provider_server_error")
         return DeepgramStreamError("provider_error")
-    if isinstance(exc, (OSError, ConnectionError, ConnectionClosed)):
+    if isinstance(exc, ConnectionClosed):
+        received = getattr(exc, "rcvd", None)
+        code = getattr(received, "code", None)
+        close_class = "abnormal" if received is None else _CLOSE_CLASSES.get(code, "unknown")
+        return DeepgramStreamError("connection_error", close_class=close_class)
+    if isinstance(exc, (OSError, ConnectionError)):
         return DeepgramStreamError("connection_error")
     return DeepgramStreamError("provider_error")
 
@@ -400,25 +412,43 @@ class DeepgramLiveStream:
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, traceback: Any) -> bool:
+        cleanup_timeout = min(self.config.operation_timeout_seconds, MAX_CLEANUP_TIMEOUT_SECONDS)
+        cleanup_deadline = asyncio.get_running_loop().time() + cleanup_timeout
+        cleanup_timed_out = False
         try:
             if self._connection_context is not None and self._socket is not None:
                 try:
-                    await self._connection_context.__aexit__(exc_type, exc, traceback)
+                    # Reserve one quarter of the shared cleanup budget for the
+                    # HTTP client, even if the SDK websocket context stalls.
+                    context_timeout = cleanup_timeout * 0.75
+                    async with asyncio.timeout(context_timeout):
+                        await self._connection_context.__aexit__(exc_type, exc, traceback)
                 except asyncio.CancelledError:
                     raise
+                except TimeoutError:
+                    cleanup_timed_out = True
                 except Exception as cleanup_exc:
                     if exc_type is None:
                         raise _safe_sdk_error(cleanup_exc) from None
         finally:
-            await self._close_http_client()
+            await self._close_http_client(deadline=cleanup_deadline)
             self._socket = None
+            self._connection_context = None
+        if cleanup_timed_out and exc_type is None:
+            raise DeepgramStreamError("timeout") from None
         return False
 
-    async def _close_http_client(self) -> None:
+    async def _close_http_client(self, *, deadline: float | None = None) -> None:
         client, self._http_client = self._http_client, None
         if client is not None:
             try:
-                await client.aclose()
+                remaining = MAX_CLEANUP_TIMEOUT_SECONDS
+                if deadline is not None:
+                    remaining = min(remaining, deadline - asyncio.get_running_loop().time())
+                    if remaining <= 0:
+                        return
+                async with asyncio.timeout(remaining):
+                    await client.aclose()
             except Exception:
                 # Cleanup must not expose SDK/httpx exception content.
                 pass
@@ -518,7 +548,8 @@ class DeepgramLiveStream:
         duration = _safe_number(message.duration)
         try:
             alternatives = message.channel.alternatives
-            text = alternatives[0].transcript if alternatives else ""
+            alternative = alternatives[0] if alternatives else None
+            text = alternative.transcript if alternative else ""
         except (AttributeError, IndexError, TypeError):
             raise DeepgramStreamError("invalid_response") from None
         if (

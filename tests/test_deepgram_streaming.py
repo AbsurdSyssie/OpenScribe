@@ -436,3 +436,33 @@ def test_connection_and_receive_timeouts_are_controlled(monkeypatch):
         assert raised.value.category == "timeout"
 
     asyncio.run(exercise())
+
+
+def test_context_cleanup_is_bounded_and_clears_owned_connection_references(monkeypatch):
+    async def exercise():
+        socket = _FakeSocket()
+
+        class StalledExit(_FakeContext):
+            async def __aexit__(self, exc_type, exc, traceback):
+                await asyncio.Event().wait()
+
+        clients = _fake_sdk(monkeypatch, socket=socket, context=StalledExit(socket))
+        monkeypatch.setattr(streaming, "MAX_CLEANUP_TIMEOUT_SECONDS", 0.05)
+        client = streaming.DeepgramLiveStream(
+            streaming.DeepgramStreamConfig(
+                "https://api.eu.deepgram.com", "nova-3", operation_timeout_seconds=0.1,
+            ),
+            api_key="synthetic-key",
+        )
+        await client.__aenter__()
+
+        with pytest.raises(streaming.DeepgramStreamError) as raised:
+            await client.__aexit__(None, None, None)
+
+        assert raised.value.category == "timeout"
+        assert client._socket is None
+        assert client._connection_context is None
+        assert client._http_client is None
+        assert clients[0].context.exited is False
+
+    asyncio.run(exercise())

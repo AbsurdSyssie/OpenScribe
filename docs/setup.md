@@ -233,6 +233,7 @@ Database-test safety and xdist behavior are documented in [testing.md](testing.m
 - `COOKIE_SECURE_MODE=always is required in production`: set `APP_ENV=local` for local development, or configure production HTTPS and `COOKIE_SECURE_MODE=always`.
 - CSRF/Vault startup failure: provide a stable `CSRF_SECRET`, or make local Vault available with KV-v2 and the token file.
 - Audio normalization/probe errors: install `ffmpeg` and verify both `ffmpeg` and `ffprobe` are on `PATH`.
+- Deepgram live recording stops with an error: search `.local/logs/deepgram-live.jsonl` for the recording's `diagnostic_id`; the `recording_failed` record shows the active stage and last completed stage. See [live STT diagnostics](live_stt.md#live-diagnostics). In Docker, inspect the `openscribe` container stdout with the documented Compose log command.
 - Queued work never completes: confirm the Celery worker is running and consumes all configured queues.
 - Durable cleanup/outbox fallback never runs: confirm Celery Beat is running.
 - Setup/reset email disabled: configure `MAIL_TRANSPORT` and required sender/public URL values.

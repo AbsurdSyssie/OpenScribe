@@ -18,12 +18,21 @@ from sqlalchemy.orm import Session
 from app.errors import AppError
 from app.models import (
     AttemptKind, AttemptOutcome, AttemptStatus, LlmAdapterKind, PromptTemplate,
-    QuotaResource, TaskDispatchKind, TaskDispatchOutbox, TeamLlmConfig, TemplateSuggestionJob,
+    ProviderAttempt, QuotaResource, TaskDispatchKind, TaskDispatchOutbox, TeamLlmConfig, TemplateSuggestionJob,
     TemplateSuggestionStatus, Transcript, User, utcnow,
 )
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
 from app.services.llm import resolve_user_llm
+from app.services.llm_backup import (
+    effective_provider_attempt, freeze_backup_selection, provider_result_is_current, read_backup_provider,
+    reserve_backup_attempt,
+)
+from app.services.llm_backup_policy import (
+    backup_is_distinct, can_failover, prepare_backup_request,
+    tag_output_validation_failure, tag_provider_failure,
+)
 from app.services.llm_adapters import runtime as llm_runtime
+from app.services.llm_adapters.runtime import validate_provider_snapshot_for_config
 from app.services.json_validation import reject_duplicate_json_keys
 from app.services.preferences import template_suggestions_enabled
 from app.services.quotas import (
@@ -35,6 +44,7 @@ from app.services.task_outbox import add_pending_task_dispatch, try_publish_task
 from app.services.templates import (
     _apply_manual_pii_redaction, _invoke_frozen_llm,
     _extract_first_balanced_json_object, _generation_request_snapshot, _resolve_generation_credential,
+    _normalize_missing_provider_credential,
     list_available_templates_for_user,
 )
 from app.services.transcripts import get_active_owner_transcript, transcript_draft_text, transcript_is_expired
@@ -208,6 +218,7 @@ def queue_template_suggestion(
     try:
         db.add(job)
         db.flush()
+        freeze_backup_selection(db, source=job, owner_user_id=job.owner_user_id, team_id=job.team_id)
         reserve_provider_attempt(
             db, team_id=job.team_id, owner_user_id=job.owner_user_id, resource=QuotaResource.tokens,
             attempt_kind=AttemptKind.llm_template_suggestion, correlation_id=job.id, attempt_number=1,
@@ -295,14 +306,61 @@ def _attempt(db: Session, job_id: UUID, *, populate_existing: bool = False):
     return db.scalar(statement)
 
 
-def _fail(db: Session, job: TemplateSuggestionJob, code: str) -> TemplateSuggestionJob:
+def _settle_suggestion_attempt(
+    db: Session, *, attempt, usage: dict[str, int | None] | None,
+    outcome: AttemptOutcome, error_code: str | None = None,
+) -> None:
+    total = usage.get("total_tokens") if usage else None
+    if isinstance(total, int):
+        settled = settle_provider_attempt_tokens(
+            db, attempt_id=attempt.id, reported_total_tokens=total, outcome=outcome,
+            reported_input_tokens=usage.get("input_tokens"), reported_output_tokens=usage.get("output_tokens"),
+        )
+    else:
+        settled = settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id)
+    settled.error_code = error_code
+    db.add(settled)
+
+
+def _lock_suggestion_result(
+    db: Session, *, job: TemplateSuggestionJob, submitted_attempt_id,
+) -> bool:
+    identity = db.get(TemplateSuggestionJob, job.id)
+    if identity is None:
+        return False
+    owner = db.scalar(select(User).where(User.id == identity.owner_user_id).execution_options(populate_existing=True).with_for_update())
+    transcript = db.scalar(select(Transcript).where(Transcript.id == identity.transcript_id).execution_options(populate_existing=True).with_for_update())
+    locked = db.scalar(select(TemplateSuggestionJob).where(
+        TemplateSuggestionJob.id == job.id,
+    ).with_for_update().execution_options(populate_existing=True))
+    primary = db.scalar(select(ProviderAttempt).where(
+        ProviderAttempt.correlation_id == job.id,
+        ProviderAttempt.attempt_kind == AttemptKind.llm_template_suggestion,
+        ProviderAttempt.attempt_number == 1,
+    ).with_for_update())
+    if (owner is None or transcript is None or locked is None or owner.is_system_admin
+        or owner.id != locked.owner_user_id or transcript.id != locked.transcript_id
+        or owner.team_id != locked.team_id or transcript.team_id != locked.team_id
+        or transcript.owner_user_id != locked.owner_user_id or transcript_is_expired(transcript)):
+        return False
+    if locked.status is not TemplateSuggestionStatus.processing or primary is None:
+        return False
+    active = effective_provider_attempt(db, primary=primary, lock=True)
+    return (
+        active.id == submitted_attempt_id and active.status is AttemptStatus.submitted
+        and provider_result_is_current(db, primary_id=primary.id, submitted_attempt_id=submitted_attempt_id, now=utcnow())
+    )
+
+
+def _fail(db: Session, job: TemplateSuggestionJob, code: str, *,
+          submitted_attempt_id: UUID, usage: dict[str, int | None] | None = None) -> TemplateSuggestionJob | None:
+    if not _lock_suggestion_result(db, job=job, submitted_attempt_id=submitted_attempt_id):
+        db.rollback()
+        return db.get(TemplateSuggestionJob, job.id)
     previous_status = job.status.value
-    attempt = _attempt(db, job.id)
-    if attempt is not None:
-        if attempt.status is AttemptStatus.reserved:
-            cancel_provider_attempt(db, attempt_id=attempt.id)
-        elif attempt.status is AttemptStatus.submitted:
-            settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id)
+    attempt = db.get(ProviderAttempt, submitted_attempt_id)
+    _settle_suggestion_attempt(db, attempt=attempt, usage=usage,
+        outcome=AttemptOutcome.failed, error_code=code)
     job.status = TemplateSuggestionStatus.failed
     job.error_code = code[:128]
     job.completed_at = utcnow()
@@ -365,6 +423,153 @@ def _fail_pre_submit(db: Session, *, job_id: UUID, code: str) -> TemplateSuggest
     return job
 
 
+def _parse_suggestion_result(output: str, job: TemplateSuggestionJob) -> dict[str, object] | None:
+    parsed = _ProviderSuggestion.model_validate(_extract_json(output))
+    candidate_ids = {str(item.get("id")) for item in job.candidates_snapshot_json if isinstance(item, dict)}
+    selected_id = str((job.selected_template_snapshot_json or {}).get("id") or "")
+    if parsed.template_id is not None and str(parsed.template_id) == selected_id:
+        return None
+    if parsed.template_id is not None and str(parsed.template_id) not in candidate_ids:
+        raise AppError(502, "template_suggestion_invalid_response", "The provider returned an invalid suggestion")
+    return None if parsed.confidence == "low" or parsed.template_id is None else {
+        "template_id": str(parsed.template_id), "confidence": parsed.confidence,
+    }
+
+
+def _try_backup_suggestion(
+    db: Session, *, job: TemplateSuggestionJob, primary: TeamLlmConfig,
+    primary_attempt, primary_request: dict[str, object], primary_exc: AppError,
+    primary_usage: dict[str, int | None] | None = None, preclaim: bool = False,
+) -> tuple[dict[str, object] | None, dict[str, int | None], TeamLlmConfig, object] | None:
+    # A local storage/preparation failure must never turn into another dispatch.
+    # Roll back its uncommitted transition; the caller terminalizes its exact
+    # original attempt (or cancels the still-unsubmitted primary).
+    try:
+        return _try_backup_suggestion_impl(db, job=job, primary=primary,
+            primary_attempt=primary_attempt, primary_request=primary_request,
+            primary_exc=primary_exc, primary_usage=primary_usage, preclaim=preclaim)
+    except Exception:
+        db.rollback()
+        return None
+
+
+def _try_backup_suggestion_impl(
+    db: Session, *, job: TemplateSuggestionJob, primary: TeamLlmConfig,
+    primary_attempt, primary_request: dict[str, object], primary_exc: AppError,
+    primary_usage: dict[str, int | None] | None = None,
+    preclaim: bool = False,
+) -> tuple[dict[str, object] | None, dict[str, int | None], TeamLlmConfig, object] | None:
+    if not can_failover(primary_exc):
+        return None
+    try:
+        backup = read_backup_provider(db, source=job)
+    except AppError:
+        return None
+    if backup is None or not backup_is_distinct(
+        primary_config_id=primary.id, primary_model=primary_request.get("model"), backup_provider=backup,
+    ):
+        return None
+    config = db.get(TeamLlmConfig, UUID(backup.llm_config_id))
+    if config is None or config.team_id != job.team_id:
+        return None
+    try:
+        validate_provider_snapshot_for_config(backup.to_dict(), config=config, expected_model=backup.model)
+        request = prepare_backup_request(
+            backup, primary_request, job.owner_user_id,
+            output_token_cap=llm_runtime.request_output_token_cap(primary_request),
+        )
+        credential = _resolve_generation_credential(config)
+    except AppError:
+        return None
+
+    owner = db.scalar(select(User).where(User.id == job.owner_user_id).with_for_update())
+    transcript = db.scalar(select(Transcript).where(Transcript.id == job.transcript_id).with_for_update())
+    locked = db.scalar(select(TemplateSuggestionJob).where(
+        TemplateSuggestionJob.id == job.id,
+    ).with_for_update().execution_options(populate_existing=True))
+    current_primary = _attempt(db, job.id, populate_existing=True)
+    active = effective_provider_attempt(db, primary=current_primary, lock=True) if current_primary is not None else None
+    if (owner is None or transcript is None or locked is None
+        or transcript.owner_user_id != locked.owner_user_id
+        or owner.id != locked.owner_user_id or transcript.id != locked.transcript_id
+        or owner.is_system_admin or owner.team_id != locked.team_id or transcript.team_id != locked.team_id
+        or transcript_is_expired(transcript)
+        or locked.status is not (TemplateSuggestionStatus.queued if preclaim else TemplateSuggestionStatus.processing)
+        or current_primary is None
+        or (primary_attempt is not None and current_primary.id != primary_attempt.id)
+        or current_primary.status is not (AttemptStatus.reserved if preclaim else AttemptStatus.submitted)
+        or (preclaim and current_primary.reservation_valid_until <= utcnow())
+        or active is None or active.id != current_primary.id):
+        db.rollback()
+        return None
+    if preclaim:
+        require_supported_execution_context()
+        cancel_provider_attempt(db, attempt_id=current_primary.id)
+        locked.status = TemplateSuggestionStatus.processing
+        locked.started_at = utcnow()
+    else:
+        _settle_suggestion_attempt(
+            db, attempt=current_primary, usage=primary_usage,
+            outcome=AttemptOutcome.failed if primary_usage and isinstance(primary_usage.get("total_tokens"), int) else AttemptOutcome.unknown,
+            error_code=primary_exc.code,
+        )
+    cap = llm_runtime.request_output_token_cap(request)
+    if not isinstance(cap, int) or cap <= 0:
+        db.rollback()
+        return None
+    messages = request.get("messages")
+    if isinstance(messages, list):
+        texts = tuple(str(item.get("content", "")) for item in messages if isinstance(item, dict))
+    else:
+        from app.services.llm_adapters.runtime import gemini_request_from_snapshot
+        gemini = gemini_request_from_snapshot(request)
+        texts = (gemini.system_message, gemini.user_message)
+    try:
+        with db.begin_nested():
+            child = reserve_backup_attempt(
+                db, primary=current_primary, provider=backup,
+                reserved_units=estimate_token_reservation(texts, max_completion_tokens=cap), now=utcnow(),
+            )
+    except AppError as exc:
+        if exc.code not in {"quota_exceeded", "quota_disabled"}:
+            raise
+        locked.status = TemplateSuggestionStatus.failed
+        locked.error_code = exc.code
+        locked.completed_at = utcnow()
+        db.add(locked)
+        db.commit()
+        return None
+    now = utcnow()
+    locked.llm_request_payload_json_encrypted = encrypt_json_for_owner(
+        db, owner_user_id=locked.owner_user_id, table=locked.__tablename__,
+        field="llm_request_payload_json_encrypted", record_id=locked.id, plaintext=request,
+    )
+    child.deadline_at = now + timedelta(seconds=TEMPLATE_SUGGESTION_PROVIDER_DEADLINE_SECONDS)
+    mark_provider_attempt_submitted(db, attempt_id=child.id, deadline_at=child.deadline_at, now=now)
+    db.commit()
+    try:
+        adapter = LlmAdapterKind(backup.adapter_kind)
+        with provider_attempt_execution(db, attempt_id=child.id, maximum_seconds=90):
+            output, usage = _invoke_frozen_llm(
+                config=config, adapter_kind=adapter, base_url=backup.base_url,
+                provider_config=dict(backup.provider_config), credential=credential, request_body=request,
+            )
+        result = _parse_suggestion_result(output, locked)
+    except Exception:
+        _fail(db, locked, "template_suggestion_failed", submitted_attempt_id=child.id,
+            usage=locals().get("usage"))
+        return None
+    if not _lock_suggestion_result(db, job=locked, submitted_attempt_id=child.id):
+        db.rollback()
+        return None
+    locked.model_used = backup.model
+    locked.llm_adapter_kind = adapter.value
+    locked.llm_base_url = backup.base_url
+    locked.llm_provider_config_json = dict(backup.provider_config)
+    db.add(locked)
+    return result, usage, config, child
+
+
 def cancel_queued_template_suggestions_for_owner(db: Session, actor: User) -> int:
     """Cancel queued owner jobs before redaction or provider dispatch.
 
@@ -413,6 +618,59 @@ def _extract_json(text: str) -> dict:
     return value
 
 
+def _complete_suggestion(
+    db: Session, *, locked: TemplateSuggestionJob, result: dict[str, object] | None,
+    usage: dict[str, int | None], config: TeamLlmConfig, active_attempt: ProviderAttempt,
+) -> TemplateSuggestionJob | None:
+    try:
+        return _complete_suggestion_impl(db, locked=locked, result=result, usage=usage,
+            config=config, active_attempt=active_attempt)
+    except Exception:
+        db.rollback()
+        return _fail(db, locked, "template_suggestion_failed",
+            submitted_attempt_id=active_attempt.id, usage=usage)
+
+
+def _complete_suggestion_impl(
+    db: Session, *, locked: TemplateSuggestionJob, result: dict[str, object] | None,
+    usage: dict[str, int | None], config: TeamLlmConfig, active_attempt: ProviderAttempt,
+) -> TemplateSuggestionJob | None:
+    if not _lock_suggestion_result(db, job=locked, submitted_attempt_id=active_attempt.id):
+        db.rollback()
+        return db.get(TemplateSuggestionJob, locked.id)
+    # The fence refreshes the row after provider I/O. Persist the winning
+    # attempt's public provider metadata only after that refresh so a late
+    # primary response cannot overwrite the backup's model identity.
+    if active_attempt.backup_of_attempt_id is not None:
+        locked.model_used = active_attempt.provider_model
+        locked.llm_adapter_kind = LlmAdapterKind(active_attempt.provider_adapter).value
+        backup = read_backup_provider(db, source=locked)
+        if backup is None:
+            raise AppError(500, "llm_backup_snapshot_invalid", "Backup snapshot is unavailable")
+        locked.llm_base_url = backup.base_url
+        locked.llm_provider_config_json = dict(backup.provider_config)
+    attempt = active_attempt
+    total = usage.get("total_tokens") if usage else None
+    if attempt is None or attempt.status is not AttemptStatus.submitted:
+        _log("template_suggestion_attempt_rejected", job=locked, reason_code="attempt_not_submitted", attempt_status=attempt.status.value if attempt is not None else "missing")
+        return _fail(db, locked, "template_suggestion_attempt_conflict", submitted_attempt_id=active_attempt.id)
+    _settle_suggestion_attempt(db, attempt=attempt, usage=usage, outcome=AttemptOutcome.succeeded)
+    _set_result(db, locked, result)
+    locked.status = TemplateSuggestionStatus.completed
+    locked.error_code = None
+    locked.completed_at = utcnow()
+    db.add(locked)
+    db.commit()
+    _log(
+        "template_suggestion_completed",
+        job=locked,
+        status=locked.status.value,
+        has_suggestion=result is not None,
+        usage_reported=isinstance(total, int),
+    )
+    return locked
+
+
 def process_template_suggestion(db: Session, *, job_id: UUID) -> TemplateSuggestionJob | None:
     job = db.get(TemplateSuggestionJob, job_id)
     if job is None or job.status in {TemplateSuggestionStatus.completed, TemplateSuggestionStatus.failed}:
@@ -425,6 +683,8 @@ def process_template_suggestion(db: Session, *, job_id: UUID) -> TemplateSuggest
         )
         return job
     _log("template_suggestion_worker_started", job=job, status=job.status.value)
+    if job.status is TemplateSuggestionStatus.processing:
+        return job
     transcript = db.get(Transcript, job.transcript_id)
     if transcript is None or transcript_is_expired(transcript) or transcript.owner_user_id != job.owner_user_id:
         _log("template_suggestion_source_rejected", job=job, reason_code="source_unavailable")
@@ -454,9 +714,30 @@ def process_template_suggestion(db: Session, *, job_id: UUID) -> TemplateSuggest
             system_message=system_message, user_message=user_message, output_token_cap=TEMPLATE_SUGGESTION_OUTPUT_TOKENS,
             temperature=0.0,
         )
-        credential = _resolve_generation_credential(config)
     except Exception:
-        _log("template_suggestion_preparation_failed", job=job, reason_code="redaction_or_credential_failed")
+        _log("template_suggestion_preparation_failed", job=job, reason_code="redaction_failed")
+        return _fail_pre_submit(db, job_id=job.id, code="template_suggestion_preparation_failed")
+    try:
+        credential = _resolve_generation_credential(config)
+    except Exception as exc:
+        # Only a provider-specific rejection can skip the unsubmitted primary.
+        # Vault availability, missing/corrupt owner keys and local configuration
+        # failures stay outside the provider fallback boundary.
+        if isinstance(exc, AppError):
+            exc = _normalize_missing_provider_credential(config, exc)
+        if isinstance(exc, AppError) and exc.code == "llm_invalid_credential":
+            try:
+                backup_result = _try_backup_suggestion(
+                    db, job=job, primary=config, primary_attempt=None,
+                    primary_request=request_body, primary_exc=tag_provider_failure(exc), preclaim=True,
+                )
+            except Exception:
+                db.rollback()
+                return _fail_pre_submit(db, job_id=job.id, code="template_suggestion_preparation_failed")
+            if backup_result is not None:
+                result, usage, backup_config, child = backup_result
+                return _complete_suggestion(db, locked=job, result=result, usage=usage,
+                    config=backup_config, active_attempt=child)
         return _fail_pre_submit(db, job_id=job.id, code="template_suggestion_preparation_failed")
     _log("template_suggestion_prepared", job=job, candidate_count=len(job.candidates_snapshot_json or []), adapter_kind=job.llm_adapter_kind)
 
@@ -507,6 +788,14 @@ def process_template_suggestion(db: Session, *, job_id: UUID) -> TemplateSuggest
     except AppError as exc:
         db.rollback()
         return _fail_pre_submit(db, job_id=locked.id, code=exc.code)
+    try:
+        locked.llm_request_payload_json_encrypted = encrypt_json_for_owner(
+            db, owner_user_id=locked.owner_user_id, table=locked.__tablename__,
+            field="llm_request_payload_json_encrypted", record_id=locked.id, plaintext=request_body,
+        )
+    except Exception:
+        db.rollback()
+        return _fail_pre_submit(db, job_id=locked.id, code="template_suggestion_preparation_failed")
     locked.status = TemplateSuggestionStatus.processing
     locked.started_at = utcnow()
     mark_provider_attempt_submitted(
@@ -516,6 +805,7 @@ def process_template_suggestion(db: Session, *, job_id: UUID) -> TemplateSuggest
     db.add(locked)
     db.commit()
     _log("template_suggestion_provider_submitted", job=locked, adapter_kind=locked.llm_adapter_kind)
+    active_attempt = attempt
     try:
         adapter = LlmAdapterKind(locked.llm_adapter_kind)
         with provider_attempt_execution(db, attempt_id=attempt.id, maximum_seconds=90):
@@ -527,43 +817,34 @@ def process_template_suggestion(db: Session, *, job_id: UUID) -> TemplateSuggest
                 credential=credential,
                 request_body=request_body,
             )
-        parsed = _ProviderSuggestion.model_validate(_extract_json(output))
-        candidate_ids = {str(item.get("id")) for item in locked.candidates_snapshot_json if isinstance(item, dict)}
-        selected_id = str((locked.selected_template_snapshot_json or {}).get("id") or "")
-        if parsed.template_id is not None and str(parsed.template_id) == selected_id:
-            result = None
-        elif parsed.template_id is not None and str(parsed.template_id) not in candidate_ids:
-            raise ValueError("invalid candidate")
-        else:
-            result = None if parsed.confidence == "low" or parsed.template_id is None else {
-                "template_id": str(parsed.template_id), "confidence": parsed.confidence,
-            }
+    except AppError as exc:
+        backup_result = _try_backup_suggestion(
+            db, job=locked, primary=config, primary_attempt=active_attempt,
+            primary_request=request_body, primary_exc=exc,
+        )
+        if backup_result is None:
+            _log("template_suggestion_provider_failed", job=locked, reason_code="provider_failed")
+            return _fail(db, locked, "template_suggestion_failed", submitted_attempt_id=active_attempt.id)
+        result, usage, config, active_attempt = backup_result
     except Exception:
         _log("template_suggestion_provider_failed", job=locked, reason_code="provider_or_output_validation_failed")
-        return _fail(db, locked, "template_suggestion_failed")
-    attempt = _attempt(db, locked.id)
-    total = usage.get("total_tokens") if usage else None
-    if attempt is None or attempt.status is not AttemptStatus.submitted:
-        _log("template_suggestion_attempt_rejected", job=locked, reason_code="attempt_not_submitted", attempt_status=attempt.status.value if attempt is not None else "missing")
-        return _fail(db, locked, "template_suggestion_attempt_conflict")
-    if isinstance(total, int):
-        settle_provider_attempt_tokens(
-            db, attempt_id=attempt.id, reported_total_tokens=total, outcome=AttemptOutcome.succeeded,
-            reported_input_tokens=usage.get("input_tokens"), reported_output_tokens=usage.get("output_tokens"),
-        )
+        return _fail(db, locked, "template_suggestion_failed", submitted_attempt_id=active_attempt.id)
     else:
-        settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id)
-    _set_result(db, locked, result)
-    locked.status = TemplateSuggestionStatus.completed
-    locked.error_code = None
-    locked.completed_at = utcnow()
-    db.add(locked)
-    db.commit()
-    _log(
-        "template_suggestion_completed",
-        job=locked,
-        status=locked.status.value,
-        has_suggestion=result is not None,
-        usage_reported=isinstance(total, int),
-    )
-    return locked
+        try:
+            result = _parse_suggestion_result(output, locked)
+        except (AppError, ValueError) as parse_exc:
+            if isinstance(parse_exc, AppError):
+                validation_error = tag_output_validation_failure(parse_exc)
+            else:
+                validation_error = AppError(502, "template_suggestion_invalid_response", "The provider returned an invalid suggestion", {"backup_failure_class": "output_validation_failure"})
+            backup_result = _try_backup_suggestion(
+                db, job=locked, primary=config, primary_attempt=active_attempt,
+                primary_request=request_body, primary_exc=validation_error, primary_usage=usage,
+            )
+            if backup_result is None:
+                _log("template_suggestion_provider_failed", job=locked, reason_code="output_validation_failed")
+                return _fail(db, locked, "template_suggestion_failed",
+                    submitted_attempt_id=active_attempt.id, usage=usage)
+            result, usage, config, active_attempt = backup_result
+    return _complete_suggestion(db, locked=locked, result=result, usage=usage,
+        config=config, active_attempt=active_attempt)

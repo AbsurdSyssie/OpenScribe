@@ -31,6 +31,7 @@ from app.services.preferences import consultation_splitting_enabled, consultatio
 from app.services.consultation_split_gates import analysis_split_enabled
 from app.services.generation_presentation import active_retry_presentation, generation_failure_presentation
 from app.services.transcripts import get_active_owner_transcript, transcript_is_expired
+from app.services.llm_backup import effective_provider_attempt
 
 
 _SAFE_ERROR_CODES = {
@@ -146,6 +147,7 @@ def _projection(
             select(ProviderAttempt)
             .where(
                 ProviderAttempt.consultation_split_execution_id == execution.id,
+                ProviderAttempt.backup_of_attempt_id.is_(None),
                 ProviderAttempt.owner_user_id == actor.id,
                 ProviderAttempt.team_id == analysis.team_id,
                 ProviderAttempt.transcript_id == analysis.transcript_id,
@@ -153,6 +155,7 @@ def _projection(
             .limit(1)
         )
         if attempt is not None:
+            attempt = effective_provider_attempt(db, primary=attempt)
             active_retry = active_retry_presentation(attempt, reference=execution.id)
     return ConsultationSplitAnalysisDetail(
         analysis_id=analysis.id,
@@ -471,6 +474,7 @@ def read_workspace_split_batch(db: Session, actor: User, *, transcript_id: UUID)
             select(ProviderAttempt)
             .where(
                 ProviderAttempt.consultation_split_execution_id == active.id,
+                ProviderAttempt.backup_of_attempt_id.is_(None),
                 ProviderAttempt.owner_user_id == actor.id,
                 ProviderAttempt.team_id == batch.team_id,
                 ProviderAttempt.transcript_id == batch.transcript_id,
@@ -478,6 +482,7 @@ def read_workspace_split_batch(db: Session, actor: User, *, transcript_id: UUID)
             .limit(1)
         )
         if attempt is not None:
+            attempt = effective_provider_attempt(db, primary=attempt)
             active_retry = active_retry_presentation(attempt, reference=active.id)
     return ConsultationSplitBatchDetail(
         batch_id=batch.id, status=batch.status.value, failed_topic_count=len(failed),

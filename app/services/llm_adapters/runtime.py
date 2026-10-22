@@ -533,7 +533,10 @@ def translate_openai_generation_error(
             code = error.get("code") if isinstance(error, dict) else None
             if isinstance(code, str) and code.strip():
                 provider_error_code = safe_provider_error_code(code, status_code=status_code)
-        return AppError(502, "llm_generation_failed", _safe_provider_http_error_message(status_code=status_code, provider_error_code=provider_error_code), {"provider_http_status": status_code, "provider_error_code": provider_error_code, **_retry_details(exc, status_code=status_code, provider_error_code=code if isinstance(body, dict) and isinstance(error, dict) else None)})
+        details = {"provider_http_status": status_code, "provider_error_code": provider_error_code, **_retry_details(exc, status_code=status_code, provider_error_code=code if isinstance(body, dict) and isinstance(error, dict) else None)}
+        if provider_error_code == "quota_exceeded":
+            details["backup_failure_class"] = "provider_quota_blocked"
+        return AppError(502, "llm_generation_failed", _safe_provider_http_error_message(status_code=status_code, provider_error_code=provider_error_code), details)
     return AppError(502, "llm_generation_failed", "LLM generation failed")
 
 
@@ -563,7 +566,10 @@ def translate_ollama_generation_error(
                     "model_not_found" if status_code == 404 and "model" in normalized and "not found" in normalized else error_value,
                     status_code=status_code,
                 )
-        return AppError(502, "llm_generation_failed", _safe_provider_http_error_message(status_code=status_code, provider_error_code=provider_error_code), {"provider_http_status": status_code, "provider_error_code": provider_error_code, **_retry_details(exc, status_code=status_code, provider_error_code=None)})
+        details = {"provider_http_status": status_code, "provider_error_code": provider_error_code, **_retry_details(exc, status_code=status_code, provider_error_code=None)}
+        if provider_error_code == "quota_exceeded":
+            details["backup_failure_class"] = "provider_quota_blocked"
+        return AppError(502, "llm_generation_failed", _safe_provider_http_error_message(status_code=status_code, provider_error_code=provider_error_code), details)
     return AppError(502, "llm_generation_failed", "LLM generation failed")
 
 

@@ -127,6 +127,8 @@ STT, LLM, de-identification, clinical NLP, and hallucination-check tests should 
 
 Provider metadata and selection rows must remain separate from owner transcript content.
 
+LLM backup tests cover the separate admin-owned selection, owner-encrypted queue-time provider snapshots, and a unique `backup_of_attempt_id` link for each backup quota attempt. Checker attempt numbering and split recovery numbering remain separate from failover. Test primary settlement before backup reservation, hard-quota rejection, credential failure before submission, timeout accounting, duplicate delivery and exact-attempt result fencing. Configuration tests also exercise committed queue/edit locking and credential correction that preserves a queued backup model. Migration checks must cover the partial primary-attempt uniqueness index and refusal to downgrade while backup-attempt accounting remains.
+
 ## Transcript and content boundaries
 
 ### Ownership and retention

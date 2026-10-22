@@ -23,6 +23,7 @@ from app.services.consultation_splits import queue_split_execution, read_split_b
 from app.services.content_crypto import encrypt_json_for_existing_owner
 from app.services.llm import resolve_user_llm
 from app.services.llm_adapters.runtime import build_provider_snapshot
+from app.services.llm_backup import freeze_backup_selection
 
 SPLIT_GENERATION_RESERVATION_SECONDS = 1_500
 
@@ -67,6 +68,10 @@ def queue_confirmed_split_generation(
     )
     if existing is not None:
         return QueuedSplitGeneration(existing, None, False)
+
+    freeze_backup_selection(
+        db, source=batch, owner_user_id=owner.id, team_id=batch.team_id,
+    )
 
     _selection, config, model, _preference = resolve_user_llm(db, owner)
     if not isinstance(model, str) or not model.strip():

@@ -43,6 +43,7 @@ from app.models import (
     TaskDispatchSourceKind,
     TaskDispatchState,
     Transcript,
+    TeamLlmConfig,
     User,
     utcnow,
 )
@@ -50,6 +51,7 @@ from app.services.consultation_split_analysis import (
     CONSULTATION_SPLIT_MAX_RESPONSE_CHARS,
     CONSULTATION_SPLIT_MAX_CANDIDATES,
     parse_split_analysis_output,
+    split_analysis_response_json_schema,
 )
 from app.services.consultation_split_locks import (
     AnalysisExecutionLockRequirements,
@@ -65,6 +67,12 @@ from app.services.consultation_split_sources import current_consultation_split_a
 from app.services.consultation_splits import read_split_analysis_json, read_split_execution_json
 from app.services.content_crypto import encrypt_json_for_existing_owner
 from app.services.llm_adapters import runtime as llm_runtime
+from app.services.llm_backup import effective_provider_attempt
+from app.services.llm_backup import read_backup_provider, reserve_backup_attempt
+from app.services.llm_backup_policy import backup_is_distinct, can_failover, prepare_backup_request, tag_provider_failure, tag_output_validation_failure
+from app.services.llm_credentials import resolve_generation_credential
+from app.services.llm_adapters.runtime import validate_provider_snapshot_for_config, request_output_token_cap
+from app.services.llm_adapters.types import LlmProviderSnapshot
 from app.services.consultation_split_gates import analysis_split_enabled
 from app.services.provider_errors import safe_provider_error_code
 from app.services.quotas import (
@@ -72,6 +80,7 @@ from app.services.quotas import (
     mark_provider_attempt_submitted,
     settle_provider_attempt_tokens,
     settle_provider_attempt_unknown_tokens,
+    estimate_token_reservation,
 )
 from app.services.task_outbox import cancel_pending_task_dispatch
 from app.services.transcripts import transcript_is_expired
@@ -173,7 +182,9 @@ def _read_execution_state(db: Session, *, execution_id: UUID) -> tuple[Consultat
         return execution.status, analysis.status if analysis is not None else None, bool(execution.recoverable_response_encrypted)
 
 
-def _is_durably_submitted_for_provider_call(db: Session, *, execution_id: UUID) -> bool:
+def _is_durably_submitted_for_provider_call(
+    db: Session, *, execution_id: UUID, submitted_attempt_id: UUID,
+) -> bool:
     """Prove the full delivered/processing/submitted state in a clean session."""
     with Session(bind=db.get_bind(), future=True) as read_db:
         execution = read_db.get(ConsultationSplitExecution, execution_id)
@@ -186,9 +197,11 @@ def _is_durably_submitted_for_provider_call(db: Session, *, execution_id: UUID) 
         ):
             return False
         analysis = read_db.get(ConsultationSplitAnalysis, execution.analysis_id)
-        attempt = read_db.scalar(
-            select(ProviderAttempt).where(ProviderAttempt.consultation_split_execution_id == execution.id)
-        )
+        primary = read_db.scalar(select(ProviderAttempt).where(
+            ProviderAttempt.consultation_split_execution_id == execution.id,
+            ProviderAttempt.backup_of_attempt_id.is_(None),
+        ))
+        attempt = effective_provider_attempt(read_db, primary=primary) if primary is not None else None
         dispatch = read_db.scalar(
             select(TaskDispatchOutbox).where(
                 TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_execution,
@@ -199,6 +212,7 @@ def _is_durably_submitted_for_provider_call(db: Session, *, execution_id: UUID) 
             analysis is not None
             and analysis.status is ConsultationSplitAnalysisStatus.processing
             and attempt is not None
+            and attempt.id == submitted_attempt_id
             and attempt.status is AttemptStatus.submitted
             and dispatch is not None
             and dispatch.dispatch_kind is TaskDispatchKind.consultation_split_analysis
@@ -298,7 +312,9 @@ def _terminalize_processing_when_preference_disabled(
     if analysis_split_enabled(db, work.owner, analysis_id=work.analysis.id):
         db.rollback()
         return None
-    if work.analysis.status is not ConsultationSplitAnalysisStatus.processing or work.attempt.status is not AttemptStatus.submitted:
+    if (work.analysis.status is not ConsultationSplitAnalysisStatus.processing
+        or work.attempt.status is not AttemptStatus.submitted
+        or work.attempt.deadline_at is None or work.attempt.deadline_at <= utcnow()):
         db.rollback()
         return None
     usage: dict[str, int | None] | None = None
@@ -317,10 +333,12 @@ def _terminalize_processing_when_preference_disabled(
                 usage = _normalized_usage(response.get("usage"))
         except (AppError, UnicodeDecodeError):
             usage = None
+    expected_attempt_id = work.attempt.id
     db.rollback()
     return _terminalize_submitted_failure(
         db,
         execution_id=execution_id,
+        expected_attempt_id=expected_attempt_id,
         code="consultation_split_preference_disabled",
         usage=usage,
         suppress_proposal=True,
@@ -422,16 +440,17 @@ def _usage_event(
     provider_error_code: str | None = None,
     provider_http_status: int | None = None,
 ) -> ProviderUsageEvent:
+    is_backup = work.attempt.backup_of_attempt_id is not None
     return ProviderUsageEvent(
         team_id=work.transcript.team_id,
         owner_user_id=work.owner.id,
         consultation_split_execution_id=work.execution.id,
         transcript_id=work.transcript.id,
-        llm_config_id=work.execution.llm_config_id,
+        llm_config_id=work.analysis.backup_llm_config_id if is_backup else work.execution.llm_config_id,
         feature_type=ProviderFeatureType.consultation_split_analysis,
         event_type=event_type,
-        provider_adapter=work.execution.provider_adapter,
-        model_name=work.execution.provider_model,
+        provider_adapter=work.attempt.provider_adapter,
+        model_name=work.attempt.provider_model,
         status=status,
         prompt_tokens=usage["input_tokens"] if usage is not None else None,
         completion_tokens=usage["output_tokens"] if usage is not None else None,
@@ -484,6 +503,7 @@ def _terminalize_submitted_failure(
     provider_http_status: int | None = None,
     stale: bool = False,
     suppress_proposal: bool = False,
+    expected_attempt_id: UUID | None = None,
 ) -> SplitAnalysisRuntimeResult:
     work = _lock_processing_work(
         db,
@@ -493,7 +513,13 @@ def _terminalize_submitted_failure(
     if work is None:
         db.rollback()
         return SplitAnalysisRuntimeResult("noop", execution_id)
-    if work.analysis.status is not ConsultationSplitAnalysisStatus.processing or work.attempt.status is not AttemptStatus.submitted:
+    if (work.analysis.status is not ConsultationSplitAnalysisStatus.processing
+        or work.attempt.status is not AttemptStatus.submitted
+        or (expected_attempt_id is not None and (
+            work.attempt.id != expected_attempt_id
+            or work.attempt.deadline_at is None
+            or work.attempt.deadline_at <= utcnow()
+        ))):
         db.rollback()
         return SplitAnalysisRuntimeResult("noop", execution_id)
     existing_events = db.scalars(
@@ -501,7 +527,11 @@ def _terminalize_submitted_failure(
         .where(ProviderUsageEvent.consultation_split_execution_id == execution_id)
         .with_for_update()
     ).all()
-    if existing_events:
+    expected_config_id = (work.analysis.backup_llm_config_id
+        if work.attempt.backup_of_attempt_id is not None else work.execution.llm_config_id)
+    if any(event.llm_config_id == expected_config_id
+           and event.provider_adapter == work.attempt.provider_adapter
+           and event.model_name == work.attempt.provider_model for event in existing_events):
         # A terminal execution must be the only writer of a usage event.  This
         # state is inconsistent, so leave it to the conservative timeout path
         # rather than manufacture duplicate accounting.
@@ -555,6 +585,7 @@ def _persist_recoverable_response(
     execution_id: UUID,
     text: str,
     usage: dict[str, int | None],
+    expected_attempt_id: UUID,
 ) -> tuple[bool, SplitAnalysisRuntimeResult | None]:
     """Commit provider success before parsing, with no plaintext response row."""
     work = _lock_processing_work(
@@ -562,7 +593,10 @@ def _persist_recoverable_response(
         execution_id=execution_id,
         expected_status=ConsultationSplitExecutionStatus.processing,
     )
-    if work is None or work.analysis.status is not ConsultationSplitAnalysisStatus.processing or work.attempt.status is not AttemptStatus.submitted:
+    if (work is None or work.attempt.id != expected_attempt_id
+        or work.analysis.status is not ConsultationSplitAnalysisStatus.processing
+        or work.attempt.status is not AttemptStatus.submitted
+        or work.attempt.deadline_at is None or work.attempt.deadline_at <= utcnow()):
         db.rollback()
         return False, None
     # The provider has already been invoked.  If the clinician disables this
@@ -573,6 +607,7 @@ def _persist_recoverable_response(
         return False, _terminalize_submitted_failure(
             db,
             execution_id=execution_id,
+            expected_attempt_id=expected_attempt_id,
             code="consultation_split_preference_disabled",
             usage=usage,
             suppress_proposal=True,
@@ -582,6 +617,7 @@ def _persist_recoverable_response(
         return False, _terminalize_submitted_failure(
             db,
             execution_id=execution_id,
+            expected_attempt_id=expected_attempt_id,
             code="consultation_split_source_expired",
             usage=usage,
         )
@@ -590,6 +626,7 @@ def _persist_recoverable_response(
         return False, _terminalize_submitted_failure(
             db,
             execution_id=execution_id,
+            expected_attempt_id=expected_attempt_id,
             code="consultation_split_retention_binding_invalid",
             usage=usage,
         )
@@ -600,6 +637,7 @@ def _persist_recoverable_response(
         return False, _terminalize_submitted_failure(
             db,
             execution_id=execution_id,
+            expected_attempt_id=expected_attempt_id,
             code="consultation_split_source_stale",
             usage=usage,
             stale=True,
@@ -663,29 +701,55 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
     if work is None:
         db.rollback()
         return SplitAnalysisRuntimeResult("noop", execution_id)
-    if work.analysis.status is not ConsultationSplitAnalysisStatus.processing or work.attempt.status is not AttemptStatus.submitted:
+    if (work.analysis.status is not ConsultationSplitAnalysisStatus.processing
+        or work.attempt.status is not AttemptStatus.submitted
+        or work.attempt.deadline_at is None or work.attempt.deadline_at <= utcnow()):
         db.rollback()
         return SplitAnalysisRuntimeResult("noop", execution_id)
+    expected_attempt_id = work.attempt.id
     try:
         response = read_split_execution_json(
             db, work.owner, execution=work.execution, field="recoverable_response_encrypted"
         )
-        if not isinstance(response, dict) or set(response) != {"text", "usage"}:
-            raise AppError(502, "consultation_split_analysis_invalid", "Split analysis output was invalid")
-        text = response.get("text")
-        if not isinstance(text, str) or not text or len(text) > RECOVERABLE_RESPONSE_MAX_CHARS:
-            raise AppError(502, "consultation_split_analysis_invalid", "Split analysis output was invalid")
-        usage = _normalized_usage(response.get("usage"))
     except (AppError, UnicodeDecodeError):
         db.rollback()
         return _terminalize_submitted_failure(
-            db, execution_id=execution_id, code="consultation_split_analysis_invalid_output"
+            db, execution_id=execution_id, expected_attempt_id=expected_attempt_id,
+            code="consultation_split_response_binding_invalid"
+        )
+    if response is None:
+        # A concurrent failover clears the primary response before submitting
+        # its child. This stale finalizer must leave that child untouched.
+        db.rollback()
+        return SplitAnalysisRuntimeResult("in_flight", execution_id)
+    if not isinstance(response, dict) or set(response) != {"text", "usage"}:
+        db.rollback()
+        invalid = tag_output_validation_failure(AppError(502, "consultation_split_analysis_invalid", "Split analysis output was invalid"))
+        backup_result = _try_backup_analysis(db, execution_id=execution_id, primary_error=invalid)
+        if backup_result is not None:
+            return backup_result
+        return _terminalize_submitted_failure(
+            db, execution_id=execution_id, expected_attempt_id=expected_attempt_id,
+            code="consultation_split_analysis_invalid_output"
+        )
+    text = response.get("text")
+    usage = _normalized_usage(response.get("usage"))
+    if not isinstance(text, str) or not text or len(text) > RECOVERABLE_RESPONSE_MAX_CHARS:
+        db.rollback()
+        invalid = tag_output_validation_failure(AppError(502, "consultation_split_analysis_invalid", "Split analysis output was invalid"))
+        backup_result = _try_backup_analysis(db, execution_id=execution_id, primary_error=invalid, usage=usage)
+        if backup_result is not None:
+            return backup_result
+        return _terminalize_submitted_failure(
+            db, execution_id=execution_id, expected_attempt_id=expected_attempt_id,
+            code="consultation_split_analysis_invalid_output", usage=usage
         )
     if not analysis_split_enabled(db, work.owner, analysis_id=work.analysis.id):
         db.rollback()
         return _terminalize_submitted_failure(
             db,
             execution_id=execution_id,
+            expected_attempt_id=expected_attempt_id,
             code="consultation_split_preference_disabled",
             usage=usage,
             suppress_proposal=True,
@@ -693,13 +757,15 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
     if transcript_is_expired(work.transcript):
         db.rollback()
         return _terminalize_submitted_failure(
-            db, execution_id=execution_id, code="consultation_split_source_expired", usage=usage
+            db, execution_id=execution_id, expected_attempt_id=expected_attempt_id,
+            code="consultation_split_source_expired", usage=usage
         )
     if not _retention_binding_matches(work):
         db.rollback()
         return _terminalize_submitted_failure(
             db,
             execution_id=execution_id,
+            expected_attempt_id=expected_attempt_id,
             code="consultation_split_retention_binding_invalid",
             usage=usage,
         )
@@ -710,6 +776,7 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
         return _terminalize_submitted_failure(
             db,
             execution_id=execution_id,
+            expected_attempt_id=expected_attempt_id,
             code="consultation_split_source_stale",
             usage=usage,
             stale=True,
@@ -718,13 +785,25 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
         candidates = read_split_analysis_json(
             db, work.owner, analysis=work.analysis, field="candidate_template_snapshot_encrypted"
         )
+    except (AppError, UnicodeDecodeError):
+        db.rollback()
+        return _terminalize_submitted_failure(
+            db, execution_id=execution_id, expected_attempt_id=expected_attempt_id,
+            code="consultation_split_source_binding_invalid", usage=usage
+        )
+    try:
         parsed = parse_split_analysis_output(text, candidate_ids=_candidate_ids(candidates))
         proposal = _proposal_json(parsed)
     except (AppError, UnicodeDecodeError):
         db.rollback()
+        invalid = tag_output_validation_failure(AppError(502, "consultation_split_analysis_invalid", "Split analysis output was invalid"))
+        backup_result = _try_backup_analysis(db, execution_id=execution_id, primary_error=invalid, usage=usage)
+        if backup_result is not None:
+            return backup_result
         return _terminalize_submitted_failure(
             db,
             execution_id=execution_id,
+                expected_attempt_id=expected_attempt_id,
             code="consultation_split_analysis_invalid_output",
             usage=usage,
         )
@@ -733,7 +812,11 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
         .where(ProviderUsageEvent.consultation_split_execution_id == execution_id)
         .with_for_update()
     ).all()
-    if existing_events:
+    expected_config_id = (work.analysis.backup_llm_config_id
+        if work.attempt.backup_of_attempt_id is not None else work.execution.llm_config_id)
+    if any(event.llm_config_id == expected_config_id
+           and event.provider_adapter == work.attempt.provider_adapter
+           and event.model_name == work.attempt.provider_model for event in existing_events):
         db.rollback()
         return SplitAnalysisRuntimeResult("in_flight", execution_id)
     try:
@@ -744,6 +827,7 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
             return _terminalize_submitted_failure(
                 db,
                 execution_id=execution_id,
+                expected_attempt_id=expected_attempt_id,
                 code="consultation_split_preference_disabled",
                 usage=usage,
                 suppress_proposal=True,
@@ -753,6 +837,7 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
             return _terminalize_submitted_failure(
                 db,
                 execution_id=execution_id,
+                expected_attempt_id=expected_attempt_id,
                 code="consultation_split_source_expired",
                 usage=usage,
             )
@@ -761,6 +846,7 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
             return _terminalize_submitted_failure(
                 db,
                 execution_id=execution_id,
+                expected_attempt_id=expected_attempt_id,
                 code="consultation_split_retention_binding_invalid",
                 usage=usage,
             )
@@ -771,6 +857,7 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
             return _terminalize_submitted_failure(
                 db,
                 execution_id=execution_id,
+            expected_attempt_id=expected_attempt_id,
                 code="consultation_split_source_stale",
                 usage=usage,
                 stale=True,
@@ -830,13 +917,264 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
     return SplitAnalysisRuntimeResult("not_required" if is_not_required else "ready", execution_id)
 
 
+def _backup_request_strings(request: dict[str, object]) -> tuple[str, ...]:
+    if isinstance(request.get("messages"), list):
+        return tuple(item["content"] for item in request["messages"]
+                     if isinstance(item, dict) and isinstance(item.get("content"), str))
+    parsed = llm_runtime.gemini_request_from_snapshot(request)
+    return parsed.system_message, parsed.user_message
+
+
+def _try_backup_analysis(db: Session, *, execution_id: UUID, primary_error: AppError,
+                         usage: dict[str, int | None] | None = None) -> SplitAnalysisRuntimeResult | None:
+    """Run the one frozen backup from the same encrypted, redacted request."""
+    if not can_failover(primary_error):
+        return None
+    if db.in_transaction():
+        db.rollback()
+    with Session(bind=db.get_bind(), future=True) as lookup:
+        execution = lookup.get(ConsultationSplitExecution, execution_id)
+        analysis = lookup.get(ConsultationSplitAnalysis, execution.analysis_id) if execution and execution.analysis_id else None
+        owner = lookup.get(User, execution.owner_user_id) if execution else None
+        if execution is None or analysis is None or owner is None:
+            return None
+        try:
+            backup = read_backup_provider(lookup, source=analysis)
+            primary_data = read_split_execution_json(lookup, owner, execution=execution, field="provider_snapshot_encrypted")
+            primary_request = read_split_execution_json(lookup, owner, execution=execution, field="request_payload_encrypted")
+        except AppError:
+            return None
+        if backup is None or not isinstance(primary_request, dict) or not isinstance(primary_data, dict):
+            return None
+        if not backup_is_distinct(primary_config_id=execution.llm_config_id,
+                                  primary_model=execution.provider_model, backup_provider=backup):
+            return None
+        backup_config = lookup.get(TeamLlmConfig, UUID(backup.llm_config_id))
+        if backup_config is None or backup_config.team_id != execution.team_id:
+            return None
+        primary_output_cap = request_output_token_cap(primary_request)
+        if not isinstance(primary_output_cap, int) or primary_output_cap <= 0:
+            return None
+        try:
+            validate_provider_snapshot_for_config(backup.to_dict(), config=backup_config, expected_model=backup.model)
+            backup_request = prepare_backup_request(backup, primary_request, owner.id,
+                output_token_cap=primary_output_cap,
+                response_json_schema=split_analysis_response_json_schema())
+            credential = resolve_generation_credential(backup_config)
+        except (AppError, TypeError, ValueError):
+            return None
+        lookup.expunge(backup_config)
+
+    work = _lock_processing_work(db, execution_id=execution_id,
+                                 expected_status=ConsultationSplitExecutionStatus.processing)
+    if (work is None or work.attempt.id != work.primary_attempt.id
+        or work.primary_attempt.status is not AttemptStatus.submitted
+        or transcript_is_expired(work.transcript) or not _retention_binding_matches(work)
+        or not analysis_split_enabled(db, work.owner, analysis_id=work.analysis.id)
+        or not current_consultation_split_analysis_source_matches(db, work.owner,
+            transcript=work.transcript, analysis=work.analysis)):
+        db.rollback()
+        return None
+    try:
+        if (read_split_execution_json(db, work.owner, execution=work.execution, field="provider_snapshot_encrypted") != primary_data
+            or read_split_execution_json(db, work.owner, execution=work.execution, field="request_payload_encrypted") != primary_request):
+            db.rollback()
+            return None
+    except AppError:
+        db.rollback()
+        return None
+
+    try:
+        require_supported_execution_context()
+    except AppError:
+        db.rollback()
+        return None
+    provider_error_code = safe_provider_error_code((primary_error.details or {}).get("provider_error_code"),
+        status_code=(primary_error.details or {}).get("provider_http_status"))
+    http_status = (primary_error.details or {}).get("provider_http_status")
+    _settle_processing_attempt(db, work=work, usage=usage, outcome=AttemptOutcome.failed,
+                               error_code=primary_error.code, provider_error_code=provider_error_code)
+    db.add(_usage_event(work=work, event_type=ProviderUsageEventType.failed, status="failed", usage=usage,
+                        error_code=primary_error.code, provider_error_code=provider_error_code,
+                        provider_http_status=http_status))
+    cap = request_output_token_cap(backup_request)
+    if not isinstance(cap, int) or cap <= 0:
+        db.rollback()
+        return None
+    units = estimate_token_reservation(_backup_request_strings(backup_request), max_completion_tokens=cap)
+    try:
+        with db.begin_nested():
+            child = reserve_backup_attempt(db, primary=work.primary_attempt, provider=backup,
+                                           reserved_units=units, now=utcnow())
+    except AppError as exc:
+        now = utcnow()
+        work.execution.status = ConsultationSplitExecutionStatus.failed
+        work.execution.error_code = exc.code
+        work.execution.completed_at = now
+        work.analysis.status = ConsultationSplitAnalysisStatus.failed
+        work.analysis.error_code = exc.code
+        work.analysis.completed_at = now
+        db.commit()
+        return SplitAnalysisRuntimeResult("failed", execution_id, exc.code)
+    now = utcnow()
+    mark_provider_attempt_submitted(db, attempt_id=child.id, now=now,
+        deadline_at=now + timedelta(seconds=SPLIT_ANALYSIS_PROVIDER_DEADLINE_SECONDS))
+    work.execution.recoverable_response_encrypted = None
+    db.commit()
+    try:
+        with provider_attempt_execution(db, attempt_id=child.id, maximum_seconds=90):
+            response_text, raw_usage = llm_runtime.invoke_llm(snapshot=backup, credential=credential,
+                                                               request_body=backup_request)
+    except AppError as exc:
+        tagged = tag_provider_failure(exc)
+        failed = _terminalize_submitted_failure(db, execution_id=execution_id,
+            expected_attempt_id=child.id,
+            code="consultation_split_provider_failed",
+            provider_error_code=safe_provider_error_code((tagged.details or {}).get("provider_error_code"),
+                status_code=(tagged.details or {}).get("provider_http_status")),
+            provider_http_status=(tagged.details or {}).get("provider_http_status"))
+        return failed
+    if not isinstance(response_text, str) or not response_text or len(response_text) > RECOVERABLE_RESPONSE_MAX_CHARS:
+        invalid = tag_output_validation_failure(AppError(502, "consultation_split_analysis_invalid",
+                                                          "Split analysis output was invalid"))
+        return _terminalize_submitted_failure(db, execution_id=execution_id, code=invalid.code,
+            expected_attempt_id=child.id, usage=_normalized_usage(raw_usage))
+    try:
+        persisted, terminal = _persist_recoverable_response(db, execution_id=execution_id,
+            text=response_text.strip(), usage=_normalized_usage(raw_usage), expected_attempt_id=child.id)
+    except Exception:
+        db.rollback()
+        return SplitAnalysisRuntimeResult("in_flight", execution_id)
+    if terminal is not None:
+        return terminal
+    return (_finalize_recoverable_response(db, execution_id=execution_id) if persisted
+            else SplitAnalysisRuntimeResult("in_flight", execution_id))
+
+
+def _try_pre_submit_backup_analysis(
+    db: Session, *, execution_id: UUID, credential_error: AppError,
+) -> SplitAnalysisRuntimeResult | None:
+    """Replace a reserved primary after an explicitly provider-scoped credential rejection."""
+    if not can_failover(tag_provider_failure(credential_error)):
+        return None
+    if db.in_transaction():
+        db.rollback()
+    with Session(bind=db.get_bind(), future=True) as lookup:
+        execution = lookup.get(ConsultationSplitExecution, execution_id)
+        analysis = lookup.get(ConsultationSplitAnalysis, execution.analysis_id) if execution and execution.analysis_id else None
+        owner = lookup.get(User, execution.owner_user_id) if execution else None
+        if execution is None or analysis is None or owner is None:
+            return None
+        try:
+            backup = read_backup_provider(lookup, source=analysis)
+            primary_data = read_split_execution_json(lookup, owner, execution=execution, field="provider_snapshot_encrypted")
+            primary_request = read_split_execution_json(lookup, owner, execution=execution, field="request_payload_encrypted")
+        except AppError:
+            return None
+        if backup is None or not isinstance(primary_request, dict) or not isinstance(primary_data, dict):
+            return None
+        if not backup_is_distinct(primary_config_id=execution.llm_config_id,
+                                  primary_model=execution.provider_model, backup_provider=backup):
+            return None
+        config = lookup.get(TeamLlmConfig, UUID(backup.llm_config_id))
+        if config is None or config.team_id != execution.team_id:
+            return None
+        cap = request_output_token_cap(primary_request)
+        if not isinstance(cap, int) or cap <= 0:
+            return None
+        try:
+            validate_provider_snapshot_for_config(backup.to_dict(), config=config, expected_model=backup.model)
+            request = prepare_backup_request(backup, primary_request, owner.id,
+                output_token_cap=cap, response_json_schema=split_analysis_response_json_schema())
+            credential = resolve_generation_credential(config)
+        except (AppError, TypeError, ValueError):
+            return None
+        lookup.expunge(config)
+
+    work = _lock_processing_work(db, execution_id=execution_id,
+        expected_status=ConsultationSplitExecutionStatus.queued)
+    if (work is None or work.attempt.id != work.primary_attempt.id
+        or work.analysis.status is not ConsultationSplitAnalysisStatus.queued
+        or work.primary_attempt.status is not AttemptStatus.reserved
+        or work.primary_attempt.reservation_valid_until <= utcnow()
+        or transcript_is_expired(work.transcript)
+        or not _retention_binding_matches(work)
+        or not analysis_split_enabled(db, work.owner, analysis_id=work.analysis.id)
+        or not current_consultation_split_analysis_source_matches(db, work.owner,
+            transcript=work.transcript, analysis=work.analysis)):
+        db.rollback()
+        return None
+    try:
+        if (read_split_execution_json(db, work.owner, execution=work.execution, field="provider_snapshot_encrypted") != primary_data
+            or read_split_execution_json(db, work.owner, execution=work.execution, field="request_payload_encrypted") != primary_request):
+            db.rollback()
+            return None
+    except AppError:
+        db.rollback()
+        return None
+    try:
+        require_supported_execution_context()
+    except AppError as exc:
+        return _cancel_queued_locked(db, work=work, code=exc.code)
+    now = utcnow()
+    cancel_provider_attempt(db, attempt_id=work.primary_attempt.id, now=now)
+    cap = request_output_token_cap(request)
+    if not isinstance(cap, int) or cap <= 0:
+        db.rollback()
+        return None
+    units = estimate_token_reservation(_backup_request_strings(request), max_completion_tokens=cap)
+    try:
+        with db.begin_nested():
+            child = reserve_backup_attempt(db, primary=work.primary_attempt, provider=backup,
+                reserved_units=units, now=now)
+    except AppError as exc:
+        work.execution.status = ConsultationSplitExecutionStatus.failed
+        work.execution.error_code = exc.code
+        work.execution.completed_at = now
+        work.analysis.status = ConsultationSplitAnalysisStatus.failed
+        work.analysis.error_code = exc.code
+        work.analysis.completed_at = now
+        if work.dispatch.state is TaskDispatchState.pending:
+            cancel_pending_task_dispatch(db, task_id=work.dispatch.task_id)
+        db.commit()
+        return SplitAnalysisRuntimeResult("failed", execution_id, exc.code)
+    work.execution.status = ConsultationSplitExecutionStatus.processing
+    work.execution.started_at = now
+    work.analysis.status = ConsultationSplitAnalysisStatus.processing
+    mark_provider_attempt_submitted(db, attempt_id=child.id, now=now,
+        deadline_at=now + timedelta(seconds=SPLIT_ANALYSIS_PROVIDER_DEADLINE_SECONDS))
+    db.commit()
+    try:
+        with provider_attempt_execution(db, attempt_id=child.id, maximum_seconds=90):
+            response_text, raw_usage = llm_runtime.invoke_llm(snapshot=backup, credential=credential, request_body=request)
+    except AppError as exc:
+        tagged = tag_provider_failure(exc)
+        return _terminalize_submitted_failure(db, execution_id=execution_id,
+            expected_attempt_id=child.id,
+            code="consultation_split_provider_failed",
+            provider_error_code=safe_provider_error_code((tagged.details or {}).get("provider_error_code"),
+                status_code=(tagged.details or {}).get("provider_http_status")),
+            provider_http_status=(tagged.details or {}).get("provider_http_status"))
+    if not isinstance(response_text, str) or not response_text or len(response_text) > RECOVERABLE_RESPONSE_MAX_CHARS:
+        return _terminalize_submitted_failure(db, execution_id=execution_id,
+            expected_attempt_id=child.id,
+            code="consultation_split_analysis_invalid_output", usage=_normalized_usage(raw_usage))
+    persisted, terminal = _persist_recoverable_response(db, execution_id=execution_id,
+        text=response_text.strip(), usage=_normalized_usage(raw_usage), expected_attempt_id=child.id)
+    if terminal is not None:
+        return terminal
+    return _finalize_recoverable_response(db, execution_id=execution_id) if persisted else SplitAnalysisRuntimeResult("in_flight", execution_id)
+
+
 def _run_prepared_provider_call(db: Session, *, prepared: PreparedSplitAnalysisSubmission) -> SplitAnalysisRuntimeResult:
     submitted, submit_committed = _submit_prepared(db, prepared)
     if submitted.outcome != "in_flight" or not submit_committed:
         return submitted
     # Prove the durable *attempt* submission, not merely an execution state,
     # in a clean read session before an irreversible provider call.
-    if not _is_durably_submitted_for_provider_call(db, execution_id=prepared.execution_id):
+    if not _is_durably_submitted_for_provider_call(
+        db, execution_id=prepared.execution_id, submitted_attempt_id=prepared.attempt_id,
+    ):
         return SplitAnalysisRuntimeResult("noop", prepared.execution_id)
     try:
         with provider_attempt_execution(db, attempt_id=prepared.attempt_id, maximum_seconds=90):
@@ -846,29 +1184,42 @@ def _run_prepared_provider_call(db: Session, *, prepared: PreparedSplitAnalysisS
                 request_body=prepared.request_body,
             )
     except AppError as exc:
-        provider_error_code, provider_http_status = _safe_provider_error(exc)
+        tagged = tag_provider_failure(exc)
+        backup_result = _try_backup_analysis(db, execution_id=prepared.execution_id, primary_error=tagged)
+        if backup_result is not None:
+            return backup_result
+        provider_error_code, provider_http_status = _safe_provider_error(tagged)
         return _terminalize_submitted_failure(
             db,
             execution_id=prepared.execution_id,
+            expected_attempt_id=prepared.attempt_id,
             code="consultation_split_provider_failed",
             provider_error_code=provider_error_code,
             provider_http_status=provider_http_status,
         )
     except Exception:
         return _terminalize_submitted_failure(
-            db, execution_id=prepared.execution_id, code="consultation_split_provider_failed"
+            db, execution_id=prepared.execution_id, expected_attempt_id=prepared.attempt_id,
+            code="consultation_split_provider_failed"
         )
     if not isinstance(response_text, str) or not response_text or len(response_text) > RECOVERABLE_RESPONSE_MAX_CHARS:
+        invalid = tag_output_validation_failure(AppError(502, "consultation_split_analysis_invalid", "Split analysis output was invalid"))
+        backup_result = _try_backup_analysis(db, execution_id=prepared.execution_id,
+            primary_error=invalid, usage=_normalized_usage(raw_usage))
+        if backup_result is not None:
+            return backup_result
         return _terminalize_submitted_failure(
             db,
             execution_id=prepared.execution_id,
+            expected_attempt_id=prepared.attempt_id,
             code="consultation_split_analysis_invalid_output",
             usage=_normalized_usage(raw_usage),
         )
     usage = _normalized_usage(raw_usage)
     try:
         persisted, terminal = _persist_recoverable_response(
-            db, execution_id=prepared.execution_id, text=response_text.strip(), usage=usage
+            db, execution_id=prepared.execution_id, text=response_text.strip(), usage=usage,
+            expected_attempt_id=prepared.attempt_id,
         )
     except Exception:
         db.rollback()
@@ -923,6 +1274,17 @@ def process_consultation_split_analysis_execution(
     prepared_result: PrepareSplitAnalysisSubmissionResult = prepare_queued_split_analysis_for_submission(
         db, execution_id=execution_id
     )
+    if prepared_result.outcome == "credential_failure" and prepared_result.pre_submit_error is not None:
+        backup_result = _try_pre_submit_backup_analysis(
+            db, execution_id=execution_id, credential_error=prepared_result.pre_submit_error,
+        )
+        if backup_result is not None:
+            return backup_result
+        work = _lock_viable_analysis_work(db, execution_id=execution_id)
+        if work is not None:
+            return _cancel_queued_locked(db, work=work, code="consultation_split_credential_unavailable")
+        db.rollback()
+        return SplitAnalysisRuntimeResult("noop", execution_id)
     if prepared_result.outcome != "prepared" or prepared_result.prepared is None:
         return SplitAnalysisRuntimeResult(
             "stale" if prepared_result.outcome == "stale" else "failed" if prepared_result.outcome == "failed" else "noop",

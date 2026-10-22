@@ -37,6 +37,7 @@ from app.models import (
     Transcript,
     User,
 )
+from app.services.llm_backup import effective_provider_attempt
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +66,7 @@ class LockedAnalysisExecutionWork:
     execution: ConsultationSplitExecution
     analysis: ConsultationSplitAnalysis
     attempt: ProviderAttempt
+    primary_attempt: ProviderAttempt
     dispatch: TaskDispatchOutbox
 
 
@@ -159,9 +161,11 @@ def lock_analysis_execution_work(
     ).order_by(
         ConsultationSplitExecution.attempt_no.desc(), ConsultationSplitExecution.id.desc()
     ).limit(1))
-    attempt = db.scalar(select(ProviderAttempt).where(
+    primary_attempt = db.scalar(select(ProviderAttempt).where(
         ProviderAttempt.consultation_split_execution_id == execution.id,
+        ProviderAttempt.backup_of_attempt_id.is_(None),
     ).with_for_update())
+    attempt = effective_provider_attempt(db, primary=primary_attempt, lock=True) if primary_attempt is not None else None
     dispatch = db.scalar(select(TaskDispatchOutbox).where(
         TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_execution,
         TaskDispatchOutbox.source_id == execution.id,
@@ -177,8 +181,11 @@ def lock_analysis_execution_work(
         or attempt.owner_user_id != owner.id
         or attempt.team_id != transcript.team_id
         or attempt.transcript_id != transcript.id
-        or attempt.correlation_id != execution.id
-        or attempt.attempt_number != 1
+        or primary_attempt is None
+        or primary_attempt.correlation_id != execution.id
+        or primary_attempt.attempt_number != 1
+        or attempt.backup_of_attempt_id not in {None, primary_attempt.id}
+        or attempt.consultation_split_execution_id != execution.id
         or dispatch.dispatch_kind is not requirements.dispatch_kind
         or dispatch.state not in {TaskDispatchState.pending, TaskDispatchState.published}
         or owner.team_id is None
@@ -193,4 +200,4 @@ def lock_analysis_execution_work(
         or analysis.transcript_id != transcript.id
     ):
         return None
-    return LockedAnalysisExecutionWork(owner, transcript, execution, analysis, attempt, dispatch)
+    return LockedAnalysisExecutionWork(owner, transcript, execution, analysis, attempt, primary_attempt, dispatch)

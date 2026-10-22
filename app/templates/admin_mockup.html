@@ -2684,6 +2684,22 @@
                     {% if llm_selection %}<form method="post" action="/admin/llm-selection/clear" data-confirm-submit="Clear writing assistant selection? Users will lose team LLM actions until another provider is selected."><input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="provider-policy"><button class="btn small" type="submit">Clear</button></form>{% else %}<span></span>{% endif %}
                   </div>
 
+                  <div class="policy-row" data-policy-row="writing-assistant-backup">
+                    <div class="purpose"><span class="purpose-icon">↻</span><span><strong>Writing assistant backup</strong><small>Used after an eligible provider failure</small></span></div>
+                    <form method="post" action="/admin/llm-backup-selection" data-llm-backup-form>
+                      <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}"><input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="provider-policy">
+                      <select class="select-like" name="backup_llm_config_id" aria-label="Backup LLM provider" data-backup-provider-select>
+                        <option value="" data-models="[]">No backup provider</option>
+                        {% for config in selectable_llm_configs %}<option value="{{ config.id }}" data-models='{{ config.available_models_json|tojson|forceescape }}' data-default-model="{{ config.model_name or '' }}"{% if llm_backup_selection and llm_backup_selection.llm_config_id == config.id %} selected{% endif %}>{{ config.label }}</option>{% endfor %}
+                      </select>
+                      <select class="select-like" name="backup_model_name" aria-label="Backup LLM model" data-backup-model-select data-selected-value="{{ llm_backup_selection.model_name if llm_backup_selection else '' }}"></select>
+                      <span class="policy-na">—</span>
+                      <span class="configured{% if not llm_backup_selection %} fallback{% endif %}">{% if llm_backup_selection %}Configured{% else %}No backup{% endif %}</span>
+                      <button class="btn primary small" type="submit">Save</button>
+                    </form>
+                    <span></span>
+                  </div>
+
                   <div class="policy-row" data-policy-row="hallucination-checker">
                     <div class="purpose"><span class="purpose-icon">✓</span><span><strong>Hallucination checker</strong><small>Verification model</small></span></div>
                     {% if selectable_llm_configs %}<form method="post" action="/admin/hallucination-check-selection" data-policy-model-form><input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="provider-policy"><select class="select-like" name="llm_config_id" aria-label="Hallucination checker provider instance" required data-policy-provider-select>{% for config in selectable_llm_configs %}<option value="{{ config.id }}" data-models='{{ config.available_models_json|tojson|forceescape }}' data-default-model="{{ config.model_name or '' }}"{% if hallucination_check_selection and hallucination_check_selection.llm_config_id == config.id %} selected{% endif %}>{{ config.label }}</option>{% endfor %}</select><select class="select-like" name="provider_model" aria-label="Hallucination checker model" required data-policy-model-select data-selected-value="{{ hallucination_check_selection.model_name_override if hallucination_check_selection else '' }}"></select><span class="policy-na">—</span><span class="configured{% if not hallucination_check_selection %} fallback{% endif %}">{% if hallucination_check_selection %}Configured{% else %}Unconfigured{% endif %}</span><button class="btn primary small" type="submit">Save</button></form>{% else %}<span class="policy-empty"><a href="/admin?team_id={{ selected_team.id }}&amp;team_tab=llm">Add LLM provider</a></span><span class="policy-na">—</span><span class="policy-na">—</span><span class="configured fallback">Unconfigured</span><span></span>{% endif %}
@@ -5009,6 +5025,24 @@
       document.querySelectorAll("[data-policy-stt-form], [data-policy-llm-form], [data-policy-model-form]").forEach((form) => {
         syncPolicyModels(form);
         form.querySelector("[data-policy-provider-select]")?.addEventListener("change", () => syncPolicyModels(form));
+      });
+
+      const syncBackupModels = (form) => {
+        const provider = form.querySelector("[data-backup-provider-select]");
+        const model = form.querySelector("[data-backup-model-select]");
+        if (!provider || !model) return;
+        const option = provider.selectedOptions[0];
+        const choices = [...new Set(JSON.parse(option?.dataset.models || "[]").filter(Boolean))];
+        const wanted = model.dataset.selectedValue || model.value;
+        model.replaceChildren(new Option(choices.length ? "Select model" : "No model available", ""));
+        for (const name of choices) model.add(new Option(name, name, false, name === wanted));
+        if (!choices.includes(wanted)) model.value = "";
+        model.disabled = choices.length === 0;
+        model.dataset.selectedValue = "";
+      };
+      document.querySelectorAll("[data-llm-backup-form]").forEach((form) => {
+        syncBackupModels(form);
+        form.querySelector("[data-backup-provider-select]")?.addEventListener("change", () => syncBackupModels(form));
       });
 
       const tabs = [...document.querySelectorAll(".tab")];

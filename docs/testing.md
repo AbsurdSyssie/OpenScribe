@@ -333,6 +333,8 @@ Use `down --volumes` only for a deliberately disposable instance.
 
 ### Provider behavior
 
+For team LLM failover, run the `tests/test_llm_backup*.py` checks and the affected generation, suggestion and consultation-split suites. They cover admin selection, immutable encrypted snapshots, per-attempt quota settlement, source-specific failover and migration guards. Keep these commands sequential with other database-backed tests and the API audit.
+
 - unsupported worker contexts fail before the provider-attempt submitted transition, and reserved quota is cancelled without provider dispatch;
 - native worker-thread, greenlet/eventlet/gevent, and occupied timer contexts fail closed with content-free diagnostics;
 - ready/pending setup states;

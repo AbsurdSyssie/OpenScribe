@@ -27,7 +27,7 @@ from app.models import (AttemptOutcome, AttemptStatus, ConsultationSplitAnalysis
     TaskDispatchState, TeamLlmConfig, Transcript, TranscriptVersion, User, utcnow)
 from app.services.consultation_split_generation import (SplitGenerationTopic, parse_split_generation_partial,
     prepare_split_generation_request, prepare_split_generation_recovery_request,
-    split_generation_request_snapshot)
+    split_generation_request_snapshot, split_generation_response_json_schema)
 from app.services.consultation_splits import read_split_topic_outcome_output
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.consultation_splits import read_split_batch_json, read_split_batch_phi_index, read_split_execution_json
@@ -36,6 +36,10 @@ from app.services.llm_adapters import runtime as llm_runtime
 from app.services.llm_adapters.runtime import validate_provider_snapshot_for_config
 from app.services.llm_adapters.types import LlmProviderSnapshot
 from app.services.llm_credentials import resolve_generation_credential
+from app.services.llm_backup import backup_is_distinct, read_backup_provider, reserve_backup_attempt
+from app.services.llm_backup_policy import can_failover, prepare_backup_request, tag_provider_failure, tag_output_validation_failure
+from app.services.quotas import estimate_token_reservation
+from app.services.llm_backup import effective_provider_attempt
 from app.services.consultation_split_pre_submit import (
     _credential_config_identity,
     read_queued_split_phase_config,
@@ -73,7 +77,7 @@ class SplitGenerationRuntimeResult:
 @dataclass(slots=True)
 class _Work:
     owner: User; transcript: Transcript; batch: ConsultationSplitBatch; analysis: ConsultationSplitAnalysis
-    execution: ConsultationSplitExecution; attempt: ProviderAttempt; dispatch: TaskDispatchOutbox
+    execution: ConsultationSplitExecution; attempt: ProviderAttempt; primary_attempt: ProviderAttempt; dispatch: TaskDispatchOutbox
     topics: list[object]; outcomes: dict[UUID, ConsultationSplitTopicOutcome]
     materialization_transcript_version: TranscriptVersion | None
 
@@ -91,6 +95,10 @@ def _usage(value: object) -> dict[str, int | None]:
     ):
         result["total_tokens"] = None
     return result
+
+
+def _provider_config_id(work: _Work) -> UUID | None:
+    return work.batch.backup_llm_config_id if work.attempt.backup_of_attempt_id is not None else work.execution.llm_config_id
 
 
 def _safe_http_status(value: object) -> int | None:
@@ -134,9 +142,13 @@ def _lock_work(db: Session, execution_id: UUID, *, status: ConsultationSplitExec
         return None
     batch = db.scalar(select(ConsultationSplitBatch).where(ConsultationSplitBatch.id == execution.batch_id).execution_options(populate_existing=True).with_for_update())
     analysis = db.scalar(select(ConsultationSplitAnalysis).where(ConsultationSplitAnalysis.id == batch.analysis_id).execution_options(populate_existing=True).with_for_update()) if batch else None
-    attempt = db.scalar(select(ProviderAttempt).where(ProviderAttempt.consultation_split_execution_id == execution_id).execution_options(populate_existing=True).with_for_update())
+    primary_attempt = db.scalar(select(ProviderAttempt).where(
+        ProviderAttempt.consultation_split_execution_id == execution_id,
+        ProviderAttempt.backup_of_attempt_id.is_(None),
+    ).execution_options(populate_existing=True).with_for_update())
+    attempt = effective_provider_attempt(db, primary=primary_attempt, lock=True) if primary_attempt is not None else None
     dispatch = db.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_execution, TaskDispatchOutbox.source_id == execution_id).execution_options(populate_existing=True).with_for_update())
-    if not all((batch, analysis, attempt, dispatch)) or attempt.attempt_kind.value != "consultation_split_generation":
+    if not all((batch, analysis, attempt, primary_attempt, dispatch)) or attempt.attempt_kind.value != "consultation_split_generation":
         return None
     topics = db.scalars(
         select(ConsultationSplitBatchTopic)
@@ -162,7 +174,7 @@ def _lock_work(db: Session, execution_id: UUID, *, status: ConsultationSplitExec
         else None
     )
     return _Work(
-        owner, transcript, batch, analysis, execution, attempt, dispatch, topics,
+        owner, transcript, batch, analysis, execution, attempt, primary_attempt, dispatch, topics,
         {outcome.batch_topic_id: outcome for outcome in outcomes}, materialization_version,
     )
 
@@ -215,9 +227,9 @@ def _terminal(db: Session, work: _Work, code: str, *, submitted: bool, usage: di
         outcome.status = ConsultationSplitTopicOutcomeStatus.failed; outcome.error_code = code
     if event_type:
         db.add(ProviderUsageEvent(team_id=work.transcript.team_id, owner_user_id=work.owner.id, transcript_id=work.transcript.id,
-            consultation_split_execution_id=work.execution.id, llm_config_id=work.execution.llm_config_id,
+            consultation_split_execution_id=work.execution.id, llm_config_id=_provider_config_id(work),
             feature_type=ProviderFeatureType.consultation_split_generation, event_type=event_type, status="failed",
-            provider_adapter=work.execution.provider_adapter, model_name=work.execution.provider_model, error_code=code,
+            provider_adapter=work.attempt.provider_adapter, model_name=work.attempt.provider_model, error_code=code,
             provider_error_code=provider_error_code, provider_http_status=provider_http_status,
             prompt_tokens=usage["input_tokens"] if usage else None, completion_tokens=usage["output_tokens"] if usage else None,
             total_tokens=usage["total_tokens"] if usage else None))
@@ -256,6 +268,300 @@ def _queue_verification_after_terminal_recovery(db: Session, work: _Work) -> Non
         from app.services.task_outbox import try_publish_task_dispatch_safely
         try_publish_task_dispatch_safely(queued.dispatch_task_id)
 
+
+def _try_pre_submit_backup_generation(db: Session, *, work: _Work,
+                                     credential_error: AppError) -> SplitGenerationRuntimeResult | None:
+    """Replace a reserved generation attempt after a classified credential rejection."""
+    if not can_failover(tag_provider_failure(credential_error)):
+        return None
+    execution_id = work.execution.id
+    db.rollback()
+    with Session(bind=db.get_bind(), future=True) as lookup:
+        execution = lookup.get(ConsultationSplitExecution, execution_id)
+        batch = lookup.get(ConsultationSplitBatch, execution.batch_id) if execution and execution.batch_id else None
+        owner = lookup.get(User, execution.owner_user_id) if execution else None
+        if execution is None or batch is None or owner is None:
+            return None
+        try:
+            backup = read_backup_provider(lookup, source=batch)
+            primary_request = read_split_execution_json(lookup, owner, execution=execution, field="request_payload_encrypted")
+        except AppError:
+            return None
+        if backup is None or not isinstance(primary_request, dict):
+            return None
+        if not backup_is_distinct(primary_config_id=execution.llm_config_id,
+                                  primary_model=execution.provider_model, backup_provider=backup):
+            return None
+        plan = read_split_batch_json(lookup, owner, batch=batch, field="confirmed_plan_encrypted") or {}
+        all_topics = _topics_from_plan(plan)
+        if execution.attempt_no == 1:
+            schema_topics = all_topics
+        else:
+            rows = lookup.scalars(select(ConsultationSplitBatchTopic).where(
+                ConsultationSplitBatchTopic.batch_id == batch.id).order_by(ConsultationSplitBatchTopic.topic_order)).all()
+            outcomes = lookup.scalars(select(ConsultationSplitTopicOutcome).where(
+                ConsultationSplitTopicOutcome.batch_topic_id.in_([row.id for row in rows]))).all()
+            outcome_map = {row.batch_topic_id: row for row in outcomes}
+            failed_ids = {row.topic_uuid for row in rows
+                if row.disposition is ConsultationSplitTopicDisposition.separate_note
+                and outcome_map.get(row.id) is not None
+                and outcome_map[row.id].status in {ConsultationSplitTopicOutcomeStatus.pending, ConsultationSplitTopicOutcomeStatus.failed}}
+            schema_topics = [topic for topic in all_topics if topic.topic_uuid in failed_ids]
+        if not schema_topics:
+            return None
+        schema = split_generation_response_json_schema(schema_topics)
+        config = lookup.get(TeamLlmConfig, UUID(backup.llm_config_id))
+        if config is None or config.team_id != execution.team_id:
+            return None
+        cap = llm_runtime.request_output_token_cap(primary_request)
+        if not isinstance(cap, int) or cap <= 0:
+            return None
+        try:
+            validate_provider_snapshot_for_config(backup.to_dict(), config=config, expected_model=backup.model)
+            request = prepare_backup_request(backup, primary_request, owner.id,
+                output_token_cap=cap, response_json_schema=schema)
+            credential = resolve_generation_credential(config)
+        except (AppError, TypeError, ValueError):
+            return None
+        lookup.expunge(config)
+    locked = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.queued)
+    if (locked is None or locked.attempt.id != locked.primary_attempt.id
+        or locked.primary_attempt.status is not AttemptStatus.reserved
+        or locked.primary_attempt.reservation_valid_until <= utcnow()
+        or transcript_is_expired(locked.transcript)
+        or not _has_valid_materialization_binding(db, locked)
+        or locked.batch.status not in {ConsultationSplitBatchStatus.generation_queued, ConsultationSplitBatchStatus.partially_ready}):
+        db.rollback()
+        return None
+    try:
+        if read_split_execution_json(db, locked.owner, execution=locked.execution, field="request_payload_encrypted") != primary_request:
+            db.rollback()
+            return None
+    except AppError:
+        db.rollback()
+        return None
+    try:
+        require_supported_execution_context()
+    except AppError as exc:
+        return _terminal(db, locked, exc.code, submitted=False)
+    cap = llm_runtime.request_output_token_cap(request)
+    if not isinstance(cap, int) or cap <= 0:
+        db.rollback()
+        return None
+    texts = (tuple(item["content"] for item in request["messages"] if isinstance(item, dict) and isinstance(item.get("content"), str))
+        if isinstance(request.get("messages"), list) else
+        (llm_runtime.gemini_request_from_snapshot(request).system_message,
+         llm_runtime.gemini_request_from_snapshot(request).user_message))
+    now = utcnow()
+    cancel_provider_attempt(db, attempt_id=locked.primary_attempt.id, now=now)
+    try:
+        with db.begin_nested():
+            child = reserve_backup_attempt(db, primary=locked.primary_attempt, provider=backup,
+                reserved_units=estimate_token_reservation(texts, max_completion_tokens=cap), now=now)
+    except AppError as exc:
+        _terminal(db, locked, exc.code, submitted=False)
+        return SplitGenerationRuntimeResult("failed", execution_id, exc.code)
+    mark_provider_attempt_submitted(db, attempt_id=child.id, now=now,
+        deadline_at=now + timedelta(seconds=SPLIT_GENERATION_PROVIDER_DEADLINE_SECONDS))
+    locked.execution.status = ConsultationSplitExecutionStatus.processing
+    locked.execution.started_at = now
+    locked.batch.status = ConsultationSplitBatchStatus.generating
+    db.commit()
+    try:
+        with provider_attempt_execution(db, attempt_id=child.id, maximum_seconds=90):
+            text, usage = llm_runtime.invoke_llm(snapshot=backup, credential=credential, request_body=request)
+    except AppError as exc:
+        work = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
+        if (work is None or work.attempt.id != child.id
+            or work.attempt.status is not AttemptStatus.submitted
+            or work.attempt.deadline_at is None or work.attempt.deadline_at <= utcnow()
+            or transcript_is_expired(work.transcript)
+            or not _has_valid_materialization_binding(db, work)):
+            db.rollback()
+            return SplitGenerationRuntimeResult("in_flight", execution_id)
+        return _terminal(db, work, "consultation_split_provider_failed", submitted=True)
+    current = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
+    if (current is None or current.attempt.id != child.id or current.attempt.status is not AttemptStatus.submitted
+        or current.attempt.deadline_at is None or current.attempt.deadline_at <= utcnow()
+        or transcript_is_expired(current.transcript)
+        or not _has_valid_materialization_binding(db, current)):
+        db.rollback()
+        return SplitGenerationRuntimeResult("in_flight", execution_id)
+    if not isinstance(text, str) or len(text) > RECOVERABLE_GENERATION_RESPONSE_MAX_CHARS:
+        return _terminal(db, current, "consultation_split_generation_invalid_output", submitted=True, usage=_usage(usage))
+    current.execution.recoverable_response_encrypted = encrypt_json_for_existing_owner(
+        db, owner_user_id=current.owner.id, table="consultation_split_executions",
+        field="recoverable_response_encrypted", record_id=current.execution.id,
+        plaintext={"text": text, "usage": _usage(usage)})
+    db.commit()
+    return _finalize(db, execution_id)
+
+def _try_backup_generation(db: Session, *, execution_id: UUID, error: AppError,
+                           usage: dict[str, int | None] | None = None) -> SplitGenerationRuntimeResult | None:
+    """Submit one backup from the immutable request, preserving split lineage."""
+    if not can_failover(error):
+        return None
+    if db.in_transaction():
+        db.rollback()
+    with Session(bind=db.get_bind(), future=True) as lookup:
+        execution = lookup.get(ConsultationSplitExecution, execution_id)
+        batch = lookup.get(ConsultationSplitBatch, execution.batch_id) if execution and execution.batch_id else None
+        owner = lookup.get(User, execution.owner_user_id) if execution else None
+        if execution is None or batch is None or owner is None:
+            return None
+        try:
+            backup = read_backup_provider(lookup, source=batch)
+            primary_request = read_split_execution_json(lookup, owner, execution=execution, field="request_payload_encrypted")
+        except AppError:
+            return None
+        if backup is None or not isinstance(primary_request, dict):
+            return None
+        if not backup_is_distinct(primary_config_id=execution.llm_config_id,
+                                  primary_model=execution.provider_model, backup_provider=backup):
+            return None
+        cap = llm_runtime.request_output_token_cap(primary_request)
+        if not isinstance(cap, int) or cap <= 0:
+            return None
+        plan = read_split_batch_json(lookup, owner, batch=batch, field="confirmed_plan_encrypted") or {}
+        all_topics = _topics_from_plan(plan)
+        if execution.attempt_no == 1:
+            schema_topics = all_topics
+        else:
+            topic_rows = lookup.scalars(select(ConsultationSplitBatchTopic).where(
+                ConsultationSplitBatchTopic.batch_id == batch.id).order_by(ConsultationSplitBatchTopic.topic_order)).all()
+            outcomes = lookup.scalars(select(ConsultationSplitTopicOutcome).where(
+                ConsultationSplitTopicOutcome.batch_topic_id.in_([row.id for row in topic_rows]))).all()
+            outcome_map = {row.batch_topic_id: row for row in outcomes}
+            failed_ids = {row.topic_uuid for row in topic_rows
+                if row.disposition is ConsultationSplitTopicDisposition.separate_note
+                and outcome_map.get(row.id) is not None
+                and outcome_map[row.id].status in {ConsultationSplitTopicOutcomeStatus.pending, ConsultationSplitTopicOutcomeStatus.failed}}
+            schema_topics = [topic for topic in all_topics if topic.topic_uuid in failed_ids]
+        if not schema_topics:
+            return None
+        schema = split_generation_response_json_schema(schema_topics)
+        config = lookup.get(TeamLlmConfig, UUID(backup.llm_config_id))
+        if config is None or config.team_id != execution.team_id:
+            return None
+        try:
+            validate_provider_snapshot_for_config(backup.to_dict(), config=config, expected_model=backup.model)
+            request = prepare_backup_request(backup, primary_request, owner.id,
+                output_token_cap=cap, response_json_schema=schema)
+            credential = resolve_generation_credential(config)
+        except (AppError, TypeError, ValueError):
+            return None
+        lookup.expunge(config)
+    work = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
+    if (work is None or work.attempt.id != work.primary_attempt.id
+        or work.primary_attempt.status is not AttemptStatus.submitted
+        or transcript_is_expired(work.transcript) or not _has_valid_materialization_binding(db, work)):
+        db.rollback()
+        return None
+    try:
+        if read_split_execution_json(db, work.owner, execution=work.execution, field="request_payload_encrypted") != primary_request:
+            db.rollback()
+            return None
+    except AppError:
+        db.rollback()
+        return None
+    try:
+        require_supported_execution_context()
+    except AppError:
+        db.rollback()
+        return None
+    provider_error_code, http_status = _safe_provider_error(error)
+    if usage and usage.get("total_tokens") is not None:
+        settled = settle_provider_attempt_tokens(db, attempt_id=work.primary_attempt.id,
+            reported_total_tokens=usage["total_tokens"], reported_input_tokens=usage["input_tokens"],
+            reported_output_tokens=usage["output_tokens"], outcome=AttemptOutcome.failed)
+    else:
+        settled = settle_provider_attempt_unknown_tokens(db, attempt_id=work.primary_attempt.id)
+    settled.error_code = error.code
+    settled.provider_error_code = provider_error_code
+    settled.provider_http_status = http_status
+    db.add(ProviderUsageEvent(team_id=work.transcript.team_id, owner_user_id=work.owner.id,
+        transcript_id=work.transcript.id, consultation_split_execution_id=work.execution.id,
+        llm_config_id=work.execution.llm_config_id, feature_type=ProviderFeatureType.consultation_split_generation,
+        event_type=ProviderUsageEventType.failed, status="failed", provider_adapter=work.primary_attempt.provider_adapter,
+        model_name=work.primary_attempt.provider_model, error_code=error.code,
+        provider_error_code=provider_error_code, provider_http_status=http_status,
+        prompt_tokens=usage.get("input_tokens") if usage else None,
+        completion_tokens=usage.get("output_tokens") if usage else None,
+        total_tokens=usage.get("total_tokens") if usage else None))
+    if isinstance(request.get("messages"), list):
+        texts = tuple(item["content"] for item in request["messages"]
+                      if isinstance(item, dict) and isinstance(item.get("content"), str))
+    elif isinstance(request.get("contents"), list):
+        parsed_request = llm_runtime.gemini_request_from_snapshot(request)
+        texts = (parsed_request.system_message, parsed_request.user_message)
+    else:
+        db.rollback()
+        return None
+    try:
+        with db.begin_nested():
+            child = reserve_backup_attempt(db, primary=work.primary_attempt, provider=backup,
+                reserved_units=estimate_token_reservation(texts,
+                    max_completion_tokens=llm_runtime.request_output_token_cap(request) or cap), now=utcnow())
+    except AppError as exc:
+        now = utcnow()
+        work.execution.status = ConsultationSplitExecutionStatus.failed
+        work.execution.error_code = exc.code
+        work.execution.completed_at = now
+        recover = any(item.status is ConsultationSplitTopicOutcomeStatus.validated for item in work.outcomes.values())
+        work.batch.status = ConsultationSplitBatchStatus.partially_ready if recover else ConsultationSplitBatchStatus.failed
+        work.batch.error_code = exc.code
+        work.batch.completed_at = now
+        for outcome in work.outcomes.values():
+            if outcome.status is not ConsultationSplitTopicOutcomeStatus.validated:
+                outcome.status = ConsultationSplitTopicOutcomeStatus.failed
+                outcome.error_code = exc.code
+        db.commit()
+        if recover and work.execution.attempt_no > 1:
+            _queue_verification_after_terminal_recovery(db, work)
+        return SplitGenerationRuntimeResult("failed", execution_id, exc.code)
+    now = utcnow()
+    # The response that caused failover belongs to the primary attempt. Clear
+    # it in the same transaction that makes the backup submitted, so duplicate
+    # delivery cannot finalize that stale response against the live child.
+    work.execution.recoverable_response_encrypted = None
+    mark_provider_attempt_submitted(db, attempt_id=child.id, now=now,
+        deadline_at=now + timedelta(seconds=SPLIT_GENERATION_PROVIDER_DEADLINE_SECONDS))
+    db.commit()
+    try:
+        with provider_attempt_execution(db, attempt_id=child.id, maximum_seconds=90):
+            text, raw_usage = llm_runtime.invoke_llm(snapshot=backup, credential=credential, request_body=request)
+    except AppError as exc:
+        tagged = tag_provider_failure(exc)
+        work = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
+        if (work is None or work.attempt.id != child.id
+            or work.attempt.status is not AttemptStatus.submitted
+            or work.attempt.deadline_at is None or work.attempt.deadline_at <= utcnow()
+            or transcript_is_expired(work.transcript)
+            or not _has_valid_materialization_binding(db, work)):
+            db.rollback()
+            return SplitGenerationRuntimeResult("in_flight", execution_id)
+        details = tagged.details if isinstance(tagged.details, dict) else {}
+        return _terminal(db, work, "consultation_split_provider_failed", submitted=True,
+            provider_error_code=_safe_provider_error(tagged)[0], provider_http_status=_safe_provider_error(tagged)[1])
+    work = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
+    if (work is None or work.attempt.id != child.id
+        or work.attempt.status is not AttemptStatus.submitted
+        or work.attempt.deadline_at is None or work.attempt.deadline_at <= utcnow()
+        or transcript_is_expired(work.transcript)
+        or not _has_valid_materialization_binding(db, work)):
+        db.rollback()
+        return SplitGenerationRuntimeResult("in_flight", execution_id)
+    if not isinstance(text, str) or len(text) > RECOVERABLE_GENERATION_RESPONSE_MAX_CHARS:
+        return _terminal(db, work, "consultation_split_generation_invalid_output", submitted=True, usage=_usage(raw_usage))
+    work.execution.recoverable_response_encrypted = encrypt_json_for_existing_owner(
+        db, owner_user_id=work.owner.id, table="consultation_split_executions",
+        field="recoverable_response_encrypted", record_id=work.execution.id,
+        plaintext={"text": text, "usage": _usage(raw_usage)},
+    )
+    db.commit()
+    return _finalize(db, execution_id)
+
+
 def _prepared(db: Session, execution_id: UUID) -> tuple[_Work, LlmProviderSnapshot, dict[str, object], object] | SplitGenerationRuntimeResult | None:
     # Read the config in a separate session so vault resolution cannot occur in
     # the final database transaction.
@@ -266,8 +572,16 @@ def _prepared(db: Session, execution_id: UUID) -> tuple[_Work, LlmProviderSnapsh
     )
     preliminary_identity = _credential_config_identity(config) if config is not None else None
     credential = None
-    try: credential = resolve_generation_credential(config) if config else None
-    except (AppError, TypeError, ValueError): pass
+    credential_error = None
+    try:
+        credential = resolve_generation_credential(config) if config else None
+    except AppError as exc:
+        credential_error = exc
+        if (config is not None and exc.code == "business_rule_violation" and not config.vault_secret_ref
+            and config.auth_mode.value not in {"none", "google_adc"}):
+            credential_error = AppError(401, "llm_invalid_credential", "The LLM provider credential is not configured")
+    except (TypeError, ValueError):
+        credential_error = AppError(401, "llm_invalid_credential", "The LLM provider credential is invalid")
     work = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.queued)
     if work is None: db.rollback(); return None
     now = utcnow()
@@ -321,7 +635,17 @@ def _prepared(db: Session, execution_id: UUID) -> tuple[_Work, LlmProviderSnapsh
         if request != stored_request: raise AppError(422, "invalid", "invalid")
     except (AppError, UnicodeDecodeError, KeyError, TypeError):
         return _terminal(db, work, "consultation_split_provider_binding_invalid", submitted=False)
-    if not _credential_ok(config, credential): return _terminal(db, work, "consultation_split_credential_unavailable", submitted=False)
+    if not _credential_ok(config, credential):
+        credential_error = credential_error or AppError(401, "llm_invalid_credential", "The LLM provider credential is invalid")
+        if can_failover(tag_provider_failure(credential_error)):
+            result = _try_pre_submit_backup_generation(db, work=work, credential_error=credential_error)
+            if result is not None:
+                return result
+            work = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.queued)
+            if work is None:
+                db.rollback()
+                return SplitGenerationRuntimeResult("noop", execution_id)
+        return _terminal(db, work, "consultation_split_credential_unavailable", submitted=False)
     return work, provider, request, credential
 
 def _submit(db: Session, work: _Work) -> bool:
@@ -365,8 +689,14 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
     if not _has_valid_materialization_binding(db, work):
         return _terminal(db, work, "consultation_split_materialization_binding_invalid", submitted=True)
     parsed_response = False
+    finalization_attempt_id = work.attempt.id
     try:
         response=read_split_execution_json(db, work.owner, execution=work.execution, field="recoverable_response_encrypted")
+        if response is None:
+            # A concurrent failover may have cleared the primary response
+            # before this finalizer acquired the execution lock.
+            db.rollback()
+            return SplitGenerationRuntimeResult("in_flight", execution_id)
         text=response["text"]; usage=_usage(response.get("usage")); plan=read_split_batch_json(db, work.owner, batch=work.batch, field="confirmed_plan_encrypted")
         by_uuid={topic.topic_uuid: topic for topic in work.topics if topic.disposition is ConsultationSplitTopicDisposition.separate_note}
         target_uuids = {topic.topic_uuid for topic in work.topics if topic.disposition is ConsultationSplitTopicDisposition.separate_note and work.outcomes[topic.id].status in {ConsultationSplitTopicOutcomeStatus.pending, ConsultationSplitTopicOutcomeStatus.failed}}
@@ -374,13 +704,35 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
         # same target set, not the full confirmed plan: retained validated
         # siblings are immutable context and are intentionally absent from the
         # provider response.
-        parsed=parse_split_generation_partial(
-            text,
-            topics=[topic for topic in _topics_from_plan(plan or {}) if topic.topic_uuid in target_uuids],
-        )
+        try:
+            parsed=parse_split_generation_partial(
+                text,
+                topics=[topic for topic in _topics_from_plan(plan or {}) if topic.topic_uuid in target_uuids],
+            )
+            if target_uuids != {note.topic_uuid for note in parsed.notes} | set(parsed.failed_topic_uuids):
+                raise AppError(502, "consultation_split_generation_invalid", "Split generation output was invalid")
+        except AppError as parse_error:
+            db.rollback()
+            event = "consultation_split_generation_parse_failed"
+            logger.warning(
+                "event=%s execution_id=%s phase=%s",
+                event, execution_id, "parse",
+                extra={"event": event, "execution_id": str(execution_id), "phase": "parse",
+                       "error_type": type(parse_error).__name__, "error_code": parse_error.code},
+            )
+            invalid = tag_output_validation_failure(AppError(502, "consultation_split_generation_invalid", "Split generation output was invalid"))
+            backup_result = _try_backup_generation(db, execution_id=execution_id, error=invalid, usage=usage)
+            if backup_result is not None:
+                return backup_result
+            current = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
+            if current is None or current.attempt.id != finalization_attempt_id:
+                db.rollback()
+                return SplitGenerationRuntimeResult("in_flight", execution_id)
+            # Preserve the established partial-recovery path when no backup is
+            # available. The outer finalization handler treats this pure
+            # parser failure as recoverable only for the first generation.
+            raise AppError(502, "consultation_split_generation_invalid", "Split generation output was invalid")
         parsed_response = True
-        if target_uuids != {note.topic_uuid for note in parsed.notes} | set(parsed.failed_topic_uuids):
-            raise AppError(502, "invalid", "invalid")
 
         # Split notes keep generic persisted document titles.  The one
         # provider-generated title belongs to the transcript and follows the
@@ -426,7 +778,7 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
             # generating only when it has claimed its own submission.
             work.batch.status = ConsultationSplitBatchStatus.partially_ready
             work.batch.error_code = "consultation_split_generation_invalid_output"
-            db.add(ProviderUsageEvent(team_id=work.transcript.team_id, owner_user_id=work.owner.id, transcript_id=work.transcript.id, consultation_split_execution_id=work.execution.id, llm_config_id=work.execution.llm_config_id, feature_type=ProviderFeatureType.consultation_split_generation, event_type=ProviderUsageEventType.completed, status="partially_ready", provider_adapter=work.execution.provider_adapter, model_name=work.execution.provider_model, prompt_tokens=usage["input_tokens"], completion_tokens=usage["output_tokens"], total_tokens=usage["total_tokens"]))
+            db.add(ProviderUsageEvent(team_id=work.transcript.team_id, owner_user_id=work.owner.id, transcript_id=work.transcript.id, consultation_split_execution_id=work.execution.id, llm_config_id=_provider_config_id(work), feature_type=ProviderFeatureType.consultation_split_generation, event_type=ProviderUsageEventType.completed, status="partially_ready", provider_adapter=work.attempt.provider_adapter, model_name=work.attempt.provider_model, prompt_tokens=usage["input_tokens"], completion_tokens=usage["output_tokens"], total_tokens=usage["total_tokens"]))
             db.commit()
             # A parsed, encrypted response is the only automatic-retry proof.
             # Do this before any optional verification. Queue construction
@@ -502,9 +854,12 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
             db, batch=work.batch, transcript_id=work.transcript.id,
             version=work.materialization_transcript_version,
         )
+        backup_snapshot = (read_backup_provider(db, source=work.batch)
+            if work.attempt.backup_of_attempt_id is not None else None)
         provider_metadata = SplitDocumentProviderMetadata(
-            work.execution.llm_config_id, work.execution.provider_model,
-            work.execution.provider_adapter, work.execution.provider_base_url,
+            _provider_config_id(work), work.attempt.provider_model,
+            work.attempt.provider_adapter,
+            backup_snapshot.base_url if backup_snapshot is not None else work.execution.provider_base_url,
         )
         for note in complete_notes:
             topic=by_uuid[note.topic_uuid]; outcome=work.outcomes[topic.id]
@@ -540,19 +895,24 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
         if work.attempt.status is AttemptStatus.submitted:
             settle_provider_attempt_tokens(db, attempt_id=work.attempt.id, reported_total_tokens=usage["total_tokens"] or 0, reported_input_tokens=usage["input_tokens"], reported_output_tokens=usage["output_tokens"], outcome=AttemptOutcome.succeeded) if usage["total_tokens"] is not None else settle_provider_attempt_unknown_tokens(db, attempt_id=work.attempt.id)
         now=utcnow(); work.execution.status=ConsultationSplitExecutionStatus.completed; work.execution.completed_at=now; work.execution.recoverable_response_encrypted=None; work.batch.status=ConsultationSplitBatchStatus.ready; work.batch.completed_at=now
-        db.add(ProviderUsageEvent(team_id=work.transcript.team_id, owner_user_id=work.owner.id, transcript_id=work.transcript.id, consultation_split_execution_id=work.execution.id, llm_config_id=work.execution.llm_config_id, feature_type=ProviderFeatureType.consultation_split_generation, event_type=ProviderUsageEventType.completed, status="ready", provider_adapter=work.execution.provider_adapter, model_name=work.execution.provider_model, prompt_tokens=usage["input_tokens"], completion_tokens=usage["output_tokens"], total_tokens=usage["total_tokens"]))
+        db.add(ProviderUsageEvent(team_id=work.transcript.team_id, owner_user_id=work.owner.id, transcript_id=work.transcript.id, consultation_split_execution_id=work.execution.id, llm_config_id=_provider_config_id(work), feature_type=ProviderFeatureType.consultation_split_generation, event_type=ProviderUsageEventType.completed, status="ready", provider_adapter=work.attempt.provider_adapter, model_name=work.attempt.provider_model, prompt_tokens=usage["input_tokens"], completion_tokens=usage["output_tokens"], total_tokens=usage["total_tokens"]))
         db.commit(); return SplitGenerationRuntimeResult("ready", execution_id)
-    except Exception:
+    except Exception as finalize_error:
         event = "consultation_split_finalization_failed"
         logger.warning(
             "event=%s execution_id=%s phase=%s",
             event,
             execution_id,
             "finalize",
-            extra={"event": event, "execution_id": str(execution_id), "phase": "finalize"},
+            extra={"event": event, "execution_id": str(execution_id), "phase": "finalize",
+                   "error_type": type(finalize_error).__name__,
+                   "error_code": finalize_error.code if isinstance(finalize_error, AppError) else "unexpected"},
         )
         db.rollback(); work=_lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
         if work is None:
+            return SplitGenerationRuntimeResult("in_flight", execution_id)
+        if work.attempt.id != finalization_attempt_id:
+            db.rollback()
             return SplitGenerationRuntimeResult("in_flight", execution_id)
         # A response was committed before finalization.  Unlike transport
         # failures, this is proof that retrying will not duplicate an uncertain
@@ -587,6 +947,7 @@ def process_consultation_split_generation_execution(db: Session, *, execution_id
     prepared=_prepared(db, execution_id)
     if not isinstance(prepared, tuple): return prepared or SplitGenerationRuntimeResult("noop", execution_id)
     work, provider, request, credential=prepared
+    submitted_attempt_id = work.attempt.id
     if not _submit(db, work):
         db.rollback()
         current = db.get(ConsultationSplitExecution, execution_id)
@@ -597,7 +958,11 @@ def process_consultation_split_generation_execution(db: Session, *, execution_id
         with provider_attempt_execution(db, attempt_id=work.attempt.id, maximum_seconds=90):
             text, raw_usage=llm_runtime.invoke_llm(snapshot=provider, credential=credential, request_body=request)
     except AppError as exc:
-        provider_error_code, provider_http_status = _safe_provider_error(exc)
+        tagged = tag_provider_failure(exc)
+        backup_result = _try_backup_generation(db, execution_id=execution_id, error=tagged)
+        if backup_result is not None:
+            return backup_result
+        provider_error_code, provider_http_status = _safe_provider_error(tagged)
         work=_lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
         return _terminal(
             db, work, "consultation_split_provider_failed", submitted=True,
@@ -610,7 +975,8 @@ def process_consultation_split_generation_execution(db: Session, *, execution_id
     work=_lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
     if work is None: db.rollback(); return SplitGenerationRuntimeResult("in_flight", execution_id)
     if (
-        work.attempt.status is not AttemptStatus.submitted
+        work.attempt.id != submitted_attempt_id
+        or work.attempt.status is not AttemptStatus.submitted
         or work.attempt.deadline_at is None
         or work.attempt.deadline_at <= utcnow()
         or transcript_is_expired(work.transcript)
@@ -621,6 +987,12 @@ def process_consultation_split_generation_execution(db: Session, *, execution_id
     # outcome.  Persist it before parsing so finalization can safely consume
     # the single automatic recovery chance.  Exceptions/no response remain
     # uncertain submitted outcomes and never reach that path.
-    if not isinstance(text, str) or len(text) > RECOVERABLE_GENERATION_RESPONSE_MAX_CHARS: return _terminal(db, work, "consultation_split_generation_invalid_output", submitted=True, usage=_usage(raw_usage))
+    if not isinstance(text, str) or len(text) > RECOVERABLE_GENERATION_RESPONSE_MAX_CHARS:
+        invalid = tag_output_validation_failure(AppError(502, "consultation_split_generation_invalid", "Split generation output was invalid"))
+        backup_result = _try_backup_generation(db, execution_id=execution_id, error=invalid, usage=_usage(raw_usage))
+        if backup_result is not None:
+            return backup_result
+        work = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
+        return _terminal(db, work, "consultation_split_generation_invalid_output", submitted=True, usage=_usage(raw_usage)) if work else SplitGenerationRuntimeResult("in_flight", execution_id)
     work.execution.recoverable_response_encrypted=encrypt_json_for_existing_owner(db, owner_user_id=work.owner.id, table="consultation_split_executions", field="recoverable_response_encrypted", record_id=work.execution.id, plaintext={"text": text, "usage": _usage(raw_usage)})
     db.commit(); return _finalize(db, execution_id)

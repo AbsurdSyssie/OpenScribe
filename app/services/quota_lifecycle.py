@@ -427,7 +427,9 @@ def _reconcile_sources(db: Session, attempts: list[ProviderAttempt], now: dateti
                 db, attempt.consultation_split_execution_id, error, now
             )
         if attempt.attempt_kind is AttemptKind.llm_template_suggestion:
-            job = db.scalar(select(TemplateSuggestionJob).where(TemplateSuggestionJob.id == attempt.correlation_id).with_for_update())
+            primary = db.get(ProviderAttempt, attempt.backup_of_attempt_id) if attempt.backup_of_attempt_id else attempt
+            job_id = primary.correlation_id if primary is not None else None
+            job = db.scalar(select(TemplateSuggestionJob).where(TemplateSuggestionJob.id == job_id).with_for_update())
             if job is not None and job.status in {TemplateSuggestionStatus.queued, TemplateSuggestionStatus.processing}:
                 job.status = TemplateSuggestionStatus.failed
                 job.error_code = error

@@ -266,6 +266,7 @@ def reserve_provider_attempt(
     measured_audio_seconds: Decimal | float | None = None,
     stream_received_samples: int | None = None,
     stream_authorized_samples: int | None = None,
+    backup_of_attempt_id: UUID | None = None,
 ) -> ProviderAttempt:
     """Reserve units under locked owner row. Does not commit."""
     if reserved_units <= 0 or attempt_number < 1:
@@ -307,6 +308,7 @@ def reserve_provider_attempt(
             and existing.attempt_kind is attempt_kind
             and existing.correlation_id == correlation_id
             and existing.attempt_number == attempt_number
+            and existing.backup_of_attempt_id == backup_of_attempt_id
             and existing.reserved_units == reserved_units
             and _utc(existing.authorized_at) == authorized_at
             and _utc(existing.reservation_valid_until) == reservation_valid_until
@@ -334,6 +336,28 @@ def reserve_provider_attempt(
         if matches_existing(existing):
             return existing
         raise AppError(409, "provider_attempt_idempotency_conflict", "Provider attempt idempotency key conflicts")
+
+    if backup_of_attempt_id is not None:
+        primary = db.get(ProviderAttempt, backup_of_attempt_id)
+        if (
+            primary is None or primary.backup_of_attempt_id is not None
+            or attempt_kind not in {
+                AttemptKind.llm_generation, AttemptKind.llm_hallucination_check,
+                AttemptKind.llm_template_suggestion, AttemptKind.consultation_split_analysis,
+                AttemptKind.consultation_split_generation, AttemptKind.consultation_split_verification,
+            }
+            or resource is not QuotaResource.tokens
+            or correlation_id != primary.id or attempt_number != 1
+            or primary.team_id != team_id or primary.owner_user_id != owner_user_id
+            or primary.resource is not resource or primary.attempt_kind is not attempt_kind
+            or primary.transcript_id != transcript_id
+            or primary.generated_document_id != generated_document_id
+            or primary.consultation_split_execution_id != consultation_split_execution_id
+            or primary.transcript_ingestion_job_id != transcript_ingestion_job_id
+            or transcript_stream_session_id is not None
+            or primary.status not in {AttemptStatus.settled, AttemptStatus.cancelled}
+        ):
+            raise AppError(409, "provider_attempt_backup_identity_invalid", "Backup attempt identity conflicts")
 
     if owner_user_id is not None:
         owner = db.scalar(select(User).where(User.id == owner_user_id).with_for_update())
@@ -388,7 +412,7 @@ def reserve_provider_attempt(
                 raise AppError(409, "provider_attempt_reference_mismatch", "Provider attempt references do not share a transcript")
             if generated_document_id is not None or transcript_ingestion_job_id is not None:
                 raise AppError(422, "provider_attempt_reference_mismatch", "Split executions cannot share another provider source")
-            if correlation_id != consultation_split_execution_id or attempt_number != 1:
+            if (backup_of_attempt_id is None and correlation_id != consultation_split_execution_id) or attempt_number != 1:
                 raise AppError(422, "provider_attempt_split_execution_identity_invalid", "Split execution attempt identity is invalid")
             expected_split_attempt_kind = {
                 ConsultationSplitExecutionKind.analysis: AttemptKind.consultation_split_analysis,
@@ -423,6 +447,7 @@ def reserve_provider_attempt(
     attempt = ProviderAttempt(
         team_id=team_id, owner_user_id=owner_user_id, resource=resource, attempt_kind=attempt_kind,
         correlation_id=correlation_id, attempt_number=attempt_number, reserved_units=reserved_units,
+        backup_of_attempt_id=backup_of_attempt_id,
         status=AttemptStatus.reserved, authorized_at=authorized_at,
         reservation_valid_until=reservation_valid_until, transcript_id=transcript_id,
         transcript_ingestion_job_id=transcript_ingestion_job_id, generated_document_id=generated_document_id,

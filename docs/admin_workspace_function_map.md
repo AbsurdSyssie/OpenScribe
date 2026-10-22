@@ -128,6 +128,7 @@ The selected-team Provider policy tab manages active team selections/defaults fo
 - consultation STT;
 - post-consultation dictation STT;
 - LLM/default model policy;
+- an optional system-admin-owned writing-assistant backup provider and model;
 - hallucination-check configuration;
 - de-identification;
 - clinical NLP.

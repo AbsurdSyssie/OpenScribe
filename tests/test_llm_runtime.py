@@ -382,7 +382,9 @@ def test_ollama_rejects_eof_without_terminal_frame(chunks):
         )
 
     assert caught.value.code == "llm_provider_bad_response"
-    assert caught.value.details == {"provider_error_code": "incomplete_response"}
+    assert caught.value.details == {
+        "provider_error_code": "incomplete_response",
+    }
     assert "partial synthetic note" not in str(caught.value)
     assert response.closed
 
@@ -417,8 +419,8 @@ def test_openai_content_extraction_and_usage_normalization():
 @pytest.mark.parametrize(
     ("failure", "expected_code", "expected_details"),
     [
-        ("connection", "llm_provider_unreachable", {"provider_error_code": "connection_error"}),
-        ("status", "llm_generation_failed", {"provider_http_status": 429, "provider_error_code": "rate_limit_exceeded"}),
+        ("connection", "llm_provider_unreachable", {"provider_error_code": "connection_error", "backup_failure_class": "provider_failure"}),
+        ("status", "llm_generation_failed", {"provider_http_status": 429, "provider_error_code": "rate_limit_exceeded", "backup_failure_class": "temporary_capacity_exhausted"}),
     ],
 )
 def test_templates_openai_transport_seam_preserves_safe_runtime_errors(monkeypatch, failure, expected_code, expected_details):

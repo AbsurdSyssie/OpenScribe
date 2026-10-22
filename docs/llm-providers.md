@@ -13,6 +13,20 @@ Pending providers are visible only to system admins as `Setup incomplete`. Team 
 
 Credential replacement uses a versioned Vault path rather than overwriting the live path before database commit. Replacement, removal, draft cancellation, revision promotion, provider deletion, and team deletion commit a FK-free cleanup intent with the exact retired reference; a scheduled worker retries Vault deletion and first verifies the reference is no longer live.
 
+## Team backup provider
+
+System administrators can set or clear **Writing assistant backup** in the selected team's **Provider policy** table. Choose an active, ready provider from that team and one of its advertised models. Team leaders' primary-provider selections and users' primary-model preferences do not change this admin-owned setting.
+
+Queued LLM work freezes the backup choice under the content owner's encryption boundary. Changing or clearing the setting affects new jobs. An unavailable backup does not prevent new primary work. A worker skips a backup that matches the primary provider and model.
+
+The backup applies to note generation, follow-ups, Quick Actions, regeneration, template suggestions, consultation-split analysis and generation/recovery, and enabled hallucination checks and split verification. It does not enable an optional workflow that the team or owner has disabled.
+
+After a provider or output-validation failure, the worker may submit one backup attempt using the same frozen redacted messages and output contract. It rebuilds the adapter envelope for the backup model and validates the backup response before accepting it. Application quota exhaustion and hard or ambiguous provider-quota rejection stop failover. Redaction, ownership, retention, cancellation, encrypted-storage and source-binding failures remain terminal.
+
+Each backup has a unique link to its primary quota attempt, its own token reservation, and a durable submission claim. Workers resolve credentials before submission. A timeout can leave the primary outcome unknown; OpenScribe accounts for that attempt conservatively before reserving the backup. Both providers may therefore charge for a timeout failover. Duplicate task delivery does not replay a submitted call, and lifecycle cleanup settles uncertain work after a worker crash.
+
+Provider edits and deletion protect queued primary and backup references. Credential correction must preserve the endpoint, authentication mode and models frozen for live backup work. The server reads only dedicated provider metadata to check these models; admin authority does not grant access to clinical source content.
+
 ## Preset Layer
 
 The admin UI exposes branded presets:
@@ -89,9 +103,9 @@ Queued generation resolves its Vault-backed credential before the provider attem
 
 ## Generated Document Request Payloads
 
-Generation uses a monotonic execution budget and a scoped Unix main-thread wall timer. Maintained workers use Celery prefork. Thread, greenlet, eventlet and gevent execution is unsupported. Each queued generation, checker, suggestion and split workflow checks worker capability before marking its provider attempt submitted; a definite unsupported context cancels reserved quota without an HTTP event. A failure detected after durable submission retains conservative quota settlement. No helper thread continues a clinical request after timeout. Client cleanup restores the previous signal handler and timer. Connection setup is limited to 10 seconds; ordinary and split generation calls and split analysis have a 90-second budget. Suggestions have 90 seconds. Ordinary generation and its checker share a 150-second deadline from provider submission; checking and split verification have at most 30 seconds. Queue waiting is separate.
+Generation uses a monotonic execution budget and a scoped Unix main-thread wall timer. Maintained workers use Celery prefork. Thread, greenlet, eventlet and gevent execution is unsupported. Each queued generation, checker, suggestion and split workflow checks worker capability before marking its provider attempt submitted; a definite unsupported context cancels reserved quota without an HTTP event. A failure detected after durable submission retains conservative quota settlement. No helper thread continues a clinical request after timeout. Client cleanup restores the previous signal handler and timer. Connection setup is limited to 10 seconds; ordinary and split generation calls and split analysis have a 90-second budget. Suggestions have 90 seconds. Each ordinary generation attempt and its checking share a 150-second deadline from that generation attempt's submission. A configured backup gets a separate bounded attempt. Checker and split-verification calls have at most 30 seconds per provider. Queue waiting is separate.
 
-SDK retries are disabled. The shared transport retries only a confirmed temporary HTTP 429 for the same frozen request and credential, with at most four HTTP requests under one logical quota attempt. Equal-jitter waits are 1–2, 2–4 and 4–8 seconds; a valid Retry-After can increase the wait within a 30-second cumulative limit and the remaining stage budget. Hard-quota rejection, timeout, ambiguous connection failure, HTTP 503 and invalid output do not replay automatically. Durable lost claims or expired transcript roots stop further requests.
+SDK retries are disabled. The shared transport retries only a confirmed temporary HTTP 429 for the same frozen request and credential, with at most four HTTP requests under one logical quota attempt. Equal-jitter waits are 1–2, 2–4 and 4–8 seconds; a valid Retry-After can increase the wait within a 30-second cumulative limit and the remaining stage budget. The transport does not replay hard-quota rejection, timeout, ambiguous connection failure, HTTP 503 or invalid output against that same request. A distinct configured [team backup](#team-backup-provider) can handle eligible failures after this transport policy finishes. Durable lost claims or expired transcript roots stop further requests.
 
 Provider attempts retain at most four content-free transport events: UTC observation time, request ordinal, duration, controlled code/status and numeric retry wait. Observations commit independently before waiting, including a final timeout observed after the attempt deadline. They contain no provider payload, header body, prompt, clinical content or credentials.
 

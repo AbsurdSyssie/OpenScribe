@@ -47,6 +47,7 @@ from app.models import (
     TeamDeidentificationProviderAssignment,
     TeamDeidentificationSelection,
     TeamHallucinationCheckSelection,
+    TeamLlmBackupSelection,
     TeamLlmConfig,
     TeamLlmSelection,
     TeamRole,
@@ -2285,6 +2286,9 @@ def delete_team(db: Session, actor: User, *, team_id: UUID) -> None:
         llm_selection = db.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == team.id))
         if llm_selection is not None:
             db.delete(llm_selection)
+        backup_selection = db.scalar(select(TeamLlmBackupSelection).where(TeamLlmBackupSelection.team_id == team.id))
+        if backup_selection is not None:
+            db.delete(backup_selection)
         hallucination_check_selection = db.scalar(select(TeamHallucinationCheckSelection).where(TeamHallucinationCheckSelection.team_id == team.id))
         if hallucination_check_selection is not None:
             db.delete(hallucination_check_selection)

@@ -133,6 +133,7 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "team_llm_configs",
         "team_hallucination_check_selections",
         "team_llm_selections",
+        "team_llm_backup_selections",
         "team_stt_configs",
         "team_stt_selections",
         "template_versions",

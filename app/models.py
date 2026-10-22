@@ -482,6 +482,7 @@ class Team(Base):
     stt_selections: Mapped[list["TeamSttSelection"]] = relationship(back_populates="team", cascade="all, delete-orphan")
     llm_configs: Mapped[list["TeamLlmConfig"]] = relationship(back_populates="team")
     llm_selection: Mapped["TeamLlmSelection | None"] = relationship(back_populates="team", uselist=False, cascade="all, delete-orphan")
+    llm_backup_selection: Mapped["TeamLlmBackupSelection | None"] = relationship(back_populates="team", uselist=False, cascade="all, delete-orphan")
     hallucination_check_selection: Mapped["TeamHallucinationCheckSelection | None"] = relationship(
         back_populates="team",
         uselist=False,
@@ -1157,9 +1158,10 @@ class TeamLlmConfig(Base):
     created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
     updated_by: Mapped[User] = relationship(foreign_keys=[updated_by_user_id])
     selections: Mapped[list["TeamLlmSelection"]] = relationship(back_populates="config")
+    backup_selections: Mapped[list["TeamLlmBackupSelection"]] = relationship(back_populates="config")
     hallucination_check_selections: Mapped[list["TeamHallucinationCheckSelection"]] = relationship(back_populates="config")
     consultation_split_executions: Mapped[list["ConsultationSplitExecution"]] = relationship(
-        back_populates="llm_config"
+        back_populates="llm_config", foreign_keys="ConsultationSplitExecution.llm_config_id"
     )
 
 
@@ -1178,6 +1180,23 @@ class TeamLlmSelection(Base):
     team: Mapped[Team] = relationship(back_populates="llm_selection")
     config: Mapped[TeamLlmConfig] = relationship(back_populates="selections")
     selected_by: Mapped[User] = relationship(foreign_keys=[selected_by_user_id])
+
+
+class TeamLlmBackupSelection(Base):
+    """System-admin-owned team failover selection, separate from primary authority."""
+    __tablename__ = "team_llm_backup_selections"
+    __table_args__ = (CheckConstraint(
+        "(llm_config_id IS NULL AND model_name IS NULL) OR "
+        "(llm_config_id IS NOT NULL AND model_name IS NOT NULL AND length(btrim(model_name)) > 0)",
+        name="ck_team_llm_backup_selections_shape",
+    ),)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), primary_key=True)
+    llm_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("team_llm_configs.id", ondelete="RESTRICT"), nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    team: Mapped[Team] = relationship(back_populates="llm_backup_selection")
+    config: Mapped[TeamLlmConfig | None] = relationship(back_populates="backup_selections")
 
 
 class TeamHallucinationCheckSelection(Base):
@@ -1973,6 +1992,10 @@ class TemplateSuggestionJob(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    backup_llm_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("team_llm_configs.id", ondelete="SET NULL"), nullable=True)
+    backup_provider_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    llm_request_payload_json_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     transcript_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False
     )
@@ -2127,6 +2150,9 @@ class ConsultationSplitAnalysis(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    backup_llm_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("team_llm_configs.id", ondelete="SET NULL"), nullable=True)
+    backup_provider_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
     transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False)
@@ -2339,6 +2365,9 @@ class ConsultationSplitBatch(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    backup_llm_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("team_llm_configs.id", ondelete="SET NULL"), nullable=True)
+    backup_provider_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     intent_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         # This edge completes a transcript-owned provenance cycle through the
@@ -2538,6 +2567,9 @@ class ConsultationSplitExecution(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    backup_llm_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("team_llm_configs.id", ondelete="SET NULL"), nullable=True)
+    backup_provider_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     analysis_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("consultation_split_analyses.id", ondelete="CASCADE"), nullable=True)
     batch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("consultation_split_batches.id", ondelete="CASCADE"), nullable=True)
     owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
@@ -2579,10 +2611,10 @@ class ConsultationSplitExecution(Base):
     owner: Mapped[User] = relationship(back_populates="consultation_split_executions")
     team: Mapped[Team] = relationship(back_populates="consultation_split_executions")
     transcript: Mapped[Transcript] = relationship(back_populates="consultation_split_executions")
-    llm_config: Mapped[TeamLlmConfig | None] = relationship(back_populates="consultation_split_executions")
+    llm_config: Mapped[TeamLlmConfig | None] = relationship(back_populates="consultation_split_executions", foreign_keys=[llm_config_id])
     provider_attempt: Mapped["ProviderAttempt | None"] = relationship(
-        back_populates="consultation_split_execution",
-        uselist=False,
+        primaryjoin="and_(ConsultationSplitExecution.id == ProviderAttempt.consultation_split_execution_id, ProviderAttempt.backup_of_attempt_id.is_(None))",
+        back_populates="consultation_split_execution", uselist=False,
     )
     provider_usage_events: Mapped[list["ProviderUsageEvent"]] = relationship(
         back_populates="consultation_split_execution",
@@ -2629,6 +2661,9 @@ class GeneratedDocument(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    backup_llm_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("team_llm_configs.id", ondelete="SET NULL"), nullable=True)
+    backup_provider_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
     transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id"), nullable=False)
@@ -2971,7 +3006,9 @@ class ProviderAttempt(Base):
             name="ck_provider_attempts_stream_source_shape",
         ),
         UniqueConstraint("correlation_id", "attempt_number", name="uq_provider_attempts_correlation_attempt"),
-        UniqueConstraint("consultation_split_execution_id", name="uq_provider_attempts_split_execution"),
+        UniqueConstraint("backup_of_attempt_id", name="uq_provider_attempts_backup_of"),
+        CheckConstraint("backup_of_attempt_id IS NULL OR (resource = 'tokens' AND attempt_number = 1 AND correlation_id = backup_of_attempt_id AND id <> backup_of_attempt_id)", name="ck_provider_attempts_backup_identity"),
+        Index("uq_provider_attempts_split_execution", "consultation_split_execution_id", unique=True, postgresql_where=text("backup_of_attempt_id IS NULL")),
         Index("ix_provider_attempts_owner_resource_authorized", "owner_user_id", "resource", "authorized_at"),
         Index("ix_provider_attempts_active_reservations", "owner_user_id", "resource", "reservation_valid_until", postgresql_where=text("status = 'reserved'")),
         Index("ix_provider_attempts_submitted_deadline", "deadline_at", postgresql_where=text("status = 'submitted'")),
@@ -2992,6 +3029,7 @@ class ProviderAttempt(Base):
         ForeignKey("consultation_split_executions.id", ondelete="SET NULL"),
         nullable=True,
     )
+    backup_of_attempt_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("provider_attempts.id", ondelete="CASCADE"), nullable=True)
     correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
     attempt_kind: Mapped[AttemptKind] = mapped_column(Enum(AttemptKind), nullable=False)

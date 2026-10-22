@@ -1844,6 +1844,7 @@ def _create_user_record(db: Session, payload: UserCreate, *, actor: User | None,
         mfa_enabled=False,
         must_change_password=onboarding_state is UserOnboardingState.pending_password_change,
         onboarding_state=onboarding_state,
+        example_consultation_pending=(not payload.is_system_admin and team is not None),
     )
     db.add(user)
     return user

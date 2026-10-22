@@ -164,6 +164,19 @@ The Docker smoke workflow runs the runtime dependency audit. It does not prove t
 
 Use the actual file names present on the branch when a focused area has been split or renamed; `pytest --collect-only -q` is the authoritative collection view.
 
+## Diarised transcripts and inline editing
+
+Run the structured source, provider, generation/redaction, shared autosave, and browser checks with synthetic data:
+
+```bash
+pytest -q tests/test_structured_transcripts.py tests/test_structured_transcript_security.py tests/test_stt_diarization.py tests/test_diarisation_content_preservation.py tests/test_diarisation_pii_detector.py tests/test_diarised_generation.py tests/test_diarised_template_suggestions.py tests/test_diarised_editor_frontend_js.py tests/test_diarised_transcript_browser.py
+pytest -q tests/test_migrations.py -k 'structured_transcript_migration or alembic_upgrade_head_creates_expected_schema'
+```
+
+The browser checks use a local static server, installed Playwright Chromium, and mocked requests; they do not send audio or content to external providers. They cover per-turn edit isolation, masking, late polls, stale revisions, pending-save edits, and adding text after deleting the final turn. Native PII checks exercise the installed Presidio/spaCy detector with synthetic speaker markers and names; they do not establish the behavior of an externally configured detector.
+
+Also run the affected Deepgram stream, ingestion/snapshot, Working-note autosave, dictation, PII override, and consultation-split suites. Apply the route authorization audit after pytest, never concurrently. New source text and speaker metadata must remain owner-encrypted, generated requests must use immutable redacted source, and recording-start settings must survive rollover and retry without a client permission flag.
+
 ## Browser CSRF regression
 
 `tests/test_csrf_browser.py` is an optional Playwright-backed regression. It starts FastAPI on localhost, logs in through the real browser form, follows the compatibility `/transcribe` redirect into the canonical `/workspace` Scribe shell, creates a consultation, and verifies that the browser sends the current session-bound `X-CSRF-Token` to the transcript-start API without rotating it during ordinary same-session navigation.

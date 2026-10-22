@@ -541,6 +541,7 @@ class User(Base):
         default=UserOnboardingState.complete,
         nullable=False,
     )
+    example_consultation_pending: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     mfa_required: Mapped[bool] = mapped_column(default=True, nullable=False)
     mfa_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
@@ -1077,6 +1078,11 @@ class TeamSttConfig(Base):
     segment_start_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
     segment_end_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
     segment_speaker_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    diarization_live_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
+    diarization_batch_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
+    diarization_field_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    diarization_on_value: Mapped[str] = mapped_column(String(64), default="true", server_default="true", nullable=False)
+    diarization_off_value: Mapped[str] = mapped_column(String(64), default="false", server_default="false", nullable=False)
     extra_form_fields_json: Mapped[dict[str, str]] = mapped_column(JSON, default=dict, nullable=False)
     vault_secret_ref: Mapped[str] = mapped_column(String(512), nullable=False)
     credential_status: Mapped[ProviderCredentialStatus] = mapped_column(
@@ -1566,13 +1572,24 @@ class DefaultQuickActionVersion(Base):
 
 class Transcript(Base):
     __tablename__ = "transcripts"
+    __table_args__ = (
+        Index(
+            "uq_transcripts_owner_example",
+            "owner_user_id",
+            unique=True,
+            postgresql_where=text("is_example IS TRUE"),
+            sqlite_where=text("is_example IS TRUE"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     multiple_problems: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_example: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     current_draft_text_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_draft_turns_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     structured_context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     working_note_mode: Mapped[TranscriptWorkingNoteMode | None] = mapped_column(Enum(TranscriptWorkingNoteMode), nullable=True)
     freeform_working_note_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -1611,6 +1628,9 @@ class Transcript(Base):
     ingestion_jobs: Mapped[list["TranscriptIngestionJob"]] = relationship(
         back_populates="transcript",
         cascade="all, delete-orphan",
+    )
+    capture_settings: Mapped[list["TranscriptCaptureSettings"]] = relationship(
+        back_populates="transcript", cascade="all, delete-orphan"
     )
     generated_documents: Mapped[list["GeneratedDocument"]] = relationship(
         back_populates="transcript",
@@ -1689,6 +1709,7 @@ class TranscriptStreamSession(Base):
     owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
     selection_snapshot_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    stt_diarisation_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
     status: Mapped[TranscriptStreamStatus] = mapped_column(Enum(TranscriptStreamStatus), nullable=False, default=TranscriptStreamStatus.active)
     connection_fence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     fence_token: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, default=uuid.uuid4)
@@ -1710,6 +1731,33 @@ class TranscriptStreamSession(Base):
     transcript: Mapped[Transcript] = relationship(back_populates="transcript_stream_sessions")
     windows: Mapped[list["TranscriptStreamWindow"]] = relationship(cascade="all, delete-orphan", order_by="TranscriptStreamWindow.window_no")
     deliveries: Mapped[list["TranscriptStreamDelivery"]] = relationship(cascade="all, delete-orphan")
+
+
+class TranscriptCaptureSettings(Base):
+    """Content-free diarisation settings frozen once per microphone recording."""
+
+    __tablename__ = "transcript_capture_settings"
+    __table_args__ = (
+        Index("ix_transcript_capture_settings_transcript_created", "transcript_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False,
+    )
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    stt_config_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    stt_contract_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    stt_diarisation_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
+    stt_diarization_batch_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
+    stt_diarization_field_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    stt_diarization_on_value: Mapped[str] = mapped_column(String(64), default="true", server_default="true", nullable=False)
+    stt_diarization_off_value: Mapped[str] = mapped_column(String(64), default="false", server_default="false", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    transcript: Mapped[Transcript] = relationship(back_populates="capture_settings")
 
 
 class TranscriptStreamWindow(Base):
@@ -1736,6 +1784,7 @@ class TranscriptStreamWindow(Base):
     status: Mapped[TranscriptStreamWindowStatus] = mapped_column(Enum(TranscriptStreamWindowStatus), nullable=False, default=TranscriptStreamWindowStatus.active)
     final_segment_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     text_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    turns_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     recovery_audio_vault_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     recovery_audio_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     recovery_audio_stored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1839,6 +1888,8 @@ class TranscriptVersion(Base):
     transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id"), nullable=False)
     version_no: Mapped[int] = mapped_column(Integer, nullable=False)
     text_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    structured_turns_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    structured_turns_schema_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     transcript: Mapped[Transcript] = relationship(back_populates="versions")
@@ -2003,6 +2054,7 @@ class TemplateSuggestionJob(Base):
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
     status: Mapped[TemplateSuggestionStatus] = mapped_column(Enum(TemplateSuggestionStatus), nullable=False)
     excerpt_snapshot_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    excerpt_turns_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     candidates_snapshot_json: Mapped[list] = mapped_column(JSON, nullable=False)
     selected_template_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     suggestion_result_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -2050,6 +2102,12 @@ class TranscriptIngestionJob(Base):
     transcript_stream_window_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("transcript_stream_windows.id", ondelete="SET NULL"), nullable=True, unique=True
     )
+    capture_settings_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(
+            "transcript_capture_settings.id", ondelete="SET NULL",
+            name="fk_transcript_ingestion_jobs_capture_settings_id",
+        ), nullable=True,
+    )
     job_kind: Mapped[TranscriptIngestionJobKind] = mapped_column(Enum(TranscriptIngestionJobKind), nullable=False)
     chunk_sequence_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_filename: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -2074,6 +2132,11 @@ class TranscriptIngestionJob(Base):
     stt_segment_end_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
     stt_segment_speaker_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
     stt_extra_form_fields_json: Mapped[dict[str, str] | None] = mapped_column(JSON, nullable=True)
+    stt_diarisation_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
+    stt_diarization_batch_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
+    stt_diarization_field_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    stt_diarization_on_value: Mapped[str] = mapped_column(String(64), default="true", server_default="true", nullable=False)
+    stt_diarization_off_value: Mapped[str] = mapped_column(String(64), default="false", server_default="false", nullable=False)
     status: Mapped[TranscriptIngestionJobStatus] = mapped_column(
         Enum(TranscriptIngestionJobStatus),
         default=TranscriptIngestionJobStatus.queued,
@@ -2088,6 +2151,7 @@ class TranscriptIngestionJob(Base):
     source_audio_expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     declared_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     result_text_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_turns_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(255), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

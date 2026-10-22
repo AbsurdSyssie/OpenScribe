@@ -337,6 +337,7 @@ def build_split_analysis_prompt(
     dictation: str | None = None,
     clinical_nlp_hints: Iterable[Any] | None = None,
     candidates: Iterable[SplitTemplateCandidate | Mapping[str, Any] | Any] = (),
+    diarised_transcript: bool = False,
 ) -> SplitAnalysisPrompt:
     """Build a bounded, minimised prompt from already-redacted sources."""
 
@@ -378,6 +379,12 @@ def build_split_analysis_prompt(
         "Put small incidental facts you are unsure about into the primary topic. "
         "Use distinct, concise titles; do not duplicate a topic."
     )
+    if diarised_transcript:
+        system_message += (
+            " Automated speaker labels may be inaccurate; infer clinician and patient roles only "
+            "from context, do not assume exactly two speakers, and preserve uncertainty where "
+            "the attribution is unclear."
+        )
     user_message = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     if len(user_message) > CONSULTATION_SPLIT_MAX_PROMPT_CHARS:
         raise AppError(413, "consultation_split_analysis_input_too_large", "Split analysis input is too large")
@@ -426,6 +433,7 @@ def split_analysis_response_json_schema() -> dict[str, object]:
 
 
 _PREPARED_SOURCE_KEYS = frozenset({"source_state", "sources", "clinical_nlp_hints", "phi_index"})
+_PREPARED_DIARISED_SOURCE_KEYS = frozenset({"source_state", "sources", "clinical_nlp_hints", "phi_index", "diarised_transcript"})
 _PREPARED_SOURCES_KEYS = frozenset({"transcript", "working_note", "dictation"})
 _PREPARED_WORKING_NOTE_KEYS = frozenset({"mode", "value"})
 _PREPARED_CANDIDATE_SNAPSHOT_KEYS = frozenset({"templates"})
@@ -449,8 +457,13 @@ def _contains_meaningful_text(value: object) -> bool:
     return False
 
 
-def _validate_prepared_source_snapshot(source_snapshot: Mapping[str, Any]) -> tuple[str | None, str | None, str | None, list[Any]]:
-    root = _require_exact_mapping_keys(source_snapshot, keys=_PREPARED_SOURCE_KEYS, label="Source snapshot")
+def _validate_prepared_source_snapshot(source_snapshot: Mapping[str, Any]) -> tuple[str | None, str | None, str | None, list[Any], bool]:
+    if not isinstance(source_snapshot, Mapping) or frozenset(source_snapshot) not in {_PREPARED_SOURCE_KEYS, _PREPARED_DIARISED_SOURCE_KEYS}:
+        raise _prepared_input_error("Source snapshot is invalid")
+    root = source_snapshot
+    diarised = root.get("diarised_transcript", False)
+    if type(diarised) is not bool:
+        raise _prepared_input_error("Diarised transcript flag is invalid")
     sources = _require_exact_mapping_keys(root["sources"], keys=_PREPARED_SOURCES_KEYS, label="Sources")
 
     transcript = sources["transcript"]
@@ -532,7 +545,7 @@ def _validate_prepared_source_snapshot(source_snapshot: Mapping[str, Any]) -> tu
 
     # The caller receives source text only through the prompt builder.  Return
     # no PHI index or source-state values from this helper.
-    return transcript, dictation, mode, hints
+    return transcript, dictation, mode, hints, diarised
 
 
 def _validate_prepared_candidate_snapshot(candidate_snapshot: Mapping[str, Any]) -> list[SplitTemplateCandidate]:
@@ -610,7 +623,7 @@ def prepare_split_analysis_request(
     if output_token_cap > CONSULTATION_SPLIT_ANALYSIS_OUTPUT_TOKENS:
         raise _prepared_input_error("Analysis output token cap is too large")
     _validated_provider_snapshot(provider_snapshot)
-    transcript, dictation, working_mode, hints = _validate_prepared_source_snapshot(source_snapshot)
+    transcript, dictation, working_mode, hints, diarised_transcript = _validate_prepared_source_snapshot(source_snapshot)
     candidates = validate_split_template_candidate_snapshot(candidate_template_snapshot)
 
     working_note_value = source_snapshot["sources"]["working_note"]["value"]
@@ -639,6 +652,7 @@ def prepare_split_analysis_request(
         dictation=dictation,
         clinical_nlp_hints=hints,
         candidates=candidates,
+        diarised_transcript=diarised_transcript,
     )
     schema = split_analysis_response_json_schema()
     adapter = LlmAdapterKind(provider_snapshot.adapter_kind)

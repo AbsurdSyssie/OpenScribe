@@ -145,6 +145,61 @@ class DeepgramResultEvent:
     from_finalize: bool
     start: float
     duration: float
+    words: tuple["DeepgramWordEvent", ...] = ()
+
+
+@dataclass(frozen=True)
+class DeepgramWordEvent:
+    text: str
+    speaker_id: str | None
+    start: float | None
+    end: float | None
+
+
+def group_deepgram_words(words: list[DeepgramWordEvent] | tuple[DeepgramWordEvent, ...]) -> list[dict[str, object]]:
+    """Group ordered word metadata into display turns without assuming binary speakers."""
+    max_turn_chars = 20_000
+    grouped: list[dict[str, object]] = []
+    for word in words:
+        if not isinstance(word, DeepgramWordEvent) or not word.text.strip():
+            continue
+        speaker = word.speaker_id
+        start_ms = round(word.start * 1000) if word.start is not None else None
+        end_ms = round(word.end * 1000) if word.end is not None else None
+        current = grouped[-1] if grouped and grouped[-1]["speaker_id"] == speaker else None
+        next_text = word.text.strip()
+        if current is None:
+            grouped.append({"text": next_text, "speaker_id": speaker, "start_ms": start_ms, "end_ms": end_ms})
+            continue
+        prior_text = str(current["text"])
+        separator = "" if next_text[:1] in ",.!?;:%)]}" else " "
+        if len(prior_text) + len(separator) + len(next_text) > max_turn_chars:
+            grouped.append({"text": next_text, "speaker_id": speaker, "start_ms": start_ms, "end_ms": end_ms})
+            continue
+        current["text"] = prior_text + separator + next_text
+        if current["start_ms"] is None:
+            current["start_ms"] = start_ms
+        if end_ms is not None:
+            current["end_ms"] = end_ms
+    return grouped
+
+
+def deepgram_event_words_or_fallback(event: DeepgramResultEvent) -> list[DeepgramWordEvent]:
+    """Use speaker words only when they cover the result text; otherwise keep it unattributed."""
+    if not event.text.strip():
+        return []
+    words = list(event.words)
+    if not words:
+        return [DeepgramWordEvent(event.text.strip(), None, event.start, event.start + event.duration)]
+    # Ignore whitespace differences only. Removing punctuation can make medically
+    # distinct strings compare equal (for example 12.5 and 125, or 120/80 and
+    # 120 80), so uncertain metadata must fall back to unattributed source text.
+    normalize = lambda value: "".join(char.casefold() for char in value if not char.isspace())
+    transcript_fingerprint = normalize(event.text)
+    words_fingerprint = normalize(" ".join(word.text for word in words))
+    if not transcript_fingerprint or transcript_fingerprint != words_fingerprint:
+        return [DeepgramWordEvent(event.text.strip(), None, event.start, event.start + event.duration)]
+    return words
 
 
 @dataclass(frozen=True)
@@ -550,8 +605,30 @@ class DeepgramLiveStream:
             alternatives = message.channel.alternatives
             alternative = alternatives[0] if alternatives else None
             text = alternative.transcript if alternative else ""
+            raw_words = getattr(alternative, "words", None) or []
         except (AttributeError, IndexError, TypeError):
             raise DeepgramStreamError("invalid_response") from None
+        words: list[DeepgramWordEvent] = []
+        for word in raw_words:
+            if not isinstance(word, Mapping):
+                word = getattr(word, "model_dump", lambda: {})()
+            if not isinstance(word, Mapping):
+                continue
+            word_text = word.get("punctuated_word") or word.get("word")
+            if not isinstance(word_text, str) or not word_text:
+                continue
+            raw_speaker = word.get("speaker")
+            speaker_id = None if raw_speaker is None else str(raw_speaker)
+            if speaker_id is not None and (len(speaker_id) > 64 or not speaker_id):
+                speaker_id = None
+            word_start = _safe_number(word.get("start"))
+            word_end = _safe_number(word.get("end"))
+            if word_start is not None and word_end is not None and word_end < word_start:
+                word_start = word_end = None
+            words.append(DeepgramWordEvent(word_text, speaker_id, word_start, word_end))
+            if len(words) > 4096:
+                words.clear()
+                break
         if (
             start is None
             or duration is None
@@ -569,6 +646,7 @@ class DeepgramLiveStream:
             from_finalize=bool(message.from_finalize),
             start=start,
             duration=duration,
+            words=tuple(words),
         )
 
     @staticmethod

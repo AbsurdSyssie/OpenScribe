@@ -111,20 +111,29 @@ def _preflight(db, owner, root) -> _Preflight:
     from app.models import SttAdapterKind
     from app.services.deepgram_streaming import DeepgramStreamConfig, validate_stream_config
     from app.services.stt_presets import is_deepgram_stt_base_url
+    from app.services.preferences import diarization_preference_enabled
 
     _, config, model, language = resolve_selected_team_stt(db, team_id=owner.team_id, purpose=SttSelectionPurpose.conversation)
     if config.adapter_kind is not SttAdapterKind.generic_rest or not is_deepgram_stt_base_url(config.base_url):
         raise AppError(422, "stream_provider_ineligible", "The selected provider does not support this stream")
+    effective_diarization = bool(
+        getattr(config, "diarization_live_enabled", False)
+        and diarization_preference_enabled(db, owner)
+    )
+    from app.services.stt import _deepgram_query_fields
+    frozen_options = _deepgram_query_fields(config.extra_form_fields_json or {}, enabled=effective_diarization)
     frozen = DeepgramStreamConfig(
         base_url=config.base_url, model_name=model, language=language,
-        extra_query_params=dict(config.extra_form_fields_json or {}),
+        extra_query_params=frozen_options,
     )
     validate_stream_config(frozen)
     snapshot = {
         "config_id": str(config.id), "provider_preset": config.provider_preset,
         "adapter_kind": config.adapter_kind.value, "base_url": config.base_url,
         "model_name": model, "language": language,
-        "extra_query_params": dict(config.extra_form_fields_json or {}), "mip_opt_out": True,
+        "extra_query_params": frozen_options, "mip_opt_out": True,
+        "diarization_live_enabled": bool(getattr(config, "diarization_live_enabled", False)),
+        "stt_diarisation_enabled": effective_diarization,
     }
     api_key = resolve_stt_snapshot_bearer_token(
         db, team_id=owner.team_id, stt_config_id=config.id, adapter_kind=config.adapter_kind.value,
@@ -154,6 +163,9 @@ class _Relay:
         self.source_end = started.next_source_sample_offset
         self.audio = bytearray()
         self.finals: dict[tuple[int, int], str] = {}
+        self.final_events: dict[tuple[int, int], object] = {}
+        self.scope_id = None
+        self.diarization_enabled = False
         self.last_media_at = monotonic()
         self.last_heartbeat_at = monotonic()
         self.completed = False
@@ -200,6 +212,8 @@ class _Relay:
         )
         self._first_dispatch_logged = False
         self.last_completed_stage = "provider_connected"
+        self.scope_id = uuid4()
+        self.diarization_enabled = bool(preflight.snapshot.get("stt_diarisation_enabled"))
         self.connection_base_samples = self.media_samples
         self._receive_provider()
 
@@ -269,7 +283,11 @@ class _Relay:
             return event
         if event.is_final:
             identity = (first, last)
-            if identity in self.finals and self.finals[identity] != event.text:
+            existing_event = self.final_events.get(identity)
+            if identity in self.finals and (
+                self.finals[identity] != event.text
+                or (existing_event is not None and getattr(existing_event, "words", ()) != event.words)
+            ):
                 raise AppError(502, "stream_result_invalid", "Conflicting finalized transcription")
             if len(self.finals) >= 2048 and identity not in self.finals:
                 raise AppError(502, "stream_result_invalid", "Too many transcription segments")
@@ -277,6 +295,7 @@ class _Relay:
                 if identity != (previous_first, previous_last) and first < previous_last and last > previous_first:
                     raise AppError(502, "stream_result_invalid", "Overlapping finalized transcription")
             self.finals[identity] = event.text
+            self.final_events[identity] = event
         provisional = " ".join(text for _, text in sorted(self.finals.items()) if text)
         if not event.is_final and event.text:
             provisional = f"{provisional} {event.text}".strip()
@@ -375,6 +394,15 @@ class _Relay:
         if not self.audio:
             return
         text = " ".join(value.strip() for _, value in sorted(self.finals.items()) if value.strip())
+        structured_turns = None
+        if self.diarization_enabled:
+            from app.services.deepgram_streaming import deepgram_event_words_or_fallback, group_deepgram_words
+            word_events = [
+                word
+                for _identity, event in sorted(self.final_events.items())
+                for word in deepgram_event_words_or_fallback(event)
+            ]
+            structured_turns = group_deepgram_words(word_events)
         commit_started = monotonic()
         self.active_phase = "commit"
         try:
@@ -383,6 +411,7 @@ class _Relay:
             source_end_sample_offset=self.source_end,
             forwarded_sample_count=self.media_samples - self.committed_samples,
             finalized_text=text, final_segment_count=len(self.finals),
+            finalized_turns=structured_turns, scope_id=self.scope_id,
             )
         except Exception:
             self.last_failure_code = "stream_commit_failed"
@@ -429,6 +458,7 @@ class _Relay:
         self.window_no += 1
         self.audio.clear()
         self.finals.clear()
+        self.final_events.clear()
 
     async def checkpoint(self, *, closing: bool = False):
         from app.services.deepgram_streaming import DeepgramMetadataEvent

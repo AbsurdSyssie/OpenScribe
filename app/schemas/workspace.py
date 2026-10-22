@@ -23,6 +23,7 @@ class TranscriptStreamGapDetail(BaseModel):
 
 
 class TranscribeWorkspaceDetail(BaseModel):
+    example_consultation_pending: bool = False
     recent_transcripts: list[TranscriptListItem]
     recent_transcripts_next_cursor: str | None = None
     recent_transcripts_has_more: bool = False
@@ -41,6 +42,9 @@ class TranscribeWorkspaceDetail(BaseModel):
     stt_selected: bool
     stt_available: bool
     deepgram_live_streaming_available: bool = False
+    diarization_available: bool = False
+    diarization_live_available: bool = False
+    diarization_batch_available: bool = False
     active_transcript_stream_gap: TranscriptStreamGapDetail | None = None
     stt_status_message: str | None = None
     stt_health: dict | None = None
@@ -60,3 +64,7 @@ class TranscribeWorkspaceDetail(BaseModel):
     consultation_split_intent: ConsultationSplitIntentWorkspaceDetail | None = None
     consultation_split_draft: ConsultationSplitDraftDetail | None = None
     consultation_split_batch: ConsultationSplitBatchDetail | None = None
+
+
+class ExampleConsultationResponse(BaseModel):
+    id: UUID | None

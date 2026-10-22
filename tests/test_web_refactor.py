@@ -300,7 +300,7 @@ def test_generation_loading_replaces_plain_text_placeholders():
     assert "generationLoadingHtml" in documents_js
     assert "structured.js?v=20260918-retired-note-workspace" in app_js
     assert "documents.js?v=20261014-generation-status" in app_js
-    assert "/static/js/transcribe/app.js?v=20261019-delete-confirmation-content" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261021-example-consultation" in shell_extras
     assert ".note-generation-loading" in transcribe_css
     assert "@keyframes note-generation-orbit" in transcribe_css
     assert 'data-transcription-loading' in workspace_template

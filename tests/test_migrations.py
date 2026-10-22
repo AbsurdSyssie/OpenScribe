@@ -123,6 +123,7 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "security_audit_event_holds",
         "smart_phrases",
         "transcript_manual_pii_entities",
+        "transcript_capture_settings",
         "transcript_stream_sessions",
         "transcript_stream_windows",
         "transcript_stream_deliveries",
@@ -3815,3 +3816,90 @@ def test_deepgram_stream_schema_upgrades_after_current_head_with_durable_claim_c
         fk["referred_table"] == "transcripts" and fk.get("options", {}).get("ondelete") == "CASCADE"
         for fk in inspector.get_foreign_keys("transcript_stream_sessions")
     )
+
+
+@pytest.mark.migration
+def test_structured_transcript_migration_adds_capture_snapshot_and_encrypted_turn_columns_then_downgrades():
+    reset_public_schema()
+    config = alembic_config()
+    command.upgrade(config, "head")
+    inspector = inspect(engine)
+    assert "transcript_capture_settings" in set(inspector.get_table_names())
+    capture_columns = {column["name"] for column in inspector.get_columns("transcript_capture_settings")}
+    assert {
+        "transcript_id", "owner_user_id", "stt_config_id", "stt_contract_fingerprint", "stt_diarisation_enabled",
+        "stt_diarization_batch_enabled", "stt_diarization_field_name",
+        "stt_diarization_on_value", "stt_diarization_off_value",
+    } <= capture_columns
+    assert any(
+        fk["referred_table"] == "transcripts" and fk.get("options", {}).get("ondelete") == "CASCADE"
+        for fk in inspector.get_foreign_keys("transcript_capture_settings")
+    )
+    job_columns = {column["name"] for column in inspector.get_columns("transcript_ingestion_jobs")}
+    assert {"capture_settings_id", "stt_diarisation_enabled", "result_turns_encrypted"} <= job_columns
+    version_columns = {column["name"] for column in inspector.get_columns("transcript_versions")}
+    assert {"structured_turns_encrypted", "structured_turns_schema_version"} <= version_columns
+    suggestion_columns = {column["name"] for column in inspector.get_columns("template_suggestion_jobs")}
+    assert "excerpt_turns_snapshot_encrypted" in suggestion_columns
+
+    command.downgrade(config, "d4e5f6a7b8ca")
+    downgraded = inspect(engine)
+    assert "transcript_capture_settings" not in set(downgraded.get_table_names())
+    assert "capture_settings_id" not in {column["name"] for column in downgraded.get_columns("transcript_ingestion_jobs")}
+    assert "structured_turns_encrypted" not in {column["name"] for column in downgraded.get_columns("transcript_versions")}
+
+
+@pytest.mark.migration
+def test_first_run_example_migration_only_marks_provably_unused_legacy_users():
+    reset_public_schema()
+    config = alembic_config()
+    command.upgrade(config, "d3e4f5a6b7c8")
+    team_id = "00000000-0000-0000-0000-000000000901"
+    user_ids = [f"00000000-0000-0000-0000-00000000090{i}" for i in range(1, 6)]
+    now = "2026-01-01T00:00:00Z"
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at) "
+            "VALUES (:id, 'Example migration team', 'example migration team', 'active', 30, :now, :now)"
+        ), {"id": team_id, "now": now})
+        for index, user_id in enumerate(user_ids, start=1):
+            connection.execute(text(
+                "INSERT INTO users (id, email, password_hash, team_id, team_role, is_system_admin, status, "
+                "must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at) "
+                "VALUES (:id, :email, 'test-hash', :team_id, CASE WHEN :is_admin THEN NULL::teamrole ELSE 'user'::teamrole END, :is_admin, 'active', "
+                "FALSE, 'complete', FALSE, TRUE, :now, :now, :last_login)"
+            ), {
+                "id": user_id,
+                "email": f"legacy-{index}@example.test",
+                "team_id": None if index == 5 else team_id,
+                "is_admin": index == 5,
+                "now": now,
+                "last_login": now if index == 2 else None,
+            })
+        connection.execute(text(
+            "INSERT INTO security_audit_events (id, action, actor_user_id, team_id, details_json, created_at) "
+            "VALUES ('00000000-0000-0000-0000-000000000991', 'transcript_root_deleted', :actor, :team, '{}'::json, :now)"
+        ), {"actor": user_ids[2], "team": team_id, "now": now})
+        connection.execute(text(
+            "INSERT INTO transcripts (id, owner_user_id, team_id, status, ingestion_mode, multiple_problems, "
+            "next_live_chunk_sequence_no_applied, retention_days_applied, retention_expires_at, created_at) "
+            "VALUES ('00000000-0000-0000-0000-000000000992', :owner, :team, 'ready', 'whole_file', FALSE, 1, 30, :expired, :now)"
+        ), {"owner": user_ids[3], "team": team_id, "expired": "2020-01-01T00:00:00Z", "now": now})
+
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        pending = dict(connection.execute(text(
+            "SELECT id::text, example_consultation_pending FROM users"
+        )).all())
+        assert pending[user_ids[0]] is True
+        assert pending[user_ids[1]] is False
+        assert pending[user_ids[2]] is False
+        assert pending[user_ids[3]] is False
+        assert pending[user_ids[4]] is False
+        columns = {column["name"] for column in inspect(engine).get_columns("transcripts")}
+        assert "is_example" in columns
+        assert "uq_transcripts_owner_example" in {index["name"] for index in inspect(engine).get_indexes("transcripts")}
+
+    command.downgrade(config, "d3e4f5a6b7c8")
+    assert "example_consultation_pending" not in {column["name"] for column in inspect(engine).get_columns("users")}
+    assert "is_example" not in {column["name"] for column in inspect(engine).get_columns("transcripts")}

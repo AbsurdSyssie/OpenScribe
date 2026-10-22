@@ -1,6 +1,7 @@
 import logging
 import os
 import hashlib
+import json
 from math import ceil
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
@@ -18,6 +19,7 @@ from app.models import (
     ConsultationSplitExecution,
     ConsultationSplitIntent,
     Transcript,
+    TranscriptCaptureSettings,
     TranscriptAudioCleanupJob,
     TranscriptIngestionJob,
     TranscriptIngestionJobKind,
@@ -71,7 +73,9 @@ from app.services.quotas import (
     settle_provider_attempt_audio,
 )
 from app.services.security_audit import record_security_event
-from app.services.stt import STT_TRANSCRIPTION_TIMEOUT_SECONDS, ensure_stt_config_credential_ready, resolve_selected_team_stt, resolve_stt_snapshot_bearer_token, transcribe_with_stt_snapshot
+from app.services.preferences import diarization_preference_enabled
+from app.services.structured_transcripts import append_transcript_turns, canonical_transcript_projection, load_current_turns, store_turns_on_version
+from app.services.stt import STT_TRANSCRIPTION_TIMEOUT_SECONDS, ensure_stt_config_credential_ready, resolve_selected_team_stt, resolve_stt_snapshot_bearer_token, transcribe_with_stt_snapshot, stt_config_supports_diarization
 from app.services.task_outbox import (
     add_pending_task_dispatch,
     find_waiting_generation_dispatches_for_transcript,
@@ -564,14 +568,21 @@ def _create_transcript_row(
     current_draft_text_encrypted: str | None,
     structured_context_json: dict | None,
     ingestion_mode: TranscriptIngestionMode,
+    commit: bool = True,
+    is_example: bool = False,
+    transcript_id: UUID | None = None,
 ) -> Transcript:
+    # Serialize ordinary consultation creation with first-run example creation.
+    owner = db.scalar(
+        select(User).where(User.id == owner.id).with_for_update().execution_options(populate_existing=True)
+    ) or owner
     if owner.is_system_admin or owner.team_id is None:
         raise AppError(403, "forbidden", "System-admin accounts cannot own transcript content")
     if owner.team is None:
         raise AppError(404, "not_found", "Team not found", {"resource": "team", "team_id": str(owner.team_id)})
 
     retention_days = owner.team.default_retention_days
-    transcript_id = uuid4()
+    transcript_id = transcript_id or uuid4()
     normalized_structured_context = normalize_structured_working_note(structured_context_json)
     if structured_context_json is not None and normalized_structured_context is None:
         raise AppError(
@@ -584,6 +595,7 @@ def _create_transcript_row(
         owner_user_id=owner.id,
         team_id=owner.team_id,
         title=title,
+        is_example=is_example,
         current_draft_text_encrypted=(
             encrypt_text_for_owner(
                 db,
@@ -617,12 +629,26 @@ def _create_transcript_row(
         retention_expires_at=transcript_expiry(retention_days),
     )
     db.add(transcript)
-    db.commit()
-    db.refresh(transcript)
+    if not is_example:
+        owner.example_consultation_pending = False
+        db.add(owner)
+    if commit:
+        db.commit()
+        db.refresh(transcript)
+    else:
+        db.flush()
     return transcript
 
 
-def start_transcript(db: Session, owner: User, payload: TranscriptStart) -> Transcript:
+def start_transcript(
+    db: Session,
+    owner: User,
+    payload: TranscriptStart,
+    *,
+    commit: bool = True,
+    is_example: bool = False,
+    transcript_id: UUID | None = None,
+) -> Transcript:
     allowed, message = can_create_new_session(db, owner)
     if not allowed:
         raise AppError(409, "business_rule_violation", message or "Cannot create a new transcript session")
@@ -633,6 +659,9 @@ def start_transcript(db: Session, owner: User, payload: TranscriptStart) -> Tran
         current_draft_text_encrypted=payload.current_draft_text_encrypted,
         structured_context_json=payload.structured_context_json,
         ingestion_mode=payload.ingestion_mode,
+        commit=commit,
+        is_example=is_example,
+        transcript_id=transcript_id,
     )
 
 
@@ -703,6 +732,9 @@ def _latest_matching_transcript_version(
     transcript: Transcript,
     plaintext: str,
 ) -> TranscriptVersion | None:
+    from app.services.structured_transcripts import load_current_turns, turns_for_version
+
+    current_turns = load_current_turns(db, transcript=transcript)
     versions = db.scalars(
         select(TranscriptVersion)
         .where(TranscriptVersion.transcript_id == transcript.id)
@@ -719,8 +751,11 @@ def _latest_matching_transcript_version(
                 stored_value=version.text_encrypted,
             )
             or ""
-        ).strip()
-        if existing_text == plaintext.strip():
+        )
+        if current_turns is not None:
+            if existing_text == plaintext and turns_for_version(db, version=version) == current_turns:
+                return version
+        elif existing_text.strip() == plaintext.strip():
             return version
     return None
 
@@ -768,17 +803,26 @@ def _preview_redact_current_draft_if_ready(db: Session, *, transcript: Transcrip
     if scope is None:
         return
     transcript = scope.transcript
-    current_draft = (transcript_draft_text(db, transcript=transcript) or "").strip()
-    if not current_draft:
-        return
-    version = _create_or_reuse_transcript_version_from_text(
-        db,
-        transcript=transcript,
-        owner_user_id=transcript.owner_user_id,
-        plaintext=current_draft,
-    )
+    from app.services.structured_transcripts import load_current_turns
+    if load_current_turns(db, transcript=transcript) is not None:
+        current_draft = transcript_draft_text(db, transcript=transcript) or ""
+        version = snapshot_current_transcript_version(
+            db, transcript=transcript, allow_empty=True, mark_transcript_ready=False,
+        )
+    else:
+        current_draft = (transcript_draft_text(db, transcript=transcript) or "").strip()
+        if not current_draft:
+            return
+        version = _create_or_reuse_transcript_version_from_text(
+            db,
+            transcript=transcript,
+            owner_user_id=transcript.owner_user_id,
+            plaintext=current_draft,
+        )
     db.add(transcript)
     db.commit()
+    if not current_draft.strip():
+        return
     _attempt_preview_redaction(db, transcript_version=version)
 
 
@@ -1274,15 +1318,11 @@ def redacted_transcript_copy_text(db: Session, owner: User, *, transcript_id: UU
     transcript = get_active_owner_transcript(db, owner, transcript_id=transcript_id)
     if transcript.status is not TranscriptStatus.ready:
         raise AppError(409, "redacted_transcript_unavailable", "A current redacted transcript is not available yet")
-    current_text = (transcript_draft_text(db, transcript=transcript) or "").strip()
-    if not current_text:
+    current_text = transcript_draft_text(db, transcript=transcript) or ""
+    if not current_text.strip():
         raise AppError(409, "redacted_transcript_unavailable", "A non-empty redacted transcript is not available yet")
 
-    transcript_version = _latest_matching_transcript_version(
-        db,
-        transcript=transcript,
-        plaintext=current_text,
-    )
+    transcript_version = _latest_matching_transcript_version(db, transcript=transcript, plaintext=current_text)
     if transcript_version is None:
         raise AppError(409, "redacted_transcript_unavailable", "A current redacted transcript is not available yet")
 
@@ -1346,6 +1386,62 @@ def _lock_split_source_writer_transcript(db: Session, owner: User, *, transcript
     return scope.transcript
 
 
+def create_transcript_capture_settings(
+    db: Session, owner: User, *, transcript_id: UUID,
+) -> TranscriptCaptureSettings:
+    """Freeze effective batch diarisation policy for one microphone capture."""
+    transcript = _lock_split_source_writer_transcript(db, owner, transcript_id=transcript_id)
+    if transcript_is_expired(transcript):
+        raise AppError(404, "not_found", "Transcript not found", {"resource": "transcript", "transcript_id": str(transcript_id)})
+    if transcript.ingestion_mode is not TranscriptIngestionMode.whole_file:
+        raise AppError(409, "business_rule_violation", "Capture settings are available for whole-file recording", {"ingestion_mode": transcript.ingestion_mode.value})
+    if transcript.status not in {TranscriptStatus.recording, TranscriptStatus.ready}:
+        raise AppError(409, "business_rule_violation", "Transcript is not ready to start a recording", {"transcript_id": str(transcript.id)})
+    assert_no_unresolved_stream_session(db, transcript_id=transcript.id)
+    _, config, _model_name, _language = resolve_selected_team_stt(db, team_id=transcript.team_id)
+    supported = stt_config_supports_diarization(config, connection_type="batch")
+    capture_settings = TranscriptCaptureSettings(
+        transcript_id=transcript.id,
+        owner_user_id=owner.id,
+        stt_config_id=config.id,
+        stt_contract_fingerprint=_stt_capture_config_fingerprint(config),
+        stt_diarisation_enabled=bool(diarization_preference_enabled(db, owner) and supported),
+        stt_diarization_batch_enabled=bool(getattr(config, "diarization_batch_enabled", False)),
+        stt_diarization_field_name=getattr(config, "diarization_field_name", None),
+        stt_diarization_on_value=getattr(config, "diarization_on_value", "true"),
+        stt_diarization_off_value=getattr(config, "diarization_off_value", "false"),
+    )
+    db.add(capture_settings)
+    db.commit()
+    db.refresh(capture_settings)
+    return capture_settings
+
+
+def _stt_capture_config_fingerprint(config) -> str:
+    """Hash only non-secret provider contract fields that affect turn parsing."""
+    contract = {
+        "provider_preset": getattr(config, "provider_preset", None),
+        "adapter_kind": getattr(getattr(config, "adapter_kind", None), "value", getattr(config, "adapter_kind", None)),
+        "base_url": getattr(config, "base_url", None),
+        "transcribe_path": getattr(config, "transcribe_path", None),
+        "model_name": getattr(config, "model_name", None),
+        "model_field_name": getattr(config, "model_field_name", None),
+        "file_field_name": getattr(config, "file_field_name", None),
+        "response_text_path": getattr(config, "response_text_path", None),
+        "segments_path": getattr(config, "segments_path", None),
+        "segment_text_field": getattr(config, "segment_text_field", None),
+        "segment_start_field": getattr(config, "segment_start_field", None),
+        "segment_end_field": getattr(config, "segment_end_field", None),
+        "segment_speaker_field": getattr(config, "segment_speaker_field", None),
+        "diarization_field_name": getattr(config, "diarization_field_name", None),
+        "diarization_on_value": getattr(config, "diarization_on_value", "true"),
+        "diarization_off_value": getattr(config, "diarization_off_value", "false"),
+        "extra_form_field_names": sorted((getattr(config, "extra_form_fields_json", None) or {}).keys()),
+    }
+    encoded = json.dumps(contract, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def snapshot_current_transcript_version(
     db: Session,
     *,
@@ -1373,7 +1469,50 @@ def snapshot_current_transcript_version(
             stored_value=transcript.current_draft_text_encrypted,
         )
         or ""
-    ).strip()
+    )
+    from app.services.structured_transcripts import (
+        canonical_transcript_projection,
+        load_current_turns,
+        store_turns_on_version,
+        turns_for_version,
+    )
+    structured_turns = load_current_turns(db, transcript=transcript)
+    if structured_turns is not None:
+        projection = canonical_transcript_projection(structured_turns)
+        if projection != current_text:
+            raise AppError(409, "transcript_version_mismatch", "Structured transcript does not match its saved text")
+        if not projection.strip() and not allow_empty:
+            raise AppError(422, "business_rule_violation", "Transcript draft is empty", {"field": "current_draft_text_encrypted"})
+        existing_versions = db.scalars(
+            select(TranscriptVersion)
+            .where(TranscriptVersion.transcript_id == transcript.id)
+            .order_by(TranscriptVersion.version_no.desc(), TranscriptVersion.created_at.desc(), TranscriptVersion.id.desc())
+        )
+        for existing_version in existing_versions:
+            existing_turns = turns_for_version(db, version=existing_version)
+            if existing_turns is None or existing_turns != structured_turns:
+                continue
+            existing_text = decrypt_text_for_owner(
+                db, owner_user_id=transcript.owner_user_id, table="transcript_versions",
+                field="text_encrypted", record_id=existing_version.id,
+                stored_value=existing_version.text_encrypted,
+            )
+            if existing_text == projection:
+                if mark_transcript_ready:
+                    transcript.status = TranscriptStatus.ready
+                    db.add(transcript)
+                    db.flush()
+                return existing_version
+        version = _create_transcript_version_from_text(
+            db, transcript=transcript, owner_user_id=transcript.owner_user_id, plaintext=projection,
+        )
+        store_turns_on_version(db, version=version, owner_user_id=transcript.owner_user_id, turns=structured_turns)
+        if mark_transcript_ready:
+            transcript.status = TranscriptStatus.ready
+            db.add(transcript)
+        db.flush()
+        return version
+    current_text = current_text.strip()
     if not current_text and not allow_empty:
         raise AppError(422, "business_rule_violation", "Transcript draft is empty", {"field": "current_draft_text_encrypted"})
     existing_versions = db.scalars(
@@ -1671,8 +1810,18 @@ def commit_transcript_text(
     *,
     transcript_id: UUID,
     plaintext: str,
+    commit: bool = True,
+    preview_redaction: bool = True,
 ) -> Transcript:
     transcript = _lock_split_source_writer_transcript(db, owner, transcript_id=transcript_id)
+    from app.services.structured_transcripts import load_current_turns
+    if load_current_turns(db, transcript=transcript) is not None:
+        raise AppError(
+            409,
+            "business_rule_violation",
+            "Structured speaker turns must be edited one turn at a time",
+            {"code": "structured_transcript_requires_turn_edits"},
+        )
     version = _create_transcript_version_from_text(
         db,
         transcript=transcript,
@@ -1682,9 +1831,13 @@ def commit_transcript_text(
     set_transcript_draft_text(db, transcript=transcript, plaintext=plaintext)
     transcript.status = TranscriptStatus.ready
     db.add(transcript)
-    db.commit()
-    _attempt_preview_redaction(db, transcript_version=version)
-    db.refresh(transcript)
+    if commit:
+        db.commit()
+        if preview_redaction:
+            _attempt_preview_redaction(db, transcript_version=version)
+        db.refresh(transcript)
+    else:
+        db.flush()
     return transcript
 
 
@@ -2057,6 +2210,8 @@ def queue_audio_file_ingestion(
     source_audio_expires_at: datetime | None = None,
     exclude_job_ids: tuple[UUID, ...] = (),
     request_idempotency_key: str | None = None,
+    capture_settings_id: UUID | None = None,
+    _diarisation_snapshot_job: TranscriptIngestionJob | None = None,
 ) -> tuple[Transcript, TranscriptIngestionJob]:
     transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
     if transcript.ingestion_mode is not TranscriptIngestionMode.whole_file:
@@ -2094,8 +2249,43 @@ def queue_audio_file_ingestion(
             "A file transcription job is already in progress for this session",
             {"transcript_id": str(transcript.id)},
         )
+    capture_settings = None
+    if capture_settings_id is not None:
+        capture_settings = db.scalar(select(TranscriptCaptureSettings).where(
+            TranscriptCaptureSettings.id == capture_settings_id,
+            TranscriptCaptureSettings.transcript_id == transcript.id,
+            TranscriptCaptureSettings.owner_user_id == owner.id,
+        ))
+        if capture_settings is None:
+            raise AppError(404, "not_found", "Capture settings not found", {"resource": "transcript_capture_settings"})
     _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=transcript.team_id)
     ensure_stt_config_credential_ready(team_id=transcript.team_id, config=config)
+    if _diarisation_snapshot_job is not None:
+        diarization_batch_enabled = _diarisation_snapshot_job.stt_diarization_batch_enabled
+        stt_diarisation_enabled = _diarisation_snapshot_job.stt_diarisation_enabled
+        diarization_field_name = _diarisation_snapshot_job.stt_diarization_field_name
+        diarization_on_value = _diarisation_snapshot_job.stt_diarization_on_value
+        diarization_off_value = _diarisation_snapshot_job.stt_diarization_off_value
+    elif (
+        capture_settings is not None
+        and capture_settings.stt_config_id == config.id
+        and capture_settings.stt_contract_fingerprint == _stt_capture_config_fingerprint(config)
+    ):
+        # A microphone's preference and eligibility are frozen at capture start.
+        # Provider execution itself remains selected at upload time; a config
+        # switch disables diarisation instead of reusing incompatible options.
+        diarization_batch_enabled = capture_settings.stt_diarization_batch_enabled
+        stt_diarisation_enabled = capture_settings.stt_diarisation_enabled
+        diarization_field_name = capture_settings.stt_diarization_field_name
+        diarization_on_value = capture_settings.stt_diarization_on_value
+        diarization_off_value = capture_settings.stt_diarization_off_value
+    else:
+        diarization_batch_enabled = bool(getattr(config, "diarization_batch_enabled", False))
+        stt_diarisation_enabled = bool(capture_settings_id is None and diarization_preference_enabled(db, owner)
+                                       and stt_config_supports_diarization(config, connection_type="batch"))
+        diarization_field_name = getattr(config, "diarization_field_name", None)
+        diarization_on_value = getattr(config, "diarization_on_value", "true")
+        diarization_off_value = getattr(config, "diarization_off_value", "false")
     # Quota and hourly-duration enforcement must use server inspection, never
     # caller or retry-row declarations. inspect() includes normalization fallback.
     try:
@@ -2135,6 +2325,10 @@ def queue_audio_file_ingestion(
         chunk_sequence_no=None,
         source_filename=filename,
         request_idempotency_key=request_idempotency_key,
+        capture_settings_id=(
+            capture_settings.id if capture_settings is not None
+            else (_diarisation_snapshot_job.capture_settings_id if _diarisation_snapshot_job is not None else None)
+        ),
         source_audio_blob=None,
         source_audio_vault_ref=persisted_source_audio_vault_ref,
         source_audio_size_bytes=len(source_audio_blob),
@@ -2157,6 +2351,11 @@ def queue_audio_file_ingestion(
         stt_segment_end_field=config.segment_end_field,
         stt_segment_speaker_field=config.segment_speaker_field,
         stt_extra_form_fields_json=dict(config.extra_form_fields_json or {}),
+        stt_diarisation_enabled=stt_diarisation_enabled,
+        stt_diarization_batch_enabled=diarization_batch_enabled,
+        stt_diarization_field_name=diarization_field_name,
+        stt_diarization_on_value=diarization_on_value,
+        stt_diarization_off_value=diarization_off_value,
         status=TranscriptIngestionJobStatus.queued,
     )
     transcript.status = TranscriptStatus.transcribing
@@ -2230,6 +2429,7 @@ def retry_audio_file_ingestion(
         source_audio_vault_ref=latest_job.source_audio_vault_ref,
         source_audio_expires_at=latest_job.source_audio_expires_at,
         exclude_job_ids=(latest_job.id,),
+        _diarisation_snapshot_job=latest_job,
     )
     latest_job.source_audio_blob = None
     latest_job.source_audio_vault_ref = None
@@ -2736,10 +2936,32 @@ def _apply_completed_live_chunks(db: Session, transcript: Transcript) -> None:
             # gap succeeds, so their text cannot be committed out of order.
             break
         recovered_text = job_result_text(db, transcript=transcript, job=job) or ""
-        updated_draft_text = _append_chunk_text(
-            transcript_draft_text(db, transcript=transcript), recovered_text,
+        from app.services.structured_transcripts import append_transcript_turns, load_current_turns
+        existing_turns = load_current_turns(db, transcript=transcript)
+        recovery_window = db.get(TranscriptStreamWindow, job.transcript_stream_window_id) if job.transcript_stream_window_id else None
+        recovery_session = db.get(TranscriptStreamSession, recovery_window.session_id) if recovery_window is not None else None
+        structured_source = (
+            existing_turns is not None or job.stt_diarisation_enabled
+            or (recovery_session is not None and recovery_session.stt_diarisation_enabled)
         )
-        set_transcript_draft_text(db, transcript=transcript, plaintext=updated_draft_text)
+        if structured_source:
+            payload = decrypt_json_for_owner(
+                db, owner_user_id=transcript.owner_user_id, table="transcript_ingestion_jobs",
+                field="result_turns_encrypted", record_id=job.id, stored_value=job.result_turns_encrypted,
+            )
+            if payload is not None and (
+                not isinstance(payload, dict) or payload.get("version") != 1 or not isinstance(payload.get("turns"), list)
+            ):
+                raise AppError(500, "transcript_turns_unavailable", "Structured transcript data is unavailable")
+            append_transcript_turns(
+                db, transcript=transcript, turns=payload["turns"] if payload else [],
+                scope_id=job.id, fallback_text=recovered_text,
+            )
+        else:
+            updated_draft_text = _append_chunk_text(
+                transcript_draft_text(db, transcript=transcript), recovered_text,
+            )
+            set_transcript_draft_text(db, transcript=transcript, plaintext=updated_draft_text)
         job.status = TranscriptIngestionJobStatus.applied
         job.applied_at = utcnow()
         if job.transcript_stream_window_id is not None:
@@ -3012,7 +3234,7 @@ def process_transcript_ingestion_job(
         # Successful queued -> processing claim is irreversible dispatch
         # boundary. Deletion after this point may discard only late results.
         stage = "stt_dispatch"
-        transcript_text = transcribe_with_stt_snapshot(
+        transcription_result = transcribe_with_stt_snapshot(
             db,
             team_id=transcript.team_id,
             stt_config_id=job.stt_config_id,
@@ -3032,11 +3254,33 @@ def process_transcript_ingestion_job(
             segment_start_field=job.stt_segment_start_field,
             segment_end_field=job.stt_segment_end_field,
             segment_speaker_field=job.stt_segment_speaker_field,
+            stt_diarisation_enabled=job.stt_diarisation_enabled,
+            diarization_batch_enabled=job.stt_diarization_batch_enabled,
+            diarization_field_name=job.stt_diarization_field_name,
+            diarization_on_value=job.stt_diarization_on_value,
+            diarization_off_value=job.stt_diarization_off_value,
             audio_bytes=normalized_audio.data,
             filename=normalized_audio.filename,
             content_type=normalized_audio.content_type,
             _resolved_bearer_token=bearer_token,
         )
+        if isinstance(transcription_result, str):
+            transcript_text = transcription_result
+            provider_turns = None
+        else:
+            transcript_text = getattr(transcription_result, "text", "")
+            raw_turns = getattr(transcription_result, "turns", None)
+            provider_turns = None if raw_turns is None else [
+                {
+                    "text": getattr(turn, "text", ""),
+                    "speaker_id": getattr(turn, "speaker_id", None),
+                    "start_ms": getattr(turn, "start_ms", None),
+                    "end_ms": getattr(turn, "end_ms", None),
+                }
+                for turn in raw_turns
+            ]
+        if not isinstance(transcript_text, str):
+            raise AppError(502, "stt_response_invalid", "Transcription provider returned an invalid result")
         _release_ingestion_transaction(db)
         locked = _lock_ingestion_job_and_transcript(db, job_id=job_id)
         if locked is None:
@@ -3080,6 +3324,14 @@ def process_transcript_ingestion_job(
             record_id=job.id,
             plaintext=transcript_text,
         )
+        job.result_turns_encrypted = (
+            encrypt_json_for_owner(
+                db, owner_user_id=transcript.owner_user_id, table="transcript_ingestion_jobs",
+                field="result_turns_encrypted", record_id=job.id,
+                plaintext={"version": 1, "turns": provider_turns},
+            )
+            if provider_turns is not None else None
+        )
         job.completed_at = now
         settle_provider_attempt_audio(
             db, attempt_id=attempt.id, measured_audio_seconds=attempt.measured_audio_seconds,
@@ -3090,17 +3342,32 @@ def process_transcript_ingestion_job(
             job.status = TranscriptIngestionJobStatus.applied
             job.applied_at = now
             job.source_audio_blob = None
-            updated_draft_text = _append_chunk_text(
-                transcript_draft_text(db, transcript=transcript),
-                transcript_text,
-            )
-            set_transcript_draft_text(db, transcript=transcript, plaintext=updated_draft_text)
+            existing_turns = load_current_turns(db, transcript=transcript)
+            if job.stt_diarisation_enabled or existing_turns is not None:
+                normalized_turns = provider_turns or []
+                combined_turns = append_transcript_turns(
+                    db, transcript=transcript, turns=normalized_turns, scope_id=job.id,
+                    fallback_text=transcript_text, mark_ready=True,
+                )
+                updated_draft_text = canonical_transcript_projection(combined_turns)
+            else:
+                updated_draft_text = _append_chunk_text(
+                    transcript_draft_text(db, transcript=transcript),
+                    transcript_text,
+                )
+                set_transcript_draft_text(db, transcript=transcript, plaintext=updated_draft_text)
+                combined_turns = None
             transcript_version = _create_transcript_version_from_text(
                 db,
                 transcript=transcript,
                 owner_user_id=transcript.owner_user_id,
                 plaintext=updated_draft_text,
             )
+            if combined_turns is not None:
+                store_turns_on_version(
+                    db, version=transcript_version, owner_user_id=transcript.owner_user_id,
+                    turns=combined_turns,
+                )
             transcript.status = TranscriptStatus.ready
             db.add(job)
             db.add(transcript)

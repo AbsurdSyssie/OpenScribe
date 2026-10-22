@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 import os
+from dataclasses import dataclass
 from datetime import timedelta
 from math import ceil
 from pathlib import Path
@@ -89,10 +90,104 @@ STT_TRANSCRIPTION_TIMEOUT_SECONDS = float(os.getenv("STT_TRANSCRIPTION_TIMEOUT_S
 STT_MODEL_DISCOVERY_MAX_RESPONSE_BYTES = 1024 * 1024
 STT_PROVIDER_ERROR_RESPONSE_MAX_BYTES = 64 * 1024
 STT_TRANSCRIPTION_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
+MAX_DIARIZATION_SEGMENTS = 100_000
+MAX_DIARIZED_TURN_TEXT_CHARS = 20_000
 SYNC_STT_RESERVATION_GRACE_SECONDS = 60
 _STT_CREDENTIAL_UNRESOLVED = object()
 _STT_PROVIDER_ERROR_CODE_UNREAD = object()
 _STT_PROVIDER_ERROR_CODE_ATTRIBUTE = "_openscribe_stt_provider_error_code"
+
+
+@dataclass(frozen=True, slots=True)
+class SttSpeakerTurn:
+    """One normalized batch speaker turn; scope and durable identity are server-owned."""
+
+    text: str
+    speaker_id: str | None
+    start_ms: int | None = None
+    end_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SttTranscriptResult:
+    """Backward-compatible typed result used only by diarisation-enabled captures."""
+
+    text: str
+    turns: tuple[SttSpeakerTurn, ...] | None = None
+
+
+def _speaker_turns_from_segments(
+    payload: dict[str, Any],
+    *,
+    segments_path: str | None,
+    segment_text_field: str | None,
+    segment_start_field: str | None,
+    segment_end_field: str | None,
+    segment_speaker_field: str | None,
+) -> tuple[SttSpeakerTurn, ...] | None:
+    if not segments_path or not segment_speaker_field:
+        return None
+    try:
+        segments = extract_json_path(payload, segments_path)
+    except AppError:
+        return None
+    if not isinstance(segments, list):
+        return None
+    text_field = segment_text_field or "text"
+    start_field = segment_start_field or "start"
+    end_field = segment_end_field or "end"
+    if len(segments) > MAX_DIARIZATION_SEGMENTS:
+        return None
+    grouped: list[SttSpeakerTurn] = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            return None
+        raw_text = segment.get(text_field)
+        if not isinstance(raw_text, str) or not raw_text.strip():
+            return None
+        text = raw_text.strip()
+        raw_speaker = segment.get(segment_speaker_field)
+        speaker_id = None if raw_speaker is None else str(raw_speaker)
+        start_ms = _timestamp_milliseconds(segment.get(start_field))
+        end_ms = _timestamp_milliseconds(segment.get(end_field))
+        if start_ms is not None and end_ms is not None and end_ms < start_ms:
+            start_ms = end_ms = None
+        if speaker_id is not None and (not speaker_id or len(speaker_id) > 64):
+            speaker_id = None
+        previous = grouped[-1] if grouped else None
+        if previous is not None and previous.speaker_id == speaker_id:
+            combined = f"{previous.text} {text}"
+            if len(combined) <= MAX_DIARIZED_TURN_TEXT_CHARS:
+                grouped[-1] = SttSpeakerTurn(
+                    text=combined, speaker_id=speaker_id,
+                    start_ms=previous.start_ms if previous.start_ms is not None else start_ms,
+                    end_ms=end_ms if end_ms is not None else previous.end_ms,
+                )
+            else:
+                grouped.append(SttSpeakerTurn(text, speaker_id, start_ms, end_ms))
+        else:
+            grouped.append(SttSpeakerTurn(text, speaker_id, start_ms, end_ms))
+    return tuple(grouped) if grouped else None
+
+
+def _turns_match_transcript(turns: tuple[SttSpeakerTurn, ...] | None, transcript: str) -> bool:
+    """Reject attribution when segment text would alter any source punctuation/content."""
+    if turns is None:
+        return False
+    compact = lambda value: "".join(char.casefold() for char in value if not char.isspace())
+    return bool(compact(transcript)) and compact(transcript) == compact(" ".join(turn.text for turn in turns))
+
+
+def _timestamp_milliseconds(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not (number >= 0 and number < 86_400):
+        return None
+    return round(number * 1000)
 
 
 def _record_stt_audit(db: Session, *, action: str, actor: User, team_id: UUID, config_id: UUID | None = None, outcome: str = "success", **details: Any) -> None:
@@ -227,6 +322,79 @@ def _normalize_deepgram_extra_query_params(
             continue
     fields[DEEPGRAM_MIP_OPT_OUT_FIELD] = DEEPGRAM_MIP_OPT_OUT_TRUE
     return fields
+
+
+def _deepgram_query_fields(extra_fields: dict[str, str] | None, *, enabled: bool) -> dict[str, str]:
+    """Freeze the effective choice and prevent a saved provider default from enabling diarisation."""
+    fields = dict(extra_fields or {})
+    for key in list(fields):
+        if key.strip().lower() == "diarize":
+            del fields[key]
+    if enabled:
+        fields["diarize"] = "true"
+    return fields
+
+
+def _validate_diarization_admin_config(
+    *,
+    provider_preset: str,
+    adapter_kind: SttAdapterKind,
+    live_enabled: bool,
+    batch_enabled: bool,
+    segments_path: str | None,
+    segment_speaker_field: str | None,
+    field_name: str | None,
+    reserved_fields: tuple[str | None, ...] = (),
+) -> None:
+    deepgram = provider_preset == SttProviderPreset.deepgram.value and adapter_kind is SttAdapterKind.generic_rest
+    custom = provider_preset in {SttProviderPreset.custom_rest_openapi.value, SttProviderPreset.custom_openai_compatible.value}
+    if live_enabled and not deepgram:
+        raise AppError(422, "business_rule_violation", "Live diarisation is currently available only for Deepgram", {"field": "diarization_live_enabled"})
+    if batch_enabled and not deepgram and not (
+        custom and segments_path and segment_speaker_field and field_name
+    ):
+        raise AppError(
+            422, "business_rule_violation",
+            "Batch diarisation requires configured segment and speaker mappings plus a request option field",
+            {"field": "diarization_batch_enabled"},
+        )
+    if field_name and any(
+        field_name.strip().casefold() == reserved.strip().casefold()
+        for reserved in reserved_fields if reserved
+    ):
+        raise AppError(
+            422, "business_rule_violation",
+        "The diarisation request field must be separate from model, language, and audio fields",
+            {"field": "diarization_field_name"},
+        )
+
+
+def stt_config_supports_diarization(config: TeamSttConfig | None, *, connection_type: str) -> bool:
+    """Authoritative capability decision for admin settings, capture snapshots, and UI."""
+    if config is None or not config.is_active or config.setup_status != SttConfigSetupStatus.ready:
+        return False
+    preset = resolve_stt_provider_preset(config.provider_preset, config.adapter_kind, config.base_url)
+    adapter = config.adapter_kind
+    if connection_type == "live":
+        return bool(
+            preset == SttProviderPreset.deepgram.value
+            and adapter is SttAdapterKind.generic_rest
+            and getattr(config, "diarization_live_enabled", False)
+        )
+    if connection_type != "batch" or not getattr(config, "diarization_batch_enabled", False):
+        return False
+    if preset == SttProviderPreset.deepgram.value:
+        return adapter is SttAdapterKind.generic_rest
+    if preset in {SttProviderPreset.custom_rest_openapi.value, SttProviderPreset.custom_openai_compatible.value}:
+        return bool(
+            config.segments_path
+            and config.segment_speaker_field
+            and getattr(config, "diarization_field_name", None)
+            and getattr(config, "diarization_on_value", "true")
+            and getattr(config, "diarization_off_value", "false")
+            and getattr(config, "diarization_on_value", "true") != getattr(config, "diarization_off_value", "false")
+        )
+    return False
 
 
 def _stt_model_options(models: list[str], *, source: str) -> list[SttModelOption]:
@@ -1335,7 +1503,11 @@ def _transcribe_via_http(
     segment_start_field: str | None = None,
     segment_end_field: str | None = None,
     segment_speaker_field: str | None = None,
-) -> str:
+    diarization_enabled: bool = False,
+    diarization_field_name: str | None = None,
+    diarization_on_value: str = "true",
+    diarization_off_value: str = "false",
+) -> str | SttTranscriptResult:
     require_safe_provider_url(base_url)
     url = f"{base_url.rstrip('/')}{transcribe_path}"
     resolved_provider_preset = resolve_stt_provider_preset(provider_preset, adapter_kind or SttAdapterKind.generic_rest, base_url)
@@ -1358,7 +1530,7 @@ def _transcribe_via_http(
             model_name=model_name,
             language=language,
             extra_query_params=_normalize_deepgram_extra_query_params(
-                extra_form_fields_json,
+                _deepgram_query_fields(extra_form_fields_json, enabled=diarization_enabled),
                 provider_preset=resolved_provider_preset,
                 adapter_kind=adapter_kind or SttAdapterKind.generic_rest,
                 base_url=base_url,
@@ -1370,6 +1542,7 @@ def _transcribe_via_http(
             segment_start_field=segment_start_field,
             segment_end_field=segment_end_field,
             segment_speaker_field=segment_speaker_field,
+            diarization_enabled=diarization_enabled,
         )
     if provider_preset == SttProviderPreset.elevenlabs.value:
         return _transcribe_via_elevenlabs(
@@ -1388,6 +1561,11 @@ def _transcribe_via_http(
             segment_speaker_field=segment_speaker_field,
         )
     form_fields = dict(extra_form_fields_json or {})
+    if diarization_field_name:
+        for key in list(form_fields):
+            if key.strip().lower() == diarization_field_name.strip().lower():
+                del form_fields[key]
+        form_fields[diarization_field_name] = diarization_on_value if diarization_enabled else diarization_off_value
     language = normalize_stt_language(language)
     if model_name and model_field_name:
         form_fields[model_field_name] = model_name
@@ -1447,6 +1625,19 @@ def _transcribe_via_http(
             },
         )
         raise _translate_http_stt_error(exc) from exc
+    if diarization_enabled:
+        transcript_text = _extract_response_text(payload, response_text_path)
+        turns = _speaker_turns_from_segments(
+            payload,
+            segments_path=segments_path,
+            segment_text_field=segment_text_field,
+            segment_start_field=segment_start_field,
+            segment_end_field=segment_end_field,
+            segment_speaker_field=segment_speaker_field,
+        )
+        if not _turns_match_transcript(turns, transcript_text):
+            turns = None
+        return SttTranscriptResult(transcript_text, turns)
     return _format_timestamped_transcript_payload_with_segments(
         payload,
         response_text_path=response_text_path,
@@ -1546,12 +1737,18 @@ def _transcribe_via_deepgram(
     segment_start_field: str | None = None,
     segment_end_field: str | None = None,
     segment_speaker_field: str | None = None,
-) -> str:
+    diarization_enabled: bool = False,
+) -> str | SttTranscriptResult:
     if not bearer_token:
         raise AppError(409, "stt_config_secret_missing", "Deepgram STT requires a saved API key.")
 
     # For Deepgram, stored extra_form_fields_json represents query parameters for /v1/listen, not multipart form fields.
     params = dict(extra_query_params or {})
+    for key in list(params):
+        if key.strip().lower() == "diarize":
+            del params[key]
+    if diarization_enabled:
+        params["diarize"] = "true"
     language = normalize_stt_language(language)
     if model_name:
         params["model"] = model_name
@@ -1590,6 +1787,22 @@ def _transcribe_via_deepgram(
         )
         raise _translate_http_stt_error(exc) from exc
 
+    if diarization_enabled:
+        words_path = "results.channels.0.alternatives.0.words"
+        text_field = "punctuated_word"
+        speaker_field = "speaker"
+        transcript_text = _extract_response_text(payload, response_text_path)
+        turns = _speaker_turns_from_segments(
+            payload,
+            segments_path=words_path,
+            segment_text_field=text_field,
+            segment_start_field=segment_start_field or "start",
+            segment_end_field=segment_end_field or "end",
+            segment_speaker_field=speaker_field,
+        )
+        if not _turns_match_transcript(turns, transcript_text):
+            turns = None
+        return SttTranscriptResult(transcript_text, turns)
     return _format_timestamped_transcript_payload_with_segments(
         payload,
         response_text_path=response_text_path,
@@ -1888,8 +2101,13 @@ def transcribe_with_stt_snapshot(
     segment_start_field: str | None = None,
     segment_end_field: str | None = None,
     segment_speaker_field: str | None = None,
+    stt_diarisation_enabled: bool = False,
+    diarization_batch_enabled: bool = False,
+    diarization_field_name: str | None = None,
+    diarization_on_value: str = "true",
+    diarization_off_value: str = "false",
     _resolved_bearer_token: Any = _STT_CREDENTIAL_UNRESOLVED,
-) -> str:
+) -> str | SttTranscriptResult:
     if not stt_config_id or not adapter_kind or not base_url:
         return transcribe_with_team_stt(
             db,
@@ -1901,6 +2119,18 @@ def transcribe_with_stt_snapshot(
         )
     resolved_adapter = SttAdapterKind(adapter_kind)
     replay_provider_preset = resolve_stt_provider_preset(provider_preset, resolved_adapter, base_url)
+    custom_diarization_mapping_is_valid = bool(
+        replay_provider_preset in {SttProviderPreset.custom_rest_openapi.value, SttProviderPreset.custom_openai_compatible.value}
+        and segments_path and segment_speaker_field and diarization_field_name
+        and diarization_on_value and diarization_off_value and diarization_on_value != diarization_off_value
+    )
+    effective_diarization = bool(
+        stt_diarisation_enabled and diarization_batch_enabled
+        and (
+            (replay_provider_preset == SttProviderPreset.deepgram.value and resolved_adapter is SttAdapterKind.generic_rest)
+            or custom_diarization_mapping_is_valid
+        )
+    )
     bearer_token = (
         resolve_stt_snapshot_bearer_token(
             db,
@@ -1948,6 +2178,10 @@ def transcribe_with_stt_snapshot(
         segment_start_field=segment_start_field,
         segment_end_field=segment_end_field,
         segment_speaker_field=segment_speaker_field,
+        diarization_enabled=effective_diarization,
+        diarization_field_name=diarization_field_name,
+        diarization_on_value=diarization_on_value,
+        diarization_off_value=diarization_off_value,
         audio_bytes=audio_bytes,
         filename=filename,
         content_type=content_type,
@@ -2211,6 +2445,11 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
         segment_end_field=inspection.segment_end_field,
         segment_speaker_field=inspection.segment_speaker_field,
         extra_form_fields_json=inspection.extra_form_fields_json,
+        diarization_live_enabled=bool(target and target.provider_preset == provider_preset and getattr(target, "diarization_live_enabled", False)),
+        diarization_batch_enabled=bool(target and target.provider_preset == provider_preset and getattr(target, "diarization_batch_enabled", False)),
+        diarization_field_name=(getattr(target, "diarization_field_name", None) if target and target.provider_preset == provider_preset else None),
+        diarization_on_value=(getattr(target, "diarization_on_value", "true") if target and target.provider_preset == provider_preset else "true"),
+        diarization_off_value=(getattr(target, "diarization_off_value", "false") if target and target.provider_preset == provider_preset else "false"),
         vault_secret_ref="pending" if bearer_token else "",
         credential_status=status,
         credential_fingerprint=fingerprint,
@@ -2267,6 +2506,13 @@ def finalize_stt_config_draft(db: Session, actor: User, payload: SttConfigFinali
     if config.adapter_kind is SttAdapterKind.elevenlabs_speech_to_text:
         model_name = _validated_elevenlabs_model(model_name)
     provider_preset = resolve_stt_provider_preset(config.provider_preset, config.adapter_kind, config.base_url)
+    _validate_diarization_admin_config(
+        provider_preset=provider_preset, adapter_kind=config.adapter_kind,
+        live_enabled=payload.diarization_live_enabled, batch_enabled=payload.diarization_batch_enabled,
+        segments_path=config.segments_path, segment_speaker_field=config.segment_speaker_field,
+        field_name=payload.diarization_field_name,
+        reserved_fields=(config.model_field_name, config.language_field_name, config.file_field_name),
+    )
     config.provider_preset = provider_preset
     config.extra_form_fields_json = _normalize_deepgram_extra_query_params(
         config.extra_form_fields_json,
@@ -2284,6 +2530,11 @@ def finalize_stt_config_draft(db: Session, actor: User, payload: SttConfigFinali
     config.model_name = model_name
     config.available_models_json = available
     config.language = normalize_stt_language(payload.language)
+    config.diarization_live_enabled = payload.diarization_live_enabled
+    config.diarization_batch_enabled = payload.diarization_batch_enabled
+    config.diarization_field_name = payload.diarization_field_name.strip() if payload.diarization_field_name else None
+    config.diarization_on_value = payload.diarization_on_value.strip()
+    config.diarization_off_value = payload.diarization_off_value.strip()
     config.setup_status = SttConfigSetupStatus.ready
     config.is_active = payload.is_active
     config.updated_by_user_id = actor.id
@@ -2312,7 +2563,7 @@ def finalize_stt_config_draft(db: Session, actor: User, payload: SttConfigFinali
             if rebound_secret_ref:
                 config.vault_secret_ref = rebound_secret_ref
             if target is not None:
-                editable = ("label", "provider_preset", "adapter_kind", "base_url", "transcribe_path", "auth_mode", "model_name", "model_field_name", "available_models_json", "file_field_name", "language", "language_field_name", "response_text_path", "segments_path", "segment_text_field", "segment_start_field", "segment_end_field", "segment_speaker_field", "extra_form_fields_json", "vault_secret_ref", "credential_status", "credential_fingerprint", "inspection_metadata_json", "setup_status", "is_active")
+                editable = ("label", "provider_preset", "adapter_kind", "base_url", "transcribe_path", "auth_mode", "model_name", "model_field_name", "available_models_json", "file_field_name", "language", "language_field_name", "response_text_path", "segments_path", "segment_text_field", "segment_start_field", "segment_end_field", "segment_speaker_field", "extra_form_fields_json", "diarization_live_enabled", "diarization_batch_enabled", "diarization_field_name", "diarization_on_value", "diarization_off_value", "vault_secret_ref", "credential_status", "credential_fingerprint", "inspection_metadata_json", "setup_status", "is_active")
                 for field in editable:
                     setattr(target, field, getattr(config, field))
                 target.updated_by_user_id = actor.id
@@ -2393,6 +2644,13 @@ def replace_stt_config_draft_credential(db: Session, actor: User, payload: SttCo
 def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> TeamSttConfig:
     team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
     provider_preset = _resolve_stt_provider_preset_for_admin_write(payload.provider_preset, payload.adapter_kind, payload.base_url)
+    _validate_diarization_admin_config(
+        provider_preset=provider_preset, adapter_kind=payload.adapter_kind,
+        live_enabled=payload.diarization_live_enabled, batch_enabled=payload.diarization_batch_enabled,
+        segments_path=payload.segments_path, segment_speaker_field=payload.segment_speaker_field,
+        field_name=payload.diarization_field_name,
+        reserved_fields=(payload.model_field_name, payload.language_field_name, payload.file_field_name),
+    )
     _validate_stt_auth_mode_for_adapter(adapter_kind=payload.adapter_kind, auth_mode=payload.auth_mode)
     if provider_preset == SttProviderPreset.deepgram.value and payload.adapter_kind is not SttAdapterKind.generic_rest:
         raise AppError(422, "business_rule_violation", "Deepgram STT must use the Deepgram generic REST contract", {"field": "adapter_kind"})
@@ -2489,6 +2747,11 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
             segment_end_field=payload.segment_end_field,
             segment_speaker_field=payload.segment_speaker_field,
             extra_form_fields_json=extra_form_fields_json,
+            diarization_live_enabled=payload.diarization_live_enabled,
+            diarization_batch_enabled=payload.diarization_batch_enabled,
+            diarization_field_name=payload.diarization_field_name.strip() if payload.diarization_field_name else None,
+            diarization_on_value=payload.diarization_on_value.strip(),
+            diarization_off_value=payload.diarization_off_value.strip(),
             vault_secret_ref="pending" if replacing_secret or payload.adapter_kind is SttAdapterKind.openai_cloud else "",
             credential_status=ProviderCredentialStatus.pending_inspection if replacing_secret else ProviderCredentialStatus.unknown,
             credential_fingerprint=fingerprint,
@@ -2518,6 +2781,11 @@ def upsert_stt_config(db: Session, actor: User, payload: SttConfigUpsert) -> Tea
         config.segment_end_field = payload.segment_end_field
         config.segment_speaker_field = payload.segment_speaker_field
         config.extra_form_fields_json = extra_form_fields_json
+        config.diarization_live_enabled = payload.diarization_live_enabled
+        config.diarization_batch_enabled = payload.diarization_batch_enabled
+        config.diarization_field_name = payload.diarization_field_name.strip() if payload.diarization_field_name else None
+        config.diarization_on_value = payload.diarization_on_value.strip()
+        config.diarization_off_value = payload.diarization_off_value.strip()
         config.is_active = payload.is_active
         config.setup_status = SttConfigSetupStatus.ready
         config.updated_by_user_id = actor.id

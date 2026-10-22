@@ -255,6 +255,9 @@ Ready to upload a recording or capture one from your microphone.
 <div class="px-4 pt-3" hidden data-flash-wrap>
 <div class="flash-banner border rounded-xl px-4 py-3 text-sm font-medium {{ message_kind }}" hidden data-flash>{{ message or '' }}</div>
 </div>
+<div class="px-4 pt-3" data-example-consultation-banner{% if not active_transcript or not active_transcript.is_example %} hidden{% endif %}>
+<div class="flash-banner border rounded-xl px-4 py-3 text-sm font-medium info" role="status">This is a fictional example. Explore the transcript, Working note, dictation, note and follow-up. Choose “Create new consultation” for your own patient.</div>
+</div>
 
 <div class="flex-1 flex flex-col min-h-0 overflow-hidden" data-split-workspace>
 <div class="transcribe-tab-bar flex items-center border-b border-stone bg-white px-4 gap-3">
@@ -334,6 +337,7 @@ data-note-editor-header-toolbar
 </div>
 
 </div>
+<p class="mt-2 text-sm text-slate" data-split-operation-status role="status" aria-live="polite" aria-atomic="true" hidden></p>
 <aside class="template-suggestion" data-template-suggestion role="status" aria-live="polite" hidden>
 <p data-template-suggestion-message></p>
 <div class="template-suggestion__actions">
@@ -834,6 +838,7 @@ data-transcript-empty
 {{ active_transcript.current_draft_text }}
 {% endif %}
 </div>
+<div class="transcript-turn-save-status" data-turn-save-status role="status" aria-live="polite" hidden><span data-turn-save-message></span><button type="button" class="btn-ghost-sm" data-turn-retry hidden>Retry</button></div>
 <button type="button" class="mobile-sheet-scrim" data-mobile-dictation-close aria-label="Close dictation" tabindex="-1" hidden></button>
 <section class="dictation-compact" data-dictation-compact>
 <div class="mobile-sheet-heading"><span>Post-consultation dictation</span><button type="button" data-mobile-dictation-close aria-label="Close dictation"><i data-lucide="x" aria-hidden="true"></i></button></div>

@@ -347,6 +347,12 @@ Structured EMIS templates use only: `problem`, `history`, `family_history`, `soc
 
 ## Transcript, workspace, and generated-content routes
 
+Diarised transcript details include an immutable `structured_revision_id`, ordered `structured_turns`, and a server-derived `structured_editable` capability. Turns carry text, scoped anonymous speaker identity, original millisecond intervals where available, edited state, and canonical text offsets. These fields remain transcript-owner content.
+
+Structured source mutations use `POST /api/v1/transcripts/{id}/turns` to insert unattributed text and `PATCH`/`DELETE /api/v1/transcripts/{id}/turns/{turn_id}` to edit text or explicitly remove a turn. Every request supplies `expected_version_id`; stale revisions return a conflict rather than overwriting newer source. Clients cannot change speaker identity, recording scope, timing, or ownership through a text edit. Only stable, completed owner transcripts are editable. The flat-text commit endpoint cannot flatten a structured source.
+
+Microphone batch capture starts with owner-authorized `POST /api/v1/transcripts/{id}/capture-settings`. Its server-created `capture_settings_id` is attached to the recording's whole-file upload parts, including rollovers, to preserve the diarisation choice from recording start. It is not a client-supplied permission flag. File uploads without a capture token freeze their choice at acceptance; the normal provider credential, authorization, quota, and dispatch checks still apply.
+
 Transcript history items expose two separate booleans. `has_transcript_content` reports non-blank transcript draft/version text and continues to drive transcription status and generation readiness. `has_saved_content` reports whether deletion confirmation is required; it includes that transcript text plus saved Working-note, post-consultation dictation, or ready generated-note records. The latter is a presence flag only: it does not disclose content, and derived-source checks use owner-scoped record/envelope metadata without decrypting those sources.
 
 Full-user owner-scoped routes include:
@@ -367,8 +373,11 @@ Full-user owner-scoped routes include:
 - `POST /api/v1/transcripts/{transcript_id}/retry-audio`
 - `POST /api/v1/transcripts/{transcript_id}/ingestion-jobs/{job_id}/retry-audio`
 - `GET /api/v1/transcribe/workspace`
+- `POST /api/v1/transcribe/example-consultation`
 - `GET /api/v1/transcribe/workspace/stream`
 - `POST /api/v1/transcribe/stt-health/recheck`
+
+The first-run example endpoint requires a full authenticated user session and CSRF protection. It creates the fictional owner-only consultation once, without provider calls, and returns `{ "id": "<transcript UUID>" }`; a repeat call or an account with prior consultation history returns `{ "id": null }`. Workspace projections expose `example_consultation_pending` and mark the active example with `active_transcript.is_example`.
 
 Owner working-note/dictation/context routes:
 

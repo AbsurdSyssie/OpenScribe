@@ -435,6 +435,9 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
     ),
     AuditCase("POST", "/api/v1/transcripts/start", AccessTier.full, json_body=_json(title="Audit Transcript")),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/commit", AccessTier.full, json_body=_json(text_encrypted="ciphertext")),
+    AuditCase("PATCH", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/turns/{PLACEHOLDER_UUID_2}", AccessTier.full, json_body=_json(expected_version_id=PLACEHOLDER_UUID_2, text="synthetic turn")),
+    AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/turns", AccessTier.full, json_body=_json(expected_version_id=PLACEHOLDER_UUID_2, text="synthetic turn")),
+    AuditCase("DELETE", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/turns/{PLACEHOLDER_UUID_2}", AccessTier.full, json_body=_json(expected_version_id=PLACEHOLDER_UUID_2)),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/finalize-live-capture", AccessTier.full),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/deepgram-stream/{PLACEHOLDER_UUID_2}/retry", AccessTier.full),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/deepgram-stream/{PLACEHOLDER_UUID_2}/discard", AccessTier.full),
@@ -463,6 +466,7 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         AccessTier.full,
         files=_file("audio.wav"),
     ),
+    AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/capture-settings", AccessTier.full),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/retry-audio-file", AccessTier.full),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/retry-audio", AccessTier.full),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/ingestion-jobs/{PLACEHOLDER_UUID_2}/retry-audio", AccessTier.full),
@@ -495,6 +499,7 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
     # REST/SSE include owner-only durable split-intent metadata and consultation
     # saved-content presence for deletion confirmation; projection is read-only.
     AuditCase("GET", "/api/v1/transcribe/workspace", AccessTier.full),
+    AuditCase("POST", "/api/v1/transcribe/example-consultation", AccessTier.full),
     AuditCase("POST", "/api/v1/transcribe/stt-health/recheck", AccessTier.full),
     AuditCase("GET", "/api/v1/transcribe/workspace/stream", AccessTier.full),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-analysis", AccessTier.full),

@@ -19149,11 +19149,21 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
         segment_start_field,
         segment_end_field,
         segment_speaker_field,
+        stt_diarisation_enabled,
+        diarization_batch_enabled,
+        diarization_field_name,
+        diarization_on_value,
+        diarization_off_value,
         audio_bytes,
         filename,
         content_type,
         _resolved_bearer_token,
     ):
+        assert stt_diarisation_enabled is False
+        assert diarization_batch_enabled is False
+        assert diarization_field_name is None
+        assert diarization_on_value == "true"
+        assert diarization_off_value == "false"
         assert team_id == team.id
         assert stt_config_id == config.id
         assert provider_preset == config.provider_preset
@@ -21347,11 +21357,21 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
         segment_start_field,
         segment_end_field,
         segment_speaker_field,
+        stt_diarisation_enabled,
+        diarization_batch_enabled,
+        diarization_field_name,
+        diarization_on_value,
+        diarization_off_value,
         audio_bytes,
         filename,
         content_type,
         _resolved_bearer_token,
     ):
+        assert stt_diarisation_enabled is False
+        assert diarization_batch_enabled is False
+        assert diarization_field_name is None
+        assert diarization_on_value == "true"
+        assert diarization_off_value == "false"
         assert team_id == team.id
         assert stt_config_id == config.id
         assert provider_preset == config.provider_preset
@@ -21555,11 +21575,21 @@ def test_audio_file_job_uses_snapshotted_stt_selection_after_team_selection_chan
         segment_start_field,
         segment_end_field,
         segment_speaker_field,
+        stt_diarisation_enabled,
+        diarization_batch_enabled,
+        diarization_field_name,
+        diarization_on_value,
+        diarization_off_value,
         audio_bytes,
         filename,
         content_type,
         _resolved_bearer_token,
     ):
+        assert stt_diarisation_enabled is False
+        assert diarization_batch_enabled is False
+        assert diarization_field_name is None
+        assert diarization_on_value == "true"
+        assert diarization_off_value == "false"
         assert team_id == team.id
         assert stt_config_id == config_one.id
         assert provider_preset == config_one.provider_preset

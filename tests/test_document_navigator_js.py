@@ -561,7 +561,7 @@ def test_note_regeneration_controls_and_scroll_rail_contract():
 
     app = (root / "app/static/js/transcribe/app.js").read_text(encoding="utf-8")
     shell = (root / "app/templates/transcribe/_shell_extras.html").read_text(encoding="utf-8")
-    assert "actions.js?v=20261019-delete-confirmation-content" in app
+    assert "actions.js?v=20261021-example-consultation" in app
     assert "documents.js?v=20261014-generation-status" in app
     assert "structured.js?v=20260918-retired-note-workspace" in app
     assert "app.js?v=20261019-delete-confirmation-content" in shell

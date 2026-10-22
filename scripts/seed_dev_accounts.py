@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import argparse
 from pathlib import Path
 
 from sqlalchemy import create_engine, select
@@ -18,6 +19,8 @@ from app.services.admin import hash_password
 from app.services.content_crypto import ensure_user_dek, get_active_user_key
 from app.services.default_assets import ensure_builtin_team_assets
 from app.services.transcripts import process_transcript_audio_cleanup_jobs, queue_retry_source_cleanup_for_transcripts
+from app.services import content_crypto
+from app.services.dev_demo_fixtures import seed_dev_demo_consultations
 from app.services.vault import unwrap_user_content_data_key
 
 
@@ -44,6 +47,17 @@ def ensure_team(db: Session, *, team_name: str) -> Team:
     db.add(team)
     db.commit()
     db.refresh(team)
+    return team
+
+
+def get_or_create_demo_team(db: Session, *, team_name: str) -> Team:
+    """Resolve the Dev Test Team for demo-only runs without rewriting it."""
+    team_name_key = normalize_team_name_key(team_name)
+    team = db.scalar(select(Team).where(Team.name_key == team_name_key))
+    if team is None:
+        return ensure_team(db, team_name=team_name)
+    if team.status is not TeamStatus.active:
+        raise AppError(409, "dev_demo_team_inactive", "The Dev Test Team is not active.")
     return team
 
 
@@ -168,6 +182,84 @@ def ensure_dev_system_admin(
     return user
 
 
+def ensure_dev_demo_user(
+    db: Session,
+    *,
+    password: str,
+    team: Team,
+) -> User:
+    """Create the demo clinician once; preserve existing identity and data."""
+    from app.schemas.preferences import UserAppPreferencesUpsert
+    from app.services.preferences import get_user_app_preferences, set_user_app_preferences
+
+    normalized_email = normalize_email("demo@example.com")
+    user = db.scalar(select(User).where(User.email == normalized_email))
+    if user is None:
+        user = User(
+            full_name="Dev Demo Clinician",
+            email=normalized_email,
+            password_hash=hash_password(password),
+            team_id=team.id,
+            team_role=TeamRole.user,
+            is_system_admin=False,
+            status=UserStatus.active,
+            must_change_password=False,
+            onboarding_state=UserOnboardingState.complete,
+            mfa_required=False,
+            mfa_enabled=False,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        ensure_user_dek(db, user=user)
+        db.commit()
+        db.refresh(user)
+        set_user_app_preferences(
+            db,
+            user,
+            UserAppPreferencesUpsert(split_consultations_into_separate_notes=True),
+        )
+        return user
+
+    if (
+        user.team_id != team.id
+        or user.team_role is not TeamRole.user
+        or user.is_system_admin
+        or user.status is not UserStatus.active
+    ):
+        raise AppError(
+            409,
+            "dev_demo_account_conflict",
+            "The existing demo account is not an active clinician in the Dev Test Team.",
+        )
+
+    key_record = get_active_user_key(db, user_id=user.id)
+    has_content = _user_has_transcript_content(db, user=user)
+    if key_record is None:
+        if has_content:
+            raise AppError(
+                409,
+                "dev_demo_content_key_missing",
+                "The existing demo account has content but no active content key.",
+            )
+        ensure_user_dek(db, user=user)
+        db.commit()
+        db.refresh(user)
+    else:
+        content_crypto.unwrap_user_content_data_key(
+            wrapped_dek=key_record.wrapped_dek,
+            mount_point=key_record.kek_mount,
+            key_name=key_record.kek_key_name,
+        )
+    if get_user_app_preferences(db, user) is None:
+        set_user_app_preferences(
+            db,
+            user,
+            UserAppPreferencesUpsert(split_consultations_into_separate_notes=True),
+        )
+    return user
+
+
 def repair_dev_user_content_key_if_needed(db: Session, *, user: User) -> None:
     key_record = get_active_user_key(db, user_id=user.id)
     if key_record is None:
@@ -209,6 +301,21 @@ def _reset_dev_user_transcript_content(db: Session, *, user: User) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Seed localhost-only development accounts and synthetic demo cases.")
+    parser.add_argument(
+        "--demo-only",
+        action="store_true",
+        help="Seed only demo@example.com and its synthetic cases; leave other dev accounts untouched.",
+    )
+    parser.add_argument(
+        "--reset-demo-content",
+        action="store_true",
+        help="Delete and rebuild only the deterministic synthetic demo consultation roots.",
+    )
+    args = parser.parse_args()
+    if args.reset_demo_content and not args.demo_only:
+        parser.error("--reset-demo-content requires --demo-only")
+
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
         raise SystemExit("DATABASE_URL is required")
@@ -223,6 +330,19 @@ def main() -> None:
 
     engine = create_engine(database_url, future=True)
     with Session(engine) as db:
+        if args.demo_only:
+            team = get_or_create_demo_team(db, team_name=team_name)
+            demo_user = ensure_dev_demo_user(db, password=user_password, team=team)
+            transcripts = seed_dev_demo_consultations(
+                db,
+                owner=demo_user,
+                reset=args.reset_demo_content,
+            )
+            print("Seeded development demo account:")
+            print(f"team={team_name}")
+            print(f"demo_email={demo_user.email}")
+            print(f"consultations={len(transcripts)}")
+            return
         team = ensure_team(db, team_name=team_name)
         admin = ensure_dev_system_admin(
             db,
@@ -246,17 +366,22 @@ def main() -> None:
             team=team,
             team_role=TeamRole.user,
         )
+        demo_user = ensure_dev_demo_user(db, password=user_password, team=team)
         ensure_builtin_team_assets(db, team=team, actor=leader)
         db.commit()
         admin_email = admin.email
         leader_email = leader.email
         user_email = user.email
+        demo_email = demo_user.email
+        transcripts = seed_dev_demo_consultations(db, owner=demo_user)
 
     print("Seeded dev test accounts:")
     print(f"team={team_name}")
     print(f"admin_email={admin_email}")
     print(f"leader_email={leader_email}")
     print(f"user_email={user_email}")
+    print(f"demo_email={demo_email}")
+    print(f"demo_consultations={len(transcripts)}")
 
 
 if __name__ == "__main__":

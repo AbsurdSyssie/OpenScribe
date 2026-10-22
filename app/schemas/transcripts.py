@@ -1,10 +1,12 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models import TranscriptIngestionJobKind, TranscriptIngestionJobStatus, TranscriptIngestionMode, TranscriptStatus, TranscriptWorkingNoteMode
 
+MAX_TRANSCRIPT_TURN_CHARS = 8_000_000
 
 EMIS_WORKING_NOTE_SECTION_KEYS = (
     "problem",
@@ -38,6 +40,33 @@ class TranscriptCommit(BaseModel):
     text_encrypted: str = Field(min_length=1)
 
 
+class TranscriptTurnTextUpdate(BaseModel):
+    expected_version_id: UUID
+    text: str = Field(max_length=MAX_TRANSCRIPT_TURN_CHARS)
+
+    model_config = {"extra": "forbid"}
+
+
+class TranscriptTurnCreate(BaseModel):
+    expected_version_id: UUID
+    text: str = Field(max_length=MAX_TRANSCRIPT_TURN_CHARS)
+    after_turn_id: UUID | None = None
+
+    model_config = {"extra": "forbid"}
+
+
+class TranscriptTurnDelete(BaseModel):
+    expected_version_id: UUID
+
+    model_config = {"extra": "forbid"}
+
+
+class TranscriptCaptureSettingsDetail(BaseModel):
+    capture_settings_id: UUID
+    diarisation_enabled: bool
+    connection_type: Literal["batch"] = "batch"
+
+
 class TranscriptUpdate(BaseModel):
     title: str | None = Field(default=None, max_length=255)
     ingestion_mode: TranscriptIngestionMode | None = None
@@ -51,6 +80,7 @@ class TranscriptListItem(BaseModel):
     owner_user_id: UUID
     team_id: UUID
     title: str | None
+    is_example: bool = False
     ingestion_mode: TranscriptIngestionMode
     status: TranscriptStatus
     has_transcript_content: bool = False
@@ -71,9 +101,25 @@ class TranscriptListPage(BaseModel):
     has_more: bool = False
 
 
+class TranscriptTurnView(BaseModel):
+    id: UUID
+    scope_id: UUID
+    speaker_id: str | None = None
+    speaker_label: str
+    start_ms: int | None = None
+    end_ms: int | None = None
+    text: str
+    edited: bool = False
+    start_index: int
+    end_index: int
+
+
 class TranscriptDetail(TranscriptListItem):
     multiple_problems: bool = False
     current_draft_text: str | None = None
+    structured_revision_id: UUID | None = None
+    structured_turns: list[TranscriptTurnView] | None = None
+    structured_editable: bool = False
     structured_context_json: dict | None = None
     next_live_chunk_sequence_no_upload: int | None = None
     latest_ingestion_job_status: TranscriptIngestionJobStatus | None = None

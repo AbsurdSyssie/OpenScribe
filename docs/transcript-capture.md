@@ -147,6 +147,18 @@ The following categories are encrypted at rest before PostgreSQL persistence whe
 
 Service code resolves ownership/retention before decryption. Worker code uses durable owner IDs, not a current browser user. Encryption or Vault failures fail closed rather than falling back to plaintext.
 
+## Diarised transcript sources
+
+Diarised consultation transcripts retain ordered speaker turns as owner-encrypted structured source data associated with immutable transcript versions. Speaker identity is scoped to a provider connection or individual batch recording/upload. Ordinary Deepgram accounting checkpoints preserve that scope; an actual new connection starts another. Speaker numbers remain stable when earlier turns are deleted. They do not establish clinical roles or identify the same person across independent scopes.
+
+The canonical transcript text contains turn text only. Speaker labels, recording headings, timings, and editor controls are rendered separately. Flat-only legacy transcripts retain their existing display. Mixed transcripts preserve earlier and later unattributed text alongside attributed turns. Unknown attribution displays `?`; missing attribution must not discard usable transcription or trigger an extra provider request.
+
+Turn text can be edited after recording, ingestion, and unresolved recovery have finished. Inline edits use the shared note autosave mechanism with revision conflicts rather than overwriting newer source. New text outside a turn is unattributed. Emptying text does not implicitly delete a turn; whole-turn deletion is a separate action. Edited turns retain their original audio interval, which no longer claims exact alignment to the revised words.
+
+Each accepted mutation creates a new immutable source revision. Historical versions and already queued generation retain their existing snapshots and transcript-root lifecycle. Source changes use the existing owning-user encryption, authorization, retention, deletion, redaction, and source-writer boundaries.
+
+Redaction operates on the exact canonical version text. Speaker boundaries passed to generation must be mapped through redaction substitutions; original offsets cannot be applied directly to redacted text. Generation includes anonymous speaker/session context from its saved source and cautions against confident clinical-role assignment when attribution is uncertain. Working note and dictation remain distinct sources.
+
 ## Working notes
 
 Working note is clinician-authored source content separate from transcript and generated output.

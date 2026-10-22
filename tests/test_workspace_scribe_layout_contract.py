@@ -184,7 +184,7 @@ def test_scribe_mobile_flow_assets_have_current_cache_keys():
     legacy_transcribe = read("app/templates/transcribe.html")
 
     assert 'workspace/app.js?v=20261018-help-pointer-resize' in workspace
-    assert 'transcribe/app.js?v=20261019-delete-confirmation-content' in shell_extras
+    assert 'transcribe/app.js?v=20261021-example-consultation' in shell_extras
     assert 'transcribe/mobile.js?v=20260823-mobile-toast' in shell_extras
     assert 'documents.js?v=20261014-generation-status' in read("app/static/js/transcribe/app.js")
     assert 'transcribe-mobile.css?v=20260930-detected-pii-override' in legacy_transcribe

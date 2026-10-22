@@ -21,6 +21,8 @@
     data-workspace-endpoint="{{ workspace_endpoint }}"
     data-workspace-stream-endpoint="{{ workspace_stream_endpoint }}"
     data-route-base="{{ transcribe_route_base }}"
+    data-example-consultation-pending="{{ 'true' if example_consultation_pending else 'false' }}"
+    data-active-transcript-is-example="{{ 'true' if active_transcript and active_transcript.is_example else 'false' }}"
     data-layout-state="normal">
     {% include "transcribe/_sidebar.html" %}
     {% include "transcribe/_workspace.html" %}

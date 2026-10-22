@@ -86,6 +86,20 @@ After any user exists, bootstrap is disabled. Creation takes a database transact
 
 `start-dev.sh` seeds local test accounts by default when `DEV_SEED_TEST_ACCOUNTS=true`. Their values come from `DEV_TEST_*` variables in `.env.example`.
 
+The seed includes `demo@example.com`, a normal clinician in the Dev Test Team using `DEV_TEST_USER_PASSWORD`. It contains five fictional consultations with undiarised transcripts, Working note snippets, clinician dictations, note drafts and patient follow-up drafts. Two cases have synthetic split-note examples; these are fixtures, not records of provider calls or real clinical work. Automatic splitting is enabled in this demo account's owner preference so the split examples are visible when `CONSULTATION_SPLITTING_ENABLED=true`; the clinician can change that preference later, and seed reruns preserve the saved choice. Reruns preserve the account and existing content, and fill missing seed documents only while the original demo sources remain unchanged. The demo login is localhost-only, like the other development accounts.
+
+To seed only this account without reconciling the other development accounts:
+
+```bash
+./.venv/bin/python scripts/seed_dev_accounts.py --demo-only
+```
+
+To rebuild the demo examples, deleting their transcript roots and transcript-owned content (including edits) while preserving any other roots owned by the account:
+
+```bash
+./.venv/bin/python scripts/seed_dev_accounts.py --demo-only --reset-demo-content
+```
+
 These accounts are restricted to localhost-only requests by application checks. Do not enable seeding on a shared or production instance. Set:
 
 ```env

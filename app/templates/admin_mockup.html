@@ -3176,6 +3176,7 @@
                         name="language"
                         value="{{ stt_config.language or '' }}"
                         placeholder="Auto-detect" /></label
+                    ><fieldset class="provider-diarization-options"><legend>Diarisation availability</legend><label><input type="checkbox" name="diarization_live_enabled" value="true" {% if stt_config.diarization_live_enabled %}checked{% endif %}> Enable for live consultation recording</label><label><input type="checkbox" name="diarization_batch_enabled" value="true" {% if stt_config.diarization_batch_enabled %}checked{% endif %}> Enable for uploaded consultation audio</label><div class="field-help">Users can opt in from Preferences. Dictation is excluded.</div><div class="field"><label for="stt-config-diarization-field">Batch request field (custom providers)</label><input id="stt-config-diarization-field" name="diarization_field_name" value="{{ stt_config.diarization_field_name or '' }}" placeholder="e.g. diarize"><small>Leave blank when the provider does not accept a diarisation option.</small></div><div class="field"><label for="stt-config-diarization-on">Enabled value</label><input id="stt-config-diarization-on" name="diarization_on_value" value="{{ stt_config.diarization_on_value or 'true' }}"></div><div class="field"><label for="stt-config-diarization-off">Disabled value</label><input id="stt-config-diarization-off" name="diarization_off_value" value="{{ stt_config.diarization_off_value or 'false' }}"></div></fieldset>
                     ><label
                       ><input
                         type="checkbox"
@@ -3235,7 +3236,7 @@
                         %}Dictation{% endif %}</span
                       >
                       <div class="quick-actions">
-                        <button class="btn small" type="button" data-edit-stt-provider data-config-id="{{ config.id }}" data-provider-preset="{{ config.provider_preset or '' }}" data-provider-label="{{ config.label }}" data-base-url="{{ config.base_url }}" data-openapi-path="{% if config.adapter_kind.value == 'generic_rest' %}/openapi.json{% endif %}" data-model-name="{{ config.model_name or '' }}" data-language="{{ config.language or '' }}" data-is-active="{{ 'true' if config.is_active else 'false' }}">Edit</button>
+                        <button class="btn small" type="button" data-edit-stt-provider data-config-id="{{ config.id }}" data-provider-preset="{{ config.provider_preset or '' }}" data-provider-label="{{ config.label }}" data-base-url="{{ config.base_url }}" data-openapi-path="{% if config.adapter_kind.value == 'generic_rest' %}/openapi.json{% endif %}" data-model-name="{{ config.model_name or '' }}" data-language="{{ config.language or '' }}" data-is-active="{{ 'true' if config.is_active else 'false' }}" data-diarization-live="{{ 'true' if config.diarization_live_enabled else 'false' }}" data-diarization-batch="{{ 'true' if config.diarization_batch_enabled else 'false' }}" data-diarization-field="{{ config.diarization_field_name or '' }}" data-diarization-on="{{ config.diarization_on_value or 'true' }}" data-diarization-off="{{ config.diarization_off_value or 'false' }}">Edit</button>
                         <form
                           method="post"
                           action="/admin/stt-configs/{{ config.id }}/test"
@@ -4648,6 +4649,16 @@
                   ></span
                 >
               </label>
+              <fieldset class="provider-diarization-options">
+                <legend>Diarisation availability</legend>
+                <label class="checkbox-row"><input type="checkbox" id="stt-diarization-live" name="diarization_live_enabled"><span><strong>Enable for live consultation recording</strong><br><span class="field-help">Deepgram live only. Custom live chunking is not supported.</span></span></label>
+                <label class="checkbox-row"><input type="checkbox" id="stt-diarization-batch" name="diarization_batch_enabled"><span><strong>Enable for uploaded consultation audio</strong><br><span class="field-help">Users must also opt in from Preferences.</span></span></label>
+                <div class="wizard-form-grid wizard-spaced">
+                  <div class="field"><label for="stt-diarization-field">Batch request field</label><input id="stt-diarization-field" name="diarization_field_name" placeholder="Provider-specific, e.g. diarize"></div>
+                  <div class="field"><label for="stt-diarization-on">Enabled value</label><input id="stt-diarization-on" name="diarization_on_value" value="true"></div>
+                  <div class="field"><label for="stt-diarization-off">Disabled value</label><input id="stt-diarization-off" name="diarization_off_value" value="false"></div>
+                </div>
+              </fieldset>
             </section>
           </div>
 
@@ -5358,6 +5369,11 @@
           : "Create and validate a team-specific speech-to-text provider.";
         document.getElementById("stt-change-key-help").hidden = !editing;
         document.getElementById("stt-api-key").value = "";
+        document.getElementById("stt-diarization-live").checked = editButton?.dataset.diarizationLive === "true";
+        document.getElementById("stt-diarization-batch").checked = editButton?.dataset.diarizationBatch === "true";
+        document.getElementById("stt-diarization-field").value = editButton?.dataset.diarizationField || "";
+        document.getElementById("stt-diarization-on").value = editButton?.dataset.diarizationOn || "true";
+        document.getElementById("stt-diarization-off").value = editButton?.dataset.diarizationOff || "false";
         document.getElementById("stt-wizard-team").textContent =
           document.getElementById("team-title").textContent;
         const sttNames = {openai: "OpenAI", deepgram: "Deepgram", elevenlabs: "ElevenLabs", custom_openai_compatible: "Custom OpenAI-compatible", custom_rest_openapi: "Custom REST/OpenAPI"};
@@ -5466,7 +5482,7 @@
           sttWizardNext.disabled = cancelSttWizard.disabled = true;
           const form = document.getElementById("stt-wizard-form");
           try {
-            await apiJson(`/api/v1/stt-configs/${encodeURIComponent(sttDraftId)}/finalize`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ team_id: form.elements.team_id.value, label: form.elements.label.value, model_name: form.elements.model_name.value || null, language: form.elements.language.value || null, is_active: form.elements.is_active.checked }) });
+            await apiJson(`/api/v1/stt-configs/${encodeURIComponent(sttDraftId)}/finalize`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ team_id: form.elements.team_id.value, label: form.elements.label.value, model_name: form.elements.model_name.value || null, language: form.elements.language.value || null, is_active: form.elements.is_active.checked, diarization_live_enabled: form.elements.diarization_live_enabled.checked, diarization_batch_enabled: form.elements.diarization_batch_enabled.checked, diarization_field_name: form.elements.diarization_field_name.value.trim() || null, diarization_on_value: form.elements.diarization_on_value.value, diarization_off_value: form.elements.diarization_off_value.value }) });
             sttDraftId = "";
             window.location.assign(`/admin?team_id=${encodeURIComponent(form.elements.team_id.value)}&team_tab=stt`);
           } catch (error) { wizardError("stt-wizard-error", error); sttBusy = false; sttWizardNext.disabled = cancelSttWizard.disabled = false; }

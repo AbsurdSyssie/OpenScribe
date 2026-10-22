@@ -1,8 +1,8 @@
-import { attachTranscribeActions } from './actions.js?v=20261019-delete-confirmation-content';
+import { attachTranscribeActions } from './actions.js?v=20261021-example-consultation';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20261005-multiple-problems';
 import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261014-generation-status';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
-import { createAudioCaptureController } from './media.js?v=20261017-deepgram-live-stream';
+import { createAudioCaptureController } from './media.js?v=20261022-live-startup-guard';
 import { createStructuredEditor } from './structured.js?v=20260918-retired-note-workspace';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
@@ -11,7 +11,10 @@ import { csrfFetch } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
 import { createTemplateSuggestionController } from './templateSuggestions.js?v=20260830-template-suggestion-preference';
- import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261014-generation-status';
+import { createExampleConsultationBoundary, createExampleConsultationInitializer } from './exampleConsultation.js?v=20261021-example-consultation';
+import { createTranscriptTurnsEditor } from './transcriptTurnsEditor.js?v=20261022-recording-headings';
+import { createAutosaveController } from './autosaveController.js?v=20261022-diarized-turn-editor';
+ import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261020-split-progress-feedback';
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,
@@ -31,7 +34,19 @@ import {
       const splitWorkspace = document.querySelector('[data-split-workspace]');
       const initialWorkspaceEndpoint = shell?.dataset.workspaceEndpoint || '';
       const initialWorkspaceStreamEndpoint = shell?.dataset.workspaceStreamEndpoint || '';
+      const exampleConsultationPending = shell?.dataset.exampleConsultationPending === 'true';
+      const exampleConsultationBanner = document.querySelector('[data-example-consultation-banner]');
       let transcriptId = bootstrap.activeTranscriptId;
+      let workspaceDiarizationAvailable = Boolean(bootstrap.diarizationAvailable);
+      let priorDiarizationCapabilityKey = null;
+      const unsupportedDiarizationToastKeys = new Set();
+      let recordingDiarizationEnabledSnapshot = false;
+      let diarizationStopWarningShownThisPage = false;
+      let missingSpeakerWarningShownThisCapture = false;
+      let activeTranscriptIsExample = shell?.dataset.activeTranscriptIsExample === 'true';
+      let exampleInitializationStarted = false;
+      let transcriptSelectionGeneration = 0;
+      const initialTranscriptSelectionGeneration = transcriptSelectionGeneration;
       let activeIngestionMode = bootstrap.activeIngestionMode;
       let nextLiveChunkSequenceNo = bootstrap.nextLiveChunkSequenceNo;
       let hasSttSelection = bootstrap.hasSttSelection;
@@ -66,9 +81,6 @@ import {
       let dirtyNoteMode = null;
       let dirtyNoteExpectedUpdatedAt = null;
       let noteEditVersion = 0;
-      let noteSaveTimer = null;
-      let noteSaveInFlight = null;
-      let noteSaveQueued = false;
       let noteSaveConflictShown = false;
       let noteGenerationInFlight = null;
       let generationSubmissionBarrier = null;
@@ -107,6 +119,9 @@ import {
       let dictationAnalyser = null;
       let dictationVisualizerFrameId = null;
       let currentDraftText = '';
+      let workspaceStructuredTurns = null;
+      let workspaceStructuredRevisionId = null;
+      let workspaceStructuredEditable = false;
       let currentPiiEntities = [];
       let workspaceTranscriptPiiEntities = Array.isArray(bootstrap.activeTranscriptPiiEntities) ? [...bootstrap.activeTranscriptPiiEntities] : [];
       let piiMasked = false;
@@ -163,6 +178,7 @@ import {
       const dictationCtaStatus = document.querySelector('[data-dictation-cta-status]');
       const flashWrap = document.querySelector('[data-flash-wrap]');
       const flashBanner = document.querySelector('[data-flash]');
+      const splitOperationStatus = document.querySelector('[data-split-operation-status]');
       const latestGeneratedOutput = document.querySelector('[data-latest-generated-output]');
       const noteCheckStatus = document.querySelector('[data-note-check-status]');
       const noteEditorToolbar = document.querySelector('[data-note-editor-toolbar]');
@@ -374,7 +390,8 @@ let statusDetailsHideTimer = null;
           || ['queued', 'transcribing', 'processing', 'uploading'].includes(currentTranscriptStatus || '')) {
           return { ready: false, message: 'Wait for transcription to finish before suggesting problems.' };
         }
-        if (!hasLlmSelection || !hasSelectableOptions(generateOutputTemplateSelect) || !generateOutputTemplateSelect?.value) {
+        if (!hasLlmSelection) return { ready: false, message: 'Choose a writing assistant before suggesting problems.' };
+        if (!hasSelectableOptions(generateOutputTemplateSelect) || !generateOutputTemplateSelect?.value) {
           return { ready: false, message: 'Choose an available template before suggesting problems.' };
         }
         if (!(readActiveDraftText().trim() || workingNoteHasContent() || hasDictationContent())) {
@@ -389,6 +406,33 @@ let statusDetailsHideTimer = null;
           nextSourceReady: readiness.ready,
           nextSourceReadinessMessage: readiness.message,
         });
+      };
+      const renderRestoredSplitOperationStatus = (workspace) => {
+        if (
+          !splitOperationStatus
+          || splitGenerateController?.getOperation?.()
+          || splitOperationStatus.dataset.statusSource === 'operation'
+        ) return;
+        const intent = workspace?.consultation_split_intent;
+        const analysis = workspace?.consultation_split_analysis;
+        const draft = workspace?.consultation_split_draft;
+        let message = '';
+        const exactAnalysis = Boolean(intent?.analysis_id && intent.analysis_id === analysis?.analysis_id);
+        if (intent?.manual_review_requested && intent.status === 'analysis_pending' && exactAnalysis) {
+          if (['queued', 'processing'].includes(analysis?.status || '')) {
+            message = 'Suggested problems are being prepared. This request is saved and will continue if you leave this page.';
+          } else if (draft?.status === 'active' && draft.analysis_id === analysis?.analysis_id) {
+            message = 'Suggested problems are ready for review. Open Review problems to review them.';
+          } else if (['ready', 'not_required'].includes(analysis?.status || '')) {
+            message = 'Preparing your problem review. This accepted request is saved and will continue if you leave this page.';
+          }
+        }
+        if (message || splitOperationStatus.dataset.statusSource === 'restored') {
+          splitOperationStatus.textContent = message;
+          splitOperationStatus.hidden = !message;
+          splitOperationStatus.dataset.statusKind = message ? 'progress' : '';
+          splitOperationStatus.dataset.statusSource = message ? 'restored' : '';
+        }
       };
       const splitBatchInFlightStatuses = new Set(['generation_queued', 'generating', 'verifying']);
       const splitBatchTerminalStatuses = new Set(['ready', 'partially_ready', 'completed_partial', 'failed']);
@@ -442,7 +486,7 @@ let statusDetailsHideTimer = null;
         dirtyNoteTargetId = targetId;
         dirtyNoteMode = currentRenderedNoteMode();
         noteEditVersion += 1;
-        scheduleNoteAutosave();
+        noteAutosave.markDirty();
       };
 
       const clearNoteEditorDirty = () => {
@@ -687,6 +731,8 @@ let statusDetailsHideTimer = null;
           note_generation_length: userAppPreferences.note_generation_length || null,
           preferred_recording_mode: userAppPreferences.preferred_recording_mode || null,
           preferred_transcribe_tab: userAppPreferences.preferred_transcribe_tab || null,
+          diarization_enabled: userAppPreferences.diarization_enabled === true,
+          diarization_warning_acknowledged: userAppPreferences.diarization_warning_acknowledged === true,
           ...patch,
         };
         const response = await csrfFetch('/api/v1/app-preferences', {
@@ -742,10 +788,6 @@ let statusDetailsHideTimer = null;
       };
 
       const persistNoteEditsSilently = async ({ keepalive = false, targetTranscriptId = transcriptId } = {}) => {
-        if (noteSaveInFlight) {
-          noteSaveQueued = true;
-          return noteSaveInFlight;
-        }
         if (!noteEditorDirty) {
           return null;
         }
@@ -757,11 +799,8 @@ let statusDetailsHideTimer = null;
           return null;
         }
         const requestVersion = noteEditVersion;
-        noteSaveInFlight = (async () => {
-          try {
-            if (saveRequest.kind === 'working_note' && !transcriptId) {
-              return null;
-            }
+        try {
+            if (saveRequest.kind === 'working_note' && !targetTranscriptId) return null;
             const response = await csrfFetch(saveRequest.endpoint, {
               method: 'PATCH',
               credentials: 'include',
@@ -770,7 +809,6 @@ let statusDetailsHideTimer = null;
               body: JSON.stringify(saveRequest.payload),
             });
             if (response.status === 409) {
-              noteSaveQueued = false;
               if (!noteSaveConflictShown) {
                 noteSaveConflictShown = true;
                 showFlash('Note changed elsewhere. Reload note before saving again.', 'error');
@@ -815,39 +853,19 @@ let statusDetailsHideTimer = null;
               dirtyNoteExpectedUpdatedAt = savedDocument.updated_at || '';
             }
             return savedDocument;
-          } catch (error) {
+        } catch (error) {
             showFlash(error instanceof Error ? error.message : 'Could not save note edits.', 'error');
             return null;
-          } finally {
-            noteSaveInFlight = null;
-            if (noteSaveQueued) {
-              noteSaveQueued = false;
-              scheduleNoteAutosave({ immediate: true });
-            }
-          }
-        })();
-        return noteSaveInFlight;
+        }
       };
 
+      const noteAutosave = createAutosaveController({
+        save: ({ keepalive, targetTranscriptId: saveTranscriptId }) => persistNoteEditsSilently({ keepalive, targetTranscriptId: saveTranscriptId || transcriptId }),
+        isDirty: () => noteEditorDirty,
+      });
+
       const persistNoteEditsUntilDrained = async ({ keepalive = false, targetTranscriptId = transcriptId } = {}) => {
-        let savedDocument = null;
-        while (true) {
-          if (noteSaveTimer) {
-            window.clearTimeout(noteSaveTimer);
-            noteSaveTimer = null;
-          }
-          if (noteSaveInFlight) {
-            noteSaveQueued = true;
-            savedDocument = await noteSaveInFlight;
-            if (!savedDocument) return null;
-            continue;
-          }
-          if (!noteEditorDirty) {
-            return savedDocument;
-          }
-          savedDocument = await persistNoteEditsSilently({ keepalive, targetTranscriptId });
-          if (!savedDocument) return null;
-        }
+        return noteAutosave.flush({ keepalive, targetTranscriptId });
       };
 
       const persistFollowupEditsSilently = async ({ keepalive = false } = {}) => {
@@ -932,7 +950,11 @@ let statusDetailsHideTimer = null;
       };
 
       const persistPendingEditorsBeforeWorkspaceSwitch = async () => {
-        if (noteEditorDirty || noteSaveInFlight) {
+        if (transcriptTurnsEditor?.dirty) {
+          const savedTranscript = await transcriptTurnsEditor.flush({ keepalive: false });
+          if (!savedTranscript && transcriptTurnsEditor.dirty) return false;
+        }
+        if (noteEditorDirty || noteAutosave.pending) {
           const savedNote = await persistNoteEditsUntilDrained({ keepalive: false });
           if (!savedNote && noteEditorDirty) return false;
         }
@@ -944,17 +966,7 @@ let statusDetailsHideTimer = null;
       };
 
       function scheduleNoteAutosave({ immediate = false } = {}) {
-        if (noteSaveTimer) {
-          window.clearTimeout(noteSaveTimer);
-          noteSaveTimer = null;
-        }
-        if (!noteEditorDirty) {
-          return;
-        }
-        noteSaveTimer = window.setTimeout(() => {
-          noteSaveTimer = null;
-          void persistNoteEditsSilently();
-        }, immediate ? 0 : 700);
+        noteAutosave.schedule({ immediate });
       }
 
       function scheduleFollowupAutosave({ immediate = false } = {}) {
@@ -2125,7 +2137,8 @@ let statusDetailsHideTimer = null;
       const syncTranscriptSurface = (statusLabel = localStatusLabel || currentTranscriptStatus) => {
         const visibleStatus = displayStatusLabel(statusLabel, activeIngestionMode);
         const isTranscribing = String(visibleStatus || '').toLowerCase() === 'transcribing';
-        const hasDraft = Boolean(currentDraftText && currentDraftText.trim());
+        const hasStructuredReview = Array.isArray(workspaceStructuredTurns);
+        const hasDraft = Boolean((currentDraftText && currentDraftText.trim()) || hasStructuredReview);
         const normalizedStatus = String(statusLabel || '').toLowerCase();
         const animateEmpty = Boolean(
           captureController?.isCaptureUiActive?.()
@@ -2208,6 +2221,7 @@ let statusDetailsHideTimer = null;
       };
 
       const readActiveDraftText = () => {
+        if (transcriptTurnsEditor && Array.isArray(workspaceStructuredTurns)) return transcriptTurnsEditor.getCanonicalText();
         if (currentDraftText) return currentDraftText;
         if (!activeDraft) return '';
         if (activeDraft instanceof HTMLTextAreaElement || activeDraft instanceof HTMLInputElement) {
@@ -2345,6 +2359,19 @@ let statusDetailsHideTimer = null;
         const force = Boolean(options.force);
         currentDraftText = nextText;
         syncTranscriptSurface();
+        if (transcriptTurnsEditor && Array.isArray(workspaceStructuredTurns)) {
+          transcriptTurnsEditor.render({
+            transcript_id: transcriptId,
+            revision_id: workspaceStructuredRevisionId,
+            turns: workspaceStructuredTurns,
+            editable: workspaceStructuredEditable,
+            masked: piiMasked,
+            entities: workspaceTranscriptPiiEntities,
+            pii_revision_id: workspaceRedactionStatus.transcript_version_id || null,
+          });
+          renderTranscriptStats(transcriptTurnsEditor.getCanonicalText());
+          return;
+        }
         if (activeDraft instanceof HTMLTextAreaElement || activeDraft instanceof HTMLInputElement) {
           if (!force && activeDraft.value === nextText) {
             renderTranscriptStats(nextText);
@@ -2371,6 +2398,31 @@ let statusDetailsHideTimer = null;
         lastDraftRenderSignature = nextSignature;
         renderTranscriptStats(nextText);
       };
+
+      const transcriptTurnsEditor = activeDraft ? createTranscriptTurnsEditor({
+        root: activeDraft,
+        getTranscriptId: () => transcriptId,
+        onCanonicalText: (value) => {
+          currentDraftText = value;
+          renderTranscriptStats(value);
+          syncGenerationAvailability(value);
+        },
+        onEdited: () => {
+          workspaceTranscriptPiiEntities = [];
+          currentPiiEntities = [];
+          workspaceRedactionStatus = { status: 'not_run', entity_count: 0, error_code: null };
+          renderPiiEntities([], { updateTranscriptHighlights: false });
+        },
+        onSourceSaved: (source) => {
+          workspaceStructuredRevisionId = source.structured_revision_id;
+          workspaceStructuredTurns = source.structured_turns;
+          workspaceStructuredEditable = Boolean(source.structured_editable);
+          workspaceTranscriptPiiEntities = [];
+          currentPiiEntities = [];
+          workspaceRedactionStatus = { status: 'not_run', entity_count: 0, error_code: null };
+        },
+        onToast: (message, kind = 'error') => window.showToast?.(message, kind),
+      }) : null;
 
       document.addEventListener('selectionchange', flushDeferredDraftRender);
       document.addEventListener('mouseup', () => window.setTimeout(flushDeferredDraftRender, 0));
@@ -2472,7 +2524,7 @@ let statusDetailsHideTimer = null;
             return true;
           }
           if (noteEditorDirty) {
-            const saved = await persistNoteEditsSilently({ keepalive: false });
+            const saved = await persistNoteEditsUntilDrained({ keepalive: false });
             if (!saved) {
               showFlash('Save or clear the working note before changing template.', 'error');
               revertOutputTemplateSelection();
@@ -3053,8 +3105,15 @@ let statusDetailsHideTimer = null;
         consultBoundaryStartButton?.focus();
       });
 
-      const createNewConsultForRecording = async () => {
+      const createNewConsultForRecording = async ({ message = 'New consultation started. Recording will begin here.' } = {}) => {
+        const sourceTranscriptId = transcriptId;
+        const sourceSelectionGeneration = transcriptSelectionGeneration;
+        const sourceIsExample = activeTranscriptIsExample;
         if (!await waitForGenerationSubmission()) return false;
+        if (!(await persistPendingEditorsBeforeWorkspaceSwitch())) return false;
+        if (transcriptId !== sourceTranscriptId
+          || transcriptSelectionGeneration !== sourceSelectionGeneration
+          || (sourceIsExample && !activeTranscriptIsExample)) return false;
         const mode = selectedRecordingMode();
         const response = await csrfFetch('/api/v1/transcripts/start', {
           method: 'POST',
@@ -3070,6 +3129,9 @@ let statusDetailsHideTimer = null;
         if (!newTranscriptId) {
           throw new Error('Could not open the new consultation.');
         }
+        if (transcriptId !== sourceTranscriptId
+          || transcriptSelectionGeneration !== sourceSelectionGeneration
+          || (sourceIsExample && !activeTranscriptIsExample)) return false;
         const workspace = await fetchWorkspace(newTranscriptId, { allowTranscriptSwitch: true });
         if (!workspace) {
           throw new Error('Could not open the new consultation.');
@@ -3077,11 +3139,52 @@ let statusDetailsHideTimer = null;
         const url = new URL(window.location.href);
         url.searchParams.set('transcript_id', newTranscriptId);
         window.history.pushState({}, '', url.toString());
-        showFlash('New consultation started. Recording will begin here.', 'success');
+        showFlash(message, 'success');
         return true;
       };
 
+      const ensureNormalConsultation = createExampleConsultationBoundary({
+        isExample: () => activeTranscriptIsExample,
+        createConsultation: () => createNewConsultForRecording({ message: 'New consultation started.' }),
+      });
+      const initializeExampleConsultation = createExampleConsultationInitializer({
+        pending: exampleConsultationPending,
+        hasSelectedTranscript: () => Boolean(transcriptId)
+          || transcriptSelectionGeneration !== initialTranscriptSelectionGeneration,
+        createExample: async () => {
+          const response = await csrfFetch('/api/v1/transcribe/example-consultation', {
+            method: 'POST',
+            credentials: 'include',
+          });
+          if (!response.ok) throw new Error('Could not open the example consultation.');
+          return (await response.json())?.id || null;
+        },
+        canOpenTranscript: () => !transcriptId
+          && transcriptSelectionGeneration === initialTranscriptSelectionGeneration,
+        openTranscript: async (exampleTranscriptId) => {
+          const workspace = await fetchWorkspace(exampleTranscriptId, { allowTranscriptSwitch: true });
+          if (!workspace) throw new Error('Could not open the example consultation.');
+          const url = new URL(window.location.href);
+          url.searchParams.set('transcript_id', exampleTranscriptId);
+          window.history.replaceState({}, '', url.toString());
+        },
+        refreshWorkspace: async () => { await fetchWorkspace(); },
+        onError: () => showFlash('Could not open the example consultation. Refresh the page to try again.', 'error'),
+      });
+
       const confirmBeforeStartRecording = async () => {
+        if (!(await persistPendingEditorsBeforeWorkspaceSwitch())) {
+          showFlash('Save pending editor changes before starting another recording.', 'error');
+          return false;
+        }
+        if (activeTranscriptIsExample) {
+          try {
+            return await ensureNormalConsultation();
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not create a new consultation.', 'error');
+            return false;
+          }
+        }
         if (!shouldWarnBeforeRecordingCurrentConsult()) return true;
         const choice = await promptConsultBoundaryChoice();
         if (choice === 'start') return true;
@@ -3152,6 +3255,14 @@ let statusDetailsHideTimer = null;
         },
         canUseLiveInput,
         canUseWholeFileInput,
+        beforeUploadFileSelected: async () => {
+          try {
+            return await ensureNormalConsultation();
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not create a new consultation.', 'error');
+            return false;
+          }
+        },
         getState: () => ({
           transcriptId,
           activeIngestionMode,
@@ -3165,6 +3276,14 @@ let statusDetailsHideTimer = null;
         getDefaultMicStatusState: defaultMicStatusState,
         syncTranscriptTitleIfNeeded,
         confirmBeforeStartRecording,
+        onCaptureStopped: () => {
+          if (!recordingDiarizationEnabledSnapshot) return;
+          recordingDiarizationEnabledSnapshot = false;
+          if (userAppPreferences.diarization_warning_acknowledged === true || diarizationStopWarningShownThisPage) return;
+          diarizationStopWarningShownThisPage = true;
+          window.showToast?.('Speaker labels may change when recording resumes or reconnects.', 'info', 6000);
+          void persistUserAppPreferences({ diarization_warning_acknowledged: true }).catch(() => {});
+        },
         finalizeLiveCapture: async ({ keepalive = false } = {}) => {
           if (!transcriptId) return null;
           const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/finalize-live-capture`, {
@@ -3191,6 +3310,18 @@ let statusDetailsHideTimer = null;
         showFlash,
         reflectBackendStatus,
         reportMicIssue,
+      });
+      document.addEventListener('openscribe:recording-started', (event) => {
+        const captureDiarizationEnabled = event.detail?.diarisation_enabled;
+        recordingDiarizationEnabledSnapshot = typeof captureDiarizationEnabled === 'boolean'
+          ? captureDiarizationEnabled
+          : userAppPreferences.diarization_enabled === true && workspaceDiarizationAvailable;
+        if (userAppPreferences.diarization_enabled === true && captureDiarizationEnabled === false
+          && workspaceDiarizationAvailable && !unsupportedDiarizationToastKeys.has('server-effective-batch')) {
+          unsupportedDiarizationToastKeys.add('server-effective-batch');
+          window.showToast?.('Diarisation is no longer available for this recording. It remains enabled in your preferences.', 'info', 4500);
+        }
+        missingSpeakerWarningShownThisCapture = false;
       });
 
       const syncDeleteState = () => {
@@ -3876,6 +4007,7 @@ let statusDetailsHideTimer = null;
           }
           const start = codepoints.slice(0, entity.start_index).join('').length;
           const end = codepoints.slice(0, entity.end_index).join('').length;
+          if (transcriptTurnsEditor?.jumpToOffset(entity.start_index, entity.end_index)) return;
           if (activeDraft instanceof HTMLTextAreaElement || activeDraft instanceof HTMLInputElement) {
             activeDraft.focus();
             activeDraft.setSelectionRange(start, end);
@@ -4063,6 +4195,12 @@ let statusDetailsHideTimer = null;
       const saveWorkingNoteBeforeGeneration = async (targetTranscriptId = transcriptId) => {
         if (!targetTranscriptId || transcriptId !== targetTranscriptId) {
           throw new Error('Keep this consultation open until note creation starts.');
+        }
+        if (transcriptTurnsEditor?.dirty) {
+          const savedTranscript = await transcriptTurnsEditor.flush({ keepalive: false });
+          if (!savedTranscript && transcriptTurnsEditor.dirty) {
+            throw new Error('Save the transcript edits before generating.');
+          }
         }
         if (!isWorkingNoteTargetId(currentRenderedNoteTargetId())) {
           return activeWorkingNote;
@@ -4288,6 +4426,8 @@ let statusDetailsHideTimer = null;
           captureController?.stopDeepgramCaptureForContextChange?.();
         }
         const transcript = workspace.active_transcript || null;
+        activeTranscriptIsExample = Boolean(transcript?.is_example);
+        if (exampleConsultationBanner) exampleConsultationBanner.hidden = !activeTranscriptIsExample;
         renderDeepgramStreamGap(workspace.active_transcript_stream_gap || null, transcript);
         const previousTranscriptStatus = currentTranscriptStatus;
         const dictation = workspace.post_consultation_dictation || null;
@@ -4299,6 +4439,12 @@ let statusDetailsHideTimer = null;
         const nextTranscriptId = transcript?.id || null;
         const activeTranscriptChanged = nextTranscriptId !== lastRenderedTranscriptId;
         if (activeTranscriptChanged) {
+          if (splitOperationStatus) {
+            splitOperationStatus.textContent = '';
+            splitOperationStatus.hidden = true;
+            splitOperationStatus.dataset.statusKind = '';
+            splitOperationStatus.dataset.statusSource = '';
+          }
           if (dictationModal && !dictationModal.hidden) {
             void closeDictationModal({ force: true });
           }
@@ -4327,7 +4473,9 @@ let statusDetailsHideTimer = null;
         latestSplitIntent = workspace.consultation_split_intent || null;
         latestSplitBatch = workspace.consultation_split_batch || null;
         if (activeTranscriptChanged) templateSuggestionController.onTranscriptChanged();
-        workspaceTranscriptPiiEntities = uniquePiiEntities(workspace.active_transcript_pii_entities || []);
+        workspaceTranscriptPiiEntities = transcriptTurnsEditor?.dirty
+          ? []
+          : uniquePiiEntities(workspace.active_transcript_pii_entities || []);
         workspaceRedactionStatus = workspace.active_transcript_redaction_status || { status: 'not_run', entity_count: 0, error_code: null };
         workspaceClinicalNlpStatus = workspace.active_transcript_clinical_nlp_status || { status: 'not_run', entity_count: 0, error_code: null };
         currentTranscriptStatus = transcript?.status || null;
@@ -4337,6 +4485,29 @@ let statusDetailsHideTimer = null;
         nextLiveChunkSequenceNo = transcript?.next_live_chunk_sequence_no_upload || 1;
         hasSttSelection = Boolean(workspace.stt_selected);
         deepgramLiveStreamingAvailable = nextDeepgramLiveStreamingAvailable;
+        const nextDiarizationAvailable = Boolean(workspace.diarization_available);
+        const capabilityKey = [
+          activeIngestionMode || userAppPreferences.preferred_recording_mode || 'whole_file',
+          Boolean(workspace.diarization_live_available),
+          Boolean(workspace.diarization_batch_available),
+          Boolean(workspace.stt_selected),
+          Boolean(workspace.stt_available),
+        ].join(':');
+        if (userAppPreferences.diarization_enabled === true && !nextDiarizationAvailable
+          && capabilityKey !== priorDiarizationCapabilityKey && !unsupportedDiarizationToastKeys.has(capabilityKey)) {
+          unsupportedDiarizationToastKeys.add(capabilityKey);
+          window.showToast?.('Diarisation is unavailable for this speech service or recording type.', 'info', 4500);
+        }
+        priorDiarizationCapabilityKey = capabilityKey;
+        workspaceDiarizationAvailable = nextDiarizationAvailable;
+        if (recordingDiarizationEnabledSnapshot && nextDiarizationAvailable) {
+          const hasUnattributedSpeaker = (transcript?.structured_turns || [])
+            .some((turn) => turn.speaker_id == null && turn.start_ms != null);
+          if (hasUnattributedSpeaker && !missingSpeakerWarningShownThisCapture) {
+            missingSpeakerWarningShownThisCapture = true;
+            window.showToast?.('Speaker labels were not available for part of this recording.', 'info', 4500);
+          }
+        }
         hasDictationSttSelection = Boolean(workspace.dictation_stt_selected);
         sttAvailable = Boolean(workspace.stt_available);
         sttHealth = workspace.stt_health || null;
@@ -4422,6 +4593,9 @@ let statusDetailsHideTimer = null;
         lastPiiRegionSignature = piiRegionSignature;
 
         if (transcript) {
+          workspaceStructuredTurns = Array.isArray(transcript.structured_turns) ? transcript.structured_turns : null;
+          workspaceStructuredRevisionId = transcript.structured_revision_id || null;
+          workspaceStructuredEditable = Boolean(transcript.structured_editable);
           reflectBackendStatus(transcript.status, transcript.latest_ingestion_error_message || null);
           const draftText = transcript.current_draft_text || '';
           renderDraft(draftText, { force: activeTranscriptChanged });
@@ -4429,7 +4603,10 @@ let statusDetailsHideTimer = null;
             renderPiiEntities(workspaceTranscriptPiiEntities, { updateTranscriptHighlights: false });
           }
           syncGenerationAvailability(draftText);
-          if (sessionTitleDisplay) sessionTitleDisplay.value = transcript.title || '';
+          if (sessionTitleDisplay) {
+            if ('value' in sessionTitleDisplay) sessionTitleDisplay.value = transcript.title || '';
+            else sessionTitleDisplay.textContent = transcript.title || 'Untitled consultation';
+          }
           if (renameTitleInput) renameTitleInput.value = transcript.title || '';
           currentTranscriptTitle = (transcript.title || '').trim();
           if (activeIngestionModeChip) {
@@ -4440,13 +4617,19 @@ let statusDetailsHideTimer = null;
           });
           syncRecordingModeControl(transcript.ingestion_mode);
         } else {
+          workspaceStructuredTurns = null;
+          workspaceStructuredRevisionId = null;
+          workspaceStructuredEditable = false;
           currentTranscriptStatus = null;
           renderDraft('', { force: activeTranscriptChanged });
           if (piiRegionChanged) {
             renderPiiEntities([], { updateTranscriptHighlights: false });
           }
           syncGenerationAvailability('');
-          if (sessionTitleDisplay) sessionTitleDisplay.value = '';
+          if (sessionTitleDisplay) {
+            if ('value' in sessionTitleDisplay) sessionTitleDisplay.value = '';
+            else sessionTitleDisplay.textContent = 'New consultation';
+          }
           if (renameTitleInput) renameTitleInput.value = '';
           if (activeIngestionModeChip) activeIngestionModeChip.textContent = '';
           syncRecordingModeControl(userAppPreferences.preferred_recording_mode || 'whole_file');
@@ -4532,6 +4715,7 @@ let statusDetailsHideTimer = null;
           });
           splitPartialActionsController?.applyWorkspaceState(workspace.consultation_split_batch || null, transcriptId);
           splitAnalysisRestorationPoller?.updateWorkspace();
+          renderRestoredSplitOperationStatus(workspace);
         const validNoteTargets = [...(transcriptId ? [{ id: workingNoteTargetId(transcriptId) }] : []), ...workspaceNoteDocuments];
         const selectedSplitDocument = selectedNoteSlotKey
           ? workspaceNoteDocuments.find((document) => document.split_slot_key === selectedNoteSlotKey)
@@ -4699,8 +4883,14 @@ let statusDetailsHideTimer = null;
            syncGenerationAvailability(readActiveDraftText());
            syncDictationControls();
          },
-          setStatus: (message, kind) => {
-            if (message && ['warning', 'error'].includes(kind)) showFlash(message, kind);
+          setStatus: (message, kind = 'info') => {
+            if (splitOperationStatus) {
+              splitOperationStatus.textContent = message || '';
+              splitOperationStatus.hidden = !message;
+              splitOperationStatus.dataset.statusKind = kind || 'info';
+              splitOperationStatus.dataset.statusSource = message ? 'operation' : '';
+            }
+            if (message && ['warning', 'error', 'success'].includes(kind)) showFlash(message, kind);
           },
           setContinueAvailable: setContinueOneNoteAvailable,
           onGeneratedDocument: async (_document, { replayed = false, transcriptId: generatedTranscriptId } = {}) => {
@@ -4760,10 +4950,15 @@ let statusDetailsHideTimer = null;
       splitAnalysisRestorationPoller = createSplitAnalysisRestorationPoller({
         getState: () => ({
           capabilityEnabled: consultationSplittingEnabled || Boolean(
-            consultationSplittingAvailable && splitGenerateController?.getOperation?.()?.manualReviewRequested,
+            consultationSplittingAvailable && (
+              splitGenerateController?.getOperation?.()?.manualReviewRequested
+              || (latestSplitIntent?.manual_review_requested && latestSplitIntent?.status === 'analysis_pending')
+            ),
           ),
           transcriptId,
           analysis: latestSplitAnalysis,
+          intent: latestSplitIntent,
+          draft: splitReviewController?.getRemoteDraft?.(),
         }),
         refreshWorkspace: (nextTranscriptId) => fetchWorkspace(nextTranscriptId, {
           guardTranscriptId: nextTranscriptId,
@@ -4865,12 +5060,30 @@ let statusDetailsHideTimer = null;
         button.addEventListener('click', () => void closeDictationModal());
       });
       dictationCancelButton?.addEventListener('click', () => void closeDictationModal());
-      dictationRecordToggleButton?.addEventListener('click', () => {
+      const prepareExampleDictationCapture = async () => {
+        if (!activeTranscriptIsExample) return true;
+        if (dictationDirty) {
+          const saved = await saveDictationAndMaybeGenerate({ generate: false });
+          if (!saved) return false;
+        }
+        if (!(await ensureNormalConsultation())) return false;
+        await openDictationModal();
+        return Boolean(dictationModal && !dictationModal.hidden);
+      };
+      dictationRecordToggleButton?.addEventListener('click', async () => {
         if (dictationRecordingState === 'recording') {
           stopDictationRecording({ keepAudio: true });
         } else if (dictationRecordingState === 'paused') {
           stopDictationRecording({ keepAudio: true });
         } else {
+          if (activeTranscriptIsExample) {
+            try {
+              if (!(await prepareExampleDictationCapture())) return;
+            } catch (error) {
+              showFlash(error instanceof Error ? error.message : 'Could not create a new consultation.', 'error');
+              return;
+            }
+          }
           void startDictationRecording();
         }
       });
@@ -4884,7 +5097,7 @@ let statusDetailsHideTimer = null;
       dictationRetryTranscriptionButton?.addEventListener('click', () => {
         void transcribePendingDictationAudio();
       });
-      dictationAudioActionTrigger?.addEventListener('click', () => {
+      dictationAudioActionTrigger?.addEventListener('click', async () => {
         if (!canUseDictationInput()) {
           setDictationMicStatus(dictationUnavailableCopy(), 'error');
           return;
@@ -4894,6 +5107,20 @@ let statusDetailsHideTimer = null;
       dictationFileInput?.addEventListener('change', async () => {
         const file = dictationFileInput.files?.[0] || null;
         if (!file) return;
+        if (activeTranscriptIsExample) {
+          try {
+            if (dictationDirty) {
+              const saved = await saveDictationAndMaybeGenerate({ generate: false });
+              if (!saved) return;
+            }
+            if (!(await ensureNormalConsultation())) return;
+            await openDictationModal();
+            if (!dictationModal || dictationModal.hidden) return;
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Could not create a new consultation.', 'error');
+            return;
+          }
+        }
         dictationPendingAudioBlob = file;
         dictationPendingAudioFilename = file.name || 'dictation-upload.webm';
         dictationNeedsExplicitRetry = false;
@@ -5006,6 +5233,7 @@ let statusDetailsHideTimer = null;
         },
         routeBase,
         getTranscriptId: () => transcriptId,
+        onTranscriptSelectionIntent: () => { transcriptSelectionGeneration += 1; },
         getTranscriptText: () => currentDraftText,
         getActiveIngestionMode: () => activeIngestionMode,
         getIsLiveCaptureUiActive: () => isLiveCaptureUiActive(),
@@ -5165,26 +5393,32 @@ let statusDetailsHideTimer = null;
         scheduleSessionRailReveal(transcriptId);
       }
 
+      window.addEventListener('beforeunload', (event) => {
+        if (!transcriptTurnsEditor?.dirty) return;
+        event.preventDefault();
+        event.returnValue = '';
+      });
+
       window.addEventListener('pagehide', () => {
         captureController?.handlePageLifecycleExit?.();
         clearWorkspaceRefreshBurst();
         splitAnalysisRestorationPoller?.stop();
         closeWorkspaceEventSource();
-        if (noteSaveTimer) {
-          window.clearTimeout(noteSaveTimer);
-          noteSaveTimer = null;
-        }
         if (followupSaveTimer) {
           window.clearTimeout(followupSaveTimer);
           followupSaveTimer = null;
         }
         stopDictationRecording({ keepAudio: false });
-        void persistNoteEditsSilently({ keepalive: true });
+        void transcriptTurnsEditor?.flush({ keepalive: true });
+        void noteAutosave.flush({ keepalive: true });
         void persistFollowupEditsSilently({ keepalive: true });
       });
 
       window.setTimeout(() => {
-        if (!hasAppliedInitialWorkspacePayload) {
+        if (exampleConsultationPending && !transcriptId && !exampleInitializationStarted) {
+          exampleInitializationStarted = true;
+          void initializeExampleConsultation();
+        } else if (!hasAppliedInitialWorkspacePayload) {
           void fetchWorkspace();
         }
       }, 250);

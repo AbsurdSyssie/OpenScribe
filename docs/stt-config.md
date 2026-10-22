@@ -23,6 +23,18 @@ Normal users:
 - consume the resolved team policy indirectly during file, microphone-batch, live-chunked, dictation-preview, or other implemented STT workflows;
 - never receive provider credentials or unrestricted Vault references.
 
+## Diarisation availability
+
+System administrators control diarisation availability independently for each team's saved provider configuration and live/batch connection type. Availability permits use; it does not force a user to enable it. The user's persistent preference defaults off and survives provider switches. The effective setting is frozen when a recording or upload starts, so preference or availability changes apply to the next capture.
+
+Deepgram live and supported prerecorded providers can return structured speaker turns. Custom-provider live chunking is ineligible because independent requests do not establish continuous speaker identity. Custom batch configurations need an explicit supported request option and segment/speaker response mapping. Dictation is always excluded, including its preview and subsequent processing paths. Credentials, provider eligibility, authorization, and quota checks remain authoritative throughout capture.
+
+For custom batch configurations, `diarization_field_name` identifies the multipart request field and `diarization_on_value`/`diarization_off_value` supply its enabled/disabled values (default `true`/`false`). The frozen choice overrides any saved value for that field. Deepgram uses its fixed `diarize` query option. OpenAI cloud and ElevenLabs are not enabled by this implementation's diarisation capability.
+
+Microphone batch captures receive an owner-bound server settings token before recording starts. Its choice is reused across rollover parts and retries. A provider contract change, including an in-place endpoint or response-mapping change, disables diarisation for that capture's upload rather than applying incompatible frozen options; the normal selected-provider transcription remains available. Direct uploads snapshot settings on acceptance.
+
+When a preferred selection is unavailable, the workspace reports it with a toast and preserves the user's preference for an eligible selection. The recording-boundary explanation is shown once per user and remains beside the preference. Missing speaker labels retain transcription as unattributed rather than automatically retrying or inventing attribution.
+
 ## Setup lifecycle
 
 STT setup is stateful:

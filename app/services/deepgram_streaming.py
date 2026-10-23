@@ -194,7 +194,7 @@ def deepgram_event_words_or_fallback(event: DeepgramResultEvent) -> list[Deepgra
     # Ignore whitespace differences only. Removing punctuation can make medically
     # distinct strings compare equal (for example 12.5 and 125, or 120/80 and
     # 120 80), so uncertain metadata must fall back to unattributed source text.
-    normalize = lambda value: "".join(char.casefold() for char in value if not char.isspace())
+    normalize = lambda value: "".join(char for char in value if not char.isspace())
     transcript_fingerprint = normalize(event.text)
     words_fingerprint = normalize(" ".join(word.text for word in words))
     if not transcript_fingerprint or transcript_fingerprint != words_fingerprint:

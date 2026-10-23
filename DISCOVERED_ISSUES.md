@@ -13,13 +13,25 @@
 
 ### CHECKER-FAILURE-DEBUG-EXPECTATION — 2026-10-22
 
-- Status: Open validation failure; found during diarisation regression selection.
+- Status: Resolved 2026-10-23; terminal failure diagnostics use content-free metadata.
+- Resolution: restored the opt-in failure payload through the existing owner-encrypted storage, limited to allowlisted application/provider codes, HTTP status, and retry count. Provider and Vault failure API regressions pass, including checks that error-message sentinels and content-bearing fields are absent. The original discovery notes below are retained as history.
 - Discovery baseline: `57af8486387ce2a4d4701c676c5f6cadfbfd4345` plus the existing working tree.
 - Locations: `tests/test_api.py::test_structured_hallucination_check_provider_failure_records_safe_debug`, `test_structured_hallucination_check_vault_failure_does_not_fail_document`; `app/web/presentation.py::generated_document_response`.
 - Exact expectation: `assert debug["failure_code"] == "vault_read_failed"` (and the equivalent provider-failure assertion).
 - Observation: both tests enable the diagnostic flag but receive `hallucination_check_debug_json=None` after otherwise correct provider/credential failure handling, then fail while indexing it. The diarisation edits do not change checker-debug persistence or its presentation gate; the underlying reason for the missing debug payload still needs investigation.
 - Impact: the selected checker regressions are not green. No change to checker execution correctness or privacy exposure was established by these assertions. Do not broaden debug content exposure merely to satisfy them.
 - Not fixed here: diagnostic payload expectations are outside speaker-source handling. Follow up by tracing failure-debug persistence and reconciling the synthetic fixtures with the intended opt-in diagnostic contract, including default-off coverage.
+
+### HALLUCINATION-DEBUG-CONTENT-BOUNDARY — 2026-10-22
+
+- Status: Open; privacy-boundary follow-up.
+- Discovery baseline: commit `445119e` plus the current working tree.
+- Location: `app/services/templates.py::_run_hallucination_check`.
+- Safe code excerpt: `"initial_note": _structured_note_debug_payload(title=title, sections=sections)` and `debug_payload["checker_edits"] = edits`.
+- Observation: when the gated hallucination-check debug path is enabled, the initial note snapshot is retained on skipped and successful checks, and checker edits are retained on corrected checks. The record is encrypted on the owning generated document and remains owner-only; this is not evidence of cross-owner exposure. The terminal provider/credential failure paths added in this review use content-free failure metadata, but they do not change the older skipped and successful paths.
+- Impact: opt-in diagnostic storage can retain transcript-derived note content, contrary to the project's content-free diagnostic boundary, even though the stored field is encrypted and owner-scoped.
+- Not fixed here: changing the historical success/skipped debug contract is outside the four review fixes and needs a focused privacy review of the gate and presentation path.
+- Follow-up: inspect the debug gate and every persistence/display path; remove note snapshots and checker edits from diagnostics or limit any required investigation to synthetic content. Keep owner and encryption boundaries intact, and test both default-off and explicitly enabled behavior.
 
 Reconciled on 19 October 2026 against `97da191926db1da74fdf741e01f4f8490d60f6c8` and the remediation working tree; final verification was completed on 20 October 2026. This is a work log, not an architectural source of truth. Current status notes take precedence over the original dated observations retained beneath them. See the [remediation and regression review](docs/reviews/discovered-issues-remediation-2026-10-19.md) for changes, verification and limits.
 

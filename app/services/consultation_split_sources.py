@@ -744,7 +744,10 @@ def _prepared_analysis_source_snapshot(
 ) -> dict[str, Any]:
     """Build the complete encrypted-only redacted source payload."""
     effective_redaction = effective_redaction_text_and_phi_index(db, run=redaction_run) if redaction_run is not None else None
-    transcript_text = effective_redaction.redacted_text.strip() if effective_redaction is not None else ""
+    structured_transcript = transcript_version is not None and transcript_version.structured_turns_encrypted is not None
+    transcript_text = (
+        effective_redaction.redacted_text if structured_transcript else effective_redaction.redacted_text.strip()
+    ) if effective_redaction is not None else ""
     base_phi_index = effective_redaction.phi_index if effective_redaction is not None else []
     start_index = next_placeholder_index(redaction_run) if redaction_run is not None else 1
 
@@ -813,7 +816,7 @@ def _prepared_analysis_source_snapshot(
         ],
     ]
     diarised_transcript = False
-    if transcript_version is not None and transcript_version.structured_turns_encrypted is not None:
+    if structured_transcript:
         rendered = render_redacted_diarised_transcript(
             db,
             version=transcript_version,

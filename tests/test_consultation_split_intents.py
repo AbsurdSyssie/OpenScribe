@@ -51,6 +51,8 @@ from app.services.consultation_split_sources import prepare_source_bound_consult
 from app.services.consultation_splits import create_split_analysis
 from app.services.consultation_splits import read_split_execution_json
 from app.services.quotas import cancel_provider_attempt
+from app.schemas import LlmBackupSelectionUpsert
+from app.services.llm import delete_llm_config, set_team_llm_backup_selection
 from app.services.content_crypto import decrypt_json_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
 from app.schemas.preferences import UserAppPreferencesUpsert
 from app.schemas.templates import GeneratedDocumentSectionUpdate, GeneratedDocumentUpdateRequest
@@ -959,25 +961,56 @@ def test_manual_retry_uses_frozen_analysis_and_terminalizes_old_pending_create(
     transcript, _config = _enabled_source(
         db_session, owner, make_llm_config, make_llm_selection, make_user_app_preference, monkeypatch
     )
+    admin = make_user(email=f"intent-retry-admin-{uuid4()}@example.com", is_system_admin=True)
+    backup = make_llm_config(team=owner.team, actor=admin, label="Retry Backup",
+        model_name="backup-model",
+        available_models_json=["backup-model"])
+    set_team_llm_backup_selection(db_session, admin, LlmBackupSelectionUpsert(
+        team_id=owner.team_id, llm_config_id=backup.id, model_name="backup-model"))
     template = make_template(owner=owner, actor=owner)
     first = create_or_replay_consultation_split_intent(
         db_session, owner, transcript_id=transcript.id,
         client_idempotency_key=uuid4(), selected_template_id=template.id,
     )
     assert first.intent is not None and first.execution is not None and first.analysis is not None
+    assert first.analysis.backup_llm_config_id == backup.id
+    assert first.analysis.backup_provider_snapshot_encrypted is not None
+    first_intent_id = first.intent.id
+    first_analysis_id = first.analysis.id
     old_execution_id = first.execution.id
-    first.execution.status = ConsultationSplitExecutionStatus.failed
-    first.execution.error_code = "consultation_split_provider_failed"
-    first.execution.completed_at = utcnow()
-    first.analysis.status = ConsultationSplitAnalysisStatus.failed
-    first.analysis.error_code = "consultation_split_provider_failed"
-    first.analysis.completed_at = first.execution.completed_at
-    attempt = db_session.scalar(select(ProviderAttempt).where(
-        ProviderAttempt.consultation_split_execution_id == first.execution.id
-    ))
-    assert attempt is not None
-    cancel_provider_attempt(db_session, attempt_id=attempt.id)
+    backup_id = backup.id
+    db_session.rollback()
+    monkeypatch.setattr("app.services.consultation_split_pre_submit.resolve_generation_credential", lambda _config: "synthetic-token")
+    monkeypatch.setattr("app.services.consultation_split_runtime.resolve_generation_credential", lambda _config: "synthetic-token")
+    monkeypatch.setattr(
+        "app.services.consultation_split_runtime.llm_runtime.invoke_llm",
+        lambda **_kwargs: (_ for _ in ()).throw(AppError(
+            502, "llm_provider_unreachable", "synthetic provider failure",
+            {"provider_http_status": 503},
+        )),
+    )
+    failed = process_consultation_split_analysis_execution(
+        db_session, execution_id=old_execution_id,
+    )
+    assert failed.outcome == "failed"
+    first_execution = db_session.get(ConsultationSplitExecution, old_execution_id)
+    first_analysis = db_session.get(ConsultationSplitAnalysis, first_analysis_id)
+    assert first_execution.status is ConsultationSplitExecutionStatus.failed
+    assert first_analysis.status is ConsultationSplitAnalysisStatus.failed
+    assert len(db_session.scalars(select(ProviderAttempt).where(
+        ProviderAttempt.consultation_split_execution_id == old_execution_id,
+    )).all()) == 2
     db_session.commit()
+    delete_llm_config(db_session, admin, config_id=backup_id, team_id=owner.team_id)
+    db_session.refresh(first_analysis)
+    assert first_analysis.backup_llm_config_id is None
+    assert first_analysis.backup_provider_snapshot_encrypted is None
+    # A newly selected backup must not be read when retrying the old analysis.
+    replacement_backup = make_llm_config(team=owner.team, actor=admin,
+        label="Replacement Retry Backup",
+        model_name="replacement-backup", available_models_json=["replacement-backup"])
+    set_team_llm_backup_selection(db_session, admin, LlmBackupSelectionUpsert(
+        team_id=owner.team_id, llm_config_id=replacement_backup.id, model_name="replacement-backup"))
     set_user_app_preferences(
         db_session, owner,
         UserAppPreferencesUpsert(split_consultations_into_separate_notes=False),
@@ -997,12 +1030,12 @@ def test_manual_retry_uses_frozen_analysis_and_terminalizes_old_pending_create(
             manual_review_requested=True, retry_failed_analysis=True,
         )
     db_session.rollback()
-    assert db_session.get(ConsultationSplitAnalysis, first.analysis.id).status is ConsultationSplitAnalysisStatus.failed
+    assert db_session.get(ConsultationSplitAnalysis, first_analysis_id).status is ConsultationSplitAnalysisStatus.failed
     assert len(db_session.scalars(select(ConsultationSplitExecution).where(
-        ConsultationSplitExecution.analysis_id == first.analysis.id
+        ConsultationSplitExecution.analysis_id == first_analysis_id
     )).all()) == 1
     assert len(db_session.scalars(select(ConsultationSplitIntent).where(
-        ConsultationSplitIntent.analysis_id == first.analysis.id
+        ConsultationSplitIntent.analysis_id == first_analysis_id
     )).all()) == 1
     monkeypatch.setattr(queue_service, "queue_split_execution", original_queue)
 
@@ -1013,21 +1046,26 @@ def test_manual_retry_uses_frozen_analysis_and_terminalizes_old_pending_create(
         manual_review_requested=True, retry_failed_analysis=True,
     )
     assert retry.intent is not None and retry.analysis is not None and retry.execution is not None
-    assert retry.analysis.id == first.analysis.id
+    assert retry.analysis.id == first_analysis_id
     assert retry.intent.manual_review_requested is True
     assert retry.execution.attempt_no == 2
-    assert retry.execution.llm_config_id == first.execution.llm_config_id
-    assert retry.execution.provider_model == first.execution.provider_model
+    assert retry.execution.llm_config_id == first_execution.llm_config_id
+    assert retry.execution.provider_model == first_execution.provider_model
+    assert retry.execution.backup_llm_config_id is None
+    assert retry.execution.backup_provider_snapshot_encrypted is None
     assert retry.analysis.status is ConsultationSplitAnalysisStatus.queued
-    assert db_session.get(ConsultationSplitIntent, first.intent.id).status is ConsultationSplitIntentStatus.failed
+    assert db_session.get(ConsultationSplitIntent, first_intent_id).status is ConsultationSplitIntentStatus.failed
     assert read_split_execution_json(
         db_session, owner, execution=retry.execution, field="provider_snapshot_encrypted"
     ) == read_split_execution_json(
-        db_session, owner, execution=first.execution, field="provider_snapshot_encrypted"
+        db_session, owner, execution=first_execution, field="provider_snapshot_encrypted"
     )
     assert len(db_session.scalars(select(ProviderAttempt).where(
-        ProviderAttempt.consultation_split_execution_id.in_([old_execution_id, retry.execution.id])
+        ProviderAttempt.consultation_split_execution_id == old_execution_id
     )).all()) == 2
+    assert len(db_session.scalars(select(ProviderAttempt).where(
+        ProviderAttempt.consultation_split_execution_id == retry.execution.id
+    )).all()) == 1
     assert db_session.scalar(select(ProviderAttempt).where(
         ProviderAttempt.consultation_split_execution_id == retry.execution.id
     )).status is AttemptStatus.reserved
@@ -1041,13 +1079,13 @@ def test_manual_retry_uses_frozen_analysis_and_terminalizes_old_pending_create(
     assert replay.intent is not None and replay.intent.id == retry.intent.id
     assert replay.created_new_analysis_work is False
     assert len(db_session.scalars(select(ConsultationSplitExecution).where(
-        ConsultationSplitExecution.analysis_id == retry.analysis.id
+        ConsultationSplitExecution.analysis_id == first_analysis_id
     )).all()) == 2
     db_session.rollback()
     assert process_consultation_split_analysis_execution(db_session, execution_id=old_execution_id).outcome == "failed"
-    assert db_session.get(ConsultationSplitAnalysis, retry.analysis.id).status is ConsultationSplitAnalysisStatus.queued
+    assert db_session.get(ConsultationSplitAnalysis, first_analysis_id).status is ConsultationSplitAnalysisStatus.queued
     db_session.rollback()
-    assert progress_consultation_split_intent(db_session, intent_id=first.intent.id).outcome == "terminal"
+    assert progress_consultation_split_intent(db_session, intent_id=first_intent_id).outcome == "terminal"
     assert db_session.scalars(select(GeneratedDocument).where(
         GeneratedDocument.transcript_id == transcript.id
     )).all() == []

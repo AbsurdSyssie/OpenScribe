@@ -5,10 +5,14 @@ from app.services.deepgram_streaming import (
     group_deepgram_words,
 )
 from app.services import stt
-from app.models import SttAdapterKind, SttConfigSetupStatus, SttProviderPreset, TeamRole
+from app.models import (
+    SttAdapterKind, SttConfigSetupStatus, SttProviderPreset, TeamRole,
+    TranscriptIngestionJobKind, TranscriptIngestionMode, TranscriptStatus, utcnow,
+)
 from app.services.preferences import diarization_preference_enabled
 from app.services.transcript_streaming import _selection_snapshot
 from types import SimpleNamespace
+from datetime import timedelta
 from uuid import uuid4
 
 
@@ -52,6 +56,35 @@ def test_invalid_batch_metadata_keeps_text_and_drops_only_bad_attribution_or_tim
     assert result[0].start_ms is None and result[0].end_ms is None
 
 
+def test_same_speaker_group_with_backwards_merged_interval_keeps_text_and_drops_timing():
+    result = stt._speaker_turns_from_segments(
+        {"segments": [
+            {"text": "First phrase", "speaker": 0, "start": 10.0, "end": 11.0},
+            {"text": "second phrase.", "speaker": 0, "start": 8.0, "end": 9.0},
+            {"text": "third phrase.", "speaker": 0, "start": 12.0, "end": 13.0},
+        ]},
+        segments_path="segments",
+        segment_text_field="text",
+        segment_start_field="start",
+        segment_end_field="end",
+        segment_speaker_field="speaker",
+    )
+
+    assert result == (stt.SttSpeakerTurn(
+        text="First phrase second phrase. third phrase.", speaker_id="0", start_ms=None, end_ms=None,
+    ),)
+    from app.services.structured_transcripts import _normalize_turn
+
+    persisted = _normalize_turn({
+        "scope_id": uuid4(), "speaker_id": result[0].speaker_id,
+        "start_ms": result[0].start_ms, "end_ms": result[0].end_ms,
+        "text": result[0].text,
+    })
+    assert persisted["text"] == "First phrase second phrase. third phrase."
+    assert persisted["speaker_id"] == "0"
+    assert persisted["start_ms"] is None and persisted["end_ms"] is None
+
+
 def test_oversized_batch_word_map_falls_back_without_truncating_transcript():
     previous_limit = stt.MAX_DIARIZATION_SEGMENTS
     stt.MAX_DIARIZATION_SEGMENTS = 1
@@ -86,6 +119,18 @@ def test_deepgram_word_mismatch_preserves_result_as_unattributed_and_zero_is_val
         DeepgramWordEvent("there.", "0", 0.2, 0.4),
     ))
     assert grouped == [{"text": "hello there.", "speaker_id": "0", "start_ms": 0, "end_ms": 400}]
+
+
+def test_batch_speaker_turn_match_allows_whitespace_but_rejects_case_changes():
+    source = "Synthetic reading 5 mS."
+    whitespace_only = (
+        stt.SttSpeakerTurn("Synthetic   reading", "0"),
+        stt.SttSpeakerTurn("5\tmS.", "0"),
+    )
+    changed_case = (stt.SttSpeakerTurn("Synthetic reading 5 ms.", "0"),)
+
+    assert stt._turns_match_transcript(whitespace_only, source)
+    assert not stt._turns_match_transcript(changed_case, source)
 
 
 def test_custom_provider_option_is_removed_or_overridden_by_frozen_choice():
@@ -535,3 +580,183 @@ def test_audio_queue_uses_capture_snapshot_only_for_same_selected_config(monkeyp
         source_audio_blob=b"synthetic", capture_settings_id=uuid4(),
     )
     assert mismatched_job.stt_diarisation_enabled is False
+
+
+def _retry_job_snapshot(config, *, enabled=True, batch_enabled=True, field_name=None):
+    return SimpleNamespace(
+        id=uuid4(), stt_config_id=config.id,
+        stt_provider_preset=config.provider_preset,
+        stt_adapter_kind=config.adapter_kind.value,
+        stt_base_url=config.base_url,
+        stt_transcribe_path=config.transcribe_path,
+        stt_model_name="model-a",
+        stt_model_field_name=config.model_field_name or "model",
+        stt_file_field_name=config.file_field_name,
+        stt_response_text_path=config.response_text_path,
+        stt_segments_path=config.segments_path,
+        stt_segment_text_field=config.segment_text_field,
+        stt_segment_start_field=config.segment_start_field,
+        stt_segment_end_field=config.segment_end_field,
+        stt_segment_speaker_field=config.segment_speaker_field,
+        stt_extra_form_fields_json=dict(config.extra_form_fields_json or {}),
+        stt_diarisation_enabled=enabled,
+        stt_diarization_batch_enabled=batch_enabled,
+        stt_diarization_field_name=field_name or config.diarization_field_name,
+        stt_diarization_on_value=config.diarization_on_value,
+        stt_diarization_off_value=config.diarization_off_value,
+        capture_settings_id=uuid4(),
+    )
+
+
+def _queue_retry_snapshot(monkeypatch, config, failed_job):
+    from app.services import transcripts as transcript_service
+
+    owner_id, team_id, transcript_id = uuid4(), config.team_id, uuid4()
+    owner = SimpleNamespace(id=owner_id, team_id=team_id)
+    transcript = SimpleNamespace(
+        id=transcript_id, owner_user_id=owner_id, team_id=team_id,
+        ingestion_mode=TranscriptIngestionMode.whole_file, status=TranscriptStatus.ready,
+    )
+
+    class FakeDb:
+        def __init__(self):
+            self.added = []
+
+        def scalar(self, _query):
+            return None
+
+        def add(self, item):
+            self.added.append(item)
+
+        def flush(self):
+            return None
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+        def refresh(self, _item):
+            return None
+
+    monkeypatch.setattr(transcript_service, "_get_owner_transcript_for_ingestion", lambda *_a, **_kw: transcript)
+    monkeypatch.setattr(transcript_service, "resolve_selected_team_stt", lambda *_a, **_kw: (None, config, "model-a", None))
+    monkeypatch.setattr(transcript_service, "ensure_stt_config_credential_ready", lambda **_kw: None)
+    monkeypatch.setattr(transcript_service, "inspect_audio_duration_seconds", lambda **_kw: 1.0)
+    monkeypatch.setattr(transcript_service, "_enforce_whole_file_hourly_usage_budget", lambda *_a, **_kw: None)
+    monkeypatch.setattr(transcript_service, "_queue_ingestion_attempt_and_dispatch", lambda *_a, **_kw: None)
+    monkeypatch.setattr(transcript_service, "record_security_event", lambda *_a, **_kw: None)
+    db = FakeDb()
+    _transcript, job = transcript_service.queue_audio_file_ingestion(
+        db, owner, transcript_id=transcript_id, filename="synthetic.wav",
+        source_audio_blob=b"synthetic", source_audio_vault_ref="synthetic-existing-ref",
+        source_audio_expires_at=utcnow() + timedelta(hours=1),
+        _diarisation_snapshot_job=failed_job,
+    )
+    assert job in db.added
+    assert job.job_kind is TranscriptIngestionJobKind.audio_file
+    return job
+
+
+def _custom_stt_config(*, config_id=None, base_url="https://stt.example.test", field="speaker_mode"):
+    return SimpleNamespace(
+        id=config_id or uuid4(), team_id=uuid4(),
+        provider_preset=SttProviderPreset.custom_rest_openapi.value,
+        adapter_kind=SttAdapterKind.generic_rest, base_url=base_url,
+        transcribe_path="/transcribe", model_name="model-a", model_field_name="model",
+        file_field_name="file", language=None, language_field_name="language",
+        response_text_path="text", segments_path="segments", segment_text_field="text",
+        segment_start_field="start", segment_end_field="end", segment_speaker_field="speaker",
+        extra_form_fields_json={"format": "json"}, diarization_live_enabled=False,
+        diarization_batch_enabled=True, diarization_field_name=field,
+        diarization_on_value="enabled", diarization_off_value="disabled",
+    )
+
+
+def test_retry_provider_switch_uses_current_off_option_in_actual_custom_transport(monkeypatch):
+    from app.services import transcripts as transcript_service
+    import httpx
+
+    config_a = _custom_stt_config(field="speaker_labels")
+    failed_job = _retry_job_snapshot(config_a, field_name="speaker_labels")
+    config_b = _custom_stt_config(base_url="https://provider-b.example.test", field="diarize_mode")
+    # Retry selects B, but retains A's captured choice only when contract identity matches.
+    monkeypatch.setattr(transcript_service, "diarization_preference_enabled", lambda *_a, **_kw: True)
+    retry_job = _queue_retry_snapshot(monkeypatch, config_b, failed_job)
+    assert retry_job.stt_diarisation_enabled is False
+    assert retry_job.stt_diarization_field_name == "diarize_mode"
+    assert retry_job.stt_diarization_off_value == "disabled"
+
+    captured = {}
+    class ResponseContext:
+        def __enter__(self):
+            return httpx.Response(200, json={"text": "hello", "segments": [{"text": "hello", "speaker": 0}]},
+                                  request=httpx.Request("POST", captured["url"]))
+        def __exit__(self, *_exc):
+            return False
+
+    def fake_stream(method, url, **kwargs):
+        captured.update(url=url, form=dict(kwargs["data"]))
+        return ResponseContext()
+
+    monkeypatch.setattr(stt, "require_safe_provider_url", lambda _url: None)
+    monkeypatch.setattr(stt.httpx, "stream", fake_stream)
+    result = stt.transcribe_with_stt_snapshot(
+        None,
+        team_id=config_b.team_id,
+        stt_config_id=retry_job.stt_config_id,
+        provider_preset=retry_job.stt_provider_preset,
+        adapter_kind=retry_job.stt_adapter_kind,
+        base_url=retry_job.stt_base_url,
+        transcribe_path=retry_job.stt_transcribe_path,
+        file_field_name=retry_job.stt_file_field_name,
+        response_text_path=retry_job.stt_response_text_path,
+        extra_form_fields_json=retry_job.stt_extra_form_fields_json,
+        model_name=retry_job.stt_model_name,
+        model_field_name=retry_job.stt_model_field_name,
+        language=retry_job.stt_language,
+        language_field_name=retry_job.stt_language_field_name,
+        segments_path=retry_job.stt_segments_path,
+        segment_text_field=retry_job.stt_segment_text_field,
+        segment_start_field=retry_job.stt_segment_start_field,
+        segment_end_field=retry_job.stt_segment_end_field,
+        segment_speaker_field=retry_job.stt_segment_speaker_field,
+        stt_diarisation_enabled=retry_job.stt_diarisation_enabled,
+        diarization_batch_enabled=retry_job.stt_diarization_batch_enabled,
+        diarization_field_name=retry_job.stt_diarization_field_name,
+        diarization_on_value=retry_job.stt_diarization_on_value,
+        diarization_off_value=retry_job.stt_diarization_off_value,
+        audio_bytes=b"synthetic", filename="synthetic.wav", content_type="audio/wav",
+        _resolved_bearer_token=None,
+    )
+    assert captured["url"] == "https://provider-b.example.test/transcribe"
+    assert captured["form"]["diarize_mode"] == "disabled"
+    assert "speaker_labels" not in captured["form"]
+    assert result == "hello"
+
+
+def test_retry_diarization_requires_matching_contract_but_preserves_capture_choice(monkeypatch):
+    from app.services import transcripts as transcript_service
+
+    config = _custom_stt_config()
+    failed_job = _retry_job_snapshot(config)
+    # An in-place endpoint change disables the prior choice and uses current off settings.
+    changed = _custom_stt_config(config_id=config.id, base_url="https://stt-changed.example.test", field="new_flag")
+    changed_job = _queue_retry_snapshot(monkeypatch, changed, failed_job)
+    assert changed_job.stt_diarisation_enabled is False
+    assert changed_job.stt_diarization_field_name == "new_flag"
+    assert changed_job.stt_diarization_off_value == "disabled"
+
+    # Same provider and exact contract keep the original capture choice despite later
+    # preference/availability changes; an originally opted-out capture stays off.
+    config.diarization_batch_enabled = False
+    monkeypatch.setattr(transcript_service, "diarization_preference_enabled", lambda *_a, **_kw: False)
+    unchanged_job = _queue_retry_snapshot(monkeypatch, config, failed_job)
+    assert unchanged_job.stt_diarisation_enabled is True
+    assert unchanged_job.stt_diarization_batch_enabled is True
+    assert unchanged_job.stt_diarization_field_name == "speaker_mode"
+    opted_out_job = _retry_job_snapshot(config, enabled=False)
+    monkeypatch.setattr(transcript_service, "diarization_preference_enabled", lambda *_a, **_kw: True)
+    still_off_job = _queue_retry_snapshot(monkeypatch, config, opted_out_job)
+    assert still_off_job.stt_diarisation_enabled is False

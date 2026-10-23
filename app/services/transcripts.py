@@ -1417,9 +1417,9 @@ def create_transcript_capture_settings(
     return capture_settings
 
 
-def _stt_capture_config_fingerprint(config) -> str:
-    """Hash only non-secret provider contract fields that affect turn parsing."""
-    contract = {
+def _stt_capture_config_contract(config) -> dict[str, object]:
+    """Project only non-secret provider contract fields that affect turn parsing."""
+    return {
         "provider_preset": getattr(config, "provider_preset", None),
         "adapter_kind": getattr(getattr(config, "adapter_kind", None), "value", getattr(config, "adapter_kind", None)),
         "base_url": getattr(config, "base_url", None),
@@ -1438,8 +1438,52 @@ def _stt_capture_config_fingerprint(config) -> str:
         "diarization_off_value": getattr(config, "diarization_off_value", "false"),
         "extra_form_field_names": sorted((getattr(config, "extra_form_fields_json", None) or {}).keys()),
     }
+
+
+def _stt_capture_config_fingerprint(config) -> str:
+    """Hash only non-secret provider contract fields that affect turn parsing."""
+    contract = _stt_capture_config_contract(config)
     encoded = json.dumps(contract, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _stt_retry_diarization_contract_matches_config(config, *, job: TranscriptIngestionJob, resolved_model_name: str | None) -> bool:
+    """Keep a captured diarisation choice only for its matching provider contract.
+
+    Retries use the team's current provider selection.  The failed job has no
+    separate contract fingerprint, so compare its frozen non-secret request
+    and response fields with the current config before carrying forward the
+    captured preference.  The resolved model is compared with the model that
+    the retry would submit (rather than the config's default) so a selected
+    model override does not spuriously invalidate an unchanged capture.
+    """
+    if job.stt_config_id != getattr(config, "id", None) or job.stt_model_name != resolved_model_name:
+        return False
+    current = _stt_capture_config_contract(config)
+    # Model identity is compared separately above using the effective model
+    # selected for both executions, since config.model_name may be unset when
+    # the original request used a team/user selection override.
+    current.pop("model_name", None)
+    current["model_field_name"] = getattr(config, "model_field_name", None) or "model"
+    frozen = {
+        "provider_preset": job.stt_provider_preset,
+        "adapter_kind": job.stt_adapter_kind,
+        "base_url": job.stt_base_url,
+        "transcribe_path": job.stt_transcribe_path,
+        "model_field_name": job.stt_model_field_name,
+        "file_field_name": job.stt_file_field_name,
+        "response_text_path": job.stt_response_text_path,
+        "segments_path": job.stt_segments_path,
+        "segment_text_field": job.stt_segment_text_field,
+        "segment_start_field": job.stt_segment_start_field,
+        "segment_end_field": job.stt_segment_end_field,
+        "segment_speaker_field": job.stt_segment_speaker_field,
+        "diarization_field_name": job.stt_diarization_field_name,
+        "diarization_on_value": job.stt_diarization_on_value,
+        "diarization_off_value": job.stt_diarization_off_value,
+        "extra_form_field_names": sorted((job.stt_extra_form_fields_json or {}).keys()),
+    }
+    return current == frozen
 
 
 def snapshot_current_transcript_version(
@@ -2261,11 +2305,27 @@ def queue_audio_file_ingestion(
     _, config, resolved_model_name, resolved_language = resolve_selected_team_stt(db, team_id=transcript.team_id)
     ensure_stt_config_credential_ready(team_id=transcript.team_id, config=config)
     if _diarisation_snapshot_job is not None:
-        diarization_batch_enabled = _diarisation_snapshot_job.stt_diarization_batch_enabled
-        stt_diarisation_enabled = _diarisation_snapshot_job.stt_diarisation_enabled
-        diarization_field_name = _diarisation_snapshot_job.stt_diarization_field_name
-        diarization_on_value = _diarisation_snapshot_job.stt_diarization_on_value
-        diarization_off_value = _diarisation_snapshot_job.stt_diarization_off_value
+        if _stt_retry_diarization_contract_matches_config(
+            config,
+            job=_diarisation_snapshot_job,
+            resolved_model_name=resolved_model_name,
+        ):
+            # Preference and availability are frozen at the original capture.
+            # They remain authoritative while its provider contract matches,
+            # even if the user or administrator changed the setting since then.
+            diarization_batch_enabled = _diarisation_snapshot_job.stt_diarization_batch_enabled
+            stt_diarisation_enabled = _diarisation_snapshot_job.stt_diarisation_enabled
+            diarization_field_name = _diarisation_snapshot_job.stt_diarization_field_name
+            diarization_on_value = _diarisation_snapshot_job.stt_diarization_on_value
+            diarization_off_value = _diarisation_snapshot_job.stt_diarization_off_value
+        else:
+            # Retry still uses the team's current provider, but never sends a
+            # previous provider's request option or attribution contract to it.
+            diarization_batch_enabled = bool(getattr(config, "diarization_batch_enabled", False))
+            stt_diarisation_enabled = False
+            diarization_field_name = getattr(config, "diarization_field_name", None)
+            diarization_on_value = getattr(config, "diarization_on_value", "true")
+            diarization_off_value = getattr(config, "diarization_off_value", "false")
     elif (
         capture_settings is not None
         and capture_settings.stt_config_id == config.id

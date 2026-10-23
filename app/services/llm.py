@@ -34,6 +34,7 @@ from app.services.llm_adapters.gemini_enterprise import (
 from app.services.llm_credentials import google_service_account_secret, resolve_llm_runtime_credential
 from app.services.llm_adapters.runtime import build_provider_snapshot, validate_provider_snapshot_shape
 from app.services.content_crypto import decrypt_json_for_owner, is_encrypted_envelope
+from app.services.llm_backup import retire_backup_snapshots_for_config
 from app.services.provider_credential_persistence import provider_credential_write_transaction
 from app.services.provider_secret_cleanup import queue_orphan_provider_secret_after_rollback, queue_provider_secret_cleanup
 from app.services.provider_inspection import read_limited_httpx_response
@@ -1405,6 +1406,11 @@ def delete_llm_config(db: Session, actor: User, *, config_id: UUID, team_id: UUI
             "Cannot delete this LLM config while dependent work is queued or processing",
             {"config_id": str(config.id)},
         )
+    # The FK uses ON DELETE SET NULL, but its encrypted snapshot is paired
+    # metadata. Retire both on terminal sources so a later retry can proceed
+    # with its frozen primary provider instead of treating the detached
+    # snapshot as corruption.
+    retire_backup_snapshots_for_config(db, config_id=config.id)
     selection = db.scalar(select(TeamLlmSelection).where(TeamLlmSelection.llm_config_id == config.id))
     if selection is not None:
         db.delete(selection)

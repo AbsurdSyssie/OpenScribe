@@ -177,6 +177,10 @@ Guardrails:
 - excluded from logs, audit, usage, provider metadata, and normal production responses;
 - contains no credentials or original PII values.
 
+Terminal provider and credential failures store only allowlisted failure codes, a
+safe provider error code, a valid HTTP status, and the retry count. They do not
+store error messages, prompts, provider responses, or content-bearing debug fields.
+
 The owner-only debug route is a testing aid, not a support/production observability mechanism.
 
 ## Testing requirements

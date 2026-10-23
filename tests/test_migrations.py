@@ -989,7 +989,8 @@ def test_security_audit_event_user_and_team_references_set_null_on_delete():
                 INSERT INTO users (
                     id, email, password_hash, full_name, team_id, team_role,
                     is_system_admin, status, must_change_password, onboarding_state,
-                    mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                    mfa_required, mfa_enabled, created_at, updated_at, last_login_at,
+                    example_consultation_pending
                 )
                 VALUES (
                     '00000000-0000-0000-0000-000000000102',
@@ -1006,7 +1007,8 @@ def test_security_audit_event_user_and_team_references_set_null_on_delete():
                     false,
                     NOW(),
                     NOW(),
-                    NULL
+                    NULL,
+                    false
                 )
                 """
             )
@@ -1074,7 +1076,8 @@ def test_alembic_head_uses_normalized_uniqueness_rules():
                 """
                 INSERT INTO users (
                     id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
-                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at,
+                    example_consultation_pending
                 )
                 SELECT
                     '00000000-0000-0000-0000-000000000002',
@@ -1091,7 +1094,8 @@ def test_alembic_head_uses_normalized_uniqueness_rules():
                     true,
                     NOW(),
                     NOW(),
-                    NULL
+                    NULL,
+                    false
                 FROM teams
                 LIMIT 1
                 """
@@ -1542,7 +1546,8 @@ def test_alembic_head_supports_multiple_stt_selection_purposes_per_team():
                 """
                 INSERT INTO users (
                     id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
-                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at,
+                    example_consultation_pending
                 )
                 VALUES (
                     '00000000-0000-0000-0000-000000000401',
@@ -1559,7 +1564,8 @@ def test_alembic_head_supports_multiple_stt_selection_purposes_per_team():
                     false,
                     NOW(),
                     NOW(),
-                    NULL
+                    NULL,
+                    false
                 )
                 """
             )
@@ -2112,7 +2118,8 @@ def test_alembic_head_supports_new_stt_adapter_values():
                 """
                 INSERT INTO users (
                     id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
-                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at,
+                    example_consultation_pending
                 )
                 VALUES (
                     '00000000-0000-0000-0000-000000000020',
@@ -2129,7 +2136,8 @@ def test_alembic_head_supports_new_stt_adapter_values():
                     false,
                     NOW(),
                     NOW(),
-                    NULL
+                    NULL,
+                    false
                 )
                 """
             )
@@ -2226,7 +2234,8 @@ def test_alembic_head_supports_llm_adapter_values():
                 """
                 INSERT INTO users (
                     id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
-                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at,
+                    example_consultation_pending
                 )
                 VALUES (
                     '00000000-0000-0000-0000-000000000120',
@@ -2243,7 +2252,8 @@ def test_alembic_head_supports_llm_adapter_values():
                     false,
                     NOW(),
                     NOW(),
-                    NULL
+                    NULL,
+                    false
                 )
                 """
             )
@@ -2314,7 +2324,8 @@ def test_alembic_head_supports_bedrock_llm_adapter_value():
                 """
                 INSERT INTO users (
                     id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
-                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at,
+                    example_consultation_pending
                 )
                 VALUES (
                     '00000000-0000-0000-0000-000000000130',
@@ -2331,7 +2342,8 @@ def test_alembic_head_supports_bedrock_llm_adapter_value():
                     false,
                     NOW(),
                     NOW(),
-                    NULL
+                    NULL,
+                    false
                 )
                 """
             )
@@ -2706,7 +2718,8 @@ def test_alembic_head_supports_simplified_transcript_ingestion_mode():
                 """
                 INSERT INTO users (
                     id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
-                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at,
+                    example_consultation_pending
                 )
                 VALUES (
                     '00000000-0000-0000-0000-000000000031',
@@ -2723,7 +2736,8 @@ def test_alembic_head_supports_simplified_transcript_ingestion_mode():
                     false,
                     NOW(),
                     NOW(),
-                    NULL
+                    NULL,
+                    false
                 )
                 """
             )
@@ -2733,7 +2747,8 @@ def test_alembic_head_supports_simplified_transcript_ingestion_mode():
                 """
                 INSERT INTO transcripts (
                     id, owner_user_id, team_id, title, current_draft_text_encrypted, ingestion_mode, status,
-                    next_live_chunk_sequence_no_applied, retention_days_applied, retention_expires_at, created_at, multiple_problems
+                    next_live_chunk_sequence_no_applied, retention_days_applied, retention_expires_at, created_at, multiple_problems,
+                    is_example
                 )
                 VALUES (
                     '00000000-0000-0000-0000-000000000032',
@@ -2747,6 +2762,7 @@ def test_alembic_head_supports_simplified_transcript_ingestion_mode():
                     30,
                     NOW(),
                     NOW(),
+                    false,
                     false
                 )
                 """
@@ -2769,7 +2785,8 @@ def test_alembic_head_supports_suspended_user_status():
                 """
                 INSERT INTO users (
                     id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
-                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, last_login_at,
+                    example_consultation_pending
                 )
                 VALUES (
                     '00000000-0000-0000-0000-000000000010',
@@ -2786,7 +2803,8 @@ def test_alembic_head_supports_suspended_user_status():
                     false,
                     NOW(),
                     NOW(),
-                    NULL
+                    NULL,
+                    false
                 )
                 """
             )
@@ -2897,7 +2915,13 @@ def test_quota_accounting_foundation_schema_has_metadata_only_constraints_and_fk
         "ix_provider_attempts_team_resource_settled",
         "ix_provider_attempts_split_execution_status",
     } <= attempt_indexes
-    assert {"uq_provider_attempts_correlation_attempt", "uq_provider_attempts_split_execution"} <= attempt_uniques
+    assert "uq_provider_attempts_correlation_attempt" in attempt_uniques
+    split_primary_index = next(
+        item for item in inspector.get_indexes("provider_attempts")
+        if item["name"] == "uq_provider_attempts_split_execution"
+    )
+    assert split_primary_index["unique"] is True
+    assert "backup_of_attempt_id IS NULL" in str(split_primary_index["dialect_options"]["postgresql_where"])
     assert any(fk["constrained_columns"] == ["team_id"] and fk["options"].get("ondelete") == "CASCADE" for fk in attempt_fks)
     assert sum(
         fk["constrained_columns"] in (["owner_user_id"], ["transcript_id"], ["transcript_ingestion_job_id"], ["generated_document_id"], ["consultation_split_execution_id"])
@@ -2969,9 +2993,9 @@ def test_quota_accounting_constraints_reject_incomplete_grants_and_attempt_state
         """), {"team_id": team_id})
         connection.execute(text("""
             INSERT INTO users (id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
-                               must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at)
+                               must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at, example_consultation_pending)
             VALUES (:user_id, 'Constraint User', 'constraint@example.com', 'hash', :team_id, 'user', false,
-                    'active', false, 'complete', false, false, NOW(), NOW())
+                    'active', false, 'complete', false, false, NOW(), NOW(), false)
         """), {"team_id": team_id, "user_id": user_id})
 
         valid_grant = """
@@ -3046,10 +3070,12 @@ def test_quota_accounting_foundation_downgrade_fails_closed_then_removes_empty_s
         connection.execute(text("""
             INSERT INTO users (
                 id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
-                must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at
+                must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at,
+                example_consultation_pending
             ) VALUES (
                 '00000000-0000-0000-0000-000000000802', 'Quota User', 'quota-rollback@example.com', 'hash',
-                '00000000-0000-0000-0000-000000000801', 'user', false, 'active', false, 'complete', true, false, NOW(), NOW()
+                '00000000-0000-0000-0000-000000000801', 'user', false, 'active', false, 'complete', true, false, NOW(), NOW(),
+                false
             )
         """))
         connection.execute(text("UPDATE users SET daily_token_limit = 0 WHERE id = '00000000-0000-0000-0000-000000000802'"))
@@ -3326,10 +3352,12 @@ def test_consultation_split_passive_schema_has_encrypted_content_and_reversible_
                 """
                 INSERT INTO users (
                     id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
-                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at
+                    must_change_password, onboarding_state, mfa_required, mfa_enabled, created_at, updated_at,
+                    example_consultation_pending
                 ) VALUES (
                     '00000000-0000-0000-0000-000000009002', 'Split migration owner', 'split-migration@example.com', 'hash',
-                    '00000000-0000-0000-0000-000000009001', 'user', false, 'active', false, 'complete', true, false, NOW(), NOW()
+                    '00000000-0000-0000-0000-000000009001', 'user', false, 'active', false, 'complete', true, false, NOW(), NOW(),
+                    false
                 )
                 """
             )
@@ -3339,11 +3367,11 @@ def test_consultation_split_passive_schema_has_encrypted_content_and_reversible_
                 """
                 INSERT INTO transcripts (
                     id, owner_user_id, team_id, title, ingestion_mode, status, next_live_chunk_sequence_no_applied,
-                    retention_days_applied, retention_expires_at, created_at, multiple_problems
+                    retention_days_applied, retention_expires_at, created_at, multiple_problems, is_example
                 ) VALUES (
                     '00000000-0000-0000-0000-000000009003', '00000000-0000-0000-0000-000000009002',
                     '00000000-0000-0000-0000-000000009001', 'Split migration transcript', 'whole_file', 'ready', 1,
-                    30, NOW() + INTERVAL '30 days', NOW(), false
+                    30, NOW() + INTERVAL '30 days', NOW(), false, false
                 )
                 """
             )

@@ -207,6 +207,32 @@ def test_global_host_is_preserved_without_fallback():
     assert environment.production == "wss://api.deepgram.com"
 
 
+def test_word_metadata_must_match_source_case_but_may_vary_in_whitespace():
+    source = "Synthetic reading 5 mS."
+    words = (
+        streaming.DeepgramWordEvent("Synthetic", "0", 0.0, 0.2),
+        streaming.DeepgramWordEvent("reading", "0", 0.2, 0.4),
+        streaming.DeepgramWordEvent("5", "0", 0.4, 0.5),
+        streaming.DeepgramWordEvent("mS.", "0", 0.5, 0.7),
+    )
+    whitespace_variant = streaming.DeepgramResultEvent(
+        text="Synthetic   reading 5 mS.", is_final=True, speech_final=True,
+        from_finalize=False, start=0.0, duration=1.0, words=words,
+    )
+    case_variant = streaming.DeepgramResultEvent(
+        text=source, is_final=True, speech_final=True,
+        from_finalize=False, start=0.0, duration=1.0,
+        words=(*words[:-1], streaming.DeepgramWordEvent("ms.", "0", 0.5, 0.7)),
+    )
+
+    accepted = streaming.deepgram_event_words_or_fallback(whitespace_variant)
+    fallback = streaming.deepgram_event_words_or_fallback(case_variant)
+
+    assert accepted[-1].speaker_id == "0"
+    assert [word.text for word in fallback] == [source]
+    assert fallback[0].speaker_id is None
+
+
 def test_sdk_connector_wrapper_forces_bounded_response_buffers_and_preserves_other_options():
     connect = streaming.deepgram_listen_v1_client.websockets_client_connect
     external_logger = logging.getLogger("synthetic.external.websocket")

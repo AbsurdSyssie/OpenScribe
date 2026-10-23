@@ -170,6 +170,23 @@ def test_backup_rejects_expired_root_and_plaintext_snapshot(
     assert error.value.code == "llm_backup_source_inactive"
 
 
+def test_backup_rejects_snapshot_detached_from_its_config(
+    db_session, make_user, make_llm_config, make_generated_document,
+):
+    owner = make_user()
+    config = make_llm_config(team=owner.team, available_models_json=["backup"])
+    db_session.add(TeamLlmBackupSelection(
+        team_id=owner.team_id, llm_config_id=config.id, model_name="backup"))
+    db_session.commit()
+    document = _document(db_session, owner, make_generated_document)
+    freeze_backup_selection(db_session, source=document, owner_user_id=owner.id,
+                            team_id=owner.team_id)
+    document.backup_llm_config_id = None
+    with pytest.raises(AppError) as error:
+        read_backup_provider(db_session, source=document)
+    assert error.value.code == "llm_backup_snapshot_invalid"
+
+
 def test_checker_failure_presentation_uses_final_backup_not_parent_number(
     db_session, make_user, make_llm_config, make_generated_document,
 ):

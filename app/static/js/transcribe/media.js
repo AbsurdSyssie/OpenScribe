@@ -83,6 +83,7 @@ export function createAudioCaptureController({
   let deepgramRecovery = null;
   let deepgramFinishPromise = null;
   let batchVadInstance = null;
+  const batchVadStreamReleasers = new WeakMap();
   let batchCaptureSettings = null;
   let batchSpeechSegments = [];
   let batchRolloverTimeoutId = null;
@@ -432,6 +433,10 @@ export function createAudioCaptureController({
   const cleanupBatchVad = () => {
     const instance = batchVadInstance;
     batchVadInstance = null;
+    disposeBatchVad(instance);
+  };
+
+  const disposeBatchVad = (instance) => {
     if (!instance) return;
     try {
       if (typeof instance.destroy === 'function') {
@@ -440,6 +445,9 @@ export function createAudioCaptureController({
         instance.pause();
       }
     } catch (_) {}
+    const releaseStream = batchVadStreamReleasers.get(instance);
+    batchVadStreamReleasers.delete(instance);
+    if (releaseStream) void releaseStream();
   };
 
   const clearBatchRolloverTimeout = () => {
@@ -608,26 +616,34 @@ export function createAudioCaptureController({
     stopStreamTracks();
   };
 
-  const commonVadCallbacks = ({ onFrameProcessed, onSpeechStart, onSpeechEnd, onVADMisfire }) => ({
+  const commonVadCallbacks = ({
+    onFrameProcessed, onSpeechStart, onSpeechEnd, onVADMisfire,
+    isCurrent = () => true,
+    isCurrentSpeechEnd = isCurrent,
+  }) => ({
     getStream: createVadMicStream,
     pauseStream: pauseVadMicStream,
     resumeStream: createVadMicStream,
     onFrameProcessed: (probabilities, frame) => {
+      if (!isCurrent()) return;
       setMicVisualizerLevels(buildMicVisualizerLevelsFromVadFrame(frame));
       setMicVisualizerVadActive(Boolean(probabilities && probabilities.isSpeech > probabilities.notSpeech));
       onFrameProcessed?.(probabilities, frame);
     },
     onSpeechStart: () => {
+      if (!isCurrent()) return;
       setMicVisualizerVadActive(true);
       markVadSpeechStarted();
       onSpeechStart?.();
     },
     onSpeechEnd: (audio) => {
+      if (!isCurrentSpeechEnd()) return;
       setMicVisualizerVadActive(false);
       onSpeechEnd?.(audio);
       markVadSpeechEndedOrIdle();
     },
     onVADMisfire: () => {
+      if (!isCurrent()) return;
       setMicVisualizerVadActive(false);
       onVADMisfire?.();
       markVadSpeechEndedOrIdle();
@@ -1193,72 +1209,114 @@ export function createAudioCaptureController({
     return batchUploadQueue;
   };
 
-  const buildBatchVadInstance = async () => {
-    return window.vad.MicVAD.new({
-      model: config.liveVadModel,
-      preSpeechPadMs: config.batchVadPreRollMs,
-      redemptionMs: config.batchVadSilenceThresholdMs,
-      minSpeechMs: config.liveMinChunkMs,
-      submitUserSpeechOnPause: true,
-      baseAssetPath: config.liveVadAssetBasePath,
-      onnxWASMBasePath: config.liveVadOnnxBasePath,
-      ...commonVadCallbacks({
-        onSpeechStart: () => {
-          setVisibleStatus('recording');
-          setSessionProgress('Speech detected. Keeping voiced audio locally until you stop.');
-          setMicStatus('Speech detected. Voice-only batch capture is running...');
-          armBatchRolloverTimeout();
-        },
-        onSpeechEnd: (audio) => {
-          clearBatchRolloverTimeout();
-          const preparedAudio = trimLiveVadSamples(audio, Math.max(0, config.batchVadSilenceThresholdMs - config.batchVadTrailingBufferMs));
-          if (preparedAudio.length >= sampleCountForDurationMs(config.liveMinChunkMs)) {
-            batchSpeechSegments.push(preparedAudio);
-          }
-          const shouldRollover = batchForceRolloverRequested || batchRolloverThresholdReached(batchSpeechSegments);
-          batchForceRolloverRequested = false;
-          if (shouldRollover && !batchStopRequested) {
-            void rolloverMicrophoneBatchCapture();
-            return;
-          }
-          if (!batchVadInstance) {
-            return;
-          }
-          setVisibleStatus('recording');
-          setSessionProgress('Listening for next speech segment. Only voiced audio with buffer is kept.');
-          setMicStatus('Listening for speech...');
-        },
-        onVADMisfire: () => {
-          clearBatchRolloverTimeout();
-          if (batchForceRolloverRequested && !batchStopRequested && batchSpeechSegments.length > 0) {
+  const buildBatchVadInstance = async ({ generation = batchCaptureGeneration, transcriptId = getState().transcriptId } = {}) => {
+    const isCurrentGeneration = () => generation === batchCaptureGeneration
+      && transcriptId === getState().transcriptId;
+    const canAcquireMic = () => isCurrentGeneration() && !batchStopRequested;
+    let ownedMicStream = null;
+    const getBatchMicStream = async () => {
+      if (!canAcquireMic()) throw new Error('Batch microphone startup was canceled.');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!canAcquireMic()) {
+        try { stream.getTracks().forEach((track) => track.stop()); } catch (_) {}
+        throw new Error('Batch microphone startup was canceled.');
+      }
+      ownedMicStream = stream;
+      mediaStream = stream;
+      return stream;
+    };
+    const pauseBatchMicStream = async (stream = ownedMicStream) => {
+      const target = stream || ownedMicStream;
+      if (!target) return;
+      try { target.getTracks().forEach((track) => track.stop()); } catch (_) {}
+      if (ownedMicStream === target) ownedMicStream = null;
+      if (mediaStream === target) mediaStream = null;
+    };
+    try {
+      const instance = await window.vad.MicVAD.new({
+        model: config.liveVadModel,
+        preSpeechPadMs: config.batchVadPreRollMs,
+        redemptionMs: config.batchVadSilenceThresholdMs,
+        minSpeechMs: config.liveMinChunkMs,
+        submitUserSpeechOnPause: true,
+        baseAssetPath: config.liveVadAssetBasePath,
+        onnxWASMBasePath: config.liveVadOnnxBasePath,
+        ...commonVadCallbacks({
+          isCurrent: canAcquireMic,
+          isCurrentSpeechEnd: isCurrentGeneration,
+          onSpeechStart: () => {
+            if (!isCurrentGeneration()) return;
+            setVisibleStatus('recording');
+            setSessionProgress('Speech detected. Keeping voiced audio locally until you stop.');
+            setMicStatus('Speech detected. Voice-only batch capture is running...');
+            armBatchRolloverTimeout();
+          },
+          onSpeechEnd: (audio) => {
+            if (!isCurrentGeneration()) return;
+            clearBatchRolloverTimeout();
+            const preparedAudio = trimLiveVadSamples(audio, Math.max(0, config.batchVadSilenceThresholdMs - config.batchVadTrailingBufferMs));
+            if (preparedAudio.length >= sampleCountForDurationMs(config.liveMinChunkMs)) {
+              batchSpeechSegments.push(preparedAudio);
+            }
+            const shouldRollover = batchForceRolloverRequested || batchRolloverThresholdReached(batchSpeechSegments);
             batchForceRolloverRequested = false;
-            void rolloverMicrophoneBatchCapture();
-            return;
-          }
-          batchForceRolloverRequested = false;
-          if (!batchVadInstance) {
-            return;
-          }
-          setVisibleStatus('recording');
-          setSessionProgress('Listening for speech. Only voiced audio with buffer is kept.');
-          setMicStatus('Listening for speech...');
-        },
-      }),
-    });
+            if (shouldRollover && !batchStopRequested) {
+              void rolloverMicrophoneBatchCapture();
+              return;
+            }
+            if (!batchVadInstance) {
+              return;
+            }
+            setVisibleStatus('recording');
+            setSessionProgress('Listening for next speech segment. Only voiced audio with buffer is kept.');
+            setMicStatus('Listening for speech...');
+          },
+          onVADMisfire: () => {
+            if (!isCurrentGeneration()) return;
+            clearBatchRolloverTimeout();
+            if (batchForceRolloverRequested && !batchStopRequested && batchSpeechSegments.length > 0) {
+              batchForceRolloverRequested = false;
+              void rolloverMicrophoneBatchCapture();
+              return;
+            }
+            batchForceRolloverRequested = false;
+            if (!batchVadInstance) {
+              return;
+            }
+            setVisibleStatus('recording');
+            setSessionProgress('Listening for speech. Only voiced audio with buffer is kept.');
+            setMicStatus('Listening for speech...');
+          },
+        }),
+        getStream: getBatchMicStream,
+        resumeStream: getBatchMicStream,
+        pauseStream: pauseBatchMicStream,
+      });
+      if (instance && (typeof instance === 'object' || typeof instance === 'function')) {
+        batchVadStreamReleasers.set(instance, () => pauseBatchMicStream());
+      }
+      return instance;
+    } catch (error) {
+      await pauseBatchMicStream();
+      throw error;
+    }
   };
 
   const restartMicrophoneBatchAfterRollover = async () => {
     if (batchStopRequested) return;
     const restartGeneration = batchCaptureGeneration;
+    const transcriptId = activeBatchTranscriptId();
+    let preparedVad = null;
     try {
       batchRestartPending = true;
       cleanupBatchVad();
-      batchVadInstance = await buildBatchVadInstance();
-      if (batchStopRequested || batchCaptureGeneration !== restartGeneration) {
-        batchRestartPending = false;
-        cleanupBatchVad();
+      preparedVad = await buildBatchVadInstance({ generation: restartGeneration, transcriptId });
+      if (batchStopRequested || batchCaptureGeneration !== restartGeneration || transcriptId !== getState().transcriptId) {
+        disposeBatchVad(preparedVad);
         return;
       }
+      batchVadInstance = preparedVad;
+      preparedVad = null;
       batchRestartPending = false;
       batchVadInstance.start();
       setMicVisualizerVadActive(false);
@@ -1267,10 +1325,12 @@ export function createAudioCaptureController({
       setMicStatus('Recording restarted. Listening for speech...');
       markVadSpeechEndedOrIdle();
     } catch (_) {
-      batchRestartPending = false;
-      if (batchStopRequested || batchCaptureGeneration !== restartGeneration) {
+      if (batchStopRequested || batchCaptureGeneration !== restartGeneration || transcriptId !== getState().transcriptId) {
+        disposeBatchVad(preparedVad);
         return;
       }
+      batchRestartPending = false;
+      disposeBatchVad(preparedVad);
       resetRecordingState();
       setMicStatus('Could not restart recording after sending the previous part.', 'error');
     }
@@ -1539,16 +1599,17 @@ export function createAudioCaptureController({
       setMicStatus('Voice-only microphone capture could not start in this browser.', 'error');
       return;
     }
+    const captureGeneration = ++batchCaptureGeneration;
+    const transcriptId = getState().transcriptId;
+    let preparedVad = null;
     try {
       captureMode = 'batch';
-      const captureGeneration = ++batchCaptureGeneration;
       batchStopRequested = false;
       batchForceRolloverRequested = false;
       batchRolloverUploadPending = false;
       batchSpeechSegments = [];
       batchCaptureSettings = null;
       batchRestartPending = true;
-      const transcriptId = getState().transcriptId;
       if (!transcriptId) throw new Error('Open a consultation before starting microphone recording.');
       const captureSettingsResponse = await csrfFetch(`/api/v1/transcripts/${encodeURIComponent(transcriptId)}/capture-settings`, {
         method: 'POST',
@@ -1562,17 +1623,28 @@ export function createAudioCaptureController({
         || typeof captureSettings.diarisation_enabled !== 'boolean') {
         throw new Error('The server did not confirm the recording settings.');
       }
-      if (captureGeneration !== batchCaptureGeneration || batchStopRequested || transcriptId !== getState().transcriptId) return;
+      if (captureGeneration !== batchCaptureGeneration || batchStopRequested) return;
+      if (transcriptId !== getState().transcriptId) {
+        resetRecordingState();
+        return;
+      }
       batchCaptureSettings = {
         captureSettingsId: captureSettings.capture_settings_id,
         diarizationEnabled: captureSettings.diarisation_enabled,
       };
       recordingTranscriptId = transcriptId;
-      batchVadInstance = await buildBatchVadInstance();
-      if (captureGeneration !== batchCaptureGeneration || batchStopRequested || transcriptId !== getState().transcriptId) {
-        cleanupBatchVad();
+      preparedVad = await buildBatchVadInstance({ generation: captureGeneration, transcriptId });
+      if (captureGeneration !== batchCaptureGeneration || batchStopRequested) {
+        disposeBatchVad(preparedVad);
         return;
       }
+      if (transcriptId !== getState().transcriptId) {
+        disposeBatchVad(preparedVad);
+        resetRecordingState();
+        return;
+      }
+      batchVadInstance = preparedVad;
+      preparedVad = null;
       batchRestartPending = false;
       reportMicIssue?.(null);
       beginAccumulatedTimer();
@@ -1586,6 +1658,12 @@ export function createAudioCaptureController({
       setSessionProgress('Listening on this device. Silence is skipped; voiced audio with buffer stays local until upload.');
       markVadSpeechEndedOrIdle();
     } catch (error) {
+      disposeBatchVad(preparedVad);
+      if (captureGeneration !== batchCaptureGeneration || batchStopRequested) return;
+      if (transcriptId !== getState().transcriptId) {
+        resetRecordingState();
+        return;
+      }
       resetRecordingState();
       dispatchWorkspaceRecordingEvent('failed');
       reportMicIssue?.(error);

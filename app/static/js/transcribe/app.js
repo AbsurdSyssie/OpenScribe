@@ -2,7 +2,7 @@ import { attachTranscribeActions } from './actions.js?v=20261021-example-consult
 import { readTranscribeBootstrap } from './bootstrap.js?v=20261005-multiple-problems';
 import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261014-generation-status';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
-import { createAudioCaptureController } from './media.js?v=20261022-live-startup-guard';
+import { createAudioCaptureController } from './media.js?v=20261023-batch-startup-ownership';
 import { createStructuredEditor } from './structured.js?v=20260918-retired-note-workspace';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
@@ -4182,7 +4182,7 @@ let statusDetailsHideTimer = null;
           }
         },
         clearNoteEditorDirty,
-        persistNoteEditsSilently,
+        persistNoteEditsSilently: persistNoteEditsUntilDrained,
         hasPendingGeneratedNoteEdits,
         shouldPreserveNoteEditorRender,
         shouldInitializeHydratedNoteEditor,

@@ -190,6 +190,143 @@ def test_document_navigator_preserves_matching_server_note_once_but_updates_meta
     subprocess.run(["node", str(runner)], check=True, cwd=root)
 
 
+def test_document_switch_flushes_serialized_note_autosave_after_intervening_edit(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    runner = tmp_path / "note_autosave_document_switch_runner.mjs"
+    runner.write_text(
+        textwrap.dedent(
+            """
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import vm from 'node:vm';
+
+            const root = __OPENSCRIBE_ROOT__;
+            const documentsPath = `${root}/app/static/js/transcribe/documents.js`;
+            const noteTargetsPath = `${root}/app/static/js/transcribe/noteTargets.js`;
+            const autosavePath = `${root}/app/static/js/transcribe/autosaveController.js`;
+            const noteTargetsSource = fs.readFileSync(noteTargetsPath, 'utf8').replaceAll('export const ', 'var ');
+            const documentsSource = fs.readFileSync(documentsPath, 'utf8')
+              .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';", '')
+              .replaceAll('export const ', 'var ')
+              .replaceAll('export function ', 'function ');
+            const autosaveSource = fs.readFileSync(autosavePath, 'utf8')
+              .replaceAll('export function ', 'function ');
+            const makeElement = () => ({
+              dataset: {}, hidden: false, innerHTML: '', textContent: '', children: [],
+              append(...children) { this.children.push(...children); },
+              appendChild(child) { this.children.push(child); },
+              replaceChildren(...children) { this.children = children; },
+              insertAdjacentHTML() {}, querySelectorAll() { return []; },
+              setAttribute(name, value) { this[name] = value; },
+              addEventListener() {}, remove() {},
+            });
+            const fakeDocument = {
+              activeElement: null, createElement: makeElement, dispatchEvent() {},
+              querySelector() { return null; },
+            };
+            const timers = {
+              setTimeout(callback) { return { callback }; }, clearTimeout() {},
+            };
+            const sandbox = {
+              Array, Boolean, Date, Intl, JSON, Map, Number, Object, String, WeakMap,
+              clearTimeout() {}, setTimeout() {},
+              window: {
+                document: fakeDocument, CustomEvent: class CustomEvent {},
+                requestAnimationFrame(callback) { callback(); },
+              },
+            };
+            sandbox.globalThis = sandbox;
+            vm.createContext(sandbox);
+            vm.runInContext(noteTargetsSource, sandbox, { filename: noteTargetsPath });
+            vm.runInContext(documentsSource, sandbox, { filename: documentsPath });
+            vm.runInContext(autosaveSource, sandbox, { filename: autosavePath });
+
+            let noteEditDirty = true;
+            let editorText = 'first draft';
+            let baseline = 'revision-1';
+            let serverRevision = baseline;
+            let serverText = '';
+            let firstPatchStarted;
+            let releaseFirstPatch;
+            const firstStarted = new Promise((resolve) => { firstPatchStarted = resolve; });
+            const firstGate = new Promise((resolve) => { releaseFirstPatch = resolve; });
+            const requests = [];
+            const autosave = sandbox.createAutosaveController({
+              timers,
+              isDirty: () => noteEditDirty,
+              save: async ({ version }) => {
+                const request = { expected_updated_at: baseline, text: editorText };
+                requests.push(request);
+                if (requests.length === 1) {
+                  firstPatchStarted();
+                  await firstGate;
+                }
+                if (request.expected_updated_at !== serverRevision) {
+                  throw new Error('409 revision conflict');
+                }
+                serverText = request.text;
+                serverRevision = `revision-${requests.length + 1}`;
+                if (version === autosave.editVersion) {
+                  noteEditDirty = false;
+                } else {
+                  baseline = serverRevision;
+                }
+                return { id: 'note-1', updated_at: serverRevision };
+              },
+            });
+
+            const note = (id, title) => ({ id, title, status: 'ready', document_mode: 'freeform', updated_at: '2026-08-12T10:00:00Z' });
+            const state = {
+              hasActiveTranscript: false, activeTranscriptId: null,
+              selectedNoteDocumentId: 'note-1', selectedNoteSlotKey: null,
+              workspaceNoteDocuments: [note('note-1', 'First'), note('note-2', 'Second')],
+              workspaceFollowupDocuments: [], workspaceStructuredContext: {},
+            };
+            const navigator = sandbox.createDocumentNavigator({
+              dom: {
+                latestGeneratedOutput: makeElement(), noteMeta: makeElement(), noteSelector: makeElement(),
+                noteSelectorCount: makeElement(), noteSelectorWrap: makeElement(),
+                outputLlmRequestSlot: makeElement(), outputRedactionSlot: makeElement(),
+              },
+              helpers: {
+                escapeHtml: String, refreshIcons() {}, renderGeneratedOutput() {}, renderRedactionDebugPanel() {},
+                setTab() {},
+              },
+              getState: () => state,
+              setState: (patch) => Object.assign(state, patch),
+              hasPendingGeneratedNoteEdits: () => noteEditDirty,
+              persistNoteEditsSilently: (options) => autosave.flush(options),
+              clearNoteEditorDirty: () => { noteEditDirty = false; },
+            });
+
+            autosave.markDirty();
+            const firstSave = autosave.persist();
+            await firstStarted;
+            editorText = 'edited while first save was pending';
+            noteEditDirty = true;
+            autosave.markDirty();
+            const switching = navigator.selectDocumentFromUi('note', 'note-2');
+            await Promise.resolve();
+            assert.equal(state.selectedNoteDocumentId, 'note-1', 'navigation must wait for the current and queued saves');
+            releaseFirstPatch();
+            await firstSave;
+            assert.equal(await switching, true);
+            assert.equal(state.selectedNoteDocumentId, 'note-2');
+            assert.equal(serverText, 'edited while first save was pending', 'the latest editor text must reach the server before navigation');
+            assert.equal(noteEditDirty, false);
+            assert.deepEqual(JSON.parse(JSON.stringify(requests)), [
+              { expected_updated_at: 'revision-1', text: 'first draft' },
+              { expected_updated_at: 'revision-2', text: 'edited while first save was pending' },
+            ]);
+            assert.equal(serverRevision, 'revision-3');
+            """
+        ).replace("__OPENSCRIBE_ROOT__", repr(str(root))),
+        encoding="utf-8",
+    )
+
+    subprocess.run(["node", str(runner)], check=True, cwd=root)
+
+
 def test_document_navigator_only_renders_hallucination_debug_card_with_payload(tmp_path):
     root = Path(__file__).resolve().parents[1]
     runner = tmp_path / "hallucination_debug_panel_runner.mjs"
@@ -564,7 +701,7 @@ def test_note_regeneration_controls_and_scroll_rail_contract():
     assert "actions.js?v=20261021-example-consultation" in app
     assert "documents.js?v=20261014-generation-status" in app
     assert "structured.js?v=20260918-retired-note-workspace" in app
-    assert "app.js?v=20261019-delete-confirmation-content" in shell
+    assert "app.js?v=20261023-batch-startup-ownership" in shell
 
 
 def test_retired_note_workspace_compatibility_plumbing_is_absent():

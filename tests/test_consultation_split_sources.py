@@ -15,6 +15,7 @@ from app.models import (
     ConsultationSplitAnalysisStatus,
     PostConsultationDictation,
     ProviderAttempt,
+    RedactionEntity,
     PromptTemplateVersion,
     RedactionRun,
     RedactionRunStatus,
@@ -40,6 +41,7 @@ from app.services.templates import _ensure_generation_can_be_queued
 from app.services.clinical_nlp import successful_redacted_clinical_hints
 from app.services.consultation_splits import read_split_analysis_json
 from app.services.content_crypto import encrypt_text_for_owner, is_encrypted_envelope
+from app.services.structured_transcripts import append_transcript_turns, canonical_transcript_projection, store_turns_on_version
 from app.services.transcripts import create_manual_pii_entity, set_freeform_working_note_text
 
 
@@ -724,6 +726,76 @@ def test_prepare_source_bound_analysis_returns_redacted_current_sources_without_
     assert db_session.query(ConsultationSplitAnalysis).filter_by(transcript_id=transcript.id).count() == 0
     assert db_session.query(ProviderAttempt).count() == attempts_before
     assert db_session.query(TaskDispatchOutbox).count() == outbox_before
+
+
+@pytest.mark.parametrize("structured", [False, True])
+def test_prepared_split_source_preserves_structured_outer_whitespace_and_keeps_legacy_trim(
+    db_session, make_user, make_template, structured,
+):
+    owner = make_user(email=f"prepared-whitespace-owner-{uuid4()}@example.com")
+    transcript = _transcript(db_session, owner)
+    source_text = "  Alice Smith reports cough. "
+    redacted_text = "  [PHI-1] reports cough. "
+    version = _version(db_session, owner, transcript)
+    if structured:
+        # The helper seeded a legacy flat draft; clear it so this turn is the
+        # complete structured projection, including its outer spaces.
+        transcript.current_draft_text_encrypted = encrypt_text_for_owner(
+            db_session, owner_user_id=owner.id, table="transcripts", field="current_draft_text_encrypted",
+            record_id=transcript.id, plaintext="",
+        )
+        turns = append_transcript_turns(
+            db_session,
+            transcript=transcript,
+            scope_id=uuid4(),
+            turns=[{"speaker_id": "0", "text": source_text}],
+        )
+        source_text = canonical_transcript_projection(turns)
+        version.text_encrypted = encrypt_text_for_owner(
+            db_session, owner_user_id=owner.id, table="transcript_versions", field="text_encrypted",
+            record_id=version.id, plaintext=source_text,
+        ) or ""
+        store_turns_on_version(db_session, version=version, owner_user_id=owner.id, turns=turns)
+    else:
+        version.text_encrypted = encrypt_text_for_owner(
+            db_session, owner_user_id=owner.id, table="transcript_versions", field="text_encrypted",
+            record_id=version.id, plaintext=source_text,
+        ) or ""
+    transcript.current_draft_text_encrypted = encrypt_text_for_owner(
+        db_session, owner_user_id=owner.id, table="transcripts", field="current_draft_text_encrypted",
+        record_id=transcript.id, plaintext=source_text,
+    )
+    run = _redaction_run(db_session, owner, transcript, version, redacted_text=redacted_text)
+    entity_id = uuid4()
+    run.redacted_text_encrypted = encrypt_text_for_owner(
+        db_session, owner_user_id=owner.id, table="redaction_runs", field="redacted_text_encrypted",
+        record_id=run.id, plaintext=redacted_text,
+    )
+    db_session.add(RedactionEntity(
+        id=entity_id,
+        redaction_run_id=run.id,
+        entity_order=1,
+        entity_type="PERSON",
+        placeholder="[PHI-1]",
+        normalized_value_hash="synthetic",
+        occurrence_count=1,
+        original_value_encrypted=encrypt_text_for_owner(
+            db_session, owner_user_id=owner.id, table="redaction_entities", field="original_value_encrypted",
+            record_id=entity_id, plaintext="Alice Smith",
+        ) or "",
+    ))
+    make_template(owner=owner, actor=owner, prompt_text=PROMPT_TEXT)
+    db_session.flush()
+
+    prepared = prepare_source_bound_consultation_split_analysis(
+        db_session, owner, transcript_id=transcript.id,
+        transcript_version_id=version.id, redaction_run_id=run.id,
+    )
+
+    expected = "Recording 1\nSpeaker 1:   [PHI-1] reports cough. " if structured else "[PHI-1] reports cough."
+    assert prepared.source_snapshot["sources"]["transcript"] == expected
+    assert "Alice Smith" not in prepared.source_snapshot["sources"]["transcript"]
+    assert bool(prepared.source_snapshot.get("diarised_transcript")) is structured
 
 
 def test_constructor_delegates_to_preparation_and_preserves_encrypted_persistence(

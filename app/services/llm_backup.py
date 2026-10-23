@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
@@ -28,6 +28,26 @@ from app.services.quotas import reserve_provider_attempt
 _SOURCES = (GeneratedDocument, TemplateSuggestionJob, ConsultationSplitAnalysis,
             ConsultationSplitBatch, ConsultationSplitExecution)
 _FIELD = "backup_provider_snapshot_encrypted"
+
+
+def retire_backup_snapshots_for_config(db: Session, *, config_id: UUID) -> None:
+    """Remove owner-encrypted snapshots before deleting their referenced config.
+
+    Terminal sources may later be retried. Clearing both the FK and its paired
+    snapshot lets those retries continue with their frozen primary provider,
+    while ``read_backup_provider`` can keep rejecting inconsistent metadata.
+    This updates only dedicated provider metadata and never loads source content.
+    """
+    for model in _SOURCES:
+        db.execute(
+            update(model)
+            .where(model.backup_llm_config_id == config_id)
+            .values(
+                backup_llm_config_id=None,
+                backup_provider_snapshot_encrypted=None,
+            )
+            .execution_options(synchronize_session="fetch")
+        )
 
 
 def _source(source: object) -> tuple[str, UUID, UUID, UUID]:

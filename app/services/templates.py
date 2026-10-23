@@ -3349,6 +3349,19 @@ def _set_checker_attempt_error(
     attempt.provider_http_status = provider_http_status
 
 
+def _checker_terminal_failure_debug_payload(exc: AppError, *, retry_count: int = 0) -> dict[str, object]:
+    """Return content-free, allowlisted metadata for a terminal checker failure."""
+    details = exc.details if isinstance(exc.details, dict) else {}
+    raw_http_status = details.get("provider_http_status")
+    http_status = raw_http_status if type(raw_http_status) is int and 100 <= raw_http_status <= 599 else None
+    return {
+        "failure_code": _usage_error_code(exc.code) or "other_error",
+        "provider_error_code": _usage_provider_error_code(details.get("provider_error_code"), status=http_status),
+        "provider_http_status": http_status,
+        "retry_count": max(0, retry_count),
+    }
+
+
 def _settle_hallucination_check_attempt(
     db: Session,
     *,
@@ -3780,6 +3793,11 @@ def _run_hallucination_check(
                 document.hallucination_check_llm_config_id = config.id
                 document.hallucination_check_model_name = model_name
                 document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
+                if debug_payload is not None:
+                    set_generated_document_hallucination_check_debug(
+                        db, document=document,
+                        plaintext=_checker_terminal_failure_debug_payload(credential_error),
+                    )
                 _record_hallucination_check_usage_event(
                     db, document=document, config=config, model_name=model_name, usage=None,
                     status="failed_provider", event_type=ProviderUsageEventType.failed,
@@ -3928,6 +3946,11 @@ def _run_hallucination_check(
                     db, document=document, config=config, model_name=model_name, usage=None,
                     status="failed_provider", event_type=ProviderUsageEventType.failed, error_code=exc.code,
                 )
+                if debug_payload is not None:
+                    set_generated_document_hallucination_check_debug(
+                        db, document=document,
+                        plaintext=_checker_terminal_failure_debug_payload(exc, retry_count=attempt),
+                    )
                 db.commit()
                 _checker_usage_event(
                     event="llm_hallucination_check_failed", context=log_context,

@@ -25,7 +25,7 @@ After a provider or output-validation failure, the worker may submit one backup 
 
 Each backup has a unique link to its primary quota attempt, its own token reservation, and a durable submission claim. Workers resolve credentials before submission. A timeout can leave the primary outcome unknown; OpenScribe accounts for that attempt conservatively before reserving the backup. Both providers may therefore charge for a timeout failover. Duplicate task delivery does not replay a submitted call, and lifecycle cleanup settles uncertain work after a worker crash.
 
-Provider edits and deletion protect queued primary and backup references. Credential correction must preserve the endpoint, authentication mode and models frozen for live backup work. The server reads only dedicated provider metadata to check these models; admin authority does not grant access to clinical source content.
+Provider edits and deletion protect queued primary and backup references. Credential correction must preserve the endpoint, authentication mode and models frozen for live backup work. Deleting a backup config clears its paired encrypted backup metadata from terminal sources before the config is removed. A later retry of that source can use its frozen primary request without consulting a newer backup selection. The server reads only dedicated provider metadata to check live backup models; admin authority does not grant access to clinical source content.
 
 ## Preset Layer
 

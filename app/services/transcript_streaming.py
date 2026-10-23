@@ -628,6 +628,12 @@ def commit_stream_window(
                             connection_fence=connection_fence, fence_token=fence_token)
     has_structured_source = bool(getattr(transcript, "current_draft_turns_encrypted", None))
     structured_commit = bool(session.stt_diarisation_enabled or has_structured_source)
+    canonical_turns = None
+    if structured_commit:
+        canonical_turns = finalized_turns or (
+            [{"text": finalized_text, "speaker_id": None, "start_ms": None, "end_ms": None}]
+            if finalized_text.strip() else []
+        )
     if session.status not in {TranscriptStreamStatus.active, TranscriptStreamStatus.finalizing}:
         raise AppError(409, "stream_session_not_active", "Stream session is no longer active")
     window = db.scalar(select(TranscriptStreamWindow).where(
@@ -643,11 +649,7 @@ def commit_stream_window(
                                         purpose="transcript_stream_final_text", value=finalized_text)
         turns_digest = None
         if structured_commit:
-            digest_turns = finalized_turns or (
-                [{"text": finalized_text, "speaker_id": None, "start_ms": None, "end_ms": None}]
-                if finalized_text.strip() else []
-            )
-            turns_payload = json.dumps(digest_turns, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            turns_payload = json.dumps(canonical_turns, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             turns_digest = keyed_digest_for_owner(
                 db, owner_user_id=owner_user_id,
                 purpose="transcript_stream_turns", value=f"{scope_id}:{turns_payload}",
@@ -677,7 +679,7 @@ def commit_stream_window(
     if structured_commit:
         if scope_id is None:
             raise AppError(422, "stream_final_text_invalid", "Final transcription is invalid")
-        turns_payload = json.dumps(finalized_turns or [], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        turns_payload = json.dumps(canonical_turns, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         turns_digest = keyed_digest_for_owner(
             db, owner_user_id=owner_user_id,
             purpose="transcript_stream_turns", value=f"{scope_id}:{turns_payload}",
@@ -689,13 +691,9 @@ def commit_stream_window(
     if structured_commit:
         if scope_id is None:
             raise AppError(422, "stream_final_text_invalid", "Final transcription is invalid")
-        turns = finalized_turns or (
-            [{"text": finalized_text, "speaker_id": None, "start_ms": None, "end_ms": None}]
-            if finalized_text.strip() else []
-        )
         from app.services.structured_transcripts import append_transcript_turns
         append_transcript_turns(
-            db, transcript=transcript, turns=turns, scope_id=scope_id,
+            db, transcript=transcript, turns=canonical_turns, scope_id=scope_id,
             fallback_text=finalized_text,
         )
     elif finalized_text.strip():

@@ -139,6 +139,7 @@ def _speaker_turns_from_segments(
     if len(segments) > MAX_DIARIZATION_SEGMENTS:
         return None
     grouped: list[SttSpeakerTurn] = []
+    grouped_timing_invalid = False
     for segment in segments:
         if not isinstance(segment, dict):
             return None
@@ -158,23 +159,37 @@ def _speaker_turns_from_segments(
         if previous is not None and previous.speaker_id == speaker_id:
             combined = f"{previous.text} {text}"
             if len(combined) <= MAX_DIARIZED_TURN_TEXT_CHARS:
+                merged_start_ms = previous.start_ms if previous.start_ms is not None else start_ms
+                merged_end_ms = end_ms if end_ms is not None else previous.end_ms
+                if grouped_timing_invalid or (
+                    merged_start_ms is not None
+                    and merged_end_ms is not None
+                    and merged_end_ms < merged_start_ms
+                ):
+                    # Keep the provider's complete text and speaker grouping;
+                    # discard only timing metadata that cannot describe this
+                    # merged turn without violating the structured transcript contract.
+                    merged_start_ms = merged_end_ms = None
+                    grouped_timing_invalid = True
                 grouped[-1] = SttSpeakerTurn(
                     text=combined, speaker_id=speaker_id,
-                    start_ms=previous.start_ms if previous.start_ms is not None else start_ms,
-                    end_ms=end_ms if end_ms is not None else previous.end_ms,
+                    start_ms=merged_start_ms,
+                    end_ms=merged_end_ms,
                 )
             else:
                 grouped.append(SttSpeakerTurn(text, speaker_id, start_ms, end_ms))
+                grouped_timing_invalid = False
         else:
             grouped.append(SttSpeakerTurn(text, speaker_id, start_ms, end_ms))
+            grouped_timing_invalid = False
     return tuple(grouped) if grouped else None
 
 
 def _turns_match_transcript(turns: tuple[SttSpeakerTurn, ...] | None, transcript: str) -> bool:
-    """Reject attribution when segment text would alter any source punctuation/content."""
+    """Reject attribution when segment text differs from the source beyond whitespace."""
     if turns is None:
         return False
-    compact = lambda value: "".join(char.casefold() for char in value if not char.isspace())
+    compact = lambda value: "".join(char for char in value if not char.isspace())
     return bool(compact(transcript)) and compact(transcript) == compact(" ".join(turn.text for turn in turns))
 
 

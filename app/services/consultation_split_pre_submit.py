@@ -48,12 +48,13 @@ from app.services.consultation_splits import (
 from app.services.llm_adapters.runtime import validate_provider_snapshot_for_config
 from app.services.llm_adapters.types import LlmProviderSnapshot
 from app.services.llm_credentials import resolve_generation_credential
+from app.services.llm_backup_policy import can_failover, tag_provider_failure
 from app.services.quotas import cancel_provider_attempt
 from app.services.task_outbox import cancel_pending_task_dispatch
 from app.services.transcripts import transcript_is_expired
 
 
-PrepareSplitAnalysisSubmissionOutcome = Literal["prepared", "failed", "stale", "noop"]
+PrepareSplitAnalysisSubmissionOutcome = Literal["prepared", "credential_failure", "failed", "stale", "noop"]
 
 @dataclass(frozen=True, slots=True)
 class PreparedSplitAnalysisSubmission:
@@ -73,6 +74,7 @@ class PrepareSplitAnalysisSubmissionResult:
     outcome: PrepareSplitAnalysisSubmissionOutcome
     prepared: PreparedSplitAnalysisSubmission | None = None
     error_code: str | None = None
+    pre_submit_error: AppError | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,13 +196,22 @@ def prepare_queued_split_analysis_for_submission(
         db, execution_id=execution_id, kind=ConsultationSplitExecutionKind.analysis,
     )
     credential: object | None = None
+    credential_error: AppError | None = None
     credential_failed = preliminary_config is None
     preliminary_identity = _credential_config_identity(preliminary_config) if preliminary_config is not None else None
     if preliminary_config is not None:
         try:
             credential = resolve_generation_credential(preliminary_config)
             credential_failed = not _credential_matches_auth_mode(preliminary_config, credential)
-        except (AppError, TypeError, ValueError):
+            if credential_failed:
+                credential_error = AppError(401, "llm_invalid_credential", "The LLM provider credential is invalid")
+        except AppError as exc:
+            credential_failed = True
+            credential_error = exc
+            if (exc.code == "business_rule_violation" and not preliminary_config.vault_secret_ref
+                and preliminary_config.auth_mode not in {LlmAuthMode.none, LlmAuthMode.google_adc}):
+                credential_error = AppError(401, "llm_invalid_credential", "The LLM provider credential is not configured")
+        except (TypeError, ValueError):
             credential_failed = True
 
     work = _lock_viable_analysis_work(db, execution_id=execution_id)
@@ -342,6 +353,10 @@ def prepare_queued_split_analysis_for_submission(
         or work.analysis.retention_expires_at != work.transcript.retention_expires_at
     ):
         return _terminal_failure(db, work=work, code="consultation_split_retention_binding_invalid")
+    if credential_failed and credential_error is not None and can_failover(tag_provider_failure(credential_error)):
+        return PrepareSplitAnalysisSubmissionResult(
+            "credential_failure", error_code=credential_error.code, pre_submit_error=credential_error,
+        )
     if credential_failed or not _credential_matches_auth_mode(config, credential):
         return _terminal_failure(db, work=work, code="consultation_split_credential_unavailable")
 

@@ -35,6 +35,7 @@ _TEMPORARY_APP_CODES = frozenset(
 )
 _VALIDATION_APP_CODES = frozenset(
     {
+        "hallucination_check_invalid_response",
         "llm_generation_invalid_json",
         "llm_generation_truncated",
         "llm_provider_bad_response",
@@ -314,7 +315,11 @@ def generated_document_status_projection(db: object, document: object, actor: ob
                     ProviderAttempt.attempt_kind == AttemptKind.llm_hallucination_check,
                     ProviderAttempt.status == AttemptStatus.settled,
                     ProviderAttempt.outcome.in_((AttemptOutcome.failed, AttemptOutcome.unknown)),
-                ).order_by(ProviderAttempt.attempt_number.desc()).limit(1)
+                ).order_by(
+                    ProviderAttempt.settled_at.desc(),
+                    ProviderAttempt.backup_of_attempt_id.is_not(None).desc(),
+                    ProviderAttempt.attempt_number.desc(),
+                ).limit(1)
             )
         transport_code, transport_status = failed_transport_details(checker_attempt)
         invalid = getattr(document, "hallucination_check_status", None) is HallucinationCheckStatus.failed_invalid_response

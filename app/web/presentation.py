@@ -86,6 +86,7 @@ from ..services.llm import (
     active_team_llm_selection as active_team_llm_selection_service,
     get_team_hallucination_check_selection as get_team_hallucination_check_selection_service,
     get_team_llm_selection as get_team_llm_selection_service,
+    get_team_llm_backup_selection as get_team_llm_backup_selection_service,
     get_llm_config as get_llm_config_service,
     get_user_llm_preference as get_user_llm_preference_service,
     list_selectable_llm_configs as list_selectable_llm_configs_service,
@@ -166,6 +167,11 @@ def stt_config_response(config) -> SttConfigDetail:
         segment_end_field=config.segment_end_field,
         segment_speaker_field=config.segment_speaker_field,
         extra_form_fields_json=config.extra_form_fields_json or {},
+        diarization_live_enabled=bool(getattr(config, "diarization_live_enabled", False)),
+        diarization_batch_enabled=bool(getattr(config, "diarization_batch_enabled", False)),
+        diarization_field_name=getattr(config, "diarization_field_name", None),
+        diarization_on_value=getattr(config, "diarization_on_value", "true") or "true",
+        diarization_off_value=getattr(config, "diarization_off_value", "false") or "false",
         credential_status=config.credential_status,
         inspection_metadata_json=config.inspection_metadata_json or {},
         setup_status=setup_status,
@@ -393,6 +399,8 @@ def user_app_preferences_response(preference) -> UserAppPreferencesDetail:
         note_generation_length=payload.get("note_generation_length"),
         preferred_recording_mode=payload.get("preferred_recording_mode"),
         preferred_transcribe_tab=payload.get("preferred_transcribe_tab"),
+        diarization_enabled=payload.get("diarization_enabled") is True,
+        diarization_warning_acknowledged=payload.get("diarization_warning_acknowledged") is True,
         created_at=preference.created_at,
         updated_at=preference.updated_at,
     )
@@ -950,6 +958,7 @@ def render_admin(
         except (ValueError, AppError):
             edit_llm_config = None
     llm_selection = get_team_llm_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
+    llm_backup_selection = get_team_llm_backup_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
     hallucination_check_selection = get_team_hallucination_check_selection_service(db, current_user, team_id=selected_uuid) if selected_uuid else None
     deidentification_providers = list_deidentification_providers_service(db, current_user)
     edit_deidentification_provider = next(
@@ -1183,6 +1192,7 @@ def render_admin(
         "llm_configs": llm_configs,
         "llm_config": edit_llm_config,
         "llm_selection": llm_selection,
+        "llm_backup_selection": llm_backup_selection,
         "hallucination_check_selection": hallucination_check_selection,
         "llm_inspection": llm_inspection,
         "llm_form": llm_form_override or llm_form_defaults(edit_llm_config, None),

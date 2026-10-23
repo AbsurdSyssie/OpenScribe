@@ -24,10 +24,10 @@ def test_split_review_workspace_accessibility_hooks_and_cachebusters():
     assert 'data-split-review-problem-count' in workspace
     assert 'data-split-review-add' in workspace
     assert 'data-split-review-create' in workspace
-    assert 'splitReview.js?v=20261014-generation-status' in app_js
+    assert 'splitReview.js?v=20261020-split-progress-feedback' in app_js
     assert 'splitReviewController?.applyWorkspaceState' in app_js
-    assert 'app.js?v=20261019-delete-confirmation-content' in shell
-    assert 'transcribe.css?v=20261016-accessible-manual-guide' in head
+    assert 'app.js?v=20261023-batch-startup-ownership' in shell
+    assert 'transcribe.css?v=20261022-compact-diarized-turns' in head
     assert 'data-split-continue-one-note hidden' in workspace
     assert 'data-split-review-confirm' not in workspace
     assert 'data-split-review-continue' in workspace
@@ -39,6 +39,12 @@ def test_split_review_workspace_accessibility_hooks_and_cachebusters():
     assert 'data-split-retry-missing hidden' in workspace
     assert 'data-split-keep-available hidden' in workspace
     assert 'id="split-partial-status"' in workspace
+    assert 'data-split-operation-status role="status" aria-live="polite"' in workspace
+    assert 'renderRestoredSplitOperationStatus(workspace)' in app_js
+    assert "intent.analysis_id === analysis?.analysis_id" in app_js
+    assert "splitOperationStatus.dataset.statusSource === 'operation'" in app_js
+    assert "Preparing your problem review. This accepted request is saved" in app_js
+    assert "Choose a writing assistant before suggesting problems." in app_js
 
 
 def test_split_placeholder_reconciliation_omits_only_deleted_materialized_topics(tmp_path):
@@ -325,6 +331,17 @@ if (scheduledDelay() !== 1500) throw new Error('SSE error did not resume polling
 state = {{ ...state, analysis: {{ ...state.analysis, status: 'ready' }} }};
 poller.updateWorkspace();
 if (poller.getState().scheduled) throw new Error('terminal analysis kept polling');
+state = {{ ...state, intent: {{ intent_id: 'intent-1', manual_review_requested: true, status: 'analysis_pending', analysis_id: 'analysis-1' }} }};
+poller.updateWorkspace();
+if (scheduledDelay() !== 1500) throw new Error('accepted manual review stopped polling before its draft was projected');
+await runNext();
+if (scheduledDelay() !== 3000) throw new Error('missing manual review draft did not use bounded backoff');
+state = {{ ...state, draft: {{ draft_id: 'draft-1', status: 'active', analysis_id: 'analysis-1' }} }};
+poller.updateWorkspace();
+if (poller.getState().scheduled) throw new Error('matching active review draft did not stop restoration polling');
+state = {{ ...state, draft: null, intent: {{ ...state.intent, analysis_id: 'other-analysis' }} }};
+poller.updateWorkspace();
+if (poller.getState().scheduled) throw new Error('unbound manual intent kept polling another analysis');
 state = {{ ...state, capabilityEnabled: false }};
 poller.updateWorkspace();
 if (poller.getState().scheduled) throw new Error('disabled capability kept polling');
@@ -335,7 +352,7 @@ state = {{ capabilityEnabled: true, transcriptId: 'tx-1', analysis: {{ analysis_
 poller.updateWorkspace(); rejectNext = true; await runNext();
 if (scheduledDelay() !== 3000) throw new Error('failed refresh did not retry');
 pending = true; await runNext(); poller.updateWorkspace();
-if (calls.length !== 3) throw new Error('poller started a second in-flight refresh');
+if (calls.length !== 4) throw new Error('poller started a second in-flight refresh');
 state = {{ capabilityEnabled: true, transcriptId: 'tx-2', analysis: {{ analysis_id: 'analysis-2', status: 'processing', updated_at: 'v4' }} }};
 poller.updateWorkspace(); resolvePending(null); pending = false;
 await Promise.resolve(); await Promise.resolve();
@@ -454,13 +471,13 @@ def test_split_generate_controller_preserves_ordinary_flow_and_coordinates_brows
         f"""
 const {{ createSplitGenerateController }} = await import('{module_uri}');
 let enabled = false, transcriptId = 'tx-1', templateId = 'template-1';
-let saves = [], calls = [], statuses = [], busy = [], refreshes = [], opens = 0, applies = 0, keyNo = 0;
-let draftResponse = null, intentResponse = {{ status: 202, ok: true, json: async () => ({{ analysis: {{ analysis_id: 'analysis-1', status: 'queued' }} }}) }};
+let saves = [], calls = [], statuses = [], busy = [], refreshes = [], opens = 0, applies = 0, keyNo = 0, controller;
+let draftResponse = null, intentResponse = {{ status: 202, ok: true, json: async () => ({{ intent_id: 'intent-1', analysis: {{ analysis_id: 'analysis-1', status: 'queued' }} }}) }};
 const fetcher = async (url, options) => {{ calls.push([url, options?.method]); if (url.includes('intents')) return intentResponse; return draftResponse; }};
 const reviewController = {{ applyWorkspaceState: () => {{ applies += 1; }}, open: () => {{ opens += 1; }} }};
-const controller = createSplitGenerateController({{
+controller = createSplitGenerateController({{
   fetcher, getCapabilityEnabled: () => enabled, getTranscriptId: () => transcriptId, getTemplateId: () => templateId,
-  saveSources: async ({{ transcriptId: sourceTranscriptId }} = {{}}) => {{ saves.push(`working:${{sourceTranscriptId}}`); saves.push(`dictation:${{sourceTranscriptId}}`); }}, refreshWorkspace: async (...args) => {{ refreshes.push(args); return null; }},
+  saveSources: async ({{ transcriptId: sourceTranscriptId }} = {{}}) => {{ saves.push(`working:${{sourceTranscriptId}}`); saves.push(`dictation:${{sourceTranscriptId}}`); }}, refreshWorkspace: async (...args) => {{ refreshes.push(args); controller.applyWorkspaceState({{ capabilityEnabled: true, transcriptId, analysis: {{ analysis_id: 'analysis-1', status: 'queued' }} }}); return null; }},
   reviewController, setBusy: (value) => busy.push(value), setStatus: (message) => statuses.push(message),
   createKey: () => `00000000-0000-0000-0000-${{String(++keyNo).padStart(12, '0')}}`,
 }});
@@ -470,10 +487,11 @@ await controller.start();
 if (saves.join() !== 'working:tx-1,dictation:tx-1' || calls.length !== 1 || !calls[0][0].includes('/consultation-split-intents')) throw new Error('sources were not target-bound before intent');
 if (calls.some(([url]) => url.includes('/generate-output'))) throw new Error('split path called generate-output');
 if (refreshes.length !== 1 || refreshes[0][0] !== transcriptId || refreshes[0][1]?.guardTranscriptId !== transcriptId) throw new Error('accepted queued intent did not refresh the guarded workspace');
+if (!statuses.at(-1).includes('saved and will continue if you leave this page')) throw new Error('workspace refresh replaced accepted-intent feedback with generic analysis status');
 await controller.start();
 if (calls.length !== 1 || keyNo !== 1) throw new Error('duplicate Create started a second operation');
 controller.applyWorkspaceState({{ capabilityEnabled: true, transcriptId, analysis: {{ analysis_id: 'analysis-1', status: 'processing' }} }});
-if (!statuses.at(-1).includes('Preparing')) throw new Error('processing state was not persistent');
+if (!statuses.at(-1).includes('saved and will continue if you leave this page')) throw new Error('accepted processing state lost durable-work guidance');
 draftResponse = {{ ok: true, json: async () => ({{ draft_id: 'draft-1' }}) }};
 controller.applyWorkspaceState({{ capabilityEnabled: true, transcriptId, analysis: {{ analysis_id: 'analysis-1', status: 'ready' }}, draft: null }});
 await Promise.resolve(); await Promise.resolve();
@@ -486,7 +504,7 @@ controller.applyWorkspaceState({{ capabilityEnabled: true, transcriptId, analysi
 controller.applyWorkspaceState({{ capabilityEnabled: true, transcriptId, analysis: {{ analysis_id: 'analysis-1', status: 'ready' }}, draft }});
 if (opens !== 1 || applies !== 1) throw new Error('current ready draft did not open exactly once');
 controller.applyWorkspaceState({{ capabilityEnabled: true, transcriptId, analysis: {{ analysis_id: 'analysis-1', status: 'not_required' }} }});
-if (!statuses.at(-1).includes('No note generated')) throw new Error('terminal status lacked safe guidance');
+if (!statuses.at(-1).includes('Starting one note')) throw new Error('not-required intent did not report its existing one-note continuation');
 controller.applyWorkspaceState({{ capabilityEnabled: true, transcriptId: 'tx-restored', analysis: {{ analysis_id: 'analysis-r', status: 'ready' }}, draft: {{ ...draft, analysis_id: 'analysis-r' }} }});
 if (opens !== 1) throw new Error('restored draft auto-opened');
 intentResponse = {{ status: 503, ok: false, json: async () => ({{}}) }};
@@ -1517,16 +1535,22 @@ resolveSwitch({{ status: 200, ok: true, json: async () => ({{ ...base, draft_id:
 if (switchController.getDraft()?.draft_id !== 'switch-new' || documentTarget.activeElement !== switchTrigger) throw new Error('stale save response resurrected switched draft or focus was lost');
 let activeConfirmTranscript = 'tx-confirm'; let resolveConfirm; let confirmCalls = 0;
 const confirmResponse = new Promise((resolve) => {{ resolveConfirm = resolve; }});
+const confirmStatus = new FakeElement('p'); const confirmModal = new FakeElement('div'); const confirmCloseButton = new FakeElement('button');
 const confirmController = createSplitReviewController({{
-  trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: new FakeElement('div'),
-  status: new FakeElement('p'), saveButton: new FakeElement('button'), confirmButton: new FakeElement('button'),
-  closeButtons: [], getTranscriptId: () => activeConfirmTranscript, getConfirmIntentId: () => 'intent-confirm',
+  trigger: new FakeElement('button'), modal: confirmModal, topicList: new FakeElement('div'),
+  status: confirmStatus, saveButton: new FakeElement('button'), confirmButton: new FakeElement('button'),
+  closeButtons: [confirmCloseButton], getTranscriptId: () => activeConfirmTranscript, getConfirmIntentId: () => 'intent-confirm',
   fetcher: async (_url, options) => {{ confirmCalls += 1; const body = JSON.parse(options.body); if (body.intent_id !== 'intent-confirm' || body.expected_updated_at !== 'confirm-v1') throw new Error('confirm body leaked or missed optimistic fields'); return confirmResponse; }},
 }});
 const confirmDraft = {{ ...base, draft_id: 'confirm-draft', updated_at: 'confirm-v1', topics: base.topics.map((topic) => ({{ ...topic, disposition: 'separate_note' }})) }};
 confirmController.applyWorkspaceState({{ draft: confirmDraft, nextTranscriptId: 'tx-confirm' }});
+confirmController.open();
 const firstConfirm = confirmController.confirm(); const secondConfirm = confirmController.confirm();
 if (confirmCalls !== 1) throw new Error('confirm was not single-flight');
+if (!confirmStatus.textContent.includes('Starting note creation') || confirmStatus.dataset.statusKind !== 'progress' || confirmModal.getAttribute('aria-busy') !== 'true' || !confirmCloseButton.disabled) throw new Error('pending split creation gave no progress feedback or allowed the review to close');
+if (confirmController.close() !== false || confirmModal.hidden) throw new Error('pending split confirmation closed through a non-button path');
+confirmModal.fire('keydown', {{ key: 'Escape' }});
+if (confirmModal.hidden) throw new Error('Escape closed the review while confirmation was pending');
 activeConfirmTranscript = 'tx-other'; resolveConfirm({{ status: 202, ok: true, json: async () => ({{ idempotency_replayed: false }}) }});
 if (await firstConfirm || await secondConfirm || confirmController.getDraft().status !== 'active') throw new Error('stale transcript confirm response changed draft');
 const savedGuidanceTopicList = new FakeElement('div');

@@ -3320,7 +3320,8 @@ def test_admin_workspace_provider_policy_wires_existing_selection_routes(client,
     assert 'action="/admin/hallucination-check-selection"' in page.text
     assert 'action="/admin/deidentification-selection"' in page.text
     assert 'name="return_tab"' in page.text and 'value="provider-policy"' in page.text
-    assert page.text.count('data-policy-row=') == 6
+    assert page.text.count('data-policy-row=') == 7
+    assert 'data-policy-row="writing-assistant-backup"' in page.text
     assert 'class="policy-table" data-provider-policy-table' in page.text
     assert 'action="/admin/stt-selection/clear"' in page.text
     assert 'action="/admin/llm-selection/clear"' in page.text
@@ -4209,7 +4210,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' not in page.text
     assert 'aria-label="Workspace navigation"' in page.text
     assert "My Library" in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20261019-delete-confirmation-content"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20261023-batch-startup-ownership"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -4644,7 +4645,7 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
 
     assert page.status_code == 200
     assert "/static/css/tokens.css?v=20260902-control-height" in page.text
-    assert "/static/css/transcribe.css?v=20261016-accessible-manual-guide" in page.text
+    assert "/static/css/transcribe.css?v=20261022-compact-diarized-turns" in page.text
     assert "/static/css/transcribe-mobile.css" in page.text
     assert "/static/js/workspace/app.js" in page.text
     assert page.text.count("/static/js/transcribe/mobile.js?v=20260823-mobile-toast") == 1
@@ -5019,7 +5020,9 @@ def test_transcribe_workspace_refresh_renders_updated_pii_entities():
     app_js = Path("app/static/js/transcribe/app.js").read_text()
     transcript_branch = app_js.split("if (transcript) {", 1)[1].split("} else {", 1)[0]
 
-    assert "workspaceTranscriptPiiEntities = uniquePiiEntities(workspace.active_transcript_pii_entities || []);" in app_js
+    assert "workspaceTranscriptPiiEntities = transcriptTurnsEditor?.dirty\n          ? []\n          : uniquePiiEntities(workspace.active_transcript_pii_entities || []);" in app_js
+    assert "if (piiRegionChanged) {\n            renderPiiEntities(workspaceTranscriptPiiEntities, { updateTranscriptHighlights: false });" in transcript_branch
+    assert "if (piiRegionChanged) {\n            renderPiiEntities([], { updateTranscriptHighlights: false });" in app_js
     assert "renderDraft(draftText, { force: activeTranscriptChanged });" in transcript_branch
     assert "if (piiRegionChanged) {\n            renderPiiEntities(workspaceTranscriptPiiEntities, { updateTranscriptHighlights: false });" in transcript_branch
 
@@ -5068,7 +5071,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20261019-delete-confirmation-content" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261023-batch-startup-ownership" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -6450,7 +6453,8 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "markVadSpeechEndedOrIdle();" in media_js
     assert "silencePromptDismissedForCurrentSilentInterval = true;" in media_js
     assert "resetSilencePromptState();" in media_js
-    assert "batchVadInstance = await buildBatchVadInstance();" in media_js
+    assert "preparedVad = await buildBatchVadInstance({ generation: captureGeneration, transcriptId });" in media_js
+    assert "batchVadInstance = preparedVad;" in media_js
     assert "Speech detected. Voice-only batch capture is running..." in media_js
     assert "microphone-batch.wav" in media_js
     assert 'data-mic-visualizer' in workspace_html
@@ -6578,7 +6582,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "runQuickActionTrigger.disabled = !canUsePrimaryFollowupAction;" in app_js
     assert "if (!dom.quickActionContextInput?.value?.trim()) {" in actions_js
     assert "showFlash('Choose a quick action or add context.', 'warning');" in actions_js
-    assert "./actions.js?v=20261019-delete-confirmation-content" in app_js
+    assert "./actions.js?v=20261021-example-consultation" in app_js
     assert "const isDiscardableEmptyWorkingNoteDraft = () => (" in app_js
     assert "return { kind: 'working_note_empty_draft_discarded' };" in app_js
     assert "Empty working-note draft ignored." in app_js
@@ -6612,7 +6616,8 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "await saveWorkingNoteBeforeGeneration?.();" in actions_js
     assert "Clear the working note before generating." in app_js
     assert "const persistNoteEditsUntilDrained = async ({ keepalive = false, targetTranscriptId = transcriptId } = {}) => {" in app_js
-    assert "noteSaveQueued = true;\n            savedDocument = await noteSaveInFlight;" in app_js
+    assert "save: ({ keepalive, targetTranscriptId: saveTranscriptId }) => persistNoteEditsSilently" in app_js
+    assert "persistNoteEditsSilently: persistNoteEditsUntilDrained," in app_js
     assert "const saved = await persistNoteEditsUntilDrained({ keepalive: false, targetTranscriptId });" in app_js
     assert "includeUncheckedStructuredLines: false" not in app_js
     assert "let noteGenerationInFlight = null;" in app_js
@@ -6662,7 +6667,8 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "lastSavedStructuredContext" not in structured_js
     assert "method: 'PATCH'" in app_js
     assert "keepalive," in app_js
-    assert "void persistNoteEditsSilently();" in app_js
+    assert "void noteAutosave.flush({ keepalive: true });" in app_js
+    assert "persistNoteEditsSilently: persistNoteEditsUntilDrained," in app_js
     assert "window.showToast?.(message, kind);" in app_js
     assert "flashWrap.hidden = true;" in app_js
     assert ".statement-input" in transcribe_css
@@ -6873,7 +6879,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20261019-delete-confirmation-content" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261023-batch-startup-ownership" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():
@@ -7311,7 +7317,8 @@ def test_recorded_upload_microphone_rolls_over_before_whole_file_limits():
     assert "batchForceRolloverRequested = true;" in media_js
     assert "void rolloverMicrophoneBatchCapture();" in media_js
     assert "batchRolloverUploadPending = true;" in media_js
-    assert "const uploaded = await queueMicrophoneBatchUpload(blob, { rollover: true, transcriptId });" in media_js
+    normalized_media_js = " ".join(media_js.split())
+    assert "const uploaded = await queueMicrophoneBatchUpload(blob, { rollover: true, transcriptId, captureSettingsId: batchCaptureSettings?.captureSettingsId || null, });" in normalized_media_js
     assert "if (!uploaded) {" in media_js
     assert "No later audio was recorded after the failed part." in media_js
     assert "batchSpeechSegments = [];" in media_js
@@ -7322,11 +7329,11 @@ def test_recorded_upload_microphone_rolls_over_before_whole_file_limits():
     assert "const transcriptId = activeBatchTranscriptId();" in media_js
     assert "return true;" in media_js
     assert "return false;" in media_js
-    assert "await queueMicrophoneBatchUpload(blob, { transcriptId });" in media_js
-    assert "await uploadBatchAudio(blob, { transcriptId: uploadTranscriptId, idempotencyKey });" in media_js
+    assert "await queueMicrophoneBatchUpload(blob, { transcriptId, captureSettingsId });" in media_js
+    assert "await uploadBatchAudio(blob, { transcriptId: uploadTranscriptId, idempotencyKey, captureSettingsId });" in media_js
     assert "`/api/v1/transcripts/${uploadTranscriptId}/audio-file`" in media_js
     assert "if (typeof uploadBatchAudio === 'function') {" in media_js
-    assert "await uploadBatchAudio(blob, { transcriptId: uploadTranscriptId, idempotencyKey });" in media_js
+    assert "await uploadBatchAudio(blob, { transcriptId: uploadTranscriptId, idempotencyKey, captureSettingsId });" in media_js
     assert "isCaptureUiActive: () => (" in media_js
     assert "setMicButtons(isCaptureUiActive());" in app_js
     assert "captureController?.isCaptureUiActive?.()" in app_js

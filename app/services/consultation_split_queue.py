@@ -47,6 +47,8 @@ from app.services.consultation_splits import (
 from app.services.llm import resolve_user_llm
 from app.services.llm_adapters.runtime import build_provider_snapshot
 from app.services.llm_adapters.types import LlmProviderSnapshot
+from app.services.llm_backup import freeze_backup_selection
+from app.services.llm_backup import effective_provider_attempt
 from app.services.preferences import consultation_splitting_enabled
 from app.services.task_outbox import try_publish_task_dispatch_safely
 
@@ -183,10 +185,14 @@ def _retry_failed_prepared_split_analysis(
     ):
         return _PreparedSplitAnalysisQueueDecision(QueueOrReuseSplitAnalysisResult("incomplete", analysis=locked_analysis))
     for prior in executions:
-        attempt = db.scalar(select(ProviderAttempt).where(
+        primary_attempt = db.scalar(select(ProviderAttempt).where(
             ProviderAttempt.consultation_split_execution_id == prior.id,
+            ProviderAttempt.backup_of_attempt_id.is_(None),
         ).with_for_update())
-        if attempt is None or attempt.status not in {AttemptStatus.cancelled, AttemptStatus.settled}:
+        if primary_attempt is None or primary_attempt.status not in {AttemptStatus.cancelled, AttemptStatus.settled}:
+            return _PreparedSplitAnalysisQueueDecision(QueueOrReuseSplitAnalysisResult("incomplete", analysis=locked_analysis))
+        backup_attempt = effective_provider_attempt(db, primary=primary_attempt, lock=True)
+        if backup_attempt.status not in {AttemptStatus.cancelled, AttemptStatus.settled}:
             return _PreparedSplitAnalysisQueueDecision(QueueOrReuseSplitAnalysisResult("incomplete", analysis=locked_analysis))
     latest = executions[-1]
     if latest.status is ConsultationSplitExecutionStatus.completed or latest.llm_config_id is None:
@@ -349,6 +355,9 @@ def _queue_or_reuse_prepared_split_analysis(
                 source_snapshot=prepared.source_snapshot,
                 candidate_template_snapshot=prepared.candidate_template_snapshot,
                 provider_snapshot=provider_snapshot,
+            )
+            freeze_backup_selection(
+                db, source=analysis, owner_user_id=actor.id, team_id=state.team_id,
             )
             execution, _attempt, dispatch = queue_split_execution(
                 db,

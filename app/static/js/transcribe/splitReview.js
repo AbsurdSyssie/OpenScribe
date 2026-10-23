@@ -125,10 +125,17 @@ export function createSplitAnalysisRestorationPoller({
     const state = currentState();
     const analysis = state.analysis;
     if (!state.capabilityEnabled || !state.transcriptId || !analysis?.analysis_id) return null;
-    if (!IN_FLIGHT_ANALYSIS_STATUSES.has(analysis.status)) return null;
+    const awaitingManualReviewDraft = Boolean(
+      state.intent?.manual_review_requested
+      && state.intent?.status === 'analysis_pending'
+      && state.intent?.analysis_id === analysis.analysis_id
+      && ['ready', 'not_required'].includes(analysis.status)
+      && !(state.draft?.status === ACTIVE_STATUS && state.draft?.analysis_id === analysis.analysis_id)
+    );
+    if (!IN_FLIGHT_ANALYSIS_STATUSES.has(analysis.status) && !awaitingManualReviewDraft) return null;
     return {
       transcriptId: String(state.transcriptId),
-      signature: [analysis.analysis_id, analysis.status, analysis.updated_at || ''].join('|'),
+      signature: [analysis.analysis_id, analysis.status, analysis.updated_at || '', awaitingManualReviewDraft ? 'awaiting-review-draft' : ''].join('|'),
     };
   };
   const clearScheduled = () => {
@@ -637,7 +644,11 @@ export function createSplitGenerateController({
     operation.continueEligible = false;
     if (IN_FLIGHT_ANALYSIS_STATUSES.has(status)) {
       updateContinueAvailability(operation);
-      setOperationStatus(analysisStatusMessage(analysis));
+      setOperationStatus(operation.submissionAccepted && operation.intentId
+        ? (operation.manualReviewRequested
+          ? 'Suggested problems are being prepared. This request is saved and will continue if you leave this page.'
+          : 'Your note split is being prepared. This request is saved and will continue if you leave this page.')
+        : analysisStatusMessage(analysis), operation.submissionAccepted ? 'progress' : 'info');
       return;
     }
     if (status === 'not_required' && operation.manualReviewRequested && operation.intentId && !operation.consumed) {
@@ -1310,8 +1321,8 @@ export function createSplitReviewController({
     const readOnly = isReadOnly();
     const controlsDisabled = readOnly || saving || continuing || confirming;
     setDisabled(topicList, controlsDisabled);
-    closeButtons.forEach((button) => { button.disabled = saving || continuing; });
-    if (modal) modal.setAttribute('aria-busy', String(saving || continuing));
+    closeButtons.forEach((button) => { button.disabled = saving || continuing || confirming; });
+    if (modal) modal.setAttribute('aria-busy', String(saving || continuing || confirming));
     const validation = readOnly ? { valid: false } : validateSplitDraft(localDraft);
     const confirmationValidation = readOnly ? { valid: false } : validateSplitDraftForConfirmation(localDraft);
     const shouldContinueAsOneNote = continueAvailable && isAllMergedOneNoteDraft(localDraft);
@@ -1613,7 +1624,7 @@ export function createSplitReviewController({
 
   const close = ({ force = false } = {}) => {
     if (!opened) return true;
-    if (!force && (saving || continuing)) return false;
+    if (!force && (saving || continuing || confirming)) return false;
     if (!force && dirty && !confirmDiscard()) return false;
     if (force) {
       saveGeneration += 1;
@@ -1921,6 +1932,7 @@ export function createSplitReviewController({
     const draftId = localDraft.draft_id;
     const confirmationTranscriptId = activeTranscriptId;
     confirming = true;
+    setStatus('Starting note creation from the reviewed problems. This may take a moment.', 'progress');
     updateControlState();
     try {
       const response = await fetcher(`/api/v1/transcripts/${confirmationTranscriptId}/consultation-split-draft/confirm`, {

@@ -10,6 +10,7 @@ from app.models import (
     ProviderSecretCleanupJob,
     ProviderSecretCleanupKind,
     Team,
+    TeamLlmBackupSelection,
     TeamLlmConfig,
     TeamSttConfig,
     utcnow,
@@ -506,6 +507,7 @@ def test_deidentification_replacement_queue_failure_compensates_only_new_vault_r
     assert db_session.scalar(select(ProviderSecretCleanupJob).where(ProviderSecretCleanupJob.secret_ref == new_secret_ref)) is not None
 
 
+@pytest.mark.parametrize("with_backup", [False, True])
 def test_team_delete_queues_stt_and_llm_refs_without_direct_vault_deletion(
     db_session,
     make_team,
@@ -513,6 +515,7 @@ def test_team_delete_queues_stt_and_llm_refs_without_direct_vault_deletion(
     make_stt_config,
     make_llm_config,
     monkeypatch,
+    with_backup,
 ):
     admin = make_user(email="team-delete-cleanup-admin@example.com", is_system_admin=True)
     team = make_team(name="Team durable cleanup")
@@ -521,6 +524,11 @@ def test_team_delete_queues_stt_and_llm_refs_without_direct_vault_deletion(
     llm_config = make_llm_config(team=team, actor=admin, label="Team LLM")
     stt_secret_ref = stt_config.vault_secret_ref
     llm_secret_ref = llm_config.vault_secret_ref
+    if with_backup:
+        db_session.add(TeamLlmBackupSelection(
+            team_id=team.id, llm_config_id=llm_config.id, model_name=llm_config.model_name,
+        ))
+        db_session.commit()
     direct_vault_deletes = []
     monkeypatch.setattr(
         "app.services.vault.delete_provider_secret_by_ref",
@@ -532,6 +540,7 @@ def test_team_delete_queues_stt_and_llm_refs_without_direct_vault_deletion(
     assert db_session.get(Team, team.id) is None
     assert db_session.get(TeamSttConfig, stt_config.id) is None
     assert db_session.get(TeamLlmConfig, llm_config.id) is None
+    assert db_session.get(TeamLlmBackupSelection, team.id) is None
     assert db_session.get(type(member), member.id) is None
     assert direct_vault_deletes == []
     cleanup_jobs = {

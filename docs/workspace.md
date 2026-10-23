@@ -33,11 +33,23 @@ Browser `sessionStorage` remembers only the active transcript UUID under `opensc
 
 Create-new-consultation controls in every workspace section use the signed-in user's normalized preferred recording mode. They fall back to whole-file upload only when no supported preference is set.
 
+On the first fully authenticated Scribe visit, new accounts and existing accounts with no sign-in, consultation-root, or recorded root-deletion history receive one fictional **Example consultation**. It includes a sample transcript, structured Working note, saved dictation, editable consultation-note draft, and editable follow-up draft. The example is clearly labelled and follows the owner's normal team retention period. Recording or uploading while the example is open starts a fresh consultation so real content is not added to the example. The example is seeded once; deleting or allowing it to expire does not recreate it. Existing accounts whose history cannot establish first use are left unchanged.
+
 ## Recording navigation lock
 
 The media controller emits recording lifecycle events. Shared workspace code disables only controls marked `data-recording-navigation` while microphone capture is active and installs a `beforeunload` warning. Upload, transcription, generation, and other background states do not emit these events and therefore do not lock navigation.
 
 Post-consultation dictation remains a separate source from the consultation transcript. Save and Save & Generate can be selected while its microphone is recording or paused; the workspace waits for capture to stop and the preview transcription to finish before saving or queueing generation. A failed or empty preview requires an explicit retry.
+
+## Diarised transcript review
+
+Consultation sources display compact speaker turns with labels separate from their text. Recording headings appear when a transcript contains multiple recordings; a single recording does not need a heading. Within each recording, Speaker 1–4 use distinct subtle tints keyed to their stable presentation labels; later speakers and unattributed `?` turns use the neutral background. Removing a turn does not change another speaker's tint. Speaker labels are scoped to recording/provider continuity. Dictation remains separate and does not use diarisation. Custom live chunking does not offer diarisation; supported live and batch sources follow administrator availability and the user's default-off preference.
+
+After transcription finishes, each turn's text is directly editable. Enter and paste stay within that turn; additions outside existing turns are unattributed. A contextual action deletes a whole turn. An edited marker distinguishes corrected text while retaining the original audio interval. Speaker reassignment is outside the initial editor.
+
+Transcript edits and Working note edits share autosave scheduling and queued-save mechanics, with separate source state and requests. Note edits use one serialized save queue: switching between note documents drains the active save and any newer edit before changing the selection, so both updates use the right saved revision. Pending edits must be saved before generation, consultation navigation, or another recording starts. Failed or conflicting saves keep the latest draft in page memory and block the dependent action. Polling must not overwrite unsaved edits. The masked PII view remains read-only until revealed. No transcript draft is stored in browser persistent storage.
+
+PII highlights and masking are bound to the saved structured revision. While current PII results are unavailable or edits remain unsaved, masking covers the turn text rather than applying stale offsets. A late poll from before an accepted save cannot replace that saved revision. Closing or reloading with unsaved transcript edits triggers the browser's unsaved-change warning; the page-exit save remains best-effort.
 
 ## Layout and scrolling
 

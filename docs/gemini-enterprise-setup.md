@@ -201,6 +201,16 @@ An HTTP 400 without a structured model- or location-unavailable reason is classi
 - For `europe-west2`, check the current model page carefully: endpoint/model availability does not imply Standard PayGo availability.
 - Compare with `global`, `us`, or `eu` only when their broader processing boundary is acceptable; do not change location solely to bypass residency policy.
 
+For `gemini-3.8-flash`, Google lists the `eu` multi-region endpoint for Standard PayGo and Provisioned Throughput. EU support does not guarantee available capacity: the EU pool is separate from Google's global pool. Standard PayGo uses shared capacity, and a 429 can indicate temporary shared-pool contention rather than a fixed project quota. With capacity mode `auto`, OpenScribe omits the explicit shared/dedicated request header; use Google's `PublisherModel` monitoring `request_type` and `shared_request_type` metrics to see how requests were actually served. See Google's [Standard PayGo](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/standard-paygo), [Gemini 3.8 Flash](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-8-flash), and [Cloud Monitoring metric catalog](https://docs.cloud.google.com/monitoring/api/metrics_gcp_a_b).
+
+To investigate a fixed quota, query `serviceruntime.googleapis.com/quota/exceeded` for the `consumer_quota` resource and `aiplatform.googleapis.com` service, then inspect its `quota_metric`, `limit_name`, and location labels around the event time. A positive point is evidence of a fixed quota limit being exceeded. No returned series does not rule out shared-capacity contention or establish that the account has no quota constraints; Google notes that quota metrics are not supported by every service. See [Chart and monitor quota metrics](https://docs.cloud.google.com/monitoring/alerts/using-quota-metrics). Use aggregated status, capacity-class, and latency metrics only; do not log or inspect prompts, generated responses, or raw provider error bodies.
+
+### Gemini generation returns HTTP 504
+
+Inspect the content-free provider-attempt transport events. An event with `code="timeout"` and `http_status=504` records an upstream HTTP 504 response. A timeout with `http_status=null` records a local timeout or transport exception and does not identify an upstream HTTP status. When an HTTP 504 follows a temporary-capacity HTTP 429, compare both event durations and the retry wait with the shared 90-second generation-stage budget: the retry uses the time remaining in that same budget, so a late retry can have only a short request timeout. This sequence can help explain timing, but does not prove that every 504 was caused by a preceding retry.
+
+Use only the allowlisted event fields for diagnosis. Do not inspect raw provider payloads or response bodies. When proposing a longer timeout, check the durable attempt deadline, checker budget, worker capacity, and retry policy together. Escalate recurring events with their safe event metadata and timestamps for provider-side investigation.
+
 ### Setup succeeds but generation fails
 
 - Verify ADC in the Celery worker, not only the web container/process.

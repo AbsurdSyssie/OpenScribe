@@ -56,7 +56,8 @@ def test_workspace_scribe_and_personal_routes_load(client, make_team, make_user)
     assert 'id="workspace-help-title"' in help_page.text
     assert 'href="/workspace/help"' in scribe.text
     assert 'data-start-guide' in scribe.text
-    assert 'data-sidebar-step=' not in scribe.text, "Scribe must not render non-Scribe sidebar width buttons"
+    assert 'data-sidebar-step="-16"' in scribe.text
+    assert 'data-sidebar-step="16"' in scribe.text
     assert 'data-sidebar-step="-16"' in help_page.text
     assert 'data-sidebar-step="16"' in help_page.text
     assert 'aria-current="page"' in help_page.text

@@ -10575,7 +10575,7 @@ def test_structured_hallucination_check_provider_failure_records_safe_debug(
         raise AppError(
             502,
             "llm_generation_failed",
-            "The LLM provider rejected the generation request",
+            "Provider failure detail PATIENT_SENTINEL must not enter debug metadata",
             {"provider_http_status": 400, "provider_error_code": "bad_request"},
         )
 
@@ -10609,10 +10609,15 @@ def test_structured_hallucination_check_provider_failure_records_safe_debug(
     detail = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
     debug = detail.json()[0]["hallucination_check_debug_json"]
     assert detail.json()[0]["hallucination_check_bucket"] == "unchecked"
-    assert debug["failure_code"] == "llm_generation_failed"
-    assert debug["failure_message"] == "The LLM provider rejected the generation request"
-    assert debug["provider_http_status"] == 400
-    assert debug["provider_error_code"] == "bad_request"
+    assert debug == {
+        "failure_code": "llm_generation_failed",
+        "provider_error_code": "bad_request",
+        "provider_http_status": 400,
+        "retry_count": 0,
+    }
+    assert "PATIENT_SENTINEL" not in detail.text
+    assert "initial_note" not in debug
+    assert "checker_edits" not in debug
 
 
 def test_structured_hallucination_check_invalid_response_retries_and_settles_each_attempt(
@@ -10743,7 +10748,7 @@ def test_structured_hallucination_check_vault_failure_does_not_fail_document(
     def fake_read_team_llm_bearer_token(*, team_id, config_id, secret_ref=None):
         assert config_id == checker_config.id
         assert secret_ref == checker_config.vault_secret_ref
-        raise AppError(502, "vault_read_failed", "Vault secret read failed")
+        raise AppError(502, "vault_read_failed", "Vault detail CREDENTIAL_SENTINEL must not enter debug metadata")
 
     monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
     monkeypatch.setattr("app.services.templates.read_team_llm_bearer_token", fake_read_team_llm_bearer_token)
@@ -10777,8 +10782,15 @@ def test_structured_hallucination_check_vault_failure_does_not_fail_document(
     detail = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
     debug = detail.json()[0]["hallucination_check_debug_json"]
     assert detail.json()[0]["hallucination_check_bucket"] == "unchecked"
-    assert debug["failure_code"] == "vault_read_failed"
-    assert debug["failure_message"] == "Vault secret read failed"
+    assert debug == {
+        "failure_code": "vault_read_failed",
+        "provider_error_code": None,
+        "provider_http_status": None,
+        "retry_count": 0,
+    }
+    assert "CREDENTIAL_SENTINEL" not in detail.text
+    assert "initial_note" not in debug
+    assert "checker_edits" not in debug
 
 
 def test_openai_generation_extracts_text_from_content_part_dicts(monkeypatch):
@@ -19149,11 +19161,21 @@ def test_processing_live_audio_chunk_jobs_applies_text_in_sequence(client, db_se
         segment_start_field,
         segment_end_field,
         segment_speaker_field,
+        stt_diarisation_enabled,
+        diarization_batch_enabled,
+        diarization_field_name,
+        diarization_on_value,
+        diarization_off_value,
         audio_bytes,
         filename,
         content_type,
         _resolved_bearer_token,
     ):
+        assert stt_diarisation_enabled is False
+        assert diarization_batch_enabled is False
+        assert diarization_field_name is None
+        assert diarization_on_value == "true"
+        assert diarization_off_value == "false"
         assert team_id == team.id
         assert stt_config_id == config.id
         assert provider_preset == config.provider_preset
@@ -21347,11 +21369,21 @@ def test_processing_audio_file_job_appends_transcript_draft_and_marks_ready(clie
         segment_start_field,
         segment_end_field,
         segment_speaker_field,
+        stt_diarisation_enabled,
+        diarization_batch_enabled,
+        diarization_field_name,
+        diarization_on_value,
+        diarization_off_value,
         audio_bytes,
         filename,
         content_type,
         _resolved_bearer_token,
     ):
+        assert stt_diarisation_enabled is False
+        assert diarization_batch_enabled is False
+        assert diarization_field_name is None
+        assert diarization_on_value == "true"
+        assert diarization_off_value == "false"
         assert team_id == team.id
         assert stt_config_id == config.id
         assert provider_preset == config.provider_preset
@@ -21555,11 +21587,21 @@ def test_audio_file_job_uses_snapshotted_stt_selection_after_team_selection_chan
         segment_start_field,
         segment_end_field,
         segment_speaker_field,
+        stt_diarisation_enabled,
+        diarization_batch_enabled,
+        diarization_field_name,
+        diarization_on_value,
+        diarization_off_value,
         audio_bytes,
         filename,
         content_type,
         _resolved_bearer_token,
     ):
+        assert stt_diarisation_enabled is False
+        assert diarization_batch_enabled is False
+        assert diarization_field_name is None
+        assert diarization_on_value == "true"
+        assert diarization_off_value == "false"
         assert team_id == team.id
         assert stt_config_id == config_one.id
         assert provider_preset == config_one.provider_preset
@@ -22777,6 +22819,10 @@ def test_generation_duplicate_delivery_serializes_before_provider_bound_preparat
 
     monkeypatch.setattr(template_service, "ensure_redaction_run_for_transcript_version", count_redaction)
     monkeypatch.setattr(template_service, "_generate_freeform_output_openai", generate)
+    # This test isolates database-backed duplicate-delivery serialization. The
+    # production provider execution guard intentionally rejects thread workers;
+    # patch only that guard because the mocked provider call performs no I/O.
+    monkeypatch.setattr(template_service, "require_supported_execution_context", lambda: None)
 
     def deliver():
         with Session(bind=db_session.get_bind(), future=True) as worker_db:

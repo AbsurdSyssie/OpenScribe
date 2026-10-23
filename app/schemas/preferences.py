@@ -47,6 +47,8 @@ class UserAppPreferencesUpsert(BaseModel):
     note_generation_length: NoteGenerationLength | None = None
     preferred_recording_mode: TranscriptIngestionMode | None = None
     preferred_transcribe_tab: Literal["output", "followups"] | None = None
+    diarization_enabled: bool = False
+    diarization_warning_acknowledged: bool = False
 
     @field_validator("favorite_quick_action_ids", "favorite_template_ids")
     @classmethod
@@ -72,5 +74,7 @@ class UserAppPreferencesDetail(BaseModel):
     note_generation_length: NoteGenerationLength | None
     preferred_recording_mode: TranscriptIngestionMode | None
     preferred_transcribe_tab: Literal["output", "followups"] | None
+    diarization_enabled: bool = False
+    diarization_warning_acknowledged: bool = False
     created_at: datetime
     updated_at: datetime

@@ -101,6 +101,7 @@ run_runtime() {
   uvicorn app.main:app \
     --host 0.0.0.0 \
     --port "${CONTAINER_APP_PORT:-8080}" \
+    --log-level info \
     --ws-max-size 65536 \
     --ws-max-queue 4 \
     --proxy-headers \

@@ -3,13 +3,13 @@ import logging
 from uuid import UUID, uuid4
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
-from app.models import ConsultationSplitExecution, ConsultationSplitExecutionStatus, GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, LlmConfigSetupStatus, LlmProviderPreset, ProviderSecretCleanupKind, Team, TeamHallucinationCheckSelection, TeamLlmConfig, TeamLlmSelection, TeamRole, TemplateSuggestionJob, TemplateSuggestionStatus, User, UserLlmPreference, utcnow
-from app.schemas import HallucinationCheckSelectionUpsert, LlmConfigDraftCreate, LlmConfigDraftReplaceCredential, LlmConfigFinalize, LlmConfigInspectResult, LlmConfigUpsert, LlmInspectRequest, LlmModelOption, LlmSelectionUpsert, UserLlmPreferenceUpsert
+from app.models import ConsultationSplitAnalysis, ConsultationSplitAnalysisStatus, ConsultationSplitBatch, ConsultationSplitBatchStatus, ConsultationSplitExecution, ConsultationSplitExecutionStatus, GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, LlmConfigSetupStatus, LlmProviderPreset, ProviderSecretCleanupKind, Team, TeamHallucinationCheckSelection, TeamLlmBackupSelection, TeamLlmConfig, TeamLlmSelection, TeamRole, TemplateSuggestionJob, TemplateSuggestionStatus, User, UserLlmPreference, utcnow
+from app.schemas import HallucinationCheckSelectionUpsert, LlmBackupSelectionUpsert, LlmConfigDraftCreate, LlmConfigDraftReplaceCredential, LlmConfigFinalize, LlmConfigInspectResult, LlmConfigUpsert, LlmInspectRequest, LlmModelOption, LlmSelectionUpsert, UserLlmPreferenceUpsert
 from app.services.llm_presets import (
     apply_provider_defaults,
     default_llm_config_label,
@@ -32,6 +32,9 @@ from app.services.llm_adapters.gemini_enterprise import (
     validate_gemini_model,
 )
 from app.services.llm_credentials import google_service_account_secret, resolve_llm_runtime_credential
+from app.services.llm_adapters.runtime import build_provider_snapshot, validate_provider_snapshot_shape
+from app.services.content_crypto import decrypt_json_for_owner, is_encrypted_envelope
+from app.services.llm_backup import retire_backup_snapshots_for_config
 from app.services.provider_credential_persistence import provider_credential_write_transaction
 from app.services.provider_secret_cleanup import queue_orphan_provider_secret_after_rollback, queue_provider_secret_cleanup
 from app.services.provider_inspection import read_limited_httpx_response
@@ -314,6 +317,18 @@ def _reconcile_llm_config_model_selections(db: Session, *, config: TeamLlmConfig
                 selection.model_name_override = allowed_models[0] if allowed_models else None
         selection.allowed_models_json = allowed_models
         db.add(selection)
+
+    backup_selection = db.scalar(
+        select(TeamLlmBackupSelection)
+        .where(TeamLlmBackupSelection.llm_config_id == config.id)
+        .with_for_update()
+    )
+    if backup_selection is not None and backup_selection.model_name not in provider_models:
+        if default_model is None:
+            db.delete(backup_selection)
+        else:
+            backup_selection.model_name = default_model
+            db.add(backup_selection)
 
     checker_selection = db.scalar(
         select(TeamHallucinationCheckSelection)
@@ -647,7 +662,7 @@ def update_llm_config_details(
             TeamLlmConfig.team_id == team.id,
             TeamLlmConfig.revision_of_config_id.is_(None),
             TeamLlmConfig.setup_status == LlmConfigSetupStatus.ready,
-        )
+        ).execution_options(populate_existing=True).with_for_update()
     )
     if config is None:
         raise AppError(404, "not_found", "Ready LLM config not found", {"resource": "llm_config", "config_id": str(config_id)})
@@ -673,7 +688,7 @@ def update_llm_config_details(
 def _llm_config_has_in_flight_jobs(db: Session, *, config_id: UUID) -> bool:
     generated_document_id = db.scalar(
         select(GeneratedDocument.id).where(
-            GeneratedDocument.llm_config_id == config_id,
+            or_(GeneratedDocument.llm_config_id == config_id, GeneratedDocument.backup_llm_config_id == config_id),
             GeneratedDocument.status.in_([GeneratedDocumentStatus.queued, GeneratedDocumentStatus.processing]),
         ).limit(1)
     )
@@ -681,20 +696,76 @@ def _llm_config_has_in_flight_jobs(db: Session, *, config_id: UUID) -> bool:
         return True
     suggestion_job_id = db.scalar(
         select(TemplateSuggestionJob.id).where(
-            TemplateSuggestionJob.llm_config_id == config_id,
+            or_(TemplateSuggestionJob.llm_config_id == config_id, TemplateSuggestionJob.backup_llm_config_id == config_id),
             TemplateSuggestionJob.status.in_([TemplateSuggestionStatus.queued, TemplateSuggestionStatus.processing]),
         ).limit(1)
     )
     if suggestion_job_id is not None:
         return True
-    return db.scalar(
+    split_execution_id = db.scalar(
         select(ConsultationSplitExecution.id).where(
-            ConsultationSplitExecution.llm_config_id == config_id,
+            or_(ConsultationSplitExecution.llm_config_id == config_id, ConsultationSplitExecution.backup_llm_config_id == config_id),
             ConsultationSplitExecution.status.in_(
                 [ConsultationSplitExecutionStatus.queued, ConsultationSplitExecutionStatus.processing]
             ),
         ).limit(1)
+    )
+    if split_execution_id is not None:
+        return True
+    split_analysis_id = db.scalar(
+        select(ConsultationSplitAnalysis.id).where(
+            ConsultationSplitAnalysis.backup_llm_config_id == config_id,
+            ConsultationSplitAnalysis.status.in_([ConsultationSplitAnalysisStatus.queued, ConsultationSplitAnalysisStatus.processing]),
+        ).limit(1)
+    )
+    if split_analysis_id is not None:
+        return True
+    return db.scalar(
+        select(ConsultationSplitBatch.id).where(
+            ConsultationSplitBatch.backup_llm_config_id == config_id,
+            ConsultationSplitBatch.status.in_([
+                ConsultationSplitBatchStatus.generation_queued,
+                ConsultationSplitBatchStatus.generating,
+                ConsultationSplitBatchStatus.verifying,
+            ]),
+        ).limit(1)
     ) is not None
+
+
+def _validate_in_flight_backup_models(
+    db: Session, *, config: TeamLlmConfig, available_models: list[str],
+) -> None:
+    """Protect exact queued backup models without reading clinical content.
+
+    The config lock must already be held, so queue-time freezing cannot add a
+    reference between this check and credential replacement. Only the dedicated
+    provider-metadata ciphertext is selected/decrypted; no source payloads are
+    loaded on this administrator path. Corrupt metadata fails closed.
+    """
+    sources = (
+        (GeneratedDocument, [GeneratedDocumentStatus.queued, GeneratedDocumentStatus.processing]),
+        (TemplateSuggestionJob, [TemplateSuggestionStatus.queued, TemplateSuggestionStatus.processing]),
+        (ConsultationSplitAnalysis, [ConsultationSplitAnalysisStatus.queued, ConsultationSplitAnalysisStatus.processing]),
+        (ConsultationSplitBatch, [ConsultationSplitBatchStatus.generation_queued, ConsultationSplitBatchStatus.generating, ConsultationSplitBatchStatus.verifying]),
+        (ConsultationSplitExecution, [ConsultationSplitExecutionStatus.queued, ConsultationSplitExecutionStatus.processing]),
+    )
+    for model, statuses in sources:
+        rows = db.execute(select(
+            model.id, model.owner_user_id, model.team_id,
+            model.backup_provider_snapshot_encrypted,
+        ).where(model.backup_llm_config_id == config.id, model.status.in_(statuses)))
+        for row in rows:
+            if row.team_id != config.team_id or not is_encrypted_envelope(row.backup_provider_snapshot_encrypted):
+                raise AppError(409, "conflict", "Queued backup provider metadata is unavailable")
+            snapshot = validate_provider_snapshot_shape(decrypt_json_for_owner(
+                db, owner_user_id=row.owner_user_id, table=model.__tablename__,
+                field="backup_provider_snapshot_encrypted", record_id=row.id,
+                stored_value=row.backup_provider_snapshot_encrypted,
+            ))
+            if snapshot["llm_config_id"] != str(config.id):
+                raise AppError(409, "conflict", "Queued backup provider metadata is unavailable")
+            if snapshot["model"] not in available_models:
+                raise AppError(409, "conflict", "Replacement credential does not expose a model used by queued or processing backup generation", {"field": "bearer_token", "config_id": str(config.id)})
 
 
 def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCreate) -> tuple[TeamLlmConfig, LlmConfigInspectResult]:
@@ -830,9 +901,14 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
         raise AppError(404, "not_found", "LLM config not found", {"resource": "llm_config", "config_id": str(payload.config_id)})
     target = None
     if config.revision_of_config_id is not None:
-        target = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == config.revision_of_config_id, TeamLlmConfig.team_id == team.id, TeamLlmConfig.revision_of_config_id.is_(None)).with_for_update())
+        target = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == config.revision_of_config_id, TeamLlmConfig.team_id == team.id, TeamLlmConfig.revision_of_config_id.is_(None)).execution_options(populate_existing=True).with_for_update())
         if target is None:
             raise AppError(409, "conflict", "LLM revision target is unavailable")
+    config = db.scalar(select(TeamLlmConfig).where(
+        TeamLlmConfig.id == payload.config_id, TeamLlmConfig.team_id == team.id,
+    ).execution_options(populate_existing=True).with_for_update())
+    if config is None or (target is not None and config.revision_of_config_id != target.id):
+        raise AppError(409, "conflict", "LLM revision is unavailable")
     has_in_flight_jobs = _llm_config_has_in_flight_jobs(db, config_id=target.id if target is not None else config.id)
     if has_in_flight_jobs:
         raise AppError(409, "conflict", "Cannot edit this LLM config while generated documents are queued or processing", {"config_id": str(config.id)})
@@ -917,7 +993,7 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
 
 def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmConfigDraftReplaceCredential) -> tuple[TeamLlmConfig, LlmConfigInspectResult]:
     team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
-    config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == payload.config_id, TeamLlmConfig.team_id == team.id))
+    config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == payload.config_id, TeamLlmConfig.team_id == team.id).execution_options(populate_existing=True).with_for_update())
     if config is None:
         raise AppError(404, "not_found", "LLM config not found", {"resource": "llm_config", "config_id": str(payload.config_id)})
     is_gemini = config.adapter_kind is LlmAdapterKind.gemini_enterprise
@@ -926,6 +1002,12 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
     if not is_gemini and not payload.bearer_token:
         raise AppError(422, "business_rule_violation", "This LLM provider requires a bearer token")
     has_in_flight_jobs = _llm_config_has_in_flight_jobs(db, config_id=config.id)
+    replacement_auth_mode = (
+        LlmAuthMode.google_adc if payload.google_auth_method == "application_default"
+        else LlmAuthMode.google_service_account if is_gemini else LlmAuthMode.bearer
+    )
+    if has_in_flight_jobs and replacement_auth_mode is not config.auth_mode:
+        raise AppError(409, "conflict", "Cannot change authentication type while dependent work is queued or processing")
     was_ready = config.setup_status == LlmConfigSetupStatus.ready
     was_active = config.is_active
     existing_model_name = config.model_name
@@ -947,6 +1029,8 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
             "Replacement credential does not expose the model used by queued or processing generated documents",
             {"field": "bearer_token", "model_name": existing_model_name, "config_id": str(config.id)},
         )
+    if has_in_flight_jobs:
+        _validate_in_flight_backup_models(db, config=config, available_models=list(inspection.available_models))
     old_secret_ref = config.vault_secret_ref
     try:
         with provider_credential_write_transaction(db, kind=ProviderSecretCleanupKind.llm) as register_written_secret:
@@ -987,6 +1071,7 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
                 config.is_active = False
             config.updated_by_user_id = actor.id
             db.add(config)
+            _reconcile_llm_config_model_selections(db, config=config)
             if old_secret_ref and old_secret_ref != new_secret_ref:
                 queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[old_secret_ref])
             db.commit()
@@ -1011,7 +1096,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     is_gemini = adapter_kind is LlmAdapterKind.gemini_enterprise
     config = None
     if payload.config_id is not None:
-        config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == payload.config_id, TeamLlmConfig.team_id == team.id))
+        config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == payload.config_id, TeamLlmConfig.team_id == team.id).execution_options(populate_existing=True).with_for_update())
         if config is None:
             raise AppError(404, "not_found", "LLM config not found", {"resource": "llm_config", "config_id": str(payload.config_id)})
     creating = config is None
@@ -1051,6 +1136,14 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         )
     )
     has_in_flight_jobs = config is not None and _llm_config_has_in_flight_jobs(db, config_id=config.id)
+    incoming_auth_mode = (
+        _gemini_auth_mode(payload) if is_gemini
+        else LlmAuthMode.bearer if adapter_kind in {LlmAdapterKind.openai_chat, LlmAdapterKind.bedrock_chat}
+        or replacing_secret or (has_existing_secret and not removing_secret)
+        else LlmAuthMode.none
+    )
+    if has_in_flight_jobs and incoming_auth_mode is not config.auth_mode:
+        raise AppError(409, "conflict", "Cannot change authentication type while dependent work is queued or processing")
     submitted_model_name = (payload.model_name or "").strip()
     credential_correction_during_in_flight = (
         has_in_flight_jobs
@@ -1178,6 +1271,9 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
     else:
         available_models_json = []
 
+    if credential_correction_during_in_flight:
+        _validate_in_flight_backup_models(db, config=config, available_models=available_models_json)
+
     if credential_correction_during_in_flight and config is not None:
         model_name = config.model_name
     else:
@@ -1299,7 +1395,7 @@ def delete_llm_config(db: Session, actor: User, *, config_id: UUID, team_id: UUI
     # Queueing takes this same lock before it inserts its execution.  That
     # prevents a guard-then-SET-NULL race from detaching newly queued work.
     config = db.scalar(
-        select(TeamLlmConfig).where(TeamLlmConfig.id == config.id).with_for_update()
+        select(TeamLlmConfig).where(TeamLlmConfig.id == config.id).execution_options(populate_existing=True).with_for_update()
     )
     if config is None:
         raise AppError(404, "not_found", "LLM config not found", {"resource": "llm_config", "config_id": str(config_id)})
@@ -1310,9 +1406,18 @@ def delete_llm_config(db: Session, actor: User, *, config_id: UUID, team_id: UUI
             "Cannot delete this LLM config while dependent work is queued or processing",
             {"config_id": str(config.id)},
         )
+    # The FK uses ON DELETE SET NULL, but its encrypted snapshot is paired
+    # metadata. Retire both on terminal sources so a later retry can proceed
+    # with its frozen primary provider instead of treating the detached
+    # snapshot as corruption.
+    retire_backup_snapshots_for_config(db, config_id=config.id)
     selection = db.scalar(select(TeamLlmSelection).where(TeamLlmSelection.llm_config_id == config.id))
     if selection is not None:
         db.delete(selection)
+        db.flush()
+    backup_selection = db.scalar(select(TeamLlmBackupSelection).where(TeamLlmBackupSelection.llm_config_id == config.id))
+    if backup_selection is not None:
+        db.delete(backup_selection)
         db.flush()
     revisions = list(db.scalars(select(TeamLlmConfig).where(TeamLlmConfig.revision_of_config_id == config.id))) if config.revision_of_config_id is None else []
     revision_secrets = [item.vault_secret_ref for item in revisions if item.vault_secret_ref]
@@ -1435,6 +1540,94 @@ def clear_team_llm_selection(db: Session, actor: User, *, team_id: UUID | None =
     db.delete(selection)
     db.commit()
     _record_llm_audit(db, action="llm_selection_cleared", actor=actor, team_id=team.id)
+
+
+def get_team_llm_backup_selection(db: Session, actor: User, *, team_id: UUID) -> TeamLlmBackupSelection | None:
+    team = _resolve_admin_scoped_team(db, actor, team_id=team_id)
+    return db.scalar(
+        select(TeamLlmBackupSelection)
+        .options(joinedload(TeamLlmBackupSelection.config))
+        .where(TeamLlmBackupSelection.team_id == team.id)
+    )
+
+
+def set_team_llm_backup_selection(
+    db: Session, actor: User, payload: LlmBackupSelectionUpsert
+) -> TeamLlmBackupSelection | None:
+    team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
+    if payload.llm_config_id is None:
+        current = db.scalar(select(TeamLlmBackupSelection).where(
+            TeamLlmBackupSelection.team_id == team.id,
+        ).execution_options(populate_existing=True).with_for_update())
+        if current is None:
+            return None
+        deleted_config_id = current.llm_config_id
+        db.delete(current)
+        db.commit()
+        _record_llm_audit(db, action="llm_backup_selection_cleared", actor=actor, team_id=team.id, config_id=deleted_config_id)
+        return None
+
+    config = db.scalar(
+        select(TeamLlmConfig).where(
+            TeamLlmConfig.id == payload.llm_config_id,
+            TeamLlmConfig.team_id == team.id,
+            TeamLlmConfig.revision_of_config_id.is_(None),
+            TeamLlmConfig.is_active.is_(True),
+            TeamLlmConfig.setup_status == LlmConfigSetupStatus.ready,
+            TeamLlmConfig.model_name.is_not(None),
+        ).execution_options(populate_existing=True).with_for_update()
+    )
+    if config is None:
+        raise AppError(404, "not_found", "Selectable backup LLM config not found", {"resource": "llm_config", "config_id": str(payload.llm_config_id)})
+    current = db.scalar(select(TeamLlmBackupSelection).where(
+        TeamLlmBackupSelection.team_id == team.id,
+    ).execution_options(populate_existing=True).with_for_update())
+    model_name = (payload.model_name or "").strip()
+    if model_name not in list(config.available_models_json or []):
+        raise AppError(422, "business_rule_violation", "Selected backup model is not available for this LLM provider", {"field": "model_name"})
+    if current is None:
+        current = TeamLlmBackupSelection(
+            team_id=team.id,
+            llm_config_id=config.id,
+            model_name=model_name,
+        )
+    else:
+        current.llm_config_id = config.id
+        current.model_name = model_name
+    db.add(current)
+    db.commit()
+    db.refresh(current)
+    _record_llm_audit(db, action="llm_backup_selection_set", actor=actor, team_id=team.id, config_id=config.id)
+    return db.scalar(
+        select(TeamLlmBackupSelection)
+        .options(joinedload(TeamLlmBackupSelection.config))
+        .where(TeamLlmBackupSelection.team_id == team.id)
+    ) or current
+
+
+def snapshot_team_llm_backup(db: Session, *, team_id: UUID) -> dict[str, object] | None:
+    """Return an eligible team's backup as the standard non-secret provider snapshot."""
+    selection = db.scalar(
+        select(TeamLlmBackupSelection)
+        .options(joinedload(TeamLlmBackupSelection.config))
+        .where(TeamLlmBackupSelection.team_id == team_id)
+    )
+    if selection is None:
+        return None
+    config = selection.config
+    if config is None or selection.llm_config_id is None:
+        return None
+    models = list(config.available_models_json or [])
+    if (
+        config.team_id != team_id
+        or config.revision_of_config_id is not None
+        or not config.is_active
+        or config.setup_status != LlmConfigSetupStatus.ready
+        or not selection.model_name
+        or selection.model_name not in models
+    ):
+        return None
+    return build_provider_snapshot(config=config, model=selection.model_name).to_dict()
 
 
 def _resolve_checker_scoped_team(db: Session, actor: User, *, team_id: UUID | None) -> Team:

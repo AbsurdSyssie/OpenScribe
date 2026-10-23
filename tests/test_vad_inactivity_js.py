@@ -16,8 +16,21 @@ def test_vad_inactivity_prompt_dismiss_rearms_and_resets(tmp_path):
             const root = {str(root)!r};
             const mediaPath = `${{root}}/app/static/js/transcribe/media.js`;
             const mediaSource = fs.readFileSync(mediaPath, 'utf8')
-              .replace("import {{ csrfFetch }} from '../csrf.js';", "const csrfFetch = async () => ({{ ok: true }});")
-              .replace('export function createAudioCaptureController', 'function createAudioCaptureController');
+              .replace("import {{ csrfFetch, csrfToken }} from '../csrf.js';", `
+                const csrfFetch = async (url) => url.endsWith('/capture-settings')
+                  ? {{ ok: true, json: async () => ({{
+                    capture_settings_id: 'capture-settings-1',
+                    connection_type: 'batch',
+                    diarisation_enabled: false,
+                  }}) }}
+                  : {{ ok: true, json: async () => ({{}}) }};
+                const csrfToken = () => 'test-csrf-token';
+              `)
+              .replace("import {{ DeepgramLiveStream, trimPinnedVadSpeechBuffer }} from './deepgramLiveStream.js?v=20261017-deepgram-live-stream';", `
+                const DeepgramLiveStream = class {{}};
+                const trimPinnedVadSpeechBuffer = () => false;
+              `)
+              .replaceAll('export function ', 'function ');
 
             const makeElement = () => ({{
               hidden: true,
@@ -35,6 +48,7 @@ def test_vad_inactivity_prompt_dismiss_rearms_and_resets(tmp_path):
               const timers = new Map();
               const callbacks = [];
               const instances = [];
+              const microphoneStreams = [];
               const documentListeners = {{}};
 
               const setTimeoutFake = (callback, delay = 0) => {{
@@ -83,7 +97,11 @@ def test_vad_inactivity_prompt_dismiss_rearms_and_resets(tmp_path):
                   addEventListener(type, listener) {{ documentListeners[type] = listener; }},
                   dispatchEvent() {{ return true; }},
                 }},
-                navigator: {{ mediaDevices: {{ getUserMedia: async () => ({{ getTracks: () => [] }}) }} }},
+                navigator: {{ mediaDevices: {{ getUserMedia: async () => {{
+                  const stream = {{ tracks: [{{ stopped: false, stop() {{ this.stopped = true; }} }}], getTracks() {{ return this.tracks; }} }};
+                  microphoneStreams.push(stream);
+                  return stream;
+                }} }} }},
                 window: null,
               }};
               sandbox.window = {{
@@ -96,7 +114,13 @@ def test_vad_inactivity_prompt_dismiss_rearms_and_resets(tmp_path):
                   MicVAD: {{
                     new: async (options) => {{
                       callbacks.push(options);
-                      const instance = {{ start() {{}}, pause() {{}}, destroy() {{ instance.destroyed = true; }} }};
+                      const stream = await options.getStream();
+                      const instance = {{
+                        stream,
+                        start() {{ instance.started = true; }},
+                        pause() {{ void options.pauseStream(stream); }},
+                        destroy() {{ instance.destroyed = true; }},
+                      }};
                       instances.push(instance);
                       return instance;
                     }},
@@ -165,16 +189,19 @@ def test_vad_inactivity_prompt_dismiss_rearms_and_resets(tmp_path):
 
               const start = async () => {{
                 dom.recordToggleButton.click();
-                await Promise.resolve();
-                await Promise.resolve();
+                for (let attempt = 0; attempt < 20 && !instances[0]?.started; attempt += 1) {{
+                  await Promise.resolve();
+                }}
                 assert.equal(callbacks.length, 1);
+                assert.equal(instances[0]?.started, true, 'controller starts listening before silence timing begins');
               }};
 
-              return {{ advance, callbacks, controller, dom, documentListeners, instances, start }};
+              return {{ advance, callbacks, controller, dom, documentListeners, instances, microphoneStreams, start }};
             }};
 
             const dismissHarness = makeHarness();
             await dismissHarness.start();
+            assert.equal(dismissHarness.microphoneStreams.length, 1, 'VAD startup acquires a microphone stream');
             assert.equal(dismissHarness.dom.silencePrompt.hidden, true);
             dismissHarness.advance(50);
             assert.equal(dismissHarness.dom.silencePrompt.hidden, false, 'silent timer shows prompt');
@@ -187,6 +214,7 @@ def test_vad_inactivity_prompt_dismiss_rearms_and_resets(tmp_path):
             dismissHarness.advance(50);
             assert.equal(dismissHarness.dom.silencePrompt.hidden, false, 'new silent interval re-arms after speech');
             dismissHarness.dom.recordToggleButton.click();
+            assert.equal(dismissHarness.microphoneStreams[0].tracks[0].stopped, true, 'stopping capture releases the microphone stream');
             dismissHarness.advance(200);
             assert.equal(dismissHarness.dom.silencePrompt.hidden, true, 'stop resets prompt and timer');
 
@@ -195,6 +223,7 @@ def test_vad_inactivity_prompt_dismiss_rearms_and_resets(tmp_path):
             lifecycleHarness.advance(50);
             assert.equal(lifecycleHarness.dom.silencePrompt.hidden, false);
             assert.equal(lifecycleHarness.controller.handlePageLifecycleExit(), true);
+            assert.equal(lifecycleHarness.microphoneStreams[0].tracks[0].stopped, true, 'page lifecycle reset releases the microphone stream');
             lifecycleHarness.advance(200);
             assert.equal(lifecycleHarness.dom.silencePrompt.hidden, true, 'page lifecycle reset clears prompt and timer');
             """

@@ -80,6 +80,7 @@ from ..services.dictations import (
 from ..services.stt import active_team_stt_selection as active_team_stt_selection_service
 from ..services.stt import check_selected_stt_health as check_selected_stt_health_service
 from ..services.stt import resolve_selected_team_stt as resolve_selected_team_stt_service
+from ..services.stt import stt_config_supports_diarization
 from ..services.templates import (
     generated_document_text as generated_document_text_service,
     list_available_quick_actions_for_user as list_available_quick_actions_for_user_service,
@@ -88,6 +89,7 @@ from ..services.templates import (
     generated_document_section_text as generated_document_section_text_service,
 )
 from ..services.smart_phrases import list_available_smart_phrases as list_available_smart_phrases_service
+from ..services.structured_transcripts import current_turns_for_response
 from ..services.transcripts import (
     can_create_new_session as can_create_new_session_service,
     can_switch_transcript_ingestion_mode as can_switch_transcript_ingestion_mode_service,
@@ -777,6 +779,14 @@ def _pii_entity_response(
     )
 
 
+def _structured_current_version(db: Session, transcript: Transcript) -> TranscriptVersion | None:
+    from ..services.transcripts import _latest_matching_transcript_version
+
+    return _latest_matching_transcript_version(
+        db, transcript=transcript, plaintext=transcript_draft_text_service(db, transcript=transcript) or "",
+    )
+
+
 def transcript_pii_entities_response(
     db: Session,
     transcript: Transcript | None,
@@ -785,12 +795,15 @@ def transcript_pii_entities_response(
 ) -> list[TranscriptPiiEntitySummary | TranscriptPiiEntityDetail]:
     if transcript is None:
         return []
+    query = select(RedactionRun).where(
+        RedactionRun.transcript_id == transcript.id,
+        RedactionRun.owner_user_id == transcript.owner_user_id,
+    )
+    if transcript.current_draft_turns_encrypted is not None:
+        version = _structured_current_version(db, transcript)
+        query = query.where(RedactionRun.transcript_version_id == (version.id if version else None))
     redaction_run = db.scalar(
-        select(RedactionRun)
-        .where(
-            RedactionRun.transcript_id == transcript.id,
-            RedactionRun.owner_user_id == transcript.owner_user_id,
-        )
+        query
         .order_by(RedactionRun.created_at.desc(), RedactionRun.id.desc())
         .limit(1)
     )
@@ -889,12 +902,16 @@ def transcript_pii_entities_response(
 def transcript_redaction_status_response(db: Session, transcript: Transcript | None) -> dict[str, object]:
     if transcript is None:
         return {"status": "unavailable", "entity_count": 0, "error_code": None}
+    query = select(RedactionRun).where(
+        RedactionRun.transcript_id == transcript.id,
+        RedactionRun.owner_user_id == transcript.owner_user_id,
+    )
+    structured = transcript.current_draft_turns_encrypted is not None
+    if structured:
+        version = _structured_current_version(db, transcript)
+        query = query.where(RedactionRun.transcript_version_id == (version.id if version else None))
     latest_run = db.scalar(
-        select(RedactionRun)
-        .where(
-            RedactionRun.transcript_id == transcript.id,
-            RedactionRun.owner_user_id == transcript.owner_user_id,
-        )
+        query
         .order_by(RedactionRun.created_at.desc(), RedactionRun.id.desc())
         .limit(1)
     )
@@ -904,6 +921,7 @@ def transcript_redaction_status_response(db: Session, transcript: Transcript | N
         "status": latest_run.status.value,
         "entity_count": latest_run.entity_count,
         "error_code": latest_run.error_code,
+        **({"transcript_version_id": str(latest_run.transcript_version_id)} if structured else {}),
     }
 
 
@@ -1145,6 +1163,11 @@ def resolve_transcribe_workspace(
         )
     )
     workspace = {
+        "example_consultation_pending": bool(
+            current_user.example_consultation_pending
+            and not current_user.is_system_admin
+            and current_user.team_id is not None
+        ),
         "recent_transcripts": recent_transcripts,
         "recent_transcripts_next_cursor": recent_transcript_page["next_cursor"],
         "recent_transcripts_has_more": recent_transcript_page["has_more"],
@@ -1279,6 +1302,10 @@ def transcript_detail_response(db: Session, transcript: Transcript) -> Transcrip
     payload = transcript_list_item_response(db, transcript).model_dump()
     payload["multiple_problems"] = transcript.multiple_problems
     payload["current_draft_text"] = transcript_draft_text_service(db, transcript=transcript)
+    revision_id, turns = current_turns_for_response(db, transcript=transcript)
+    payload["structured_revision_id"] = revision_id
+    payload["structured_turns"] = turns
+    payload["structured_editable"] = bool(turns is not None and transcript.status is TranscriptStatus.ready)
     payload["structured_context_json"] = transcript_structured_context_service(db, transcript=transcript)
     if latest_job is not None:
         payload["next_live_chunk_sequence_no_upload"] = (
@@ -1317,6 +1344,37 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, 
     consultation_split_intent = None
     consultation_split_draft = None
     consultation_split_batch = None
+    stt_selection = workspace.get("stt_selection")
+    stt_config = getattr(stt_selection, "config", None) if stt_selection is not None else None
+    owner_can_use_diarization = bool(
+        current_user is not None and not current_user.is_system_admin and current_user.team_id is not None
+    )
+    live_diarization_available = bool(
+        owner_can_use_diarization and stt_config_supports_diarization(stt_config, connection_type="live")
+    )
+    if live_diarization_available:
+        try:
+            _, live_config, live_model, live_language = resolve_selected_team_stt_service(
+                db, team_id=current_user.team_id, purpose=SttSelectionPurpose.conversation,
+            )
+            from ..services.deepgram_streaming import DeepgramStreamConfig, validate_stream_config
+            validate_stream_config(DeepgramStreamConfig(
+                base_url=live_config.base_url, model_name=live_model or "", language=live_language,
+                extra_query_params=dict(live_config.extra_form_fields_json or {}),
+            ))
+        except Exception:
+            live_diarization_available = False
+    batch_diarization_available = bool(
+        owner_can_use_diarization and stt_config_supports_diarization(stt_config, connection_type="batch")
+    )
+    active_mode = getattr(active_transcript, "ingestion_mode", None)
+    if active_mode is None:
+        preference_json = workspace.get("user_app_preferences_json") or {}
+        active_mode = preference_json.get("preferred_recording_mode", "whole_file")
+    active_mode_value = getattr(active_mode, "value", active_mode)
+    diarization_available = (
+        live_diarization_available if active_mode_value == "live_chunked" else batch_diarization_available
+    )
     # Recompute the capability at the response boundary.  The workspace
     # mapping is an internal assembly object, not a source of authorization;
     # callers must not be able to smuggle an enabled value into REST/SSE.
@@ -1360,6 +1418,12 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, 
             consultation_split_draft = None
         consultation_split_batch = read_workspace_split_batch(db, current_user, transcript_id=active_transcript.id)
     return TranscribeWorkspaceDetail(
+        example_consultation_pending=bool(
+            current_user is not None
+            and current_user.example_consultation_pending
+            and not current_user.is_system_admin
+            and current_user.team_id is not None
+        ),
         recent_transcripts=[
             transcript if isinstance(transcript, TranscriptListItem) else transcript_list_item_response(db, transcript)
             for transcript in recent_transcripts
@@ -1385,6 +1449,9 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, 
         stt_selected=bool(workspace.get("stt_selection")),
         stt_available=bool(workspace.get("stt_available")),
         deepgram_live_streaming_available=bool(workspace.get("deepgram_live_streaming_available")),
+        diarization_available=diarization_available,
+        diarization_live_available=live_diarization_available,
+        diarization_batch_available=batch_diarization_available,
         active_transcript_stream_gap=workspace.get("active_transcript_stream_gap"),
         stt_status_message=workspace.get("stt_status_message"),
         stt_health=workspace.get("stt_health"),

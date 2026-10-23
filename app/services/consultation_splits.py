@@ -63,6 +63,7 @@ from app.services.llm_adapters.runtime import (
     validate_provider_snapshot_for_config,
 )
 from app.services.quotas import cancel_provider_attempt, reserve_provider_attempt
+from app.services.llm_backup import effective_provider_attempt, read_backup_provider
 from app.services.task_outbox import add_pending_task_dispatch, cancel_pending_task_dispatch
 from app.services.transcripts import get_active_owner_transcript, transcript_is_expired
 
@@ -724,6 +725,11 @@ def queue_split_execution(
         )
         db.add(execution)
         db.flush()
+        # A split execution inherits the provider choice frozen on its
+        # analysis or confirmed batch root. Never reread mutable admin state
+        # for retries, recovery, or verification.
+        from app.services.llm_backup import copy_backup_selection
+        copy_backup_selection(db, source=parent, target=execution)
         attempt = reserve_provider_attempt(
             db,
             team_id=transcript.team_id,
@@ -859,11 +865,13 @@ def _validate_split_execution_for_runtime(
             return False
     except AppError:
         return False
-    attempt = db.scalar(
+    primary_attempt = db.scalar(
         select(ProviderAttempt)
-        .where(ProviderAttempt.consultation_split_execution_id == execution.id)
+        .where(ProviderAttempt.consultation_split_execution_id == execution.id,
+               ProviderAttempt.backup_of_attempt_id.is_(None))
         .with_for_update()
     )
+    attempt = effective_provider_attempt(db, primary=primary_attempt, lock=True) if primary_attempt is not None else None
     if attempt is None or attempt.status is not expected_attempt_status:
         return False
     if expected_attempt_status is AttemptStatus.reserved and attempt.reservation_valid_until <= now:
@@ -872,8 +880,18 @@ def _validate_split_execution_for_runtime(
         attempt.deadline_at is None or attempt.deadline_at <= now
     ):
         return False
-    if attempt.provider_adapter != snapshot["adapter_kind"] or attempt.provider_model != snapshot["model"]:
-        return False
+    if attempt.id == primary_attempt.id:
+        if attempt.provider_adapter != snapshot["adapter_kind"] or attempt.provider_model != snapshot["model"]:
+            return False
+    else:
+        parent = db.get(ConsultationSplitAnalysis, execution.analysis_id) if execution.analysis_id else db.get(ConsultationSplitBatch, execution.batch_id)
+        try:
+            backup_provider = read_backup_provider(db, source=parent) if parent is not None else None
+        except AppError:
+            return False
+        if (backup_provider is None or attempt.provider_adapter != backup_provider.adapter_kind
+            or attempt.provider_model != backup_provider.model):
+            return False
     expected_attempt, _feature, expected_dispatch = split_execution_phase_mapping(execution.kind)
     dispatch = db.scalar(
         select(TaskDispatchOutbox)
@@ -893,8 +911,10 @@ def _validate_split_execution_for_runtime(
         attempt.owner_user_id == owner.id
         and attempt.team_id == transcript.team_id
         and attempt.transcript_id == transcript.id
-        and attempt.correlation_id == execution.id
-        and attempt.attempt_number == 1
+        and primary_attempt is not None
+        and primary_attempt.correlation_id == execution.id
+        and primary_attempt.attempt_number == 1
+        and (attempt.id == primary_attempt.id or attempt.backup_of_attempt_id == primary_attempt.id)
         and attempt.attempt_kind is expected_attempt
     )
 

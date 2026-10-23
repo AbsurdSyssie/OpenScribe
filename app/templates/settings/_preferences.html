@@ -5,6 +5,12 @@
   <article class="settings-card">
     {% if not stt_selection and not llm_selection %}<p class="settings-empty">No services configured. Contact team leader.</p>{% else %}
     <div class="setting-row"><div><h3>Speech service</h3><p>{% if stt_selection %}{{ stt_selection.config.label }}{% if stt_selection.model_name_override or stt_selection.config.model_name %} · {{ stt_selection.model_name_override or stt_selection.config.model_name }}{% endif %}{% else %}Not configured{% endif %}</p></div></div>
+    {% if not current_user.is_system_admin and current_user.team_id %}
+    <div class="setting-row setting-row--toggle">
+      <div><h3>Diarise consultation recordings</h3><p>Show anonymous speaker labels and separate turns when the selected speech service and recording type support it. Changes apply to your next recording. Dictation is never diarised. Labels may change after a recording resumes or reconnects; they do not identify clinical roles.</p><p class="setting-save-state" data-diarization-save-state role="status" aria-live="polite"></p></div>
+      <label class="switch-compact"><input type="checkbox" aria-label="Diarise consultation recordings" data-diarization-preference {% if user_app_preferences_json.get('diarization_enabled', false) %}checked{% endif %}><span class="switch-compact__track" aria-hidden="true"></span></label>
+    </div>
+    {% endif %}
     {% if llm_selection %}
     {% set home_note_length = user_app_preferences_json.get('note_generation_length', 'normal') %}
     {% set home_detail_level = user_app_preferences_json.get('llm_detail_level', 'balanced') %}

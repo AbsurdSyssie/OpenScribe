@@ -1,4 +1,6 @@
 /** Shared behaviour for Settings form controls. */
+import { csrfFetch } from '../csrf.js';
+
 document.addEventListener('change', (event) => {
   const control = event.target;
   if (!(control instanceof HTMLSelectElement) || !control.closest('.select-wrap')) return;
@@ -41,6 +43,49 @@ document.querySelectorAll(
   '[data-template-suggestion-preference], [data-consultation-splitting-preference]',
 ).forEach((input) => {
   input.addEventListener('change', (event) => event.target.form?.requestSubmit());
+});
+
+document.querySelectorAll('[data-diarization-preference]').forEach((input) => {
+  let savedValue = input.checked;
+  let saving = false;
+  const status = input.closest('.setting-row')?.querySelector('[data-diarization-save-state]');
+  input.addEventListener('change', async () => {
+    if (saving) return;
+    saving = true;
+    input.disabled = true;
+    if (status) status.textContent = 'Saving…';
+    try {
+      const getResponse = await csrfFetch('/api/v1/app-preferences', { credentials: 'include' });
+      if (!getResponse.ok) throw new Error('Could not load your preferences.');
+      const current = await getResponse.json() || {};
+      const payload = {
+        favorite_quick_action_ids: current.favorite_quick_action_ids || [],
+        favorite_template_ids: current.favorite_template_ids || [],
+        default_quick_action_id: current.default_quick_action_id || null,
+        default_template_id: current.default_template_id || null,
+        template_suggestions_enabled: current.template_suggestions_enabled !== false,
+        split_consultations_into_separate_notes: current.split_consultations_into_separate_notes === true,
+        llm_detail_level: current.llm_detail_level || null,
+        note_generation_length: current.note_generation_length || null,
+        preferred_recording_mode: current.preferred_recording_mode || null,
+        preferred_transcribe_tab: current.preferred_transcribe_tab || null,
+        diarization_enabled: input.checked,
+        diarization_warning_acknowledged: current.diarization_warning_acknowledged === true,
+      };
+      const saveResponse = await csrfFetch('/api/v1/app-preferences', {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      if (!saveResponse.ok) throw new Error('Could not save your diarisation preference.');
+      savedValue = input.checked;
+      if (status) status.textContent = 'Saved. This applies to your next recording.';
+    } catch (error) {
+      input.checked = savedValue;
+      if (status) status.textContent = error instanceof Error ? error.message : 'Could not save your preference.';
+    } finally {
+      input.disabled = false;
+      saving = false;
+    }
+  });
 });
 
 function initialiseAccountDialogs(root = document) {

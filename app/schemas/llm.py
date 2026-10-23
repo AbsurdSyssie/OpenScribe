@@ -416,6 +416,22 @@ class LlmSelectionDetail(BaseModel):
     updated_at: datetime
 
 
+class LlmBackupSelectionUpsert(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    team_id: UUID
+    llm_config_id: UUID | None = None
+    model_name: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def validate_backup_pair(self) -> "LlmBackupSelectionUpsert":
+        if self.llm_config_id is None and self.model_name:
+            raise ValueError("A backup model requires a backup provider")
+        if self.llm_config_id is not None and not (self.model_name or "").strip():
+            raise ValueError("A backup provider requires a backup model")
+        return self
+
+
 class HallucinationCheckSelectionUpsert(BaseModel):
     model_config = {"protected_namespaces": ()}
 

@@ -144,7 +144,9 @@ Without a configured STT selection:
 
 - verify the server-derived capability and owner/session/CSRF checks gate the stream before provider work;
 - verify bounded windows commit final text before the browser receives the committed checkpoint, while interim text remains temporary;
-- verify pause/resume and checkpoint rotation do not replay committed audio or overlap submitted sample intervals;
+- verify pause/resume and routine checkpoints reuse one provider socket without replaying committed audio or overlapping submitted sample intervals;
+- verify the five-second pre-roll ring stays bounded while the outbound queue can hold up to ten seconds during checkpoint processing;
+- verify an unproven Finalize uses bounded CloseStream drain, and a failed drain exposes only the existing explicit recovery path;
 - on stream failure, verify capture stops and does not replay audio automatically;
 - verify server-retained audio can be retried only while its original retention window remains valid;
 - verify browser-held recovery audio is offered only when its sample bounds and count exactly match the failed interval; exclude unsent audio and pre-roll;

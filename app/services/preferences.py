@@ -79,6 +79,10 @@ def _serialize_preferences_payload(payload: UserAppPreferencesUpsert) -> dict[st
         preferences["preferred_recording_mode"] = payload.preferred_recording_mode.value
     if payload.preferred_transcribe_tab is not None:
         preferences["preferred_transcribe_tab"] = payload.preferred_transcribe_tab
+    if payload.diarization_enabled:
+        preferences["diarization_enabled"] = True
+    if payload.diarization_warning_acknowledged:
+        preferences["diarization_warning_acknowledged"] = True
     return preferences
 
 
@@ -176,6 +180,11 @@ def _validate_preferences_json(db: Session, actor: User, preferences_json: dict[
     if isinstance(raw_preferred_transcribe_tab, str) and raw_preferred_transcribe_tab in {"output", "followups"}:
         normalized["preferred_transcribe_tab"] = raw_preferred_transcribe_tab
 
+    if preferences_json.get("diarization_enabled") is True:
+        normalized["diarization_enabled"] = True
+    if preferences_json.get("diarization_warning_acknowledged") is True:
+        normalized["diarization_warning_acknowledged"] = True
+
     return normalized
 
 
@@ -215,6 +224,14 @@ def consultation_splitting_enabled(db: Session, actor: User) -> bool:
     return preference is not None and preference.preferences_json.get("split_consultations_into_separate_notes") is True
 
 
+def diarization_preference_enabled(db: Session, actor: User) -> bool:
+    """Return the owner's persistent opt-in, independent of provider selection."""
+    if actor.is_system_admin or actor.team_id is None or actor.team_role not in {TeamRole.user, TeamRole.leader}:
+        return False
+    preference = db.scalar(select(UserAppPreference).where(UserAppPreference.user_id == actor.id))
+    return preference is not None and (preference.preferences_json or {}).get("diarization_enabled") is True
+
+
 def effective_consultation_splitting_enabled(db: Session, actor: User | None) -> bool:
     """Return the browser-facing split capability for a transcript owner."""
     if (
@@ -231,8 +248,12 @@ def set_user_app_preferences(db: Session, actor: User, payload: UserAppPreferenc
     _require_user_app_preference_scope(actor)
     owner = _lock_user_app_preference_owner(db, actor)
     serialized = _serialize_preferences_payload(payload)
-    normalized = _validate_preferences_json(db, owner, serialized, strict=True)
     preference = db.scalar(select(UserAppPreference).where(UserAppPreference.user_id == owner.id))
+    # The one-time recording warning is an acknowledgement, not a reversible
+    # preference. Preserve it when older clients submit a full preference set.
+    if preference and preference.preferences_json.get("diarization_warning_acknowledged") is True:
+        serialized["diarization_warning_acknowledged"] = True
+    normalized = _validate_preferences_json(db, owner, serialized, strict=True)
     was_template_suggestions_enabled = preference is None or preference.preferences_json.get("template_suggestions_enabled") is not False
     will_template_suggestions_enabled = normalized.get("template_suggestions_enabled") is not False
     if was_template_suggestions_enabled and not will_template_suggestions_enabled:

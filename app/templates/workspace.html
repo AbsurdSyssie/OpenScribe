@@ -18,6 +18,8 @@
     data-workspace-stream-endpoint="{{ workspace_stream_endpoint }}"
     data-route-base="{{ transcribe_route_base }}"
     data-layout-state="normal"
+    data-example-consultation-pending="{{ 'true' if example_consultation_pending else 'false' }}"
+    data-active-transcript-is-example="{{ 'true' if active_transcript and active_transcript.is_example else 'false' }}"
     {% endif %}>
     {% if active_workspace_section == 'help' %}<a class="workspace-help__skip-link" href="#workspace-main">Skip to main content</a>{% endif %}
     {% include "workspace/_sidebar.html" %}{% include "workspace/_mobile_header.html" %}
@@ -43,7 +45,7 @@
   {% if active_workspace_section != 'scribe' %}<form id="new-session-form" method="post" action="{{ new_consultation_url|default('/transcribe/sessions') }}" hidden><input type="hidden" name="ingestion_mode" value="{{ preferred_recording_mode or 'whole_file' }}"></form>{% endif %}
   {% if active_workspace_section == 'scribe' %}{% include "transcribe/_shell_extras.html" %}{% else %}<script src="/static/js/generated-password.js?v=20260712-infield-controls"></script>{% include "_template_editor_script.html" %}{% include "_csrf_script.html" %}{% endif %}
   <script type="module" src="/static/js/workspace/app.js?v=20261018-help-pointer-resize"></script>
-  {% if active_workspace_section != 'scribe' %}<script type="module" src="/static/js/settings/app.js?v=20260918-library-help"></script><script type="module" src="/static/js/settings/controls.js?v=20260911-split-preferences"></script>{% endif %}
+  {% if active_workspace_section != 'scribe' %}<script type="module" src="/static/js/settings/app.js?v=20260918-library-help"></script><script type="module" src="/static/js/settings/controls.js?v=20261022-diarization-preferences"></script>{% endif %}
   {% if active_workspace_section == 'smart-phrases' %}<script type="module" src="/static/js/settings/smart-phrases.js?v=20260718-library-editor"></script>{% endif %}
   {% include "_legal_footer_banner.html" %}
 </body></html>

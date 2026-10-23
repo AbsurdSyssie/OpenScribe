@@ -64,6 +64,7 @@ from ..schemas import (
     LlmConfigFinalize,
     LlmConfigUpsert,
     LlmInspectRequest,
+    LlmBackupSelectionUpsert,
     LlmSelectionUpsert,
     SttConfigDraftCreate,
     SttConfigDraftReplaceCredential,
@@ -162,6 +163,7 @@ from ..services.llm import (
     replace_llm_config_draft_credential as replace_llm_config_draft_credential_service,
     set_team_hallucination_check_selection as set_team_hallucination_check_selection_service,
     set_team_llm_selection as set_team_llm_selection_service,
+    set_team_llm_backup_selection as set_team_llm_backup_selection_service,
     update_llm_config_details as update_llm_config_details_service,
     upsert_llm_config as upsert_llm_config_service,
 )
@@ -1510,6 +1512,11 @@ def admin_upsert_stt_config(
     segment_end_field: str = Form(""),
     segment_speaker_field: str = Form(""),
     extra_form_fields_json: str = Form(""),
+    diarization_live_enabled: str | None = Form(default=None),
+    diarization_batch_enabled: str | None = Form(default=None),
+    diarization_field_name: str = Form(""),
+    diarization_on_value: str = Form("true"),
+    diarization_off_value: str = Form("false"),
     is_active: str | None = Form(default=None),
     confirm_duplicate: str | None = Form(default=None),
     return_view: str = Form(""),
@@ -1547,6 +1554,11 @@ def admin_upsert_stt_config(
                 segment_end_field=segment_end_field or None,
                 segment_speaker_field=segment_speaker_field or None,
                 extra_form_fields_json=parse_extra_form_fields_json(extra_form_fields_json),
+                diarization_live_enabled=diarization_live_enabled == "true",
+                diarization_batch_enabled=diarization_batch_enabled == "true",
+                diarization_field_name=diarization_field_name or None,
+                diarization_on_value=diarization_on_value,
+                diarization_off_value=diarization_off_value,
                 is_active=is_active == "true",
                 confirm_duplicate=confirm_duplicate == "true",
             ),
@@ -1839,6 +1851,11 @@ def admin_finalize_stt_config_draft(
     provider_model: str = Form(""),
     language: str = Form(""),
     is_active: str | None = Form(default=None),
+    diarization_live_enabled: str | None = Form(default=None),
+    diarization_batch_enabled: str | None = Form(default=None),
+    diarization_field_name: str = Form(""),
+    diarization_on_value: str = Form("true"),
+    diarization_off_value: str = Form("false"),
     return_view: str = Form(""),
     return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
@@ -1853,7 +1870,16 @@ def admin_finalize_stt_config_draft(
         finalize_stt_config_draft_service(
             db,
             context.user,
-            SttConfigFinalize(team_id=UUID(team_id), config_id=config_id, label=label, model_name=provider_model or None, language=normalize_stt_language(language), is_active=is_active == "true"),
+            SttConfigFinalize(
+                team_id=UUID(team_id), config_id=config_id, label=label,
+                model_name=provider_model or None, language=normalize_stt_language(language),
+                is_active=is_active == "true",
+                diarization_live_enabled=diarization_live_enabled == "true",
+                diarization_batch_enabled=diarization_batch_enabled == "true",
+                diarization_field_name=diarization_field_name or None,
+                diarization_on_value=diarization_on_value,
+                diarization_off_value=diarization_off_value,
+            ),
         )
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid STT finalization request"
@@ -2493,6 +2519,53 @@ def admin_set_llm_selection(
         )
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid LLM selection"
+        status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=team_id,
+            message=detail,
+            message_kind="error",
+            status_code=status_code,
+            active_admin_tab=return_tab or "providers",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "providers", team_id=team_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/llm-backup-selection", response_class=HTMLResponse)
+def admin_set_llm_backup_selection(
+    request: Request,
+    team_id: str = Form(...),
+    backup_llm_config_id: str = Form(""),
+    backup_model_name: str = Form(""),
+    return_view: str = Form(""),
+    return_tab: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        set_team_llm_backup_selection_service(
+            db,
+            context.user,
+            LlmBackupSelectionUpsert(
+                team_id=UUID(team_id),
+                llm_config_id=UUID(backup_llm_config_id) if backup_llm_config_id else None,
+                model_name=backup_model_name or None,
+            ),
+        )
+    except (ValueError, AppError) as exc:
+        detail = exc.message if isinstance(exc, AppError) else "Invalid LLM backup selection"
         status_code = exc.status_code if isinstance(exc, AppError) else status.HTTP_400_BAD_REQUEST
         return render_admin(
             request,

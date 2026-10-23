@@ -120,7 +120,12 @@ from ..schemas import (
     TotpEnrollmentStartResponse,
     TotpVerifyRequest,
     TranscribeWorkspaceDetail,
+    ExampleConsultationResponse,
     TranscriptCommit,
+    TranscriptCaptureSettingsDetail,
+    TranscriptTurnTextUpdate,
+    TranscriptTurnCreate,
+    TranscriptTurnDelete,
     TranscriptCreate,
     TranscriptDetail,
     TranscriptIngestionAccepted,
@@ -352,6 +357,7 @@ from ..services.transcripts import (
     commit_transcript_text as commit_transcript_text_service,
     create_manual_pii_entity as create_manual_pii_entity_service,
     create_transcript_from_payload,
+    create_transcript_capture_settings,
     delete_manual_pii_entity as delete_manual_pii_entity_service,
     delete_transcripts as delete_transcripts_service,
     finalize_live_capture as finalize_live_capture_service,
@@ -367,6 +373,8 @@ from ..services.transcripts import (
     update_transcript as update_transcript_service,
     working_note_detail as working_note_detail_service,
 )
+from ..services.example_consultation import create_first_run_example_consultation
+from ..services.structured_transcripts import edit_transcript_turn, add_transcript_turn, delete_transcript_turn
 from ..services.redaction import (
     dismiss_detected_pii_entity_service,
     restore_detected_pii_entity_service,
@@ -1613,6 +1621,51 @@ def commit_transcript(transcript_id: UUID, payload: TranscriptCommit, context: A
     return transcript_detail_response(db, transcript)
 
 
+@api.patch("/transcripts/{transcript_id}/turns/{turn_id}", response_model=TranscriptDetail, responses=error_responses)
+def update_transcript_turn(
+    transcript_id: UUID,
+    turn_id: UUID,
+    payload: TranscriptTurnTextUpdate,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    transcript = edit_transcript_turn(
+        db, context.user, transcript_id=transcript_id, turn_id=turn_id,
+        expected_version_id=payload.expected_version_id, text=payload.text,
+    )
+    return transcript_detail_response(db, transcript)
+
+
+@api.post("/transcripts/{transcript_id}/turns", response_model=TranscriptDetail, responses=error_responses)
+def create_transcript_turn(
+    transcript_id: UUID,
+    payload: TranscriptTurnCreate,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    transcript = add_transcript_turn(
+        db, context.user, transcript_id=transcript_id,
+        expected_version_id=payload.expected_version_id, text=payload.text,
+        after_turn_id=payload.after_turn_id,
+    )
+    return transcript_detail_response(db, transcript)
+
+
+@api.delete("/transcripts/{transcript_id}/turns/{turn_id}", response_model=TranscriptDetail, responses=error_responses)
+def remove_transcript_turn(
+    transcript_id: UUID,
+    turn_id: UUID,
+    payload: TranscriptTurnDelete,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    transcript = delete_transcript_turn(
+        db, context.user, transcript_id=transcript_id, turn_id=turn_id,
+        expected_version_id=payload.expected_version_id,
+    )
+    return transcript_detail_response(db, transcript)
+
+
 @api.patch("/transcripts/{transcript_id}", response_model=TranscriptDetail, responses=error_responses)
 def update_transcript(
     transcript_id: UUID,
@@ -1830,6 +1883,19 @@ def upload_transcript_audio_chunk(
     )
 
 
+@api.post("/transcripts/{transcript_id}/capture-settings", response_model=TranscriptCaptureSettingsDetail, responses=error_responses)
+def create_transcript_capture_settings_route(
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    snapshot = create_transcript_capture_settings(db, context.user, transcript_id=transcript_id)
+    return TranscriptCaptureSettingsDetail(
+        capture_settings_id=snapshot.id,
+        diarisation_enabled=snapshot.stt_diarisation_enabled,
+    )
+
+
 @api.post("/transcripts/{transcript_id}/audio-file", response_model=TranscriptIngestionAccepted, status_code=status.HTTP_202_ACCEPTED, responses=error_responses)
 @WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT
 @WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT
@@ -1837,6 +1903,7 @@ def upload_transcript_audio_file(
     request: Request,
     transcript_id: UUID,
     audio: UploadFile = File(...),
+    capture_settings_id: UUID | None = Form(default=None),
     idempotency_key: UUID | None = Header(default=None, alias="Idempotency-Key"),
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
@@ -1850,6 +1917,7 @@ def upload_transcript_audio_file(
         filename=audio.filename or "audio.bin",
         source_audio_blob=audio_bytes,
         request_idempotency_key=str(idempotency_key) if idempotency_key else None,
+        capture_settings_id=capture_settings_id,
     )
     refreshed_transcript = db.get(Transcript, transcript.id) or transcript
     return TranscriptIngestionAccepted(
@@ -2029,6 +2097,19 @@ def get_transcribe_workspace(
         transcript_id=str(transcript_id) if transcript_id is not None else None,
         queued_transcript_id=str(queued_transcript_id) if queued_transcript_id is not None else None,
     )
+
+
+@api.post(
+    "/transcribe/example-consultation",
+    response_model=ExampleConsultationResponse,
+    responses=error_responses,
+)
+def create_example_consultation(
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    transcript = create_first_run_example_consultation(db, owner=context.user)
+    return ExampleConsultationResponse(id=transcript.id if transcript is not None else None)
 
 
 @api.post("/transcribe/stt-health/recheck", responses=error_responses)

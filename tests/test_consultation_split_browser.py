@@ -130,12 +130,12 @@ def _create_consultation(db, owner, *, title, source_only=None):
     )
     db.add(transcript)
     db.flush()
-    if source_only is None:
+    if source_only in {None, "transcript", "transcript_dictation"}:
         set_transcript_draft_text(db, transcript=transcript, plaintext="Synthetic test transcript.")
-    if source_only != "dictation":
+    if source_only not in {"dictation", "transcript", "transcript_dictation"}:
         set_freeform_working_note_text(db, transcript=transcript, plaintext="Synthetic test consultation.")
         transcript.working_note_mode = TranscriptWorkingNoteMode.freeform
-    if source_only == "dictation":
+    if source_only in {"dictation", "transcript_dictation"}:
         update_post_consultation_dictation(
             db,
             owner,
@@ -417,7 +417,9 @@ def test_browser_review_problems_is_passive_until_explicit_manual_suggestion(
     template = make_template(owner=owner, actor=owner, name="Synthetic review-problems template")
     db_session.add(UserAppPreference(user_id=owner.id, preferences_json={}))
     db_session.commit()
-    transcript_id = _create_consultation(db_session, owner, title="Review problems consultation")
+    transcript_id = _create_consultation(
+        db_session, owner, title="Review problems consultation", source_only="transcript_dictation",
+    )
     _install_local_adapters(
         monkeypatch,
         analysis_response=json.dumps({"topics": [{
@@ -453,6 +455,9 @@ def test_browser_review_problems_is_passive_until_explicit_manual_suggestion(
         payload = response_info.value.request.post_data_json
         assert payload["manual_review_requested"] is True
         assert "retry_failed_analysis" not in payload
+        page.locator("[data-split-operation-status]").get_by_text(
+            "Suggested problems are being prepared. This request is saved and will continue if you leave this page.",
+        ).wait_for(state="visible", timeout=6_000)
         analysis_id = _execution_id(sessions, transcript_id, "analysis")
         assert _run_analysis(sessions, analysis_id).outcome == "not_required"
         with sessions() as db:
@@ -463,6 +468,9 @@ def test_browser_review_problems_is_passive_until_explicit_manual_suggestion(
             )
         assert _progress_intent(sessions, intent_id).outcome == "review_ready"
         page.reload()
+        page.locator("[data-split-operation-status]").get_by_text(
+            "Suggested problems are ready for review. Open Review problems to review them.",
+        ).wait_for(state="visible", timeout=6_000)
         page.get_by_role("button", name="Review problems", exact=True).click()
         page.locator("[data-split-review-modal]").wait_for(state="visible")
         add_problem = page.get_by_role("button", name="Add problem", exact=True)

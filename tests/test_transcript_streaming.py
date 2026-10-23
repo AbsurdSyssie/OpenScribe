@@ -240,6 +240,58 @@ def test_stream_duplicate_delivery_is_not_dispatchable_and_changed_payload_is_re
     assert caught.value.code == "stream_audio_interval_conflict"
 
 
+@pytest.mark.parametrize("finalized_turns", [None, []])
+@pytest.mark.parametrize("existing_structured_source", [False, True])
+def test_structured_checkpoint_retry_uses_same_fallback_turns_for_digest_and_persistence(
+    db_session, make_team, make_user, monkeypatch, finalized_turns, existing_structured_source,
+):
+    owner, transcript, started, _config = _stream_fixture(db_session, make_team, make_user, monkeypatch)
+    scope_id = uuid4()
+    if existing_structured_source:
+        from app.services.structured_transcripts import append_transcript_turns
+
+        append_transcript_turns(
+            db_session, transcript=transcript, scope_id=scope_id,
+            turns=[{"speaker_id": "0", "text": "Synthetic earlier turn."}],
+        )
+        db_session.commit()
+    else:
+        # Diarisation can be enabled even when the provider returns no word
+        # map; this is the other path where the text fallback becomes a turn.
+        session = db_session.get(TranscriptStreamSession, started.session_id)
+        session.stt_diarisation_enabled = True
+        db_session.add(session)
+        db_session.commit()
+
+    authorization = authorize_stream_batch(
+        db_session, owner.id, transcript_id=transcript.id, session_id=started.session_id,
+        connection_fence=started.connection_fence, fence_token=started.fence_token,
+        first_sample_offset=0, sample_count=2, pcm_bytes=b"\x01\x00\x02\x00",
+    )
+    kwargs = dict(
+        transcript_id=transcript.id, session_id=started.session_id,
+        connection_fence=started.connection_fence, fence_token=started.fence_token,
+        window_no=authorization.window_no, source_end_sample_offset=2, forwarded_sample_count=2,
+        finalized_text="Synthetic final turn.", final_segment_count=1,
+        finalized_turns=finalized_turns, scope_id=scope_id,
+    )
+
+    first = commit_stream_window(db_session, owner.id, **kwargs)
+    retry = commit_stream_window(db_session, owner.id, **kwargs)
+
+    assert first.already_committed is False
+    assert retry.already_committed is True
+    from app.services.structured_transcripts import load_current_turns
+
+    turns = load_current_turns(db_session, transcript=transcript)
+    assert turns is not None
+    expected = ["Synthetic earlier turn."] if existing_structured_source else []
+    assert [turn["text"] for turn in turns] == [*expected, "Synthetic final turn."]
+    with pytest.raises(AppError) as conflict:
+        commit_stream_window(db_session, owner.id, **{**kwargs, "finalized_text": "Changed synthetic text."})
+    assert conflict.value.code == "stream_window_conflict"
+
+
 def test_stream_start_rejects_wrong_owner_and_whole_file_root(
     db_session, make_team, make_user, monkeypatch,
 ):

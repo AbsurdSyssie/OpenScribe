@@ -22,10 +22,18 @@ HARNESS = r'''
 import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
 const sourcePath = process.argv[1];
+const { createAutosaveController } = await import(pathToFileURL(sourcePath.replace(/app\.js$/, 'autosaveController.js')).href);
 const scenario = process.argv[2];
 let source = fs.readFileSync(sourcePath, 'utf8');
 source = source.slice(source.indexOf('const bootstrap ='));
+const exampleHelperSource = fs.readFileSync(sourcePath.replace(/app\.js$/, 'exampleConsultation.js'), 'utf8')
+  .replaceAll('export function ', 'function ');
+const exampleHelperSandbox = { Boolean };
+exampleHelperSandbox.globalThis = exampleHelperSandbox;
+vm.createContext(exampleHelperSandbox);
+vm.runInContext(`${exampleHelperSource}\nglobalThis.createExampleConsultationBoundary = createExampleConsultationBoundary; globalThis.createExampleConsultationInitializer = createExampleConsultationInitializer;`, exampleHelperSandbox);
 class El {
   constructor() { this.dataset={}; this.style={setProperty(){},removeProperty(){}}; this.classList={add(){},remove(){},toggle(){return false},contains(){return false}}; this.listeners={}; this.value=''; this.textContent=''; this.innerHTML=''; this.hidden=true; this.disabled=false; this.options=[]; this.selectedOptions=[]; this.children=[]; this.files=[]; this.isConnected=true; }
   addEventListener(t,f) { (this.listeners[t]??=[]).push(f); }
@@ -72,7 +80,11 @@ const csrfFetch=async (url,options={})=>{
 };
 const no=()=>{}; const proxy=new Proxy({}, {get(_t,k){return (..._a)=> k==='isMarked' ? false : undefined}});
 const structured=new Proxy({serializeCurrentNoteEditor:()=>({mode:'freeform',edited_output_text:''}),bootstrapFromDom:no},{get:(t,k)=>t[k]??no});
-const deps={attachTranscribeActions:no,readTranscribeBootstrap:()=>bootstrap,clearDelayedGenerationStatus:no,createDocumentNavigator:()=>proxy,createInitialNoteRenderPreserver:()=>()=>false,formatWorkspaceCreatedAt:()=>'',generationFailureDetailsHtml:()=>'',generationFailureMessage:()=>'',generationLoadingHtml:()=>'',scheduleDelayedGenerationStatus:no,createTranscribeLayout:()=>({attach:no}),createAudioCaptureController:()=>({attachDomListeners:no,isLiveCaptureUiActive:()=>false,isCaptureUiActive:()=>false,shouldPreserveLiveMicStatus:()=>false}),createStructuredEditor:()=>structured,attachSmartPhraseExpander:no,attachNoteReordering:no,createGuidedTour:()=>({attach:no}),csrfFetch,isWorkingNoteTargetId:()=>false,workingNoteTargetId:()=>'',captureNoteDirtyBaseline:()=>'',noteBaselineForSave:()=>'',createTemplateSuggestionController:()=>({onTranscriptChanged:no,attach:no}),createMultipleProblemsController:()=>proxy,createSplitAnalysisRestorationPoller:()=>proxy,createSplitGenerateController:()=>proxy,createSplitPartialActionsController:()=>proxy,createSplitReviewController:()=>proxy,createWorkspaceFetchCoordinator:()=>proxy,dispatchTemplateGeneration:async()=>false,isConsultationSplitCreateEnabled:()=>false,splitDiagnosticMessage:()=>'',formatSessionRailCreatedAt:()=>'',keepSessionRailItemVisible:no,reconcileSessionRailItems:()=>[],sessionRailGroup:()=>'',sortSessionRailItems:()=>[],syncSessionRailCreatedAt:no};
+const deps={attachTranscribeActions:no,readTranscribeBootstrap:()=>bootstrap,clearDelayedGenerationStatus:no,createDocumentNavigator:()=>proxy,createInitialNoteRenderPreserver:()=>()=>false,formatWorkspaceCreatedAt:()=>'',generationFailureDetailsHtml:()=>'',generationFailureMessage:()=>'',generationLoadingHtml:()=>'',scheduleDelayedGenerationStatus:no,createTranscribeLayout:()=>({attach:no}),createAudioCaptureController:()=>({attachDomListeners:no,isLiveCaptureUiActive:()=>false,isCaptureUiActive:()=>false,shouldPreserveLiveMicStatus:()=>false}),createStructuredEditor:()=>structured,attachSmartPhraseExpander:no,attachNoteReordering:no,createGuidedTour:()=>({attach:no}),csrfFetch,isWorkingNoteTargetId:()=>false,workingNoteTargetId:()=>'',captureNoteDirtyBaseline:()=>'',noteBaselineForSave:()=>'',createTemplateSuggestionController:()=>({onTranscriptChanged:no,attach:no}),createExampleConsultationBoundary:exampleHelperSandbox.createExampleConsultationBoundary,createExampleConsultationInitializer:exampleHelperSandbox.createExampleConsultationInitializer,createMultipleProblemsController:()=>proxy,createSplitAnalysisRestorationPoller:()=>proxy,createSplitGenerateController:()=>proxy,createSplitPartialActionsController:()=>proxy,createSplitReviewController:()=>proxy,createWorkspaceFetchCoordinator:()=>proxy,dispatchTemplateGeneration:async()=>false,isConsultationSplitCreateEnabled:()=>false,splitDiagnosticMessage:()=>'',formatSessionRailCreatedAt:()=>'',keepSessionRailItemVisible:no,reconcileSessionRailItems:()=>[],sessionRailGroup:()=>'',sortSessionRailItems:()=>[],syncSessionRailCreatedAt:no};
+// Exercise the actual shared save controller; the unrelated transcript-turn
+// editor stays inactive in these dictation-only scenarios.
+deps.createAutosaveController = (options) => createAutosaveController({ ...options, timers: window });
+deps.createTranscriptTurnsEditor = () => ({ dirty: false, flush: async () => null });
 class Evt{constructor(type,init={}){this.type=type;Object.assign(this,init);this.defaultPrevented=false} preventDefault(){this.defaultPrevented=true}}
 const sandbox={...deps,document,window,globalThis:null,navigator:{mediaDevices:{getUserMedia:()=>useDeferredMedia?mediaPromise:Promise.resolve({getTracks:()=>[{stop(){trackStops++}}]})}},MediaRecorder:Recorder,console,URL,Event:Evt,CustomEvent:Evt,HTMLElement:El,HTMLInputElement:El,HTMLTextAreaElement:El,Element:El,Blob,FormData,Date,Math,Number,String,Boolean,Array,Object,JSON,Map,Set,Promise,WeakMap,WeakSet,Intl,AbortController,fetch:async()=>{fetchWorkspaceCount++;return response({})},setTimeout:window.setTimeout,clearTimeout:window.clearTimeout}; sandbox.globalThis=sandbox; vm.createContext(sandbox); vm.runInContext(source,sandbox,{filename:sourcePath});
 const modal=get('[data-dictation-modal]'); modal.hidden=false;

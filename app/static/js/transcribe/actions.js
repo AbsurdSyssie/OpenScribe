@@ -5,6 +5,7 @@ export function attachTranscribeActions({
   dom,
   routeBase,
   getTranscriptId,
+  onTranscriptSelectionIntent,
   getTranscriptText,
   getActiveIngestionMode,
   getIsLiveCaptureUiActive,
@@ -631,6 +632,7 @@ export function attachTranscribeActions({
     if (waitForGenerationSubmission && !(await waitForGenerationSubmission())) return;
     if (persistPendingEditorsBeforeWorkspaceSwitch
       && !(await persistPendingEditorsBeforeWorkspaceSwitch())) return;
+    onTranscriptSelectionIntent?.();
     const workspace = await fetchWorkspace(nextTranscriptId, { allowTranscriptSwitch: true });
     if (!workspace) {
       window.location.assign(link.href);
@@ -653,6 +655,7 @@ export function attachTranscribeActions({
         if (waitForGenerationSubmission && !(await waitForGenerationSubmission())) return;
         if (persistPendingEditorsBeforeWorkspaceSwitch
           && !(await persistPendingEditorsBeforeWorkspaceSwitch())) return;
+        onTranscriptSelectionIntent?.();
         const preferredMode = dom.newSessionForm.querySelector('input[name="ingestion_mode"]')?.value || 'whole_file';
         const response = await csrfFetch('/api/v1/transcripts/start', {
           method: 'POST',

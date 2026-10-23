@@ -163,7 +163,7 @@ def test_scribe_mobile_dictation_modal_owns_the_top_layer_and_safe_viewport():
     assert "body.modal-open [data-workspace-scribe-main] { z-index: 200; }" in transcribe_css
     assert "padding: var(--mobile-safe-top, env(safe-area-inset-top, 0px)) 0 var(--mobile-safe-bottom, env(safe-area-inset-bottom, 0px));" in transcribe_css
     assert "height: 100%; max-height: 100%; min-height: 0;" in transcribe_css
-    assert 'transcribe.css?v=20261016-accessible-manual-guide' in read("app/templates/transcribe/_head_assets.html")
+    assert 'transcribe.css?v=20261022-compact-diarized-turns' in read("app/templates/transcribe/_head_assets.html")
 
 
 def test_shared_modal_close_control_centres_its_icon():
@@ -184,7 +184,7 @@ def test_scribe_mobile_flow_assets_have_current_cache_keys():
     legacy_transcribe = read("app/templates/transcribe.html")
 
     assert 'workspace/app.js?v=20261018-help-pointer-resize' in workspace
-    assert 'transcribe/app.js?v=20261019-delete-confirmation-content' in shell_extras
+    assert 'transcribe/app.js?v=20261023-batch-startup-ownership' in shell_extras
     assert 'transcribe/mobile.js?v=20260823-mobile-toast' in shell_extras
     assert 'documents.js?v=20261014-generation-status' in read("app/static/js/transcribe/app.js")
     assert 'transcribe-mobile.css?v=20260930-detected-pii-override' in legacy_transcribe

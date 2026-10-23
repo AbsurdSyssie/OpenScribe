@@ -129,9 +129,13 @@ overflowSocket.json({ type: 'ready', stream_id: '44444444-4444-4444-8444-4444444
 await overflowReady;
 overflowStream.pushFrame(new Float32Array(512).fill(0.5), true, 70000);
 overflowStream.speechStarted();
-for (let index = 0; index < 210; index += 1) {
+for (let index = 0; index < 327; index += 1) {
   assert.doesNotThrow(() => overflowStream.pushFrame(new Float32Array(512).fill(0.5), true, 70001 + index));
 }
+assert.equal(overflowStream.stopped, false);
+assert.equal(overflowStream.outboundSamples, 159744);
+assert.equal(overflowStream.ringSamples, 5 * 16000);
+overflowStream.pushFrame(new Float32Array(512).fill(0.5), true, 70312);
 assert.equal(overflowStream.stopped, true);
 assert.match(overflowError.message, /receiving audio too slowly/);
 assert.equal(overflowSocket.sent.filter((value) => value instanceof ArrayBuffer).length, 1);

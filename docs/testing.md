@@ -134,7 +134,15 @@ Deepgram live-stream browser protocol (synthetic PCM, no database or provider co
 pytest -q tests/test_deepgram_live_stream_frontend.py
 ```
 
-This Node-backed test covers the binary PCM header, pause/resume pre-roll offsets, one-way source ordering, bounded backpressure failure, and exact bounded recovery selection that excludes unsent/ring audio. The streaming route, quota ledger, recovery lifecycle, workspace capability and owner authorization are database-backed and belong in the sequential transcript/API test run.
+This Node-backed test covers the binary PCM header, pause/resume pre-roll offsets, one-way source ordering, the unchanged five-second pre-roll ring, the separate ten-second outbound backlog bound, and exact bounded recovery selection that excludes unsent/ring audio.
+
+Deepgram streaming lifecycle, accounting, recovery and generation barriers (synthetic provider events only):
+
+```bash
+APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_deepgram_diagnostics.py tests/test_deepgram_streaming.py tests/test_deepgram_live_route.py tests/test_transcript_streaming.py tests/test_deepgram_live_stream_frontend.py tests/test_deepgram_recovery_wav.py tests/test_stream_generation_barrier.py
+```
+
+These checks cover content-free diagnostics, safe local rotation and failure handling, continuous provider-clock mapping, same-socket checkpoints, KeepAlive, bounded Finalize/CloseStream fallback, no audio replay, existing quota settlement, exact recovery, owner authorization and generation barriers. They use synthetic provider events only. Keep this run sequential with the API authorization audit because both use the shared test database and Redis.
 
 Generation logging and token reservations:
 
@@ -155,6 +163,19 @@ python -m pip_audit -r requirements.txt
 The Docker smoke workflow runs the runtime dependency audit. It does not prove that deployed image references are digest-locked or that all dependency artifacts use full hashes.
 
 Use the actual file names present on the branch when a focused area has been split or renamed; `pytest --collect-only -q` is the authoritative collection view.
+
+## Diarised transcripts and inline editing
+
+Run the structured source, provider, generation/redaction, shared autosave, and browser checks with synthetic data:
+
+```bash
+pytest -q tests/test_structured_transcripts.py tests/test_structured_transcript_security.py tests/test_stt_diarization.py tests/test_diarisation_content_preservation.py tests/test_diarisation_pii_detector.py tests/test_diarised_generation.py tests/test_diarised_template_suggestions.py tests/test_diarised_editor_frontend_js.py tests/test_diarised_transcript_browser.py
+pytest -q tests/test_migrations.py -k 'structured_transcript_migration or alembic_upgrade_head_creates_expected_schema'
+```
+
+The browser checks use a local static server, installed Playwright Chromium, and mocked requests; they do not send audio or content to external providers. They cover per-turn edit isolation, masking, late polls, stale revisions, pending-save edits, and adding text after deleting the final turn. Native PII checks exercise the installed Presidio/spaCy detector with synthetic speaker markers and names; they do not establish the behavior of an externally configured detector.
+
+Also run the affected Deepgram stream, ingestion/snapshot, Working-note autosave, dictation, PII override, and consultation-split suites. Apply the route authorization audit after pytest, never concurrently. New source text and speaker metadata must remain owner-encrypted, generated requests must use immutable redacted source, and recording-start settings must survive rollover and retry without a client permission flag.
 
 ## Browser CSRF regression
 
@@ -332,6 +353,8 @@ Use `down --volumes` only for a deliberately disposable instance.
 - API responses expose plaintext only through authorized owner paths and use `no-store`.
 
 ### Provider behavior
+
+For team LLM failover, run the `tests/test_llm_backup*.py` checks and the affected generation, suggestion and consultation-split suites. They cover admin selection, immutable encrypted snapshots, per-attempt quota settlement, source-specific failover and migration guards. Keep these commands sequential with other database-backed tests and the API audit.
 
 - unsupported worker contexts fail before the provider-attempt submitted transition, and reserved quota is cancelled without provider dispatch;
 - native worker-thread, greenlet/eventlet/gevent, and occupied timer contexts fail closed with content-free diagnostics;

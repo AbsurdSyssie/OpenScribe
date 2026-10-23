@@ -285,6 +285,12 @@ docker compose --profile runtime logs --tail=300 openscribe
 
 Check migrations, Vault bootstrap/unseal, PostgreSQL/Redis connectivity, stable CSRF secret, production cookie settings, and worker/Beat startup.
 
+For a Deepgram live recording failure, correlate the JSON lifecycle lines by
+`diagnostic_id` in `docker compose --profile runtime logs --since=1h --no-color openscribe`.
+The terminal event includes the active phase and last completed stage. Docker
+logging retention remains controlled by the deployment's daemon or logging
+driver configuration; Compose does not add a separate Deepgram file sink.
+
 ## Host development remains available
 
 `start-dev.sh` starts only PostgreSQL, Redis, and Vault in Compose, then runs FastAPI/Celery/Beat and optional Brave on the host virtualenv for reload/debugging.

@@ -116,6 +116,7 @@ Use the dedicated `CIS2_OIDC_*` settings, not the custom `OIDC_*` provider worka
 | `CELERY_BROKER_URL` | `redis://localhost:6379/2` | Celery broker. Compose uses service host `redis`. |
 | `CELERY_RESULT_BACKEND` | broker URL | Celery result backend. |
 | `CELERY_LOG_LEVEL` | `INFO` | Worker and Beat log level. |
+| `DEEPGRAM_LIVE_LOG_PATH` | `.local/logs/deepgram-live.jsonl` in `.env.example`; `start-dev.sh` default when unset | Host-development-only, optional rotating file sink for allowlisted Deepgram live diagnostics. Set it to an empty value to disable the file sink while retaining stdout diagnostics. `start-dev.sh` passes it only to FastAPI. The active file is capped at 5 MiB with two backups (15 MiB total); Docker does not map this value or write a diagnostic file. See [live_stt.md](live_stt.md#live-diagnostics). |
 | `CELERY_TASK_ALWAYS_EAGER` | `false` | Test-only synchronous execution switch. Compose forces `false`. |
 | `TASK_OUTBOX_MAX_ATTEMPTS` | `10` | Maximum broker-publication attempts before a durable task-dispatch row becomes failed. Retry delay starts at 10 seconds and is capped at one hour. |
 

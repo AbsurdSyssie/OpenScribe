@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from app.models import (
     ConsultationSplitTopicDisposition,
+    AttemptKind,
     GeneratedDocument,
     GeneratedDocumentGeneratorType,
     GeneratedDocumentStatus,
@@ -20,6 +21,7 @@ from app.models import (
     Transcript,
     TranscriptIngestionMode,
     TranscriptStatus,
+    TeamLlmBackupSelection,
     TranscriptVersion,
     utcnow,
 )
@@ -30,6 +32,7 @@ from app.services.consultation_splits import (
 )
 from app.services.content_crypto import decrypt_text_for_owner, encrypt_text_for_owner
 from app.errors import AppError
+from app.services.llm_backup_policy import tag_provider_failure
 from app.schemas.templates import RegenerationSteeringPreset
 from app.services.templates import (
     PERSISTED_SPLIT_NOTE_TITLE,
@@ -53,6 +56,7 @@ def _frozen_template(template, version):
     }
 
 
+@pytest.mark.parametrize("primary_fails", [False, True])
 def test_split_note_regeneration_uses_confirmed_snapshot_and_creates_revision(
     db_session,
     monkeypatch,
@@ -61,15 +65,16 @@ def test_split_note_regeneration_uses_confirmed_snapshot_and_creates_revision(
     make_template,
     make_llm_config,
     make_llm_selection,
+    primary_fails,
 ):
     team = make_team(name="Split regeneration clinic")
     admin = make_user(
-        email="split-regeneration-admin@example.com",
+        email=f"split-regeneration-admin-{uuid4()}@example.com",
         password="password-1",
         is_system_admin=True,
     )
     owner = make_user(
-        email="split-regeneration-owner@example.com",
+        email=f"split-regeneration-owner-{uuid4()}@example.com",
         password="password-2",
         team=team,
         team_role=TeamRole.user,
@@ -86,6 +91,16 @@ def test_split_note_regeneration_uses_confirmed_snapshot_and_creates_revision(
         allowed_models_json=["gpt-4o-mini"],
         model_name_override="gpt-4o-mini",
     )
+    backup_config = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Synthetic split backup",
+        model_name="backup-model",
+        available_models_json=["backup-model"],
+    )
+    db_session.add(TeamLlmBackupSelection(
+        team_id=team.id, llm_config_id=backup_config.id, model_name="backup-model",
+    ))
     template = make_template(
         owner=owner,
         actor=owner,
@@ -249,23 +264,26 @@ def test_split_note_regeneration_uses_confirmed_snapshot_and_creates_revision(
 
     provider_requests: list[dict] = []
 
+    split_response = json.dumps({
+        "title": "Overall consultation",
+        "notes": [{
+            "topic_uuid": str(first_topic_uuid),
+            "mode": "freeform",
+            "content": "Regenerated synthetic UTI note.",
+        }],
+    })
+    provider_calls = []
+
     def fake_generate(**kwargs):
         provider_requests.append(kwargs["request_body"])
-        return json.dumps(
-            {
-                "title": "Overall consultation",
-                "notes": [
-                    {
-                        "topic_uuid": str(first_topic_uuid),
-                        "mode": "freeform",
-                        "content": "Regenerated synthetic UTI note.",
-                    }
-                ]
-            }
-        ), {"input_tokens": 8, "output_tokens": 4, "total_tokens": 12, "duration_ms": 3}
+        provider_calls.append(kwargs["config"].id)
+        if kwargs["config"].id == config.id and primary_fails:
+            raise tag_provider_failure(AppError(502, "llm_provider_unreachable", "Synthetic primary outage"))
+        return split_response, {"input_tokens": 8, "output_tokens": 4, "total_tokens": 12, "duration_ms": 3}
 
     monkeypatch.setattr("app.services.templates.redact_transient_text", fake_redact)
-    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate)
+    monkeypatch.setattr("app.services.templates._resolve_generation_credential", lambda _config: None)
+    monkeypatch.setattr("app.services.templates._invoke_frozen_llm", fake_generate)
 
     queued = queue_generated_document_regeneration(
         db_session,
@@ -297,8 +315,27 @@ def test_split_note_regeneration_uses_confirmed_snapshot_and_creates_revision(
     assert in_flight.value.status_code == 409
 
     processed = process_generated_document(db_session, document_id=queued.id)
-    assert processed.status is GeneratedDocumentStatus.ready
+    assert processed.status is GeneratedDocumentStatus.ready, (
+        f"safe_error_code={processed.error_code!r}, providers={provider_calls!r}, "
+        f"model={processed.model_used!r}"
+    )
     assert processed.title == PERSISTED_SPLIT_NOTE_TITLE
+    expected_config = backup_config if primary_fails else config
+    assert provider_calls == ([config.id, backup_config.id] if primary_fails else [config.id])
+    assert processed.model_used == expected_config.model_name
+    assert processed.llm_adapter_kind == expected_config.adapter_kind.value
+    assert processed.llm_base_url == expected_config.base_url
+    assert processed.llm_provider_config_json == dict(expected_config.provider_config_json or {})
+    attempts = list(db_session.scalars(select(ProviderAttempt).where(
+        ProviderAttempt.generated_document_id == queued.id,
+        ProviderAttempt.attempt_kind == AttemptKind.llm_generation,
+    )))
+    assert len(attempts) == (2 if primary_fails else 1)
+    assert sum(item.backup_of_attempt_id is not None for item in attempts) == (1 if primary_fails else 0)
+    if primary_fails:
+        backup_attempt = next(item for item in attempts if item.backup_of_attempt_id is not None)
+        assert backup_attempt.status.value == "settled"
+        assert backup_attempt.outcome.value == "succeeded"
     assert decrypt_text_for_owner(
         db_session,
         owner_user_id=owner.id,

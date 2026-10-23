@@ -2684,6 +2684,22 @@
                     {% if llm_selection %}<form method="post" action="/admin/llm-selection/clear" data-confirm-submit="Clear writing assistant selection? Users will lose team LLM actions until another provider is selected."><input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="provider-policy"><button class="btn small" type="submit">Clear</button></form>{% else %}<span></span>{% endif %}
                   </div>
 
+                  <div class="policy-row" data-policy-row="writing-assistant-backup">
+                    <div class="purpose"><span class="purpose-icon">↻</span><span><strong>Writing assistant backup</strong><small>Used after an eligible provider failure</small></span></div>
+                    <form method="post" action="/admin/llm-backup-selection" data-llm-backup-form>
+                      <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}"><input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="provider-policy">
+                      <select class="select-like" name="backup_llm_config_id" aria-label="Backup LLM provider" data-backup-provider-select>
+                        <option value="" data-models="[]">No backup provider</option>
+                        {% for config in selectable_llm_configs %}<option value="{{ config.id }}" data-models='{{ config.available_models_json|tojson|forceescape }}' data-default-model="{{ config.model_name or '' }}"{% if llm_backup_selection and llm_backup_selection.llm_config_id == config.id %} selected{% endif %}>{{ config.label }}</option>{% endfor %}
+                      </select>
+                      <select class="select-like" name="backup_model_name" aria-label="Backup LLM model" data-backup-model-select data-selected-value="{{ llm_backup_selection.model_name if llm_backup_selection else '' }}"></select>
+                      <span class="policy-na">—</span>
+                      <span class="configured{% if not llm_backup_selection %} fallback{% endif %}">{% if llm_backup_selection %}Configured{% else %}No backup{% endif %}</span>
+                      <button class="btn primary small" type="submit">Save</button>
+                    </form>
+                    <span></span>
+                  </div>
+
                   <div class="policy-row" data-policy-row="hallucination-checker">
                     <div class="purpose"><span class="purpose-icon">✓</span><span><strong>Hallucination checker</strong><small>Verification model</small></span></div>
                     {% if selectable_llm_configs %}<form method="post" action="/admin/hallucination-check-selection" data-policy-model-form><input type="hidden" name="team_id" value="{{ selected_team.id }}"><input type="hidden" name="return_view" value="workspace"><input type="hidden" name="return_tab" value="provider-policy"><select class="select-like" name="llm_config_id" aria-label="Hallucination checker provider instance" required data-policy-provider-select>{% for config in selectable_llm_configs %}<option value="{{ config.id }}" data-models='{{ config.available_models_json|tojson|forceescape }}' data-default-model="{{ config.model_name or '' }}"{% if hallucination_check_selection and hallucination_check_selection.llm_config_id == config.id %} selected{% endif %}>{{ config.label }}</option>{% endfor %}</select><select class="select-like" name="provider_model" aria-label="Hallucination checker model" required data-policy-model-select data-selected-value="{{ hallucination_check_selection.model_name_override if hallucination_check_selection else '' }}"></select><span class="policy-na">—</span><span class="configured{% if not hallucination_check_selection %} fallback{% endif %}">{% if hallucination_check_selection %}Configured{% else %}Unconfigured{% endif %}</span><button class="btn primary small" type="submit">Save</button></form>{% else %}<span class="policy-empty"><a href="/admin?team_id={{ selected_team.id }}&amp;team_tab=llm">Add LLM provider</a></span><span class="policy-na">—</span><span class="policy-na">—</span><span class="configured fallback">Unconfigured</span><span></span>{% endif %}
@@ -3160,6 +3176,7 @@
                         name="language"
                         value="{{ stt_config.language or '' }}"
                         placeholder="Auto-detect" /></label
+                    ><fieldset class="provider-diarization-options"><legend>Diarisation availability</legend><label><input type="checkbox" name="diarization_live_enabled" value="true" {% if stt_config.diarization_live_enabled %}checked{% endif %}> Enable for live consultation recording</label><label><input type="checkbox" name="diarization_batch_enabled" value="true" {% if stt_config.diarization_batch_enabled %}checked{% endif %}> Enable for uploaded consultation audio</label><div class="field-help">Users can opt in from Preferences. Dictation is excluded.</div><div class="field"><label for="stt-config-diarization-field">Batch request field (custom providers)</label><input id="stt-config-diarization-field" name="diarization_field_name" value="{{ stt_config.diarization_field_name or '' }}" placeholder="e.g. diarize"><small>Leave blank when the provider does not accept a diarisation option.</small></div><div class="field"><label for="stt-config-diarization-on">Enabled value</label><input id="stt-config-diarization-on" name="diarization_on_value" value="{{ stt_config.diarization_on_value or 'true' }}"></div><div class="field"><label for="stt-config-diarization-off">Disabled value</label><input id="stt-config-diarization-off" name="diarization_off_value" value="{{ stt_config.diarization_off_value or 'false' }}"></div></fieldset>
                     ><label
                       ><input
                         type="checkbox"
@@ -3219,7 +3236,7 @@
                         %}Dictation{% endif %}</span
                       >
                       <div class="quick-actions">
-                        <button class="btn small" type="button" data-edit-stt-provider data-config-id="{{ config.id }}" data-provider-preset="{{ config.provider_preset or '' }}" data-provider-label="{{ config.label }}" data-base-url="{{ config.base_url }}" data-openapi-path="{% if config.adapter_kind.value == 'generic_rest' %}/openapi.json{% endif %}" data-model-name="{{ config.model_name or '' }}" data-language="{{ config.language or '' }}" data-is-active="{{ 'true' if config.is_active else 'false' }}">Edit</button>
+                        <button class="btn small" type="button" data-edit-stt-provider data-config-id="{{ config.id }}" data-provider-preset="{{ config.provider_preset or '' }}" data-provider-label="{{ config.label }}" data-base-url="{{ config.base_url }}" data-openapi-path="{% if config.adapter_kind.value == 'generic_rest' %}/openapi.json{% endif %}" data-model-name="{{ config.model_name or '' }}" data-language="{{ config.language or '' }}" data-is-active="{{ 'true' if config.is_active else 'false' }}" data-diarization-live="{{ 'true' if config.diarization_live_enabled else 'false' }}" data-diarization-batch="{{ 'true' if config.diarization_batch_enabled else 'false' }}" data-diarization-field="{{ config.diarization_field_name or '' }}" data-diarization-on="{{ config.diarization_on_value or 'true' }}" data-diarization-off="{{ config.diarization_off_value or 'false' }}">Edit</button>
                         <form
                           method="post"
                           action="/admin/stt-configs/{{ config.id }}/test"
@@ -4632,6 +4649,16 @@
                   ></span
                 >
               </label>
+              <fieldset class="provider-diarization-options">
+                <legend>Diarisation availability</legend>
+                <label class="checkbox-row"><input type="checkbox" id="stt-diarization-live" name="diarization_live_enabled"><span><strong>Enable for live consultation recording</strong><br><span class="field-help">Deepgram live only. Custom live chunking is not supported.</span></span></label>
+                <label class="checkbox-row"><input type="checkbox" id="stt-diarization-batch" name="diarization_batch_enabled"><span><strong>Enable for uploaded consultation audio</strong><br><span class="field-help">Users must also opt in from Preferences.</span></span></label>
+                <div class="wizard-form-grid wizard-spaced">
+                  <div class="field"><label for="stt-diarization-field">Batch request field</label><input id="stt-diarization-field" name="diarization_field_name" placeholder="Provider-specific, e.g. diarize"></div>
+                  <div class="field"><label for="stt-diarization-on">Enabled value</label><input id="stt-diarization-on" name="diarization_on_value" value="true"></div>
+                  <div class="field"><label for="stt-diarization-off">Disabled value</label><input id="stt-diarization-off" name="diarization_off_value" value="false"></div>
+                </div>
+              </fieldset>
             </section>
           </div>
 
@@ -5011,6 +5038,24 @@
         form.querySelector("[data-policy-provider-select]")?.addEventListener("change", () => syncPolicyModels(form));
       });
 
+      const syncBackupModels = (form) => {
+        const provider = form.querySelector("[data-backup-provider-select]");
+        const model = form.querySelector("[data-backup-model-select]");
+        if (!provider || !model) return;
+        const option = provider.selectedOptions[0];
+        const choices = [...new Set(JSON.parse(option?.dataset.models || "[]").filter(Boolean))];
+        const wanted = model.dataset.selectedValue || model.value;
+        model.replaceChildren(new Option(choices.length ? "Select model" : "No model available", ""));
+        for (const name of choices) model.add(new Option(name, name, false, name === wanted));
+        if (!choices.includes(wanted)) model.value = "";
+        model.disabled = choices.length === 0;
+        model.dataset.selectedValue = "";
+      };
+      document.querySelectorAll("[data-llm-backup-form]").forEach((form) => {
+        syncBackupModels(form);
+        form.querySelector("[data-backup-provider-select]")?.addEventListener("change", () => syncBackupModels(form));
+      });
+
       const tabs = [...document.querySelectorAll(".tab")];
       const panels = [...document.querySelectorAll(".tab-panel")];
       const sidebarTeamButtons = [
@@ -5324,6 +5369,11 @@
           : "Create and validate a team-specific speech-to-text provider.";
         document.getElementById("stt-change-key-help").hidden = !editing;
         document.getElementById("stt-api-key").value = "";
+        document.getElementById("stt-diarization-live").checked = editButton?.dataset.diarizationLive === "true";
+        document.getElementById("stt-diarization-batch").checked = editButton?.dataset.diarizationBatch === "true";
+        document.getElementById("stt-diarization-field").value = editButton?.dataset.diarizationField || "";
+        document.getElementById("stt-diarization-on").value = editButton?.dataset.diarizationOn || "true";
+        document.getElementById("stt-diarization-off").value = editButton?.dataset.diarizationOff || "false";
         document.getElementById("stt-wizard-team").textContent =
           document.getElementById("team-title").textContent;
         const sttNames = {openai: "OpenAI", deepgram: "Deepgram", elevenlabs: "ElevenLabs", custom_openai_compatible: "Custom OpenAI-compatible", custom_rest_openapi: "Custom REST/OpenAPI"};
@@ -5432,7 +5482,7 @@
           sttWizardNext.disabled = cancelSttWizard.disabled = true;
           const form = document.getElementById("stt-wizard-form");
           try {
-            await apiJson(`/api/v1/stt-configs/${encodeURIComponent(sttDraftId)}/finalize`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ team_id: form.elements.team_id.value, label: form.elements.label.value, model_name: form.elements.model_name.value || null, language: form.elements.language.value || null, is_active: form.elements.is_active.checked }) });
+            await apiJson(`/api/v1/stt-configs/${encodeURIComponent(sttDraftId)}/finalize`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ team_id: form.elements.team_id.value, label: form.elements.label.value, model_name: form.elements.model_name.value || null, language: form.elements.language.value || null, is_active: form.elements.is_active.checked, diarization_live_enabled: form.elements.diarization_live_enabled.checked, diarization_batch_enabled: form.elements.diarization_batch_enabled.checked, diarization_field_name: form.elements.diarization_field_name.value.trim() || null, diarization_on_value: form.elements.diarization_on_value.value, diarization_off_value: form.elements.diarization_off_value.value }) });
             sttDraftId = "";
             window.location.assign(`/admin?team_id=${encodeURIComponent(form.elements.team_id.value)}&team_tab=stt`);
           } catch (error) { wizardError("stt-wizard-error", error); sttBusy = false; sttWizardNext.disabled = cancelSttWizard.disabled = false; }

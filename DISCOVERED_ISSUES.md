@@ -1,5 +1,38 @@
 # Discovered issues
 
+### LIVE-STT-FAILURE-DIAGNOSTICS — 2026-10-22
+
+- Status: Open; diagnostic retention/correlation gap.
+- Discovery baseline: `57af8486387ce2a4d4701c676c5f6cadfbfd4345` plus the existing working tree.
+- Locations: `app/services/transcript_streaming.py::_settle_session_attempts`, `app/services/quotas.py::settle_provider_attempt_stream_unknown`, `app/routes/deepgram_live.py` failure warning, and `start-dev.sh`.
+- Exact call: `settle_provider_attempt_stream_unknown(db, attempt_id=attempt.id, now=now)`.
+- Observation: live failure settlement preserves an unknown outcome without copying the session's allowlisted failure code into the attempt. Session deletion clears the attempt's session reference. The runtime warning has safe failure/category fields but no attempt correlation key. The development launcher sends application and worker output to the terminal without configuring a retained log file.
+- Impact: historical failures can retain an outcome without an actionable reason or a reliable link to their runtime warning. This does not establish the cause of a provider or retry failure.
+- Not fixed here: this investigation is read-only operational diagnosis; changing diagnostic persistence or retention needs a focused implementation and tests.
+- Follow-up: persist bounded failure codes on failed live attempts and define a privacy-safe correlation/retention policy for diagnostic events. Preserve unknown-outcome quota semantics and exclude clinical content, credentials, and raw exceptions.
+
+### CHECKER-FAILURE-DEBUG-EXPECTATION — 2026-10-22
+
+- Status: Resolved 2026-10-23; terminal failure diagnostics use content-free metadata.
+- Resolution: restored the opt-in failure payload through the existing owner-encrypted storage, limited to allowlisted application/provider codes, HTTP status, and retry count. Provider and Vault failure API regressions pass, including checks that error-message sentinels and content-bearing fields are absent. The original discovery notes below are retained as history.
+- Discovery baseline: `57af8486387ce2a4d4701c676c5f6cadfbfd4345` plus the existing working tree.
+- Locations: `tests/test_api.py::test_structured_hallucination_check_provider_failure_records_safe_debug`, `test_structured_hallucination_check_vault_failure_does_not_fail_document`; `app/web/presentation.py::generated_document_response`.
+- Exact expectation: `assert debug["failure_code"] == "vault_read_failed"` (and the equivalent provider-failure assertion).
+- Observation: both tests enable the diagnostic flag but receive `hallucination_check_debug_json=None` after otherwise correct provider/credential failure handling, then fail while indexing it. The diarisation edits do not change checker-debug persistence or its presentation gate; the underlying reason for the missing debug payload still needs investigation.
+- Impact: the selected checker regressions are not green. No change to checker execution correctness or privacy exposure was established by these assertions. Do not broaden debug content exposure merely to satisfy them.
+- Not fixed here: diagnostic payload expectations are outside speaker-source handling. Follow up by tracing failure-debug persistence and reconciling the synthetic fixtures with the intended opt-in diagnostic contract, including default-off coverage.
+
+### HALLUCINATION-DEBUG-CONTENT-BOUNDARY — 2026-10-22
+
+- Status: Open; privacy-boundary follow-up.
+- Discovery baseline: commit `445119e` plus the current working tree.
+- Location: `app/services/templates.py::_run_hallucination_check`.
+- Safe code excerpt: `"initial_note": _structured_note_debug_payload(title=title, sections=sections)` and `debug_payload["checker_edits"] = edits`.
+- Observation: when the gated hallucination-check debug path is enabled, the initial note snapshot is retained on skipped and successful checks, and checker edits are retained on corrected checks. The record is encrypted on the owning generated document and remains owner-only; this is not evidence of cross-owner exposure. The terminal provider/credential failure paths added in this review use content-free failure metadata, but they do not change the older skipped and successful paths.
+- Impact: opt-in diagnostic storage can retain transcript-derived note content, contrary to the project's content-free diagnostic boundary, even though the stored field is encrypted and owner-scoped.
+- Not fixed here: changing the historical success/skipped debug contract is outside the four review fixes and needs a focused privacy review of the gate and presentation path.
+- Follow-up: inspect the debug gate and every persistence/display path; remove note snapshots and checker edits from diagnostics or limit any required investigation to synthetic content. Keep owner and encryption boundaries intact, and test both default-off and explicitly enabled behavior.
+
 Reconciled on 19 October 2026 against `97da191926db1da74fdf741e01f4f8490d60f6c8` and the remediation working tree; final verification was completed on 20 October 2026. This is a work log, not an architectural source of truth. Current status notes take precedence over the original dated observations retained beneath them. See the [remediation and regression review](docs/reviews/discovered-issues-remediation-2026-10-19.md) for changes, verification and limits.
 
 | Disposition | Entries |
@@ -512,3 +545,71 @@ Reconciled on 19 October 2026 against `97da191926db1da74fdf741e01f4f8490d60f6c8`
 - Likely impact: UUID ordering could leave an expired verification reservation active or lose its conservative settlement, producing incorrect quota availability/accounting.
 - Resolution: flush terminal attempt changes before reconciling source rows. A deterministic verification-first expired-reservation regression failed before the flush and passed afterward; a verification-first submitted-timeout regression verifies persisted unknown settlement.
 - Validation: both focused lifecycle regressions passed after the change; the broader focused suite is recorded in [regression review](docs/reviews/regression-review-2026-10-19.md).
+
+### LIVE-STREAM-FAILURE-DIAGNOSTIC-COLLAPSE — 2026-10-20
+
+- Current status: Corrected locally; deployment and the original incident's trigger remain unverified.
+- Discovery commit: unavailable (live incident investigation; deployed route and streaming-service fingerprints matched the inspected local files).
+- Locations: `app/routes/deepgram_live.py::deepgram_live`, `_Relay.checkpoint`; `app/services/transcript_streaming.py::_SAFE_STREAM_FAILURE_CODES`.
+- Observed problem: typed provider failures and browser disconnects become `stream_failed`. The route also passes result-validation and finalization codes absent from the lifecycle allowlist, which normalizes them to `stream_failed`. A checkpoint `asyncio.wait_for` timeout bypasses the route's specific finalization code. The fixed close message uses INFO, which the current default web-server logging does not emit.
+- Impact: durable failure metadata and available operational logs cannot distinguish several materially different causes of an interrupted recording. Successful recovery of the accepted interval does not establish why capture stopped or whether unsent browser audio existed.
+- Follow-up: preserve the established safe lifecycle categories, retain only allowlisted provider categories in visible content-free failure logs, and test synthetic route failures and finalization timeouts. These changes cannot retrospectively recover the original exception category.
+- Resolution: the route now maps failures to existing lifecycle categories and emits established-stream failures at warning level with only bounded codes. Final-drain wait expiry uses the existing finalization error. The owning-user, retained-source, explicit-retry, quota and cleanup contracts are unchanged. Luna implemented and tested the correction; the parent reviewed it. Synthetic regressions failed before the fix and passed afterward; the complete focused route, lifecycle and frontend protocol files passed 45 tests. The API authorization audit passed, with its existing HTTP route manifest unchanged. Tests and audit ran sequentially and needed the supported elevated retry for local test-service access. Maintained-document validation passed for 54 files. The original recording failure was not reproduced.
+
+### LIVE-STREAM-UNSENT-FAILURE-TAIL — 2026-10-20
+
+- Current status: Open; architectural recovery decision required before changing the contract.
+- Discovery commit: unavailable (live incident investigation).
+- Locations: `app/static/js/transcribe/deepgramLiveStream.js::_queueAudio`, `_fail`, `pendingRecoverySamples`; `app/static/js/transcribe/media.js::failDeepgramCapture`; `app/services/transcript_streaming.py::_recovery_wav_matches_deliveries`.
+- Exact boundary: `if (this.outboundSamples > RING_LIMIT_SAMPLES)` stops the stream after the unsent queue exceeds five seconds. Recovery accepts only the exact server-authorized interval and verifies persisted batch digests; unsent outbound and pre-roll are excluded.
+- Observed problem: stopping on a connection/backpressure failure does not provide a recovery path for captured audio that the server never authorized. Local failure callbacks can also lack the server interval needed to expose the exact pending recovery buffer. The media integration releases its active stream reference after failure.
+- Likely impact: server-accepted audio can be recovered while additional browser-captured audio remains unavailable. The inspected incident recovered its entire accepted interval; the available metadata cannot establish whether an unsent tail existed in that incident.
+- Not fixed now: treating an unacknowledged captured tail as a new source, or persisting capture through refresh/process loss, requires an explicit recovery/retention/encryption design. Extending the existing digest-bound recovery interval would weaken its exact-source contract.
+- Follow-up: design a bounded owner-only recovery path for unsent capture, define retention and browser-loss limits, and test stalled acknowledgements, network loss, capture stop, source sequencing, duplicate delivery, quota, encryption, and transcript-root cleanup with synthetic audio. Keep current exact-interval recovery and explicit user replay intact.
+
+### GEMINI-LATE-CAPACITY-RETRY-BUDGET — 2026-10-20
+
+- Current status: Open; provider retry-admission policy decision deferred.
+- Discovery commit: unavailable (synthetic reproduction during live HTTP 504 investigation).
+- Location: `app/services/llm_execution.py`, `bounded_request`.
+- Exact guard: `if waited + wait > 30 or wait >= remaining: wait = 0.0`.
+- Observed behavior: after a long-running request returns an explicitly temporary HTTP 429, the retry loop checks that the selected wait fits the remaining shared stage budget but does not reserve a minimum duration for the next request. Each Gemini attempt builds a fresh client, so its request timeout reflects the reduced remaining budget.
+- Likely impact: a late retry can start with only a few seconds remaining and return an upstream HTTP 504 before the local stage deadline. A synthetic full-wrapper reproduction used durations of 83.954 seconds and 3.151 seconds with a 1.650-second retry wait; the second client's SDK timeout was 4,396 ms. It emitted a first `rate_limited`/HTTP 429 event and then a terminal `timeout`/HTTP 504 event, with no third request. This demonstrates the timing path, not the cause of any individual provider 504.
+- Not fixed now: choosing a minimum residual budget changes which explicitly temporary 429s are eligible for replay; extending or refreshing a stage deadline would change provider-execution bounds. These are provider execution policy decisions. The current stage deadline and rule against automatically retrying 504 remain in force.
+- Follow-up: decide whether to require a minimum remaining budget before retry admission, then add deterministic bounded-request and Gemini-wrapper tests for late 429, shrinking per-attempt client timeouts, terminal upstream 504, and local timeout with null HTTP status. Keep tests synthetic and verify no 504 replay.
+- Reassessment — 2026-10-20: safe metadata from a separate ordinary Gemini generation showed a first and only transport event with upstream HTTP 504 after 87.266 seconds, no preceding 429 or retry, inside the original 150-second durable attempt. This means the late-retry guard alone would not prevent that incident; it does not establish the provider-side cause. The 90-second Gemini generation-stage cap is separate from the 150-second ordinary attempt deadline. A Gemini-only 120-second generation cap is a bounded trial proposal requiring approval, not a confirmed fix. The checker would remain capped at 30 seconds within the same 150-second attempt and may have less than 30 seconds after generation and intervening work. Split generation has its own 90-second durable deadline, which would also need alignment if that path were included. No runtime policy was changed. The deployment's combined worker concurrency is 1, so any deadline increase also increases the time one worker may remain occupied; host inspection confirmed one CPU and approximately 2 GB RAM. Capacity must be assessed before enabling additional isolated workers.
+- Monitoring reassessment — 2026-10-20: read-only Google Cloud Monitoring for the EU Gemini 3.8 Flash PublisherModel resource, from 09:00 UTC, showed 19 invocations: 13 HTTP 200, 2 HTTP 429, and 4 HTTP 504. All reported requests were `shared` / `standard`; no `dedicated` requests were observed. The `error_category` label was absent. Twelve model-latency observations had a mean of 30.277 seconds, but their latency-kind label was absent; no first-token latency series was returned. The fixed-quota `serviceruntime.googleapis.com/quota/exceeded` query returned no time series. That absence cannot rule out a fixed quota or dynamic shared-capacity contention. The project-metadata lookup returned 403, preventing completion of the configured-quota check; the billing tier and account/org limits were not established. An initial Monitoring read failed because of an OAuth scope mismatch; retry with the exact `monitoring.read` scope succeeded, so this was not evidence of an IAM denial. No project identifiers, provider payloads, prompts, responses, or credentials were recorded here.
+
+### LIVE-HOST-WORKER-CAPACITY-HEADROOM — 2026-10-20
+
+- Current status: Open; host sizing and workload-isolation assessment pending.
+- Discovery commit: unavailable (read-only live host capacity inspection).
+- Location: deployment worker topology and host capacity; source configuration in `app/celery_app.py` routes control, generation, and ingestion queues, but does not establish the live process topology.
+- Observed state: the live host is an AWS `t2.small` with one vCPU and 2 GiB RAM. The combined worker concurrency is one. At inspection, approximately 514 MiB RAM was available and 1,038 MiB of swap was in use. CPU credit balance remained positive but fell from 11.90 to 9.63 over about 25 minutes. AWS documents the `t2.small` baseline as 20% CPU utilization and 12 credits earned per hour ([AWS burstable performance concepts](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-credits-baseline-concepts.html)).
+- Likely impact: one combined worker limits parallelism, while adding worker processes on the same small host could increase memory pressure and allow generation backlog to starve control or ingestion work. The observed positive credit balance does not establish CPU-credit throttling, and these host observations do not establish that AWS capacity caused any Google HTTP 429 or 504.
+- Not changed: no worker count, queue routing, host size, deadline, or provider policy was modified. Increasing worker count without sizing and load testing could worsen memory pressure and queue starvation.
+- Follow-up: assess a host with at least 2 vCPUs and 8 GiB RAM as an initial sizing proposal, not a benchmark guarantee. After load testing, consider isolated pools with one control worker, two generation workers, and one ingestion worker. Profile resident memory, queue-delay p95, CPU utilization, and CPU-credit balance under representative synthetic load before changing deployment configuration.
+
+### SCRIBE-SIDEBAR-RESIZE-CONTRACT-DRIFT — 2026-10-21
+
+- Current status: Open; maintained UI contract needs reconciliation.
+- Discovery commit: unavailable.
+- Locations: `tests/test_workspace_navigation.py::test_workspace_scribe_and_personal_routes_load`; unchanged `app/templates/workspace/_sidebar.html` lines 11–13.
+- Exact test assertion: `assert 'data-sidebar-step=' not in scribe.text, "Scribe must not render non-Scribe sidebar width buttons"`.
+- Exact template snippet: `<button type="button" data-sidebar-full data-sidebar-step="-16" ...>` and `<button type="button" data-sidebar-full data-sidebar-step="16" ...>`.
+- Observed problem: the focused workspace navigation test fails because the current shared sidebar template renders resize controls in Scribe, contrary to the test assertion. The template was not changed for the example-consultation work.
+- Likely impact: the test may encode a stale expectation or the controls may need route-specific rendering; current UI behavior and maintained test contract disagree.
+- Not fixed now: this is unrelated to the example consultation and requires reconciling the current Scribe resize controls with the test/accessibility contract.
+- Follow-up: confirm whether Scribe should retain the width controls, then update the route-specific template or the focused test and its accessibility coverage to match.
+
+### VAD-INACTIVITY-TEST-IMPORT-REPLACEMENT — 2026-10-22
+
+- Current status: Open; the test harness does not reach its assertions.
+- Discovery commit: `7a1baec560c9c8cf4f357006dba28a46ed7bd921`.
+- Location: `tests/test_vad_inactivity_js.py::test_vad_inactivity_prompt_dismiss_rearms_and_resets`; source `app/static/js/transcribe/media.js`.
+- Exact obsolete replacement: `.replace("import { csrfFetch } from '../csrf.js';", ...)`.
+- Current source import: `import { csrfFetch, csrfToken } from '../csrf.js';`.
+- Observed problem: the harness leaves the ES module import in the source before passing it to `vm.runInContext`, which raises `SyntaxError: Cannot use import statement outside a module` before the test exercises VAD inactivity behavior.
+- Likely impact: this test cannot currently validate inactivity prompt dismissal or reset behavior; the failure does not establish a runtime defect.
+- Not fixed now: repairing this unrelated harness is outside the live startup change.
+- Follow-up: update the source replacement to match the current imports, then rerun `tests/test_vad_inactivity_js.py` and confirm its behavioral assertions execute.

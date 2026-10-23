@@ -62,6 +62,7 @@ from .llm import (
     LlmConfigInspectResult,
     LlmInspectRequest,
     LlmConfigUpsert,
+    LlmBackupSelectionUpsert,
     LlmModelOption,
     LlmSelectionDetail,
     LlmSelectionUpsert,
@@ -127,8 +128,13 @@ from .templates import (
 )
 from .transcripts import (
     TranscriptCommit,
+    TranscriptCaptureSettingsDetail,
+    TranscriptTurnTextUpdate,
+    TranscriptTurnCreate,
+    TranscriptTurnDelete,
     TranscriptCreate,
     TranscriptDetail,
+    TranscriptTurnView,
     TranscriptIngestionAccepted,
     TranscriptIngestionJobDetail,
     TranscriptListItem,
@@ -142,7 +148,7 @@ from .transcripts import (
     TranscriptUpdate,
 )
 from .users import UserCreate, UserDetail, UserListItem
-from .workspace import TranscribeWorkspaceDetail
+from .workspace import ExampleConsultationResponse, TranscribeWorkspaceDetail
 
 __all__ = [
     "AccountRequestApprove",
@@ -204,6 +210,7 @@ __all__ = [
     "LlmConfigInspectResult",
     "LlmInspectRequest",
     "LlmConfigUpsert",
+    "LlmBackupSelectionUpsert",
     "LlmModelOption",
     "LlmSelectionDetail",
     "LlmSelectionUpsert",
@@ -266,8 +273,13 @@ __all__ = [
     "QuickActionUpsert",
     "QuickActionVersionDetail",
     "TranscriptCommit",
+    "TranscriptCaptureSettingsDetail",
+    "TranscriptTurnTextUpdate",
+    "TranscriptTurnCreate",
+    "TranscriptTurnDelete",
     "TranscriptCreate",
     "TranscriptDetail",
+    "TranscriptTurnView",
     "TranscriptIngestionAccepted",
     "TranscriptIngestionJobDetail",
     "TranscriptListItem",
@@ -287,4 +299,5 @@ __all__ = [
     "UserLlmPreferenceUpsert",
     "UserListItem",
     "TranscribeWorkspaceDetail",
+    "ExampleConsultationResponse",
 ]

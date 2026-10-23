@@ -122,6 +122,87 @@ def test_browser_transcribe_start_sends_csrf_header(live_server, make_team, make
         playwright.stop()
 
 
+def test_first_scribe_visit_opens_editable_fictional_example(live_server, db_session, make_team, make_user):
+    """The pending first-use flow opens the saved example through the real browser client."""
+    team = make_team(name="Browser Example Clinic")
+    user = make_user(
+        email="browser-example@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.user,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+    user.example_consultation_pending = True
+    db_session.commit()
+
+    try:
+        playwright = playwright_sync.sync_playwright().start()
+        browser = playwright.chromium.launch()
+    except Exception as exc:
+        pytest.skip(f"Playwright browser unavailable: {exc}")
+
+    try:
+        context = browser.new_context(base_url=live_server)
+        page = context.new_page()
+        page_errors = []
+        example_requests = []
+        session_start_requests = []
+        page.on("pageerror", lambda error: page_errors.append(str(error)))
+
+        def track_request(request):
+            if request.method != "POST":
+                return
+            if request.url.endswith("/api/v1/transcribe/example-consultation"):
+                example_requests.append(request)
+            elif request.url.endswith("/api/v1/transcripts/start"):
+                session_start_requests.append(request)
+
+        page.on("request", track_request)
+        page.goto("/login")
+        page.locator('form[action="/login"] input[name="email"]').fill(user.email)
+        page.locator('form[action="/login"] input[name="password"]').fill("password-1")
+        page.get_by_role("button", name="Sign in").click()
+        page.locator("[data-example-consultation-banner]").wait_for(state="visible")
+        page.wait_for_url("**/workspace?transcript_id=*")
+        assert len(example_requests) == 1
+        example_response = example_requests[0].response()
+        assert example_response is not None and example_response.status == 200
+
+        title = page.locator("[data-session-title-display]")
+        expect(title).to_have_text("Example consultation")
+        example_url = page.url
+        assert "This is a fictional example." in page.locator("[data-example-consultation-banner]").inner_text()
+        assert page.locator("[data-generated-structured-section]").count() > 0
+
+        working_note = page.locator('[data-document-id^="working:"][data-document-kind="note"]')
+        working_note.click()
+        working_note_line = page.locator("[data-structured-line-input]").first
+        expect(working_note_line).to_be_visible()
+        assert "Dry cough" in working_note_line.input_value()
+
+        page.get_by_role("tab", name="Follow Ups").click()
+        followup = page.locator("[data-latest-followup-output] textarea")
+        expect(followup).to_be_visible()
+        assert "cough can continue" in followup.input_value()
+
+        page.get_by_role("tab", name="Clinical Note").click()
+        dictation_preview = page.locator("[data-dictation-compact-body]")
+        assert "Working plan" in dictation_preview.inner_text()
+        page.locator("[data-dictation-cta]").click()
+        dictation_editor = page.locator("[data-dictation-combined-input]")
+        expect(dictation_editor).to_be_visible()
+        assert "Working plan" in dictation_editor.input_value()
+        dictation_editor.fill(dictation_editor.input_value() + " Example edit.")
+        assert page.url == example_url
+        assert len(example_requests) == 1
+        assert session_start_requests == []
+        assert page_errors == []
+    finally:
+        browser.close()
+        playwright.stop()
+
+
 def test_followup_context_accepts_typed_input_when_generation_is_available(
     client,
     live_server,

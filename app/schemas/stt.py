@@ -51,6 +51,11 @@ class SttConfigUpsert(BaseModel):
     segment_end_field: str | None = Field(default=None, max_length=255)
     segment_speaker_field: str | None = Field(default=None, max_length=255)
     extra_form_fields_json: dict[str, str] = Field(default_factory=dict)
+    diarization_live_enabled: bool = False
+    diarization_batch_enabled: bool = False
+    diarization_field_name: str | None = Field(default=None, max_length=255)
+    diarization_on_value: str = Field(default="true", min_length=1, max_length=64)
+    diarization_off_value: str = Field(default="false", min_length=1, max_length=64)
     is_active: bool = True
     confirm_duplicate: bool = False
 
@@ -181,6 +186,13 @@ class SttConfigUpsert(BaseModel):
             self.model_field_name = "model"
         if self.language and not self.language_field_name:
             self.language_field_name = "language"
+        self.diarization_field_name = self.diarization_field_name.strip() if self.diarization_field_name else None
+        self.diarization_on_value = self.diarization_on_value.strip()
+        self.diarization_off_value = self.diarization_off_value.strip()
+        if not self.diarization_on_value or not self.diarization_off_value:
+            raise ValueError("Diarisation option values must not be blank")
+        if self.diarization_on_value == self.diarization_off_value:
+            raise ValueError("Diarisation on and off values must differ")
         return self
 
 
@@ -208,6 +220,11 @@ class SttConfigDetail(BaseModel):
     segment_end_field: str | None
     segment_speaker_field: str | None
     extra_form_fields_json: dict[str, str]
+    diarization_live_enabled: bool = False
+    diarization_batch_enabled: bool = False
+    diarization_field_name: str | None = None
+    diarization_on_value: str = "true"
+    diarization_off_value: str = "false"
     credential_status: ProviderCredentialStatus
     inspection_metadata_json: dict
     setup_status: SttConfigSetupStatus
@@ -399,11 +416,25 @@ class SttConfigFinalize(BaseModel):
     model_name: str | None = Field(default=None, max_length=255)
     language: str | None = Field(default=None, max_length=32)
     is_active: bool = True
+    diarization_live_enabled: bool = False
+    diarization_batch_enabled: bool = False
+    diarization_field_name: str | None = Field(default=None, max_length=255)
+    diarization_on_value: str = Field(default="true", min_length=1, max_length=64)
+    diarization_off_value: str = Field(default="false", min_length=1, max_length=64)
 
     @field_validator("language")
     @classmethod
     def normalize_language(cls, value: str | None) -> str | None:
         return normalize_stt_language(value)
+
+    @model_validator(mode="after")
+    def validate_diarization_mapping(self):
+        self.diarization_field_name = self.diarization_field_name.strip() if self.diarization_field_name else None
+        self.diarization_on_value = self.diarization_on_value.strip()
+        self.diarization_off_value = self.diarization_off_value.strip()
+        if not self.diarization_on_value or not self.diarization_off_value or self.diarization_on_value == self.diarization_off_value:
+            raise ValueError("Diarisation on/off values must be nonblank and differ")
+        return self
 
 
 class SttConfigFinalizeBody(BaseModel):
@@ -414,11 +445,25 @@ class SttConfigFinalizeBody(BaseModel):
     model_name: str | None = Field(default=None, max_length=255)
     language: str | None = Field(default=None, max_length=32)
     is_active: bool = True
+    diarization_live_enabled: bool = False
+    diarization_batch_enabled: bool = False
+    diarization_field_name: str | None = Field(default=None, max_length=255)
+    diarization_on_value: str = Field(default="true", min_length=1, max_length=64)
+    diarization_off_value: str = Field(default="false", min_length=1, max_length=64)
 
     @field_validator("language")
     @classmethod
     def normalize_language(cls, value: str | None) -> str | None:
         return normalize_stt_language(value)
+
+    @model_validator(mode="after")
+    def validate_diarization_mapping(self):
+        self.diarization_field_name = self.diarization_field_name.strip() if self.diarization_field_name else None
+        self.diarization_on_value = self.diarization_on_value.strip()
+        self.diarization_off_value = self.diarization_off_value.strip()
+        if not self.diarization_on_value or not self.diarization_off_value or self.diarization_on_value == self.diarization_off_value:
+            raise ValueError("Diarisation on/off values must be nonblank and differ")
+        return self
 
 
 class SttConfigDraftReplaceCredential(BaseModel):

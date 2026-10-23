@@ -10,6 +10,35 @@ import pytest
 from app.errors import AppError
 from app.services import llm_execution as execution
 from app.services.provider_transport_telemetry import validate_transport_event
+from app.services import templates as template_service
+
+
+def test_checker_terminal_failure_debug_payload_is_allowlisted_and_gated(monkeypatch):
+    monkeypatch.setenv("HALLUCINATION_CHECK_DEBUG_UI", "0")
+    failure = AppError(
+        502,
+        "unknown_internal_error_with_sensitive_suffix",
+        "PATIENT_MESSAGE_SENTINEL",
+        {
+            "provider_error_code": "CREDENTIAL_RESPONSE_SENTINEL",
+            "provider_http_status": 418,
+            "provider_response": "PROVIDER_BODY_SENTINEL",
+        },
+    )
+
+    payload = template_service._checker_terminal_failure_debug_payload(failure, retry_count=2)
+
+    assert template_service._hallucination_check_debug_enabled() is False
+    assert payload == {
+        "failure_code": "other_error",
+        "provider_error_code": "http_status_error",
+        "provider_http_status": 418,
+        "retry_count": 2,
+    }
+    assert all(
+        sentinel not in repr(payload)
+        for sentinel in ("PATIENT_MESSAGE_SENTINEL", "CREDENTIAL_RESPONSE_SENTINEL", "PROVIDER_BODY_SENTINEL")
+    )
 
 
 def test_temporary_429_retries_four_calls_and_records_before_sleep(monkeypatch):

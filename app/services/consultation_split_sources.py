@@ -59,6 +59,7 @@ from app.services.redaction_primitives import (
     redact_dynamic_prompt_value,
 )
 from app.services.templates import list_available_templates_for_user
+from app.services.structured_transcripts import render_redacted_diarised_transcript
 from app.services.transcripts import (
     assert_no_unresolved_stream_session,
     freeform_working_note_text,
@@ -743,7 +744,10 @@ def _prepared_analysis_source_snapshot(
 ) -> dict[str, Any]:
     """Build the complete encrypted-only redacted source payload."""
     effective_redaction = effective_redaction_text_and_phi_index(db, run=redaction_run) if redaction_run is not None else None
-    transcript_text = effective_redaction.redacted_text.strip() if effective_redaction is not None else ""
+    structured_transcript = transcript_version is not None and transcript_version.structured_turns_encrypted is not None
+    transcript_text = (
+        effective_redaction.redacted_text if structured_transcript else effective_redaction.redacted_text.strip()
+    ) if effective_redaction is not None else ""
     base_phi_index = effective_redaction.phi_index if effective_redaction is not None else []
     start_index = next_placeholder_index(redaction_run) if redaction_run is not None else 1
 
@@ -801,6 +805,28 @@ def _prepared_analysis_source_snapshot(
         start_index=start_index + len(working_phi_index) + len(dictation_phi_index),
         protections=protections,
     )
+    transcript_redacted = str(redacted_values["transcript"])
+    transcript_phi_index = [
+        *base_phi_index,
+        *[
+            item for item in manual_phi_index
+            if isinstance(item, dict)
+            and isinstance(item.get("placeholder"), str)
+            and item["placeholder"] in transcript_redacted
+        ],
+    ]
+    diarised_transcript = False
+    if structured_transcript:
+        rendered = render_redacted_diarised_transcript(
+            db,
+            version=transcript_version,
+            redacted_text=transcript_redacted,
+            phi_index=transcript_phi_index,
+        )
+        if rendered is None:
+            raise AppError(409, "diarised_redaction_mapping_failed", "Speaker labels could not be safely mapped through redaction")
+        redacted_values["transcript"] = rendered
+        diarised_transcript = True
     if not any((
         bool(str(redacted_values["transcript"]).strip()),
         redacted_values["working_note"] is not None,
@@ -818,6 +844,7 @@ def _prepared_analysis_source_snapshot(
         },
         "clinical_nlp_hints": redacted_values["clinical_nlp_hints"],
         "phi_index": [*base_phi_index, *working_phi_index, *dictation_phi_index, *manual_phi_index],
+        **({"diarised_transcript": True} if diarised_transcript else {}),
     }
 
 

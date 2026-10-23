@@ -134,6 +134,7 @@ def _local_only_dev_emails() -> set[str]:
         os.getenv("DEV_TEST_ADMIN_EMAIL", "dev.admin@example.com").strip().lower(),
         os.getenv("DEV_TEST_LEADER_EMAIL", "dev.leader@example.com").strip().lower(),
         os.getenv("DEV_TEST_USER_EMAIL", "dev.user@example.com").strip().lower(),
+        "demo@example.com",
     }
 
 

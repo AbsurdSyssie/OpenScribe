@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hmac
 import io
+import json
 import os
 import wave
 from dataclasses import dataclass
@@ -64,7 +65,7 @@ LIVE_STT_HOURLY_DURATION_LIMIT_SECONDS = float(os.getenv("LIVE_CHUNK_HOURLY_DURA
 FAILED_AUDIO_MAX_AGE = timedelta(hours=24)
 _SELECTION_KEYS = frozenset({
     "config_id", "provider_preset", "adapter_kind", "base_url", "model_name", "language",
-    "mip_opt_out", "extra_query_params",
+    "mip_opt_out", "extra_query_params", "stt_diarisation_enabled", "diarization_live_enabled",
 })
 _SAFE_STREAM_FAILURE_CODES = frozenset({
     "stream_transport_failed", "stream_provider_failed", "stream_finalization_timeout",
@@ -197,6 +198,11 @@ def _selection_snapshot(value: Mapping[str, object]) -> dict[str, object]:
         or not isinstance(snapshot.get("model_name"), str)
     ):
         raise AppError(409, "stream_selection_unsupported", "The selected transcription provider does not support live streaming")
+    for flag in ("stt_diarisation_enabled", "diarization_live_enabled"):
+        if flag in snapshot and not isinstance(snapshot[flag], bool):
+            raise AppError(422, "stream_selection_invalid", "Live transcription selection is invalid")
+    if snapshot.get("stt_diarisation_enabled") is True and snapshot.get("diarization_live_enabled") is not True:
+        raise AppError(422, "stream_selection_invalid", "Live transcription selection is invalid")
     if "language" in snapshot and snapshot["language"] is not None and not isinstance(snapshot["language"], str):
         raise AppError(422, "stream_selection_invalid", "Live transcription selection is invalid")
     try:
@@ -209,6 +215,12 @@ def _selection_snapshot(value: Mapping[str, object]) -> dict[str, object]:
     if not isinstance(extra, Mapping) or len(extra) > 24:
         raise AppError(422, "stream_selection_invalid", "Live transcription selection is invalid")
     from app.services.deepgram_streaming import DeepgramStreamError, _stream_options
+    extra = dict(extra)
+    for key in list(extra):
+        if key.strip().lower() == "diarize":
+            del extra[key]
+    if snapshot.get("stt_diarisation_enabled") is True:
+        extra["diarize"] = "true"
     try:
         _stream_options(extra)
     except DeepgramStreamError as exc:
@@ -307,6 +319,7 @@ def start_transcript_stream(
     session = TranscriptStreamSession(
         id=uuid4(), transcript_id=transcript.id, owner_user_id=locked_owner.id, team_id=transcript.team_id,
         selection_snapshot_json=snapshot, status=TranscriptStreamStatus.active,
+        stt_diarisation_enabled=bool(snapshot.get("stt_diarisation_enabled", False)),
         connection_fence=1, fence_token=uuid4(), lease_expires_at=now + timedelta(seconds=lease_seconds),
         started_at=now, created_at=now, updated_at=now,
     )
@@ -603,6 +616,8 @@ def commit_stream_window(
     forwarded_sample_count: int,
     finalized_text: str,
     final_segment_count: int,
+    finalized_turns: list[dict[str, object]] | None = None,
+    scope_id: UUID | None = None,
     now: datetime | None = None,
 ) -> StreamWindowCommitted:
     now = _now(now)
@@ -611,6 +626,14 @@ def commit_stream_window(
     _owner, transcript = _lock_owner_transcript(db, owner_user_id=owner_user_id, transcript_id=transcript_id, now=now)
     session = _lock_session(db, session_id=session_id, transcript_id=transcript.id, owner_user_id=owner_user_id,
                             connection_fence=connection_fence, fence_token=fence_token)
+    has_structured_source = bool(getattr(transcript, "current_draft_turns_encrypted", None))
+    structured_commit = bool(session.stt_diarisation_enabled or has_structured_source)
+    canonical_turns = None
+    if structured_commit:
+        canonical_turns = finalized_turns or (
+            [{"text": finalized_text, "speaker_id": None, "start_ms": None, "end_ms": None}]
+            if finalized_text.strip() else []
+        )
     if session.status not in {TranscriptStreamStatus.active, TranscriptStreamStatus.finalizing}:
         raise AppError(409, "stream_session_not_active", "Stream session is no longer active")
     window = db.scalar(select(TranscriptStreamWindow).where(
@@ -624,7 +647,19 @@ def commit_stream_window(
     if window.status is TranscriptStreamWindowStatus.committed:
         digest = keyed_digest_for_owner(db, owner_user_id=owner_user_id,
                                         purpose="transcript_stream_final_text", value=finalized_text)
-        if window.text_digest == digest and window.source_end_sample_offset == source_end_sample_offset and window.forwarded_sample_count == forwarded_sample_count:
+        turns_digest = None
+        if structured_commit:
+            turns_payload = json.dumps(canonical_turns, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            turns_digest = keyed_digest_for_owner(
+                db, owner_user_id=owner_user_id,
+                purpose="transcript_stream_turns", value=f"{scope_id}:{turns_payload}",
+            )
+        if (
+            window.text_digest == digest
+            and (not structured_commit or window.turns_digest == turns_digest)
+            and window.source_end_sample_offset == source_end_sample_offset
+            and window.forwarded_sample_count == forwarded_sample_count
+        ):
             db.commit()
             return StreamWindowCommitted(window_no, source_end_sample_offset, forwarded_sample_count, True)
         raise AppError(409, "stream_window_conflict", "Stream checkpoint conflicts with committed content")
@@ -640,17 +675,35 @@ def commit_stream_window(
         raise AppError(409, "stream_window_checkpoint_mismatch", "Stream checkpoint does not match authorized audio")
     text_digest = keyed_digest_for_owner(db, owner_user_id=owner_user_id,
                                          purpose="transcript_stream_final_text", value=finalized_text)
+    turns_digest = None
+    if structured_commit:
+        if scope_id is None:
+            raise AppError(422, "stream_final_text_invalid", "Final transcription is invalid")
+        turns_payload = json.dumps(canonical_turns, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        turns_digest = keyed_digest_for_owner(
+            db, owner_user_id=owner_user_id,
+            purpose="transcript_stream_turns", value=f"{scope_id}:{turns_payload}",
+        )
     # A drained provider window is the durable accounting boundary. Settle its
     # submitted samples before admitting more audio so quota windows follow the
     # existing per-clip ceiling semantics.
     _settle_session_attempts(db, session_id=session.id, outcome="succeeded", now=now)
-    from app.services.transcripts import _append_chunk_text, set_transcript_draft_text, transcript_draft_text
-    if finalized_text.strip():
+    if structured_commit:
+        if scope_id is None:
+            raise AppError(422, "stream_final_text_invalid", "Final transcription is invalid")
+        from app.services.structured_transcripts import append_transcript_turns
+        append_transcript_turns(
+            db, transcript=transcript, turns=canonical_turns, scope_id=scope_id,
+            fallback_text=finalized_text,
+        )
+    elif finalized_text.strip():
+        from app.services.transcripts import _append_chunk_text, set_transcript_draft_text, transcript_draft_text
         updated_text = _append_chunk_text(transcript_draft_text(db, transcript=transcript), finalized_text)
         set_transcript_draft_text(db, transcript=transcript, plaintext=updated_text)
     window.status = TranscriptStreamWindowStatus.committed
     window.final_segment_count = final_segment_count
     window.text_digest = text_digest
+    window.turns_digest = turns_digest
     window.committed_at = now
     session.window_no += 1
     session.window_forwarded_sample_count = 0

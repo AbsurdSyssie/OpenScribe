@@ -164,6 +164,7 @@ if [[ "${DEV_START_BRAVE:-true}" == "true" ]]; then
 fi
 
 echo "Starting FastAPI on ${APP_BIND_HOST}:${APP_PORT} with trusted proxy ${DEV_FORWARDED_ALLOW_IPS}..."
+DEEPGRAM_LIVE_LOG_PATH="${DEEPGRAM_LIVE_LOG_PATH-${ROOT_DIR}/.local/logs/deepgram-live.jsonl}" \
 .venv/bin/fastapi dev app/main.py \
   --host "${APP_BIND_HOST}" \
   --port "${APP_PORT}" \

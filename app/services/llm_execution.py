@@ -187,8 +187,30 @@ def bounded_request(call: Callable[[ExecutionBudget], object]) -> object:
                     remaining = max(0.0, budget.deadline - time.monotonic())
                     if waited + wait > 30 or wait >= remaining:
                         wait = 0.0
+                # The exception came from the bounded provider call itself.
+                # Preserve only a categorical decision after local retry
+                # controls are stripped below.
+                if status == 429:
+                    details = dict(details)
+                    details["backup_failure_class"] = (
+                        "temporary_capacity_exhausted"
+                        if (exc.details or {}).get("temporary_capacity") is True
+                        else "provider_quota_blocked"
+                    )
+                elif "backup_failure_class" not in details:
+                    details = dict(details)
+                    details["backup_failure_class"] = "provider_failure"
+                exc.details = details
             if error is not None and error.details is not None:
-                error.details = {key: value for key, value in error.details.items() if key not in {"temporary_capacity", "retry_after_seconds"}}
+                details = {
+                    key: value
+                    for key, value in error.details.items()
+                    if key not in {"temporary_capacity", "retry_after_seconds"}
+                }
+                # Keep only a controlled terminal category for the optional
+                # backup decision. Raw retry controls are transient transport
+                # details and must not escape this bounded request boundary.
+                error.details = details
             active = _emit({"occurred_at": datetime.now(timezone.utc).isoformat(), "request_ordinal": ordinal,
                    "duration_ms": min(150000, max(0, round((time.monotonic() - started) * 1000))),
                    "code": code, "http_status": status, "retry_wait_ms": round(wait * 1000)})

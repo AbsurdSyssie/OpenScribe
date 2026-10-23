@@ -135,6 +135,7 @@ def update_post_consultation_dictation(
     *,
     transcript_id: UUID,
     combined_text: str,
+    commit: bool = True,
 ) -> PostConsultationDictation:
     _, dictation = _get_or_create_post_consultation_dictation(db, owner, transcript_id=transcript_id)
     dictation.combined_edited_text_encrypted = encrypt_text_for_owner(
@@ -148,8 +149,11 @@ def update_post_consultation_dictation(
     dictation.is_combined_text_user_edited = True
     dictation.updated_at = utcnow()
     db.add(dictation)
-    db.commit()
-    db.refresh(dictation)
+    if commit:
+        db.commit()
+        db.refresh(dictation)
+    else:
+        db.flush()
     return dictation
 
 

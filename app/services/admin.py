@@ -70,6 +70,7 @@ from app.models import (
     utcnow,
 )
 from app.normalization import normalize_email, normalize_team_name_key
+from app.quota_policy import TEAM_QUOTA_LIMITS
 from app.schemas import (
     AccountRequestApprove,
     AccountRequestCreate,
@@ -296,6 +297,7 @@ class AdminUsageKpiCard:
 class AdminUsageTrendPoint:
     label: str
     short_label: str
+    bucket_date: str = ""
     provider_completed_count: int = 0
     provider_failed_count: int = 0
     provider_input_tokens: int = 0
@@ -1187,7 +1189,11 @@ def _usage_trend_points(db: Session, *, since, team_id: UUID | None, until=None,
     while cursor <= end_bucket:
         key = cursor.date()
         label = cursor.strftime("%b %Y" if bucket == "month" else "%d %b %Y")
-        points[key] = AdminUsageTrendPoint(label=label, short_label=cursor.strftime("%b %y" if bucket == "month" else "%d %b"))
+        points[key] = AdminUsageTrendPoint(
+            label=label,
+            short_label=cursor.strftime("%b %y" if bucket == "month" else "%d %b"),
+            bucket_date=key.isoformat(),
+        )
         cursor = _next_usage_bucket(cursor, bucket)
 
     provider_stmt = select(
@@ -1278,7 +1284,9 @@ def _usage_comparison_trend_points(
         row: dict[str, object] = {
             "label": current_point.label,
             "short_label": current_point.short_label,
+            "bucket_date": current_point.bucket_date,
             "previous_label": previous_point.label,
+            "previous_bucket_date": previous_point.bucket_date,
         }
         for metric, getter in metric_getters.items():
             current_value = getter(current_point)
@@ -1638,6 +1646,7 @@ def admin_usage_overview(
     )
     return {
         "usage_window_summaries": windows,
+        "usage_summary": current_summary,
         "usage_kpi_cards": _usage_kpi_cards(current=current_summary, previous=previous_summary, period_label=range_label),
         "usage_range_key": resolved_range_key,
         "usage_range_label": range_label,
@@ -1737,11 +1746,20 @@ def reset_user_password_to_temporary(
 def create_team(db: Session, payload: TeamCreate, *, actor: User) -> Team:
     stripped_name = payload.name.strip()
     default_retention_days = validate_retention_days(payload.default_retention_days)
+    quota_defaults = {
+        field: getattr(payload, field)
+        for field in TEAM_QUOTA_LIMITS
+    }
+    for field, maximum in TEAM_QUOTA_LIMITS.items():
+        value = quota_defaults[field]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0 or value > maximum:
+            raise AppError(422, "quota_limit_invalid", "Team quota default is invalid", {"field": field, "max": maximum})
     team = Team(
         name=stripped_name,
         name_key=normalize_team_name_key(stripped_name),
         status=payload.status,
         default_retention_days=default_retention_days,
+        **quota_defaults,
     )
     db.add(team)
     try:
@@ -1759,6 +1777,52 @@ def create_team(db: Session, payload: TeamCreate, *, actor: User) -> Team:
         actor=actor,
         team_id=team.id,
         details={"category": "account", "outcome": "success", "object_type": "team", "object_id": str(team.id), "status": team.status.value},
+    )
+    return team
+
+
+def update_team_quota_defaults(
+    db: Session,
+    actor: User,
+    *,
+    team_id: UUID,
+    default_daily_token_limit: int,
+    default_monthly_token_limit: int,
+    default_daily_audio_seconds_limit: int,
+    default_monthly_audio_seconds_limit: int,
+) -> Team:
+    if not actor.is_system_admin:
+        raise AppError(403, "forbidden", "System-admin team quota access required")
+    team = db.get(Team, team_id)
+    if team is None:
+        raise AppError(404, "not_found", "Team not found")
+    requested = {
+        "default_daily_token_limit": default_daily_token_limit,
+        "default_monthly_token_limit": default_monthly_token_limit,
+        "default_daily_audio_seconds_limit": default_daily_audio_seconds_limit,
+        "default_monthly_audio_seconds_limit": default_monthly_audio_seconds_limit,
+    }
+    for field, maximum in TEAM_QUOTA_LIMITS.items():
+        value = requested[field]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0 or value > maximum:
+            raise AppError(422, "quota_limit_invalid", "Team quota default is invalid", {"field": field, "max": maximum})
+    previous = {field: getattr(team, field) for field in TEAM_QUOTA_LIMITS}
+    for field, value in requested.items():
+        setattr(team, field, value)
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+    record_security_event(
+        db,
+        action="team_quota_defaults_updated",
+        actor=actor,
+        team_id=team.id,
+        details={
+            "category": "account",
+            "outcome": "success",
+            "old_limits": previous,
+            "new_limits": requested,
+        },
     )
     return team
 
@@ -1845,6 +1909,16 @@ def _create_user_record(db: Session, payload: UserCreate, *, actor: User | None,
         must_change_password=onboarding_state is UserOnboardingState.pending_password_change,
         onboarding_state=onboarding_state,
         example_consultation_pending=(not payload.is_system_admin and team is not None),
+        **(
+            {
+                "daily_token_limit": team.default_daily_token_limit,
+                "monthly_token_limit": team.default_monthly_token_limit,
+                "daily_audio_seconds_limit": team.default_daily_audio_seconds_limit,
+                "monthly_audio_seconds_limit": team.default_monthly_audio_seconds_limit,
+            }
+            if team is not None and not payload.is_system_admin
+            else {}
+        ),
     )
     db.add(user)
     return user

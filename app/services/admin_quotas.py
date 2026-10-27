@@ -11,27 +11,31 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
 from app.models import (
     QuotaPeriod,
     QuotaResource,
+    AttemptStatus,
+    ProviderAttempt,
     User,
     UserQuotaPolicyEvent,
     UserQuotaPolicyEventType,
     UserQuotaReasonCode,
     utcnow,
 )
+from app.quota_policy import (
+    MAX_DAILY_AUDIO_SECONDS,
+    MAX_DAILY_TOKENS,
+    MAX_MONTHLY_AUDIO_SECONDS,
+    MAX_MONTHLY_TOKENS,
+)
 from app.services.quotas import QuotaWindow, calculate_quota_window
 from app.services.security_audit import record_security_event
 
 
-MAX_DAILY_TOKENS = 10_000_000
-MAX_MONTHLY_TOKENS = 100_000_000
-MAX_DAILY_AUDIO_SECONDS = 24 * 3600
-MAX_MONTHLY_AUDIO_SECONDS = 1_000 * 3600
 MAX_GRANT_TOKENS = 100_000_000
 MAX_GRANT_AUDIO_SECONDS = 1_000 * 3600
 
@@ -77,6 +81,8 @@ class AdminUserQuotaDetail:
     windows: tuple[QuotaWindow, QuotaWindow, QuotaWindow, QuotaWindow]
     active_grants: tuple[UserQuotaHistoryItem, ...]
     history: tuple[UserQuotaHistoryItem, ...]
+    lifetime_token_units: int
+    lifetime_audio_seconds: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +221,15 @@ def get_admin_user_quota_detail(
         )
         .order_by(UserQuotaPolicyEvent.created_at.desc(), UserQuotaPolicyEvent.id.desc())
     ).all()
+    lifetime_totals = dict(db.execute(
+        select(ProviderAttempt.resource, func.coalesce(func.sum(ProviderAttempt.settled_units), 0))
+        .where(
+            ProviderAttempt.owner_user_id == target.id,
+            ProviderAttempt.status == AttemptStatus.settled,
+            ProviderAttempt.settled_units.is_not(None),
+        )
+        .group_by(ProviderAttempt.resource)
+    ).all())
     visible_events = (*active_grant_events, *history_events)
     live_ids = {event.actor_user_id for event in visible_events if event.actor_user_id} | {
         event.revoker_user_id for event in visible_events if event.revoker_user_id
@@ -242,6 +257,8 @@ def get_admin_user_quota_detail(
         windows=windows,  # type: ignore[arg-type]
         active_grants=history_items(active_grant_events),
         history=history_items(history_events),
+        lifetime_token_units=int(lifetime_totals.get(QuotaResource.tokens, 0)),
+        lifetime_audio_seconds=int(lifetime_totals.get(QuotaResource.audio_seconds, 0)),
     )
 
 

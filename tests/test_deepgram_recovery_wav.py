@@ -14,6 +14,8 @@ def test_recovery_wav_preserves_every_signed_pcm16_sample(tmp_path):
     (root / "package.json").write_text('{"type":"module"}')
     (root / "app/static/js/csrf.js").write_text((source / "app/static/js/csrf.js").read_text())
     (transcribe / "media.js").write_text((source / "app/static/js/transcribe/media.js").read_text())
+    (transcribe / "vadCapture.js").write_text((source / "app/static/js/transcribe/vadCapture.js").read_text())
+    (transcribe / "micVisualizer.js").write_text((source / "app/static/js/transcribe/micVisualizer.js").read_text())
     (transcribe / "deepgramLiveStream.js").write_text((source / "app/static/js/transcribe/deepgramLiveStream.js").read_text())
 
     script = r"""

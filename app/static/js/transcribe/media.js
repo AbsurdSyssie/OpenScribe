@@ -1,5 +1,7 @@
 import { csrfFetch, csrfToken } from '../csrf.js';
 import { DeepgramLiveStream, trimPinnedVadSpeechBuffer } from './deepgramLiveStream.js?v=20261017-deepgram-live-stream';
+import { createMicVisualizer } from './micVisualizer.js?v=20261026-shared-mic-visualizer';
+import { createOwnedMicStream, createVadCaptureCallbacks, createVadCaptureOptions } from './vadCapture.js?v=20261027-shared-vad-capture';
 
 const createWavPcmBuffer = (sampleCount, sampleRate) => {
   const pcmData = new ArrayBuffer(44 + (sampleCount * 2));
@@ -69,7 +71,7 @@ export function createAudioCaptureController({
     document.dispatchEvent(new CustomEvent(`openscribe:recording-${state}`, detail ? { detail } : undefined));
   };
   const RECORDING_DURATION_STORAGE_KEY = 'openscribe-glm2-recording-durations';
-  const MIC_VISUALIZER_BAR_COUNT = 12;
+  const micVisualizer = createMicVisualizer(dom.micVisualizer);
   const VAD_SILENCE_PROMPT_MS = 30000;
   let mediaStream = null;
   let captureMode = 'batch';
@@ -106,8 +108,6 @@ export function createAudioCaptureController({
   let timerId = null;
   let recordingTranscriptId = null;
   let accumulatedBeforeCurrentSegmentMs = 0;
-  let micVisualizerBars = [];
-  let micVisualizerLevels = Array(MIC_VISUALIZER_BAR_COUNT).fill(0.14);
   let silencePromptTimeoutId = null;
   let silencePromptDismissedForCurrentSilentInterval = false;
   let vadSpeechCurrentlyActive = false;
@@ -271,44 +271,8 @@ export function createAudioCaptureController({
     mediaStream = null;
   };
 
-  const ensureMicVisualizerBars = () => {
-    if (!dom.micVisualizer || micVisualizerBars.length > 0) return;
-    const fragment = document.createDocumentFragment();
-    for (let index = 0; index < MIC_VISUALIZER_BAR_COUNT; index += 1) {
-      const bar = document.createElement('span');
-      bar.className = 'mic-visualizer__bar';
-      bar.style.setProperty('--level', String(micVisualizerLevels[index] || 0.14));
-      fragment.appendChild(bar);
-      micVisualizerBars.push(bar);
-    }
-    dom.micVisualizer.appendChild(fragment);
-  };
-
-  const renderMicVisualizer = () => {
-    ensureMicVisualizerBars();
-    micVisualizerBars.forEach((bar, index) => {
-      bar.style.setProperty('--level', String(micVisualizerLevels[index] || 0.14));
-    });
-  };
-
-  const setMicVisualizerVadActive = (active) => {
-    if (!dom.micVisualizer) return;
-    dom.micVisualizer.dataset.vadActive = active ? 'true' : 'false';
-  };
-
-  const setMicVisualizerLevels = (levels) => {
-    micVisualizerLevels = micVisualizerLevels.map((previous, index) => {
-      const next = Math.max(0.12, Math.min(1, Number(levels[index] || 0)));
-      return (previous * 0.45) + (next * 0.55);
-    });
-    renderMicVisualizer();
-  };
-
-  const resetMicVisualizer = () => {
-    setMicVisualizerVadActive(false);
-    micVisualizerLevels = Array(MIC_VISUALIZER_BAR_COUNT).fill(0.14);
-    renderMicVisualizer();
-  };
+  const setMicVisualizerVadActive = micVisualizer.setVadActive;
+  const resetMicVisualizer = micVisualizer.reset;
 
   const isRecordingOngoing = () => (
     (
@@ -373,26 +337,6 @@ export function createAudioCaptureController({
     vadSpeechCurrentlyActive = false;
   };
 
-  const buildMicVisualizerLevelsFromVadFrame = (frame) => {
-    if (!(frame instanceof Float32Array) || frame.length === 0) {
-      return Array(MIC_VISUALIZER_BAR_COUNT).fill(0.14);
-    }
-    const levels = [];
-    const bucketSize = Math.max(1, Math.floor(frame.length / MIC_VISUALIZER_BAR_COUNT));
-    for (let bucketIndex = 0; bucketIndex < MIC_VISUALIZER_BAR_COUNT; bucketIndex += 1) {
-      const start = bucketIndex * bucketSize;
-      const end = bucketIndex === MIC_VISUALIZER_BAR_COUNT - 1 ? frame.length : Math.min(frame.length, start + bucketSize);
-      let total = 0;
-      let samples = 0;
-      for (let sampleIndex = start; sampleIndex < end; sampleIndex += 1) {
-        total += Math.abs(frame[sampleIndex] || 0);
-        samples += 1;
-      }
-      const average = samples > 0 ? total / samples : 0;
-      levels.push(Math.min(1, Math.max(0.12, average * 7)));
-    }
-    return levels;
-  };
 
   const clearLiveChunkTimeout = () => {
     if (liveChunkTimeoutId) {
@@ -624,30 +568,30 @@ export function createAudioCaptureController({
     getStream: createVadMicStream,
     pauseStream: pauseVadMicStream,
     resumeStream: createVadMicStream,
-    onFrameProcessed: (probabilities, frame) => {
-      if (!isCurrent()) return;
-      setMicVisualizerLevels(buildMicVisualizerLevelsFromVadFrame(frame));
+    ...createVadCaptureCallbacks({
+      isCurrent,
+      isCurrentSpeechEnd,
+      onFrameProcessed: (probabilities, frame) => {
+      micVisualizer.updateFrame(frame);
       setMicVisualizerVadActive(Boolean(probabilities && probabilities.isSpeech > probabilities.notSpeech));
       onFrameProcessed?.(probabilities, frame);
-    },
-    onSpeechStart: () => {
-      if (!isCurrent()) return;
+      },
+      onSpeechStart: () => {
       setMicVisualizerVadActive(true);
       markVadSpeechStarted();
       onSpeechStart?.();
-    },
-    onSpeechEnd: (audio) => {
-      if (!isCurrentSpeechEnd()) return;
+      },
+      onSpeechEnd: (audio) => {
       setMicVisualizerVadActive(false);
       onSpeechEnd?.(audio);
       markVadSpeechEndedOrIdle();
-    },
-    onVADMisfire: () => {
-      if (!isCurrent()) return;
+      },
+      onVADMisfire: () => {
       setMicVisualizerVadActive(false);
       onVADMisfire?.();
       markVadSpeechEndedOrIdle();
-    },
+      },
+    }),
   });
 
   const concatVadAudioSegments = (segments) => {
@@ -796,9 +740,8 @@ export function createAudioCaptureController({
     const canAcquireLiveMic = () => isCurrentCapture()
       && !liveStopRequested
       && transcriptId === getState().transcriptId;
-    let ownedStreamingMicStream = null;
     let streamingFrameProcessor = null;
-    const vadOptions = {
+    const vadOptions = createVadCaptureOptions({
       model: config.liveVadModel,
       positiveSpeechThreshold: 0.3,
       startOnLoad,
@@ -808,6 +751,11 @@ export function createAudioCaptureController({
       submitUserSpeechOnPause: true,
       baseAssetPath: config.liveVadAssetBasePath,
       onnxWASMBasePath: config.liveVadOnnxBasePath,
+      getStream: createVadMicStream,
+      pauseStream: pauseVadMicStream,
+      resumeStream: createVadMicStream,
+      isCurrent: isCurrentCapture,
+      isCurrentSpeechEnd: isCurrentCapture,
       ...commonVadCallbacks({
         onFrameProcessed: (probabilities, frame) => {
           if (!isCurrentCapture()) return;
@@ -878,30 +826,23 @@ export function createAudioCaptureController({
           setSessionProgress('Listening for speech. Live chunks will queue after a pause.');
         },
       }),
-    };
+    });
     if (streaming) {
-      // The shared callbacks assign to global mediaStream. Keep streaming
-      // ownership local so a late permission response cannot replace a retry's
-      // stream or make stale teardown stop the newer capture.
-      vadOptions.getStream = async () => {
-        if (!canAcquireLiveMic()) throw new Error('Live microphone startup was canceled.');
-        const microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        if (!canAcquireLiveMic()) {
-          try { microphoneStream.getTracks().forEach((track) => track.stop()); } catch (_) {}
-          throw new Error('Live microphone startup was canceled.');
-        }
-        ownedStreamingMicStream = microphoneStream;
-        mediaStream = microphoneStream;
-        pendingLiveMicStreams.set(microphoneStream, generation);
-        return microphoneStream;
-      };
-      vadOptions.resumeStream = vadOptions.getStream;
-      vadOptions.pauseStream = async (microphoneStream) => {
-        try { microphoneStream.getTracks().forEach((track) => track.stop()); } catch (_) {}
-        pendingLiveMicStreams.delete(microphoneStream);
-        if (ownedStreamingMicStream === microphoneStream) ownedStreamingMicStream = null;
-        if (mediaStream === microphoneStream) mediaStream = null;
-      };
+      const ownedMic = createOwnedMicStream({
+        acquire: () => navigator.mediaDevices.getUserMedia({ audio: true }),
+        canAcquire: canAcquireLiveMic,
+        onAcquire: (microphoneStream) => {
+          mediaStream = microphoneStream;
+          pendingLiveMicStreams.set(microphoneStream, generation);
+        },
+        onRelease: (microphoneStream) => {
+          pendingLiveMicStreams.delete(microphoneStream);
+          if (mediaStream === microphoneStream) mediaStream = null;
+        },
+      });
+      vadOptions.getStream = ownedMic.getStream;
+      vadOptions.resumeStream = ownedMic.resumeStream;
+      vadOptions.pauseStream = ownedMic.pauseStream;
     }
     const vadInstance = await window.vad.MicVAD.new(vadOptions);
     if (streaming) {
@@ -1736,7 +1677,6 @@ export function createAudioCaptureController({
   };
 
   const attachDomListeners = () => {
-    ensureMicVisualizerBars();
     resetMicVisualizer();
     if (dom.audioActionTrigger) {
       dom.audioActionTrigger.addEventListener('click', () => {

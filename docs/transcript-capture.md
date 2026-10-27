@@ -233,3 +233,5 @@ The following are not implied merely by the existing capture foundation and shou
 - any content-sharing/export workflow, which requires a separate authorization/privacy design.
 
 Do not describe implemented whole-file/live capture, encryption, working notes, dictation, or queued processing as future work. Conversely, do not infer the roadmap items above from the current two-mode backend without code, migrations, tests, and operational documentation.
+
+Live post-consultation dictation uses its own selected Deepgram provider and a transient browser preview. It does not write to the conversation transcript or persist dictation until the user saves it. Audio usage is metered even if the user discards the preview.

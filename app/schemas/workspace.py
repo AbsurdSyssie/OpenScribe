@@ -42,6 +42,7 @@ class TranscribeWorkspaceDetail(BaseModel):
     stt_selected: bool
     stt_available: bool
     deepgram_live_streaming_available: bool = False
+    dictation_live_streaming_available: bool = False
     diarization_available: bool = False
     diarization_live_available: bool = False
     diarization_batch_available: bool = False

@@ -1,0 +1,104 @@
+<form method="post" action="/admin/users/{{ selected_quota_member.id }}/quotas/limits" class="quota-limits-editor" data-quota-limits-editor{% if message_kind == 'error' and quota_open_form == 'limits' %} data-admin-dirty-on-load{% endif %}>
+  <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+  <input type="hidden" name="operation_id" value="{{ quota_operation_ids.limits }}">
+
+  <div class="quota-editor-title">
+    <div>
+      <h2>Edit quota limits <span class="quota-unsaved-badge" data-quota-dirty-badge {% if quota_open_form != 'limits' %}hidden{% endif %}>Unsaved changes</span></h2>
+      <p>Set daily and monthly usage limits for AI tokens and transcription audio.</p>
+    </div>
+  </div>
+
+  <div class="quota-editor-resource-grid">
+    <section class="quota-editor-resource" aria-labelledby="quota-editor-tokens">
+      <header class="quota-editor-resource-heading">
+        <span class="quota-resource-icon" aria-hidden="true">▤</span>
+        <div><h3 id="quota-editor-tokens">AI tokens</h3><p>Usage and limits for AI model tokens.</p></div>
+        <div class="quota-current-settings">
+          <span>Currently</span>
+          <strong>Daily {% if selected_quota_member.daily_token_limit is none %}Unlimited{% else %}{{ selected_quota_member.daily_token_limit|quota_units('tokens') }}{% endif %}<br>Monthly {% if selected_quota_member.monthly_token_limit is none %}Unlimited{% else %}{{ selected_quota_member.monthly_token_limit|quota_units('tokens') }}{% endif %}</strong>
+        </div>
+      </header>
+      {% for period in ['daily', 'monthly'] %}
+        {% set field_name = period + '_token_limit' %}
+        {% set unlimited_name = period + '_token_unlimited' %}
+        {% set saved_limit = selected_quota_member.daily_token_limit if period == 'daily' else selected_quota_member.monthly_token_limit %}
+        {% set is_unlimited = quota_form_values[unlimited_name] if unlimited_name in quota_form_values else saved_limit is none %}
+        {% set field_value = quota_form_values[field_name] if field_name in quota_form_values else (saved_limit if saved_limit is not none else '') %}
+        {% set label = 'Daily tokens' if period == 'daily' else 'Monthly tokens' %}
+      <fieldset class="quota-limit-period" data-quota-period>
+        <legend class="visually-hidden">{{ label }}</legend>
+        <div class="quota-limit-heading">
+          <span aria-hidden="true">{{ label }}</span>
+          <div class="quota-segmented-control">
+            <label><input type="radio" name="{{ unlimited_name }}" value="" data-quota-choice="finite" {% if not is_unlimited %}checked{% endif %}><span>Set limit</span></label>
+            <label><input type="radio" name="{{ unlimited_name }}" value="true" data-quota-choice="unlimited" {% if is_unlimited %}checked{% endif %}><span>Unlimited</span></label>
+          </div>
+        </div>
+        <div class="quota-limit-amount" data-quota-amount>
+          <label class="visually-hidden" for="quota-{{ field_name }}">{{ label }} limit</label>
+          <input id="quota-{{ field_name }}" type="number" min="0" step="1" name="{{ field_name }}" value="{{ field_value }}" aria-label="{{ label }} limit">
+          <span>tokens</span>
+        </div>
+        <p class="quota-unlimited-note" data-quota-unlimited-note {% if not is_unlimited %}hidden{% endif %}>∞ &nbsp;No {{ period }} limit</p>
+      </fieldset>
+      {% endfor %}
+    </section>
+
+    <section class="quota-editor-resource" aria-labelledby="quota-editor-audio">
+      <header class="quota-editor-resource-heading">
+        <span class="quota-resource-icon" aria-hidden="true">∿</span>
+        <div><h3 id="quota-editor-audio">Transcription audio</h3><p>Usage and limits for audio transcription.</p></div>
+        <div class="quota-current-settings">
+          <span>Currently</span>
+          <strong>Daily {% if selected_quota_member.daily_audio_seconds_limit is none %}Unlimited{% else %}{{ selected_quota_member.daily_audio_seconds_limit|quota_units('audio_seconds') }}{% endif %}<br>Monthly {% if selected_quota_member.monthly_audio_seconds_limit is none %}Unlimited{% else %}{{ selected_quota_member.monthly_audio_seconds_limit|quota_units('audio_seconds') }}{% endif %}</strong>
+        </div>
+      </header>
+      {% for period in ['daily', 'monthly'] %}
+        {% set field_name = period + '_audio_hours' %}
+        {% set unlimited_name = period + '_audio_unlimited' %}
+        {% set saved_seconds = selected_quota_member.daily_audio_seconds_limit if period == 'daily' else selected_quota_member.monthly_audio_seconds_limit %}
+        {% set is_unlimited = quota_form_values[unlimited_name] if unlimited_name in quota_form_values else saved_seconds is none %}
+        {% set field_value = quota_form_values[field_name] if field_name in quota_form_values else ('%.15g'|format(saved_seconds / 3600)) if saved_seconds is not none else '' %}
+        {% set label = 'Daily audio hours' if period == 'daily' else 'Monthly audio hours' %}
+      <fieldset class="quota-limit-period" data-quota-period>
+        <legend class="visually-hidden">{{ label }}</legend>
+        <div class="quota-limit-heading">
+          <span aria-hidden="true">{{ label }}</span>
+          <div class="quota-segmented-control">
+            <label><input type="radio" name="{{ unlimited_name }}" value="" data-quota-choice="finite" {% if not is_unlimited %}checked{% endif %}><span>Set limit</span></label>
+            <label><input type="radio" name="{{ unlimited_name }}" value="true" data-quota-choice="unlimited" {% if is_unlimited %}checked{% endif %}><span>Unlimited</span></label>
+          </div>
+        </div>
+        <div class="quota-limit-amount" data-quota-amount>
+          <label class="visually-hidden" for="quota-{{ field_name }}">{{ label }} limit</label>
+          <input id="quota-{{ field_name }}" type="number" min="0" step="any" name="{{ field_name }}" value="{{ field_value }}" aria-label="{{ label }} limit">
+          <span>hours</span>
+        </div>
+        <p class="quota-unlimited-note" data-quota-unlimited-note {% if not is_unlimited %}hidden{% endif %}>∞ &nbsp;No {{ period }} limit</p>
+      </fieldset>
+      {% endfor %}
+    </section>
+  </div>
+
+  <p class="quota-editor-help">Use 0 to disable a period. Unlimited has no limit. Changes take effect when saved; values already used in the current period still count.</p>
+  <section class="quota-reason-section" aria-labelledby="quota-reason-heading">
+    <h3 id="quota-reason-heading">Change details</h3>
+    <div class="quota-reason-fields">
+      <label><span class="quota-field-label">Reason <span class="quota-required-marker" aria-hidden="true">*</span></span>
+        <select name="reason_code" required>
+          <option value="">Choose a reason</option>
+          {% for code in quota_reason_codes %}<option value="{{ code }}" {% if quota_form_values.reason_code|default('') == code %}selected{% endif %}>{{ code|replace('_', ' ')|title }}</option>{% endfor %}
+        </select>
+      </label>
+      <label><span class="quota-field-label">Additional details <span class="quota-required-marker" aria-hidden="true">*</span></span>
+        <textarea name="reason" maxlength="500" required rows="1">{{ quota_form_values.reason|default('') }}</textarea>
+      </label>
+    </div>
+    <p class="quota-reason-help">Recorded in quota history. Do not include clinical information.</p>
+  </section>
+  <footer class="quota-editor-footer">
+    <a class="btn" href="/admin/usage?team_id={{ selected_team.id }}&amp;view=quotas&amp;member_id={{ selected_quota_member.id }}">Cancel</a>
+    <div><button class="btn primary" type="submit">Save quota limits</button><p>Changes take effect when saved.</p></div>
+  </footer>
+</form>

@@ -15,6 +15,9 @@ def test_vad_inactivity_prompt_dismiss_rearms_and_resets(tmp_path):
 
             const root = {str(root)!r};
             const mediaPath = `${{root}}/app/static/js/transcribe/media.js`;
+            const visualizerPath = `${{root}}/app/static/js/transcribe/micVisualizer.js`;
+            const visualizerSource = fs.readFileSync(visualizerPath, 'utf8').replaceAll('export function ', 'function ');
+            const captureHelpersSource = fs.readFileSync(`${{root}}/app/static/js/transcribe/vadCapture.js`, 'utf8').replaceAll('export function ', 'function ');
             const mediaSource = fs.readFileSync(mediaPath, 'utf8')
               .replace("import {{ csrfFetch, csrfToken }} from '../csrf.js';", `
                 const csrfFetch = async (url) => url.endsWith('/capture-settings')
@@ -30,6 +33,8 @@ def test_vad_inactivity_prompt_dismiss_rearms_and_resets(tmp_path):
                 const DeepgramLiveStream = class {{}};
                 const trimPinnedVadSpeechBuffer = () => false;
               `)
+              .replace("import {{ createMicVisualizer }} from './micVisualizer.js?v=20261026-shared-mic-visualizer';", visualizerSource)
+              .replace("import {{ createOwnedMicStream, createVadCaptureCallbacks, createVadCaptureOptions }} from './vadCapture.js?v=20261027-shared-vad-capture';", captureHelpersSource)
               .replaceAll('export function ', 'function ');
 
             const makeElement = () => ({{

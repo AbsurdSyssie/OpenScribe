@@ -63,6 +63,11 @@ def _format_quota_units(value: int, resource: str) -> str:
     return " ".join(parts)
 
 
+def _format_lifetime_audio_hours(seconds: int) -> str:
+    return f"{int(seconds) / 3600:,.2f} hours"
+
+
 templates.env.filters["quota_units"] = _format_quota_units
+templates.env.filters["lifetime_audio_hours"] = _format_lifetime_audio_hours
 templates.env.globals["app_release"] = app_release
 templates.env.globals["source_code_url"] = source_code_url

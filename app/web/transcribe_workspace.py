@@ -160,6 +160,7 @@ def _active_transcript_stream_gap(
         .where(
             TranscriptStreamSession.transcript_id == transcript.id,
             TranscriptStreamSession.owner_user_id == owner_user_id,
+            TranscriptStreamSession.purpose == "conversation",
             TranscriptStreamSession.status.in_((TranscriptStreamStatus.failed, TranscriptStreamStatus.recovering)),
             TranscriptStreamWindow.status.in_((TranscriptStreamWindowStatus.failed, TranscriptStreamWindowStatus.recovering)),
             TranscriptStreamWindow.forwarded_sample_count > 0,
@@ -212,13 +213,14 @@ def _deepgram_stream_capable(
     current_user: User,
     stt_available: bool,
     stt_selection: object | None,
+    purpose: SttSelectionPurpose = SttSelectionPurpose.conversation,
 ) -> bool:
     adapter_kind = None if stt_selection is None else getattr(stt_selection.config, "adapter_kind", None)
     if (
         transcript is None
         or transcript.owner_user_id != current_user.id
         or current_user.is_system_admin
-        or transcript.ingestion_mode is not TranscriptIngestionMode.live_chunked
+        or (purpose is SttSelectionPurpose.conversation and transcript.ingestion_mode is not TranscriptIngestionMode.live_chunked)
         or not stt_available
         or stt_selection is None
         or getattr(stt_selection.config, "provider_preset", None) != "deepgram"
@@ -229,7 +231,7 @@ def _deepgram_stream_capable(
         from ..services.deepgram_streaming import DeepgramStreamConfig, DeepgramStreamError, validate_stream_config
 
         _selection, config, model_name, language = resolve_selected_team_stt_service(
-            db, team_id=current_user.team_id, purpose=SttSelectionPurpose.conversation,
+            db, team_id=current_user.team_id, purpose=purpose,
         )
         validate_stream_config(DeepgramStreamConfig(
             base_url=config.base_url,
@@ -1187,6 +1189,11 @@ def resolve_transcribe_workspace(
         ),
         "stt_status_message": stt_status_message,
         "stt_health": stt_health,
+        "dictation_live_streaming_available": _deepgram_stream_capable(
+            db, transcript=active_transcript, current_user=current_user,
+            stt_available=dictation_stt_available, stt_selection=dictation_stt_selection,
+            purpose=SttSelectionPurpose.post_consultation_dictation,
+        ),
         "dictation_stt_selection": dictation_stt_selection,
         "dictation_stt_selected": bool(dictation_stt_selection),
         "dictation_stt_available": dictation_stt_available,
@@ -1449,6 +1456,7 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, 
         stt_selected=bool(workspace.get("stt_selection")),
         stt_available=bool(workspace.get("stt_available")),
         deepgram_live_streaming_available=bool(workspace.get("deepgram_live_streaming_available")),
+        dictation_live_streaming_available=bool(workspace.get("dictation_live_streaming_available")),
         diarization_available=diarization_available,
         diarization_live_available=live_diarization_available,
         diarization_batch_available=batch_diarization_available,

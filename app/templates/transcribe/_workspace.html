@@ -969,66 +969,152 @@ Clinical NLP has not run for this transcript yet.
 <button type="button" data-mobile-capture-return><i data-lucide="audio-lines" aria-hidden="true"></i><span>Recording <strong data-mobile-recording-timer>00:00</strong></span></button>
 <button type="button" data-mobile-recording-stop>Stop</button>
 </div>
-<div class="dictation-modal" data-dictation-modal hidden>
-<div class="dictation-modal__backdrop" data-dictation-modal-close></div>
-<section class="dictation-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="dictation-modal-title">
-<header class="dictation-modal__header">
-<div>
-<div class="section-kicker">Separate source</div>
-<h2 id="dictation-modal-title">Post-consultation dictation</h2>
-<p>Capture your summary, terminology, medication names, and plan.</p>
+<div class="dictation-modal dictation-modal--editor-first" data-dictation-modal hidden>
+  <div class="dictation-modal__backdrop" data-dictation-modal-close></div>
+  <section
+    class="dictation-modal__dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="dictation-modal-title"
+  >
+    <header class="dictation-modal__header">
+      <h2 id="dictation-modal-title">Post-consultation dictation</h2>
+      <button
+        type="button"
+        class="template-picker-modal__close"
+        data-dictation-modal-close
+        aria-label="Close dictation"
+      >
+        <i class="w-5 h-5" data-lucide="x" aria-hidden="true"></i>
+      </button>
+    </header>
+
+    <div class="dictation-modal__recording">
+      <div class="dictation-modal__controls">
+        <button
+          type="button"
+          class="dictation-modal__record-button"
+          data-dictation-record-toggle
+          {% if active_transcript and (not dictation_stt_selected or not dictation_stt_available) %}
+            disabled title="{{ dictation_unavailable_message }}"
+          {% endif %}
+        >
+          <i data-lucide="mic" data-dictation-record-toggle-icon aria-hidden="true"></i>
+          <span data-dictation-record-toggle-label>Record</span>
+        </button>
+        <button
+          type="button"
+          class="dictation-modal__pause-button"
+          data-dictation-pause-recording
+          hidden
+          aria-label="Pause dictation"
+        >
+          <i data-lucide="pause" data-dictation-pause-recording-icon aria-hidden="true"></i>
+        </button>
+        <button type="button" class="dictation-modal__live-toggle" data-dictation-live-toggle aria-pressed="false" title="Use live transcription" {% if not dictation_live_streaming_available %}hidden disabled{% endif %}>Live</button>
+        <button
+          type="button"
+          class="btn-ghost-sm dictation-modal__upload-button"
+          data-dictation-audio-action-trigger
+          {% if active_transcript and (not dictation_stt_selected or not dictation_stt_available) %}
+            disabled title="{{ dictation_unavailable_message }}"
+          {% endif %}
+        >
+          <i data-lucide="upload" aria-hidden="true"></i>
+          Upload audio
+        </button>
+        <button
+          type="button"
+          class="btn-ghost-sm dictation-modal__retry-button"
+          data-dictation-retry-transcription
+          hidden
+        >Retry transcription</button>
+      </div>
+
+      <div class="dictation-modal__live-meta">
+        <div
+          class="dictation-modal__bars mic-visualizer"
+          data-dictation-mic-visualizer
+          aria-hidden="true"
+        ></div>
+        <span class="dictation-modal__timer">
+          <span class="sr-only">Duration:</span>
+          <strong data-dictation-mic-timer>00:00</strong>
+        </span>
+        <span class="dictation-modal__status" data-dictation-mic-status role="status" aria-live="polite">
+          {% if not dictation_stt_selected or not dictation_stt_available %}
+            Recording unavailable. You can type dictation manually.
+          {% else %}
+            Ready
+          {% endif %}
+        </span>
+      </div>
+
+      <div class="dictation-modal__progress" data-dictation-session-progress hidden></div>
+    </div>
+
+    <div class="dictation-modal__body">
+      <label for="dictation-combined-text" class="sr-only">Dictation text</label>
+      <textarea
+        id="dictation-combined-text"
+        name="combined_text"
+        data-dictation-combined-input
+        placeholder="Record, upload or type…"
+        spellcheck="true"
+      >{% if post_consultation_dictation %}{{ post_consultation_dictation.effective_text }}{% endif %}</textarea>
+      <div class="dictation-modal__live-tail" data-dictation-live-tail hidden aria-live="polite" aria-atomic="false"><span class="dictation-modal__live-tail-confirmed" data-dictation-live-confirmed></span><span class="dictation-modal__live-tail-interim" data-dictation-live-interim></span></div>
+      <div class="dictation-modal__live-failure" data-dictation-live-failure hidden>
+        <button type="button" class="btn-secondary-sm" data-dictation-live-use-confirmed>Use confirmed text</button>
+        <button type="button" class="btn-ghost-sm" data-dictation-live-discard>Discard unfinished audio</button>
+      </div>
+      <p class="dictation-modal__provenance sr-only" data-dictation-provenance>
+        {% if post_consultation_dictation and post_consultation_dictation.effective_text %}
+          Saved dictation used for generation.
+        {% else %}
+          No dictation yet.
+        {% endif %}
+      </p>
+    </div>
+
+    <footer class="dictation-modal__footer">
+      <label class="dictation-modal__template">
+        <span>Template</span>
+        <select
+          data-dictation-template-select
+          {% if not available_templates or not llm_selection %}disabled{% endif %}
+        >
+          {% if not available_templates %}
+            <option value="">No templates available</option>
+          {% else %}
+            {% for template in available_templates %}
+              {% set latest_version = template.versions|sort(attribute='version_no')|last %}
+              <option
+                value="{{ template.id }}"
+                data-template-name="{{ template.name }}"
+                data-template-mode="{{ latest_version.mode.value }}"
+                {% if latest_template and template.id == latest_template.id %}selected{% endif %}
+              >{{ template.name }}</option>
+            {% endfor %}
+          {% endif %}
+        </select>
+      </label>
+      <span class="dictation-modal__word-count" data-dictation-word-count aria-live="off">0 words</span>
+      <div class="dictation-modal__actions">
+        <button type="button" class="btn-ghost-sm" data-dictation-cancel>Cancel</button>
+        <button type="button" class="btn-ghost-sm dictation-modal__save-button" data-dictation-save>Save dictation</button>
+        <button
+          type="button"
+          class="btn-primary-sm"
+          data-dictation-save-generate
+          {% if not available_templates or not llm_selection %}disabled{% endif %}
+        >
+          <span data-dictation-save-generate-label>Save &amp; generate note</span>
+        </button>
+      </div>
+    </footer>
+  </section>
 </div>
-<button type="button" class="template-picker-modal__close" data-dictation-modal-close aria-label="Close dictation">
-<i class="w-5 h-5" data-lucide="x" aria-hidden="true"></i>
-</button>
-</header>
-<div class="dictation-modal__recording">
-<div class="dictation-modal__bars mic-visualizer" data-dictation-mic-visualizer></div>
-<div class="dictation-modal__controls">
-<button type="button" class="dictation-modal__record-button" data-dictation-record-toggle {% if active_transcript and (not dictation_stt_selected or not dictation_stt_available) %}disabled title="{{ dictation_unavailable_message }}"{% endif %}>
-<i class="w-7 h-7" data-lucide="mic" data-dictation-record-toggle-icon aria-hidden="true"></i>
-<span data-dictation-record-toggle-label>Record</span>
-</button>
-<button type="button" class="dictation-modal__pause-button" data-dictation-pause-recording hidden aria-label="Pause dictation">
-<i class="w-5 h-5" data-lucide="pause" data-dictation-pause-recording-icon aria-hidden="true"></i>
-</button>
-<button type="button" class="btn-ghost-sm" data-dictation-retry-transcription hidden>Retry</button>
-<button type="button" class="btn-ghost-sm" data-dictation-audio-action-trigger {% if active_transcript and (not dictation_stt_selected or not dictation_stt_available) %}disabled title="{{ dictation_unavailable_message }}"{% endif %}>Upload audio</button>
-</div>
-<div class="dictation-modal__status">
-<span>Duration: <strong data-dictation-mic-timer>00:00</strong></span>
-<span data-dictation-mic-status>{% if not dictation_stt_selected or not dictation_stt_available %}Recording unavailable. You can type dictation manually.{% else %}Ready for dictation.{% endif %}</span>
-</div>
-<div class="dictation-modal__progress" data-dictation-session-progress hidden></div>
-</div>
-<div class="dictation-modal__body">
-<textarea name="combined_text" rows="14" data-dictation-combined-input placeholder="Dictation text will appear here. You can edit it before saving.">{% if post_consultation_dictation %}{{ post_consultation_dictation.effective_text }}{% endif %}</textarea>
-<p data-dictation-provenance>{% if post_consultation_dictation and post_consultation_dictation.effective_text %}Saved dictation used for generation.{% else %}No dictation yet. Record, upload audio, or type a summary directly.{% endif %}</p>
-</div>
-<footer class="dictation-modal__footer">
-<label class="dictation-modal__template">
-<span>Template</span>
-<select data-dictation-template-select {% if not available_templates or not llm_selection %}disabled{% endif %}>
-{% if not available_templates %}
-<option value="">No templates available</option>
-{% else %}
-{% for template in available_templates %}
-{% set latest_version = template.versions|sort(attribute='version_no')|last %}
-<option value="{{ template.id }}" data-template-name="{{ template.name }}" data-template-mode="{{ latest_version.mode.value }}"{% if latest_template and template.id == latest_template.id %} selected{% endif %}>{{ template.name }}</option>
-{% endfor %}
-{% endif %}
-</select>
-</label>
-<div class="dictation-modal__actions">
-<button type="button" class="btn-ghost-sm" data-dictation-cancel>Cancel</button>
-<button type="button" class="btn-ghost-sm" data-dictation-save>Save dictation</button>
-<button type="button" class="btn-primary-sm" data-dictation-save-generate {% if not available_templates or not llm_selection %}disabled{% endif %}>
-<span data-dictation-save-generate-label>Save & generate note</span>
-</button>
-</div>
-</footer>
-</section>
-</div>
+
 <div
 id="split-review-modal"
 class="split-review-modal"

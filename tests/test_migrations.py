@@ -38,6 +38,51 @@ def current_tables() -> set[str]:
 
 
 @pytest.mark.migration
+def test_team_quota_defaults_migration_backfills_teams_without_changing_user_limits():
+    reset_public_schema()
+    config = alembic_config()
+    command.upgrade(config, "e8f9a0b1c2d3")
+
+    team_id = "00000000-0000-0000-0000-000000000981"
+    user_id = "00000000-0000-0000-0000-000000000982"
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at) "
+            "VALUES (:id, 'Quota defaults migration', 'quota defaults migration', 'active', 30, NOW(), NOW())"
+        ), {"id": team_id})
+        connection.execute(text(
+            "INSERT INTO users (id, email, password_hash, team_id, team_role, is_system_admin, status, "
+            "must_change_password, onboarding_state, mfa_required, mfa_enabled, example_consultation_pending, created_at, updated_at, "
+            "daily_token_limit, monthly_token_limit, daily_audio_seconds_limit, monthly_audio_seconds_limit) "
+            "VALUES (:id, 'quota-migration@example.test', 'test-hash', :team_id, 'user', FALSE, 'active', "
+            "FALSE, 'complete', FALSE, TRUE, FALSE, NOW(), NOW(), NULL, NULL, NULL, NULL)"
+        ), {"id": user_id, "team_id": team_id})
+
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        team_values = connection.execute(text(
+            "SELECT default_daily_token_limit, default_monthly_token_limit, "
+            "default_daily_audio_seconds_limit, default_monthly_audio_seconds_limit FROM teams WHERE id = :id"
+        ), {"id": team_id}).one()
+        user_values = connection.execute(text(
+            "SELECT daily_token_limit, monthly_token_limit, daily_audio_seconds_limit, monthly_audio_seconds_limit "
+            "FROM users WHERE id = :id"
+        ), {"id": user_id}).one()
+        team_columns = {column["name"]: column for column in inspect(connection).get_columns("teams")}
+        team_checks = {constraint["name"] for constraint in inspect(connection).get_check_constraints("teams")}
+
+    assert tuple(team_values) == (100_000, 1_000_000, 28_800, 259_200)
+    assert tuple(user_values) == (None, None, None, None)
+    assert all(team_columns[name]["nullable"] is False for name in team_columns if name.startswith("default_") and "limit" in name)
+    assert {
+        "ck_teams_default_daily_token_limit_range",
+        "ck_teams_default_monthly_token_limit_range",
+        "ck_teams_default_daily_audio_seconds_limit_range",
+        "ck_teams_default_monthly_audio_seconds_limit_range",
+    } <= team_checks
+
+
+@pytest.mark.migration
 def test_split_intent_dispatch_migration_round_trips_metadata_and_preserves_enum_labels():
     reset_public_schema()
     config = alembic_config()
@@ -3828,7 +3873,7 @@ def test_deepgram_stream_schema_upgrades_after_current_head_with_durable_claim_c
     } <= set(inspector.get_table_names())
     session_columns = {column["name"] for column in inspector.get_columns("transcript_stream_sessions")}
     assert {
-        "transcript_id", "owner_user_id", "selection_snapshot_json", "connection_fence",
+        "transcript_id", "owner_user_id", "purpose", "selection_snapshot_json", "connection_fence",
         "lease_expires_at", "next_source_sample_offset", "authorized_sample_count", "failure_code",
     } <= session_columns
     delivery_columns = {column["name"] for column in inspector.get_columns("transcript_stream_deliveries")}

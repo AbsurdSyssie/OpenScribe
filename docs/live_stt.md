@@ -25,6 +25,10 @@ VAD boundaries are practical approximations, not a lossless continuous stream.
 
 ## Deepgram live streaming
 
+Post-consultation dictation can use the same capture and relay with an eligible Deepgram dictation selection, independently of the conversation recording mode. Provider-final and provisional text are returned to the browser as transient preview; only an explicit dictation save persists it. The dictation relay does not retain recovery audio, change the conversation transcript, or enable diarisation. Failed or expired sessions discard transient state while settling submitted usage.
+
+Apply the stream-purpose migration and update the application and worker processes together before starting live dictation. Earlier runtimes treat every stream session as conversation capture and cannot safely reconcile dictation sessions.
+
 The workspace exposes streaming only when its server-derived capability says the active owner transcript is `live_chunked` and the saved eligible selection is Deepgram. The browser cannot grant itself this capability. The server independently verifies the owner, active transcript, frozen selection, Vault credential and same-origin/session/CSRF handshake before accepting audio. Credentials stay server-side.
 
 The existing single microphone/VAD pipeline converts captured 16 kHz mono audio to signed 16-bit little-endian PCM. It initially listens locally and retains a five-second rolling pre-roll in JavaScript memory. On speech, it sends the unsent ring samples once and then new samples over the same-origin WebSocket. Frames carry monotonic source sample offsets; offsets can skip locally discarded audio, but sent intervals never overlap. The VAD speech-end copy is not uploaded a second time.

@@ -12,7 +12,7 @@ The former `/legacy-admin` and `/admin2` compatibility/development surfaces have
 
 ## Role boundary
 
-System administrators manage platform and team metadata, accounts, providers, defaults, quotas, aggregate usage, and security audit data.
+System administrators manage platform and team metadata, accounts, providers, defaults, quotas, aggregate usage, and security audit data. Selected-member quota cards live in the standalone Usage Quotas view; per-team quota defaults live in Defaults and apply to new members only.
 
 They do not gain access to another user's transcript, working note, dictation, generated document, prompt, redaction/PII, or uploaded audio. System-admin accounts cannot own transcripts.
 
@@ -23,7 +23,7 @@ The admin UI must never expose raw provider credentials, unrestricted Vault refe
 ### Teams
 
 - create and open teams;
-- view/edit supported team policy metadata such as future-root retention default;
+- view/edit supported team policy metadata such as future-root retention default in the selected team's Defaults tab;
 - inspect blockers and hard-delete an eligible team through the Danger zone;
 - understand deletion as immediate/irreversible and content/key/provider-cleanup aware.
 
@@ -82,32 +82,16 @@ Audit surfaces expose bounded action/outcome/actor/target/team/route/IP/user-age
 
 ## Navigation summary
 
-Global areas:
+The Admin landing destination is All teams Usage (`/admin/usage?view=team&range=30d`). The compact Team picker opens a selected team workspace or starts team creation in a dialog. Global administration remains a separate group for Account requests, System admins, Global defaults, De-identification providers, Audit, and Legal content. Global pages remain unscoped; the picker displays the remembered team name and the Usage link restores that team's last section without filtering global data.
 
-- Admin home;
-- Teams / Manage teams;
-- Account requests;
-- System administrators;
-- Global defaults;
-- De-identification providers;
-- Usage;
-- Audit;
-- Legal content.
+Selected-team primary tabs are Overview, Members and Quotas; Usage opens its
+dedicated standalone route with local Team/Users/Quotas destinations. Provider
+policy, STT, LLM and De-identification are grouped under Providers; Defaults,
+Security and Danger zone are grouped under Settings. The active nested page
+keeps its existing `team_tab` URL value and is marked as current. Overview
+summarizes the retention default and links to its editor in Defaults.
 
-Selected-team tabs:
-
-- Overview;
-- Members;
-- Provider policy;
-- STT;
-- LLM;
-- De-identification;
-- Defaults;
-- Usage;
-- Security;
-- Danger zone.
-
-Team and tab are validated URL state. The workspace does not guess a team when none is selected.
+Team and tab are validated URL state. A per-tab session-storage hint remembers only the validated team ID, allowlisted section/Usage view, and Usage range; it does not store form drafts, member IDs, or secrets. URLs, browser history, refresh, and explicit All teams navigation remain authoritative. Unsaved form edits prompt before navigation. The account disclosure retains POST logout, and explicit All teams selection and logout clear the admin navigation hint.
 
 ## Security and browser behavior
 

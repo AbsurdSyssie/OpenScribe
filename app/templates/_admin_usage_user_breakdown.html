@@ -1,0 +1,19 @@
+<section class="usage-panel usage-user-panel">
+  <header><h2>User usage breakdown</h2><p>Aggregate activity for users belonging to {{ selected_team.name }}.</p></header>
+  {% if usage_user_rows %}
+  <div class="usage-table-wrap table-scroll-region" tabindex="0" role="region" aria-label="Scrollable user usage table">
+    <table class="usage-table usage-user-table" data-sortable-table>
+      <thead><tr><th scope="col" data-sort-type="text">User</th><th scope="col" data-sort-type="number">Generated</th><th scope="col" data-sort-type="number">LLM success</th><th scope="col" data-sort-type="number" title="Sorts by input tokens">Input / output</th><th scope="col" data-sort-type="number">Audio</th><th scope="col" data-sort-type="number">Ingestion failures</th><th scope="col" data-sort-type="number">Activity share</th></tr></thead>
+      <tbody>{% for row in usage_user_rows %}<tr>
+        <td data-sort-value="{{ (row.full_name or row.email)|lower }}"><strong>{{ row.full_name or row.email }}</strong><br><small>{{ row.email }}</small></td>
+        <td data-sort-value="{{ row.provider_completed_count }}">{{ row.provider_completed_count }}<br><small>{{ row.provider_failed_count }} failed</small></td>
+        <td data-sort-value="{{ row.provider_success_rate }}">{{ row.provider_success_rate }}%</td>
+        <td data-sort-value="{{ row.provider_input_tokens }}">{{ row.provider_input_tokens }} / {{ row.provider_output_tokens }}<br><small>{{ row.avg_input_tokens_per_generation }} / {{ row.avg_output_tokens_per_generation }} avg</small></td>
+        <td data-sort-value="{{ row.ingested_hours }}">{{ "%.2f"|format(row.ingested_hours) }} h<br><small>{{ row.whole_file_count }} file · {{ row.live_chunk_count }} live</small></td>
+        <td data-sort-value="{{ row.ingestion_failed_count }}">{{ row.ingestion_failed_count }}<br><small>{{ row.ingestion_failure_rate }}%</small></td>
+        <td data-sort-value="{{ row.activity_share_pct }}">{{ row.activity_share_pct }}%<div class="usage-meter" aria-hidden="true"><span data-style-width-pct="{{ row.activity_share_pct }}"></span></div></td>
+      </tr>{% endfor %}</tbody>
+    </table>
+  </div>
+  {% else %}<div class="usage-empty">No user usage recorded for this range.</div>{% endif %}
+</section>

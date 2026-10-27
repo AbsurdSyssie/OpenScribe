@@ -1,0 +1,47 @@
+<div class="usage-chart-data-table">
+  <p class="usage-chart-summary" id="usage-chart-summary-{{ scope }}">
+    The charts show {{ usage_range_bucket }} usage for {{ usage_range_label }}. All four metrics are available for every period{% if usage_has_comparison %}, including each previous-period bucket{% endif %}, in the data table.
+  </p>
+  <details>
+    <summary>View usage data table</summary>
+    <div class="usage-table-wrap" tabindex="0" role="region" aria-label="{{ usage_range_bucket|capitalize }} usage data table">
+      <table class="usage-table" id="usage-chart-table-{{ scope }}" data-sortable-table>
+        <caption>Usage metrics by {{ usage_range_bucket }} for {{ usage_range_label }}{% if usage_has_comparison %}; previous equal period values are shown with their bucket labels{% endif %}.</caption>
+        <thead>
+          <tr>
+            <th scope="col" data-sort-type="date">Current-period bucket</th>
+            <th scope="col" data-sort-type="number">Current input tokens</th>
+            <th scope="col" data-sort-type="number">Current output tokens</th>
+            <th scope="col" data-sort-type="number">Current audio hours</th>
+            <th scope="col" data-sort-type="number">Current failures</th>
+            {% if usage_has_comparison %}
+            <th scope="col" data-sort-type="date">Previous-period bucket</th>
+            <th scope="col" data-sort-type="number">Previous input tokens</th>
+            <th scope="col" data-sort-type="number">Previous output tokens</th>
+            <th scope="col" data-sort-type="number">Previous audio hours</th>
+            <th scope="col" data-sort-type="number">Previous failures</th>
+            {% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for point in usage_comparison_trend_points %}
+          <tr>
+            <th scope="row" data-sort-value="{{ point.bucket_date }}">{{ point.label }}</th>
+            <td data-sort-value="{{ point.current_input }}">{{ "{:,}".format(point.current_input) }}</td>
+            <td data-sort-value="{{ point.current_output }}">{{ "{:,}".format(point.current_output) }}</td>
+            <td data-sort-value="{{ point.current_audio }}">{{ "%.2f"|format(point.current_audio) }}</td>
+            <td data-sort-value="{{ point.current_failure }}">{{ "{:,}".format(point.current_failure) }}</td>
+            {% if usage_has_comparison %}
+            <td data-sort-value="{{ point.previous_bucket_date }}">{{ point.previous_label }}</td>
+            <td data-sort-value="{{ point.previous_input }}">{{ "{:,}".format(point.previous_input) }}</td>
+            <td data-sort-value="{{ point.previous_output }}">{{ "{:,}".format(point.previous_output) }}</td>
+            <td data-sort-value="{{ point.previous_audio }}">{{ "%.2f"|format(point.previous_audio) }}</td>
+            <td data-sort-value="{{ point.previous_failure }}">{{ "{:,}".format(point.previous_failure) }}</td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+</div>

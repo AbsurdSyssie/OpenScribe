@@ -1,0 +1,25 @@
+{% if usage_summary is not none %}
+<div class="usage-summary-table-wrap table-scroll-region" role="region" aria-label="Usage summary table" tabindex="0">
+  <table class="usage-summary-table">
+    <caption class="visually-hidden">Usage summary for {% if selected_team %}{{ selected_team.name }}{% elif usage_scope_team %}{{ usage_scope_team.name }}{% else %}all teams{% endif %} · {{ usage_range_label }}</caption>
+    <thead>
+      <tr>
+        <th scope="col">Total tokens</th>
+        <th scope="col">Audio hours</th>
+        <th scope="col">Input tokens</th>
+        <th scope="col">Output tokens</th>
+        <th scope="col">Generations</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>{{ "{:,}".format(usage_summary.provider_total_tokens) }}</td>
+        <td>{{ "%.2f"|format(usage_summary.ingested_duration_seconds / 3600) }} h</td>
+        <td>{{ "{:,}".format(usage_summary.provider_input_tokens) }}</td>
+        <td>{{ "{:,}".format(usage_summary.provider_output_tokens) }}</td>
+        <td>{{ "{:,}".format(usage_summary.provider_completed_count) }}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+{% endif %}

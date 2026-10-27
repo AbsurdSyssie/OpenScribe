@@ -1,0 +1,15 @@
+{% set usage_range_menu_value = usage_range_key if usage_range_key in ['30d', '90d', '1y', 'all'] else '30d' %}
+{% set usage_range_menu_labels = {'30d':'Last 30 days','90d':'Last 90 days','1y':'Last year','all':'All available data'} %}
+<details class="tab-disclosure usage-range-disclosure">
+  <summary class="tab-disclosure-summary usage-range-summary">
+    <span class="usage-range-label">Reporting range</span>
+    <span class="usage-range-current">{{ usage_range_menu_labels[usage_range_menu_value] }}</span>
+  </summary>
+  <nav class="tab-disclosure-menu usage-range-menu" aria-label="Reporting range options">
+    {% for value, label in [('30d','Last 30 days'),('90d','Last 90 days'),('1y','Last year'),('all','All available data')] %}
+    <a class="usage-range-option" href="/admin/usage?view={{ usage_range_menu_view }}{% if usage_range_menu_team_id %}&amp;team_id={{ usage_range_menu_team_id }}{% endif %}&amp;range={{ value }}"{% if usage_range_menu_value == value %} aria-current="page"{% endif %}>
+      <span>{{ label }}</span><span class="usage-range-check" aria-hidden="true"></span>
+    </a>
+    {% endfor %}
+  </nav>
+</details>

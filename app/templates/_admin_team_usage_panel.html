@@ -1,0 +1,68 @@
+              <section
+                class="tab-panel"
+                data-panel="usage"
+                {% if not standalone_usage and workspace_team_tab != "usage" %}hidden{% endif %}
+              >
+                {% set usage_view_users = usage_page_view == 'users' if standalone_usage else request.query_params.get('usage_view') == 'users' %}
+                <div class="section-intro usage-intro">
+                  <div class="usage-toolbar">
+                    <div><h{{ '1' if standalone_usage else '2' }}>{% if usage_view_users %}User usage{% else %}Team usage{% endif %}</h{{ '1' if standalone_usage else '2' }}><p>{% if usage_view_users %}Aggregate activity for users belonging to {{ selected_team.name }}. Metadata only.{% else %}Consumption and health for {{ selected_team.name }}. Metadata only.{% endif %}</p></div>
+                  </div>
+                </div>
+                {% include "_admin_usage_navigation.html" %}
+
+                <div class="usage-page usage-page--team{% if usage_view_users %} usage-page--users{% endif %}">
+                  {% if usage_view_users %}
+                  {% include "_admin_usage_user_breakdown.html" %}
+                  {% else %}
+                  {% include "_admin_usage_summary_table.html" %}
+
+                  <section class="usage-panel usage-summary-panel">
+                    <header><h2>Consumption and health · {{ usage_range_label }}</h2><p>{{ usage_range_bucket|title }} aggregates{% if usage_has_comparison %}, with shaded previous-period comparison{% endif %}.</p></header>
+                    {% if usage_has_activity %}
+                    <div class="usage-chart-grid">
+                      {% for metric, title, detail in [('input','Input tokens','Prompt tokens consumed'),('output','Output tokens','Completion tokens produced'),('audio','Audio hours','Successfully processed audio duration'),('failure','Failures','LLM and speech failures')] %}
+                      <figure class="usage-card usage-chart">
+                        <h3>{{ title }}</h3><div class="usage-detail">{{ detail }}</div>
+                        <div class="usage-chart-a11y">
+                          <div class="usage-echart" id="usage-chart-team-{{ metric }}" data-usage-chart="{{ metric }}" data-usage-chart-scope="team" role="img" aria-label="{{ title }} trend" aria-describedby="usage-chart-summary-team"></div>
+                        </div>
+                      </figure>
+                      {% endfor %}
+                    </div>
+                    {% set scope = 'team' %}
+                    {% include "_admin_usage_chart_data.html" %}
+                    {% else %}<div class="usage-empty">No generation or ingestion activity recorded for this team in {{ usage_range_label|lower }}.</div>{% endif %}
+                  </section>
+
+                  <section class="usage-panel">
+                    <header><h2>Operational health · last 15 minutes</h2><p>Provider error counts include recovered and failed HTTP requests; overdue attempts and queue age show current open work.</p></header>
+                    <div class="usage-kpi-grid">
+                      <article class="usage-kpi"><span>HTTP 429 responses</span><strong>{{ usage_operational_health.http_429 }}</strong></article><article class="usage-kpi"><span>HTTP 503 responses</span><strong>{{ usage_operational_health.http_503 }}</strong></article><article class="usage-kpi"><span>Provider timeouts</span><strong>{{ usage_operational_health.timeouts }}</strong></article><article class="usage-kpi"><span>Overdue attempts</span><strong>{{ usage_operational_health.overdue_attempts }}</strong></article><article class="usage-kpi"><span>Oldest queued work</span><strong>{% if usage_operational_health.oldest_queue_age_seconds is not none %}{{ usage_operational_health.oldest_queue_age_seconds }} sec{% else %}—{% endif %}</strong></article><article class="usage-kpi"><span>Mean queue wait</span><strong>{% if usage_operational_health.avg_queue_wait_ms is not none %}{{ usage_operational_health.avg_queue_wait_ms }} ms{% else %}—{% endif %}</strong></article><article class="usage-kpi"><span>Mean provider call</span><strong>{% if usage_operational_health.avg_provider_latency_ms is not none %}{{ usage_operational_health.avg_provider_latency_ms }} ms{% else %}—{% endif %}</strong></article>
+                    </div>
+                    <p class="usage-detail">{{ usage_operational_health.degraded_calls }} degraded requests / {{ usage_operational_health.observed_calls }} observed requests{% if usage_operational_health.degradation_pct is not none %} ({{ usage_operational_health.degradation_pct }}%){% endif %}.</p>
+                    {% if usage_operational_health.alerts %}<p class="usage-detail">{% for alert in usage_operational_health.alerts %}{% if alert == 'queued_work_over_60_seconds' %}Queued work is older than 60 seconds.{% elif alert == 'provider_attempts_overdue' %}One or more provider attempts passed their deadline.{% elif alert == 'provider_errors_elevated' %}At least 5 provider errors occurred and reached 20% of observed attempts.{% endif %}{% if not loop.last %} {% endif %}{% endfor %}</p>{% else %}<p class="usage-detail">No operational warning thresholds were reached.</p>{% endif %}
+                  </section>
+                  <section class="usage-panel">
+                    <header><h2>Recent failures and retries</h2><p>Bounded operational metadata for this team; no clinical or provider response content.</p></header>
+                    <form method="get" action="/admin/usage" class="usage-filter-form"><input type="hidden" name="team_id" value="{{ selected_team.id }}" /><input type="hidden" name="view" value="team" /><input type="hidden" name="range" value="{{ usage_range_key }}" /><label>Operation reference <input name="reference" value="{{ usage_monitor_reference }}" placeholder="UUID" /></label><label>From (UTC) <input type="datetime-local" name="monitor_since" value="{{ usage_monitor_since[:16] }}" /></label><button class="btn small" type="submit">Search</button><a class="btn small" href="/admin/usage?team_id={{ selected_team.id }}&amp;view=team&amp;range={{ usage_range_key }}">Clear</a></form>
+                    {% if usage_monitor_lookup_error %}<p class="usage-detail" role="alert">{{ usage_monitor_lookup_error }}</p>{% endif %}
+                    {% if usage_recent_operational_rows %}<div class="usage-table-wrap table-scroll-region" tabindex="0" role="region" aria-label="Scrollable usage table"><table class="usage-table" data-sortable-table><thead><tr><th scope="col" data-sort-type="date">Time (UTC)</th><th scope="col" data-sort-type="text">Stage</th><th scope="col" data-sort-type="text">Reference</th><th scope="col" data-sort-type="text">Outcome</th><th scope="col" data-sort-type="number">Retries</th><th scope="col" data-sort-type="text">Error</th><th scope="col" data-sort-type="text" title="Sorts by provider error code, or HTTP status when no code is present">Provider / HTTP</th><th scope="col" data-sort-type="text" title="Sorts by provider, then model">Provider / model / latency</th></tr></thead><tbody>{% for row in usage_recent_operational_rows %}<tr><td data-sort-value="{{ row.timestamp.isoformat() }}">{{ row.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td><td data-sort-value="{{ row.stage|lower }}">{{ row.stage }}</td><td data-sort-value="{{ row.reference_id }}"><code>{{ row.reference_id }}</code></td><td data-sort-value="{{ row.outcome|lower }}">{{ row.outcome }}</td><td data-sort-value="{{ row.retry_count }}">{{ row.retry_count }}</td><td data-sort-value="{{ row.error_code|default('', true)|lower }}">{{ row.error_code }}</td><td data-sort-value="{{ row.provider_error_code|default('HTTP ' ~ (row.provider_http_status|string) if row.provider_http_status else '', true)|lower }}">{% if row.provider_error_code %}{{ row.provider_error_code }}{% else %}—{% endif %}{% if row.provider_http_status %}<br><small>HTTP {{ row.provider_http_status }}</small>{% endif %}</td><td data-sort-value="{{ (row.provider_adapter or '')|lower }}" data-sort-secondary="{{ (row.model or '')|lower }}">{% if row.provider_adapter %}{{ row.provider_adapter }}<br>{% endif %}{% if row.model %}{{ row.model }}{% else %}—{% endif %}{% if row.duration_ms is not none %}<br><small>{{ row.duration_ms }} ms</small>{% endif %}</td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="usage-empty">No matching failures or recovered retries in this range.</div>{% endif %}
+                  </section>
+                  <section class="usage-panel">
+                    <header><h2>Recent split failures</h2><p>Up to 25 retained, failed split executions for this team in {{ usage_range_label|lower }}. These are safe operational metadata for support correlation; they contain no source or provider response content.</p></header>
+                    {% if usage_recent_split_failure_rows %}
+                    <div class="usage-table-wrap table-scroll-region" tabindex="0" role="region" aria-label="Scrollable usage table">
+                      <table class="usage-table" data-sortable-table>
+                        <thead><tr><th scope="col" data-sort-type="date">Time (UTC)</th><th scope="col" data-sort-type="text">Stage</th><th scope="col" data-sort-type="text">Execution UUID</th><th scope="col" data-sort-type="text">Operation UUID</th><th scope="col" data-sort-type="text">Application code</th><th scope="col" data-sort-type="text" title="Sorts by provider error code, or HTTP status when no code is present">Provider code / HTTP</th></tr></thead>
+                        <tbody>{% for row in usage_recent_split_failure_rows %}<tr>
+                          <td data-sort-value="{{ row.timestamp.isoformat() }}">{{ row.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td><td data-sort-value="{{ row.stage|lower }}">{{ row.stage }}</td><td data-sort-value="{{ row.execution_id }}"><code>{{ row.execution_id }}</code></td><td data-sort-value="{{ row.operation_id }}"><code>{{ row.operation_id }}</code></td>
+                          <td data-sort-value="{{ row.error_code|lower }}">{{ row.error_code }}</td><td data-sort-value="{{ row.provider_error_code|default('HTTP ' ~ (row.provider_http_status|string) if row.provider_http_status else '', true)|lower }}">{% if row.provider_error_code %}{{ row.provider_error_code }}{% else %}—{% endif %}{% if row.provider_http_status %}<br><small>HTTP {{ row.provider_http_status }}</small>{% endif %}</td>
+                        </tr>{% endfor %}</tbody>
+                      </table>
+                    </div>
+                    {% else %}<div class="usage-empty">No retained split failures in this range.</div>{% endif %}
+                  </section>
+                  {% endif %}
+                </div>
+              </section>

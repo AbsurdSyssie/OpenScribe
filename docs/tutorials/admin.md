@@ -4,11 +4,11 @@
 
 This guide is for system administrators using the browser admin workspace after bootstrap. First-time infrastructure/bootstrap is in [system-admin-setup.md](system-admin-setup.md).
 
-System administrators manage platform/team metadata, provider provisioning, defaults, quotas, account requests, and security/usage metadata. They are admin-only accounts and cannot own or read transcript-derived content through normal product routes.
+System administrators manage platform/team metadata, provider provisioning, defaults, quotas, account requests, and security/usage metadata. Selected-member quotas are managed in the standalone Usage Quotas view; finite defaults for new members are under Defaults. They are admin-only accounts and cannot own or read transcript-derived content through normal product routes.
 
 ## Admin workspace
 
-Use `/admin` as the canonical and only admin workspace. The former `/legacy-admin` and `/admin2` development/compatibility routes have been removed.
+Use the Admin workspace after full system-administrator authentication. The former `/legacy-admin` and `/admin2` development/compatibility routes have been removed. Bare `/admin` and the retired Admin home/team-directory links redirect to All teams Usage at `/admin/usage?view=team&range=30d`.
 
 The current workspace includes global and team-scoped areas such as:
 
@@ -21,6 +21,25 @@ The current workspace includes global and team-scoped areas such as:
 - aggregate usage/failure metadata;
 - security audit metadata;
 - team danger/deletion controls.
+
+Use the compact **Team** picker to select a team, or choose **All teams** for
+aggregate Usage. The picker also opens **Create team**; successful creation
+opens the new team's Overview. The bottom account disclosure contains **Log
+out**.
+
+When a team is selected, Overview, Members and Quotas are primary navigation
+links. Usage opens its standalone route with local Team, Users and Quotas
+destinations. Provider policy, STT, LLM and De-identification are grouped
+under Providers; Defaults, Security and Danger zone are under Settings. The
+active page remains in the URL as `team_tab`. Overview is read-only for
+retention and links to the retention editor in Defaults.
+
+On a narrow screen, use the **Navigation** disclosure for sidebar links. The
+global Admin group stays separate from the Team workspace. Global pages do not
+use the remembered team as a filter; the muted picker name shows that context,
+and the Usage link restores its validated section. The browser remembers this context per tab using only the team ID,
+allowlisted section/view, and Usage range. Unsaved form changes prompt for
+**Stay** or **Discard changes** before navigation.
 
 Admin pages must not expose transcript, working-note, dictation, generated-document, prompt, raw provider response, credential, reset/setup token, TOTP/recovery code, or plaintext session content.
 
@@ -126,6 +145,13 @@ Quota/usage data is not content access. Do not add prompts, transcripts, notes, 
 When resetting/revoking quotas, understand the active reservation/attempt lifecycle rather than editing aggregate counters directly.
 
 ## Defaults and shared assets
+
+In a selected team's Defaults page, administrators can edit the retention
+default and finite daily/monthly token and audio limits for newly created
+members. The retention edit applies to transcript roots created after the
+change; it does not extend existing expiry dates. Quota changes affect new
+members only, while each existing member retains their current individual
+limits. Audio defaults are entered in hours and stored as seconds.
 
 System administrators manage global default Templates and Quick Actions. Team leaders manage own-team assets.
 

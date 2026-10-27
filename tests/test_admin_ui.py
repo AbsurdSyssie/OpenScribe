@@ -1,6 +1,7 @@
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -53,6 +54,7 @@ from app.models import (
     RedactionRunStatus,
     SecurityAuditEvent,
     Team,
+    TeamStatus,
     TeamClinicalNlpSelection,
     TeamDeidentificationProviderAssignment,
     TeamDeidentificationSelection,
@@ -104,8 +106,10 @@ from app.services.default_assets import (
 )
 from app.services.admin import admin_usage_overview
 from app.services.quotas import (
+    calculate_quota_window,
     mark_provider_attempt_submitted,
     reserve_provider_attempt,
+    settle_provider_attempt_audio,
     settle_provider_attempt_tokens,
     settle_provider_attempt_unknown_tokens,
 )
@@ -454,7 +458,7 @@ def _admin_csrf(page_text: str) -> str:
 
 
 def _quota_panel_url(team: Team, member: User) -> str:
-    return f"/admin?team_id={team.id}&team_tab=members&member_id={member.id}"
+    return f"/admin/usage?team_id={team.id}&view=quotas&member_id={member.id}"
 
 
 def _login_quota_admin(client, admin: User) -> None:
@@ -468,7 +472,7 @@ def _quota_form(client, team: Team, member: User) -> tuple[str, str]:
     return page.text, _admin_csrf(page.text)
 
 
-def test_admin_member_quota_panel_is_scoped_and_addressable(client, make_team, make_user, monkeypatch):
+def test_admin_quota_panel_is_scoped_searchable_and_addressable(client, make_team, make_user, monkeypatch):
     team = make_team(name="Quota Team")
     other_team = make_team(name="Other Quota Team")
     admin = make_user(email="quota-ui-admin@example.com", password="password-1", is_system_admin=True)
@@ -479,25 +483,140 @@ def test_admin_member_quota_panel_is_scoped_and_addressable(client, make_team, m
 
     page = client.get(_quota_panel_url(team, member))
     assert page.status_code == 200
-    assert f"/admin?team_id={team.id}&amp;team_tab=members&amp;member_id={member.id}" in page.text
-    assert "Manage quotas" in page.text
-    assert "UTC windows" in page.text
+    assert f"/admin/usage?team_id={team.id}&amp;view=quotas&amp;member_id={member.id}" in page.text
+    assert 'data-panel="quotas"' in page.text
+    assert 'id="quota-member-filter"' in page.text
+    assert 'id="quota-member-select"' in page.text
+    assert "quota-resource-grid" in page.text
+    assert "AI tokens" in page.text and "Transcription audio" in page.text
+    assert "Edit limits" in page.text and "Add allowance" in page.text
+    legacy = client.get(f"/admin?team_id={team.id}&team_tab=members&member_id={member.id}", follow_redirects=False)
+    assert legacy.status_code == 303
+    legacy_destination = client.get(legacy.headers["location"], follow_redirects=True)
+    assert legacy_destination.status_code == 200
+    assert urlparse(str(legacy_destination.url)).path == "/admin/usage"
+    assert 'data-panel="quotas"' in legacy_destination.text
     assert "Unlimited" in page.text
-    assert "No temporary allowance" in page.text
+    assert "in progress" in page.text.lower()
+    assert "allowance" in page.text.lower()
 
     calls = []
     monkeypatch.setattr("app.web.presentation.get_admin_user_quota_detail", lambda *args, **kwargs: calls.append(kwargs))
     for invalid_member in ("not-a-uuid", str(other.id), str(system_admin.id)):
-        hidden = client.get(f"/admin?team_id={team.id}&team_tab=members&member_id={invalid_member}")
+        hidden = client.get(f"/admin?team_id={team.id}&team_tab=quotas&member_id={invalid_member}")
         assert "id=\"quota-panel\"" not in hidden.text
+        assert "That member is not available in this team" in hidden.text or "Choose an eligible member" in hidden.text
     assert calls == []
 
     for team_tab in ("overview", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"):
         client.get(f"/admin?team_id={team.id}&team_tab={team_tab}&member_id={member.id}")
     assert calls == []
+    legacy_without_following = client.get(
+        f"/admin?team_id={team.id}&team_tab=members&member_id={member.id}", follow_redirects=False
+    )
+    assert legacy_without_following.status_code == 303
+    assert calls == []
 
 
-def test_admin_quota_panel_renders_unlimited_disabled_and_no_temporary_allowance(client, db_session, make_team, make_user):
+def test_admin_quota_limits_editor_keeps_mixed_current_modes_and_cancel_discards(client, db_session, make_team, make_user):
+    team = make_team(name="Quota Limits Editor Team")
+    admin = make_user(email="quota-editor-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(email="quota-editor-member@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    member.daily_token_limit = 0
+    member.monthly_token_limit = None
+    member.daily_audio_seconds_limit = 1800
+    member.monthly_audio_seconds_limit = None
+    db_session.commit()
+    _login_quota_admin(client, admin)
+
+    edit_url = _quota_panel_url(team, member) + "&quota_edit=limits"
+    editor = client.get(edit_url)
+    assert editor.status_code == 200
+    assert "Edit quota limits" in editor.text
+    assert 'class="quota-resource-card"' not in editor.text
+    assert 'class="quota-member-picker quota-member-picker--editing"' in editor.text
+    assert "Review usage and manage limits and allowances" not in editor.text
+    assert '<legend class="visually-hidden">Daily tokens</legend>' in editor.text
+    assert '<div class="quota-limit-heading">\n          <span aria-hidden="true">Daily tokens</span>' in editor.text
+    assert editor.text.count("Back to quotas") == 1
+    assert re.search(r'class="quota-unsaved-badge"[^>]*hidden', editor.text)
+    assert re.search(r'name="daily_token_unlimited" value=""[^>]*checked', editor.text)
+    assert re.search(r'name="monthly_token_unlimited" value="true"[^>]*checked', editor.text)
+    assert re.search(r'name="daily_audio_unlimited" value=""[^>]*checked', editor.text)
+    assert re.search(r'name="monthly_audio_unlimited" value="true"[^>]*checked', editor.text)
+    assert 'name="daily_token_limit" value="0"' in editor.text
+    assert 'name="daily_audio_hours" value="0.5"' in editor.text
+    assert 'href="/admin/usage?team_id=' + str(team.id) + '&amp;view=quotas&amp;member_id=' + str(member.id) + '"' in editor.text
+
+    db_session.refresh(member)
+    assert (member.daily_token_limit, member.monthly_token_limit, member.daily_audio_seconds_limit, member.monthly_audio_seconds_limit) == (0, None, 1800, None)
+    back = client.get(_quota_panel_url(team, member))
+    assert back.status_code == 200
+    assert "Edit quota limits" not in back.text
+    assert "Review usage and manage limits and allowances" in back.text
+    assert "quota-resource-grid" in back.text
+    db_session.refresh(member)
+    assert (member.daily_token_limit, member.monthly_token_limit, member.daily_audio_seconds_limit, member.monthly_audio_seconds_limit) == (0, None, 1800, None)
+
+
+def test_admin_quota_limits_editor_preserves_invalid_draft_and_saves_empty_radio_as_finite(client, db_session, make_team, make_user):
+    team = make_team(name="Quota Limits Editor Save Team")
+    admin = make_user(email="quota-editor-save-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(email="quota-editor-save-member@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    member.daily_token_limit = 500
+    member.monthly_token_limit = 700
+    member.daily_audio_seconds_limit = 3600
+    member.monthly_audio_seconds_limit = 7200
+    db_session.commit()
+    _login_quota_admin(client, admin)
+    editor_url = _quota_panel_url(team, member) + "&quota_edit=limits"
+    editor = client.get(editor_url)
+    csrf = _admin_csrf(editor.text)
+    operation_id = "a1111111-1111-4111-8111-111111111111"
+    payload = {
+        "_csrf_token": csrf,
+        "operation_id": operation_id,
+        "daily_token_limit": "",
+        "daily_token_unlimited": "",
+        "monthly_token_limit": "",
+        "monthly_token_unlimited": "true",
+        "daily_audio_hours": "0.5",
+        "daily_audio_unlimited": "",
+        "monthly_audio_hours": "",
+        "monthly_audio_unlimited": "true",
+        "reason_code": "policy_change",
+        "reason": "Mixed limit update",
+    }
+    invalid = client.post(f"/admin/users/{member.id}/quotas/limits", data=payload, headers={"Origin": "http://testserver"})
+    assert invalid.status_code == 422
+    assert 'aria-label="Usage workspace"' in invalid.text
+    assert '<details data-team-navigation' not in invalid.text
+    assert 'class="team-summary"' not in invalid.text
+    assert 'class="usage-echart"' not in invalid.text
+    assert 'id="quota-panel"' in invalid.text
+    assert "Edit quota limits" in invalid.text
+    assert "Quota limits are invalid" in invalid.text
+    assert "name=\"daily_token_unlimited\" value=\"\"" in invalid.text
+    assert 'name="monthly_token_unlimited" value="true"' in invalid.text
+    assert "Change details" in invalid.text
+    assert "Recorded in quota history. Do not include clinical information." in invalid.text
+    assert re.search(r'<select name="reason_code" required>', invalid.text)
+    assert re.search(r'<textarea name="reason" maxlength="500" required rows="1">', invalid.text)
+    assert ">Mixed limit update</textarea>" in invalid.text
+
+    payload.update({
+        "operation_id": "a2222222-2222-4222-8222-222222222222",
+        "daily_token_limit": "0",
+    })
+    saved = client.post(f"/admin/users/{member.id}/quotas/limits", data=payload, headers={"Origin": "http://testserver"}, follow_redirects=False)
+    assert saved.status_code == 303
+    assert saved.headers["location"] == f"/admin/usage?team_id={team.id}&view=quotas&member_id={member.id}&quota_notice=limits_updated"
+    assert "quota_edit" not in saved.headers["location"]
+    db_session.refresh(member)
+    assert (member.daily_token_limit, member.monthly_token_limit, member.daily_audio_seconds_limit, member.monthly_audio_seconds_limit) == (0, None, 1800, None)
+
+
+def test_admin_quota_panel_renders_unlimited_and_disabled_without_repeated_allowance_copy(client, db_session, make_team, make_user):
     team = make_team(name="Quota Window Team")
     admin = make_user(email="quota-window-admin@example.com", password="password-1", is_system_admin=True)
     member = make_user(email="quota-window-member@example.com", password="password-1", team=team, team_role=TeamRole.user)
@@ -512,7 +631,7 @@ def test_admin_quota_panel_renders_unlimited_disabled_and_no_temporary_allowance
 
     assert page.count("Unlimited") >= 2
     assert page.count("Disabled") >= 2
-    assert page.count("No temporary allowance") == 4
+    assert "No temporary allowance" not in page
 
 
 def test_admin_quota_panel_formats_tokens_and_audio_for_monitoring(client, db_session, make_team, make_user):
@@ -523,6 +642,17 @@ def test_admin_quota_panel_formats_tokens_and_audio_for_monitoring(client, db_se
     member.monthly_token_limit = 9_500_000
     member.daily_audio_seconds_limit = 3_661
     member.monthly_audio_seconds_limit = 36_000
+    now = utcnow()
+    audio_attempt = reserve_provider_attempt(
+        db_session, team_id=team.id, owner_user_id=member.id, resource=QuotaResource.audio_seconds,
+        attempt_kind=AttemptKind.stt_conversation, correlation_id=uuid4(), attempt_number=1,
+        reserved_units=12, measured_audio_seconds=12, authorized_at=now,
+        reservation_valid_until=now + timedelta(minutes=5),
+    )
+    mark_provider_attempt_submitted(
+        db_session, attempt_id=audio_attempt.id, deadline_at=now + timedelta(minutes=2), now=now,
+    )
+    settle_provider_attempt_audio(db_session, attempt_id=audio_attempt.id, measured_audio_seconds=12, now=now)
     db_session.commit()
     _login_quota_admin(client, admin)
 
@@ -532,8 +662,17 @@ def test_admin_quota_panel_formats_tokens_and_audio_for_monitoring(client, db_se
     assert "9,500,000 tokens" in page
     assert "1h 1m 1s" in page
     assert "10h" in page
-    assert "In progress" in page
-    assert "Accepted work not yet settled" in page
+    assert "in progress" in page.lower()
+    assert "accepted work not yet settled" in page.lower()
+    assert "Lifetime accounted usage" in page
+    assert "0.00 hours (12s)" in page
+    assert "Earlier activity may be unavailable." in page
+    month_window = calculate_quota_window(
+        db_session, user=member, resource=QuotaResource.tokens, period=QuotaPeriod.monthly, now=now,
+    )
+    assert f"{month_window.natural_start.strftime('%d')}–{month_window.natural_end.strftime('%d %b %Y UTC')}" in page
+    assert now.strftime("%d %b %Y UTC") in page
+    assert "Resets" in page
 
 
 def test_admin_quota_limits_post_updates_all_windows_and_uses_safe_prg(client, db_session, make_team, make_user):
@@ -553,10 +692,10 @@ def test_admin_quota_limits_post_updates_all_windows_and_uses_safe_prg(client, d
     }, params={"team_id": str(other_team.id), "member_id": str(other.id)}, headers={"Origin": "http://testserver"}, follow_redirects=False)
     assert limits.status_code == 303
     location = limits.headers["location"]
-    assert location == f"/admin?team_id={team.id}&team_tab=members&member_id={member.id}&quota_notice=limits_updated"
+    assert location == f"/admin/usage?team_id={team.id}&view=quotas&member_id={member.id}&quota_notice=limits_updated"
     assert "free+reason" not in location
     assert parse_qs(urlparse(location).query) == {
-        "team_id": [str(team.id)], "team_tab": ["members"], "member_id": [str(member.id)], "quota_notice": ["limits_updated"],
+        "team_id": [str(team.id)], "view": ["quotas"], "member_id": [str(member.id)], "quota_notice": ["limits_updated"],
     }
     assert db_session.scalar(select(func.count(UserQuotaPolicyEvent.id)).where(UserQuotaPolicyEvent.target_user_id == member.id)) == 4
     db_session.refresh(member)
@@ -585,6 +724,8 @@ def test_admin_quota_grant_is_atomic_for_zero_limits_and_rejects_unlimited_safel
         "_csrf_token": csrf, "operation_id": "22222222-2222-4222-8222-222222222222", "resource": "tokens", "periods": ["daily", "monthly"], "amount": "5", "audio_hours": "", "expiry_preset": expiry_preset, "reason_code": "temporary_allowance", "reason": "allowance",
     }, headers={"Origin": "http://testserver"}, follow_redirects=False)
     assert grant.status_code == 303
+    quota_url = f"/admin/usage?team_id={team.id}&view=quotas&member_id={member.id}"
+    assert grant.headers["location"] == quota_url + "&quota_notice=grant_created"
     grants = db_session.scalars(select(UserQuotaPolicyEvent).where(UserQuotaPolicyEvent.operation_id == UUID("22222222-2222-4222-8222-222222222222"))).all()
     assert len(grants) == 2
     assert {(event.resource, event.period, event.amount) for event in grants} == {
@@ -622,6 +763,9 @@ def test_admin_quota_grant_is_atomic_for_zero_limits_and_rejects_unlimited_safel
         "_csrf_token": csrf, "operation_id": "33333333-3333-4333-8333-333333333333", "resource": "audio_seconds", "periods": "daily", "amount": "1", "audio_hours": "1", "expiry_preset": "none", "reason_code": "temporary_allowance", "reason": unsafe_reason,
     }, headers={"Origin": "http://testserver"})
     assert unlimited.status_code == 409
+    assert '<section class="detail-pane" aria-label="Usage workspace">' in unlimited.text
+    assert '<details data-team-navigation' not in unlimited.text
+    assert 'id="quota-panel"' in unlimited.text
     assert "Cannot grant quota to unlimited window" in unlimited.text
     assert '&lt;script&gt;alert(&#34;quota&#34;)&lt;/script&gt;' in unlimited.text
     assert unsafe_reason not in unlimited.text
@@ -632,6 +776,9 @@ def test_admin_quota_grant_is_atomic_for_zero_limits_and_rejects_unlimited_safel
     }, headers={"Origin": "http://testserver"})
     assert zero_amount.status_code == 422
     assert "Quota grant is invalid" in zero_amount.text
+    assert '<section class="detail-pane" aria-label="Usage workspace">' in zero_amount.text
+    assert '<details data-team-navigation' not in zero_amount.text
+    assert 'id="quota-panel"' in zero_amount.text
 
 
 def test_admin_quota_resets_selected_and_all_windows_share_operation_and_timestamp(client, db_session, make_team, make_user):
@@ -644,6 +791,8 @@ def test_admin_quota_resets_selected_and_all_windows_share_operation_and_timesta
         "_csrf_token": csrf, "operation_id": "55555555-5555-4555-8555-555555555555", "windows": ["tokens:daily", "audio_seconds:monthly"], "reason_code": "administrative_correction", "reason": "reset selected",
     }, headers={"Origin": "http://testserver"}, follow_redirects=False)
     assert reset.status_code == 303
+    quota_url = f"/admin/usage?team_id={team.id}&view=quotas&member_id={member.id}"
+    assert reset.headers["location"] == quota_url + "&quota_notice=usage_reset"
     resets = db_session.scalars(select(UserQuotaPolicyEvent).where(UserQuotaPolicyEvent.operation_id == UUID("55555555-5555-4555-8555-555555555555"))).all()
     assert {(event.resource, event.period) for event in resets} == {(QuotaResource.tokens, QuotaPeriod.daily), (QuotaResource.audio_seconds, QuotaPeriod.monthly)}
     assert len({event.effective_at for event in resets}) == 1
@@ -652,6 +801,7 @@ def test_admin_quota_resets_selected_and_all_windows_share_operation_and_timesta
         "_csrf_token": _admin_csrf(client.get(reset.headers["location"]).text), "operation_id": "66666666-6666-4666-8666-666666666666", "reset_all": "true", "reason_code": "administrative_correction", "reason": "reset all",
     }, headers={"Origin": "http://testserver"}, follow_redirects=False)
     assert all_reset.status_code == 303
+    assert all_reset.headers["location"] == quota_url + "&quota_notice=usage_reset"
     resets = db_session.scalars(select(UserQuotaPolicyEvent).where(UserQuotaPolicyEvent.operation_id == UUID("66666666-6666-4666-8666-666666666666"))).all()
     assert len(resets) == 4
     assert {(event.resource, event.period) for event in resets} == {
@@ -672,13 +822,15 @@ def test_admin_quota_revoke_uses_prg_and_rejects_revoked_or_expired_grants(clien
         "_csrf_token": csrf, "operation_id": "77777777-7777-4777-8777-777777777777", "resource": "tokens", "periods": "daily", "amount": "5", "expiry_preset": "none", "reason_code": "temporary_allowance", "reason": "active grant",
     }, headers={"Origin": "http://testserver"}, follow_redirects=False)
     assert created.status_code == 303
+    quota_url = f"/admin/usage?team_id={team.id}&view=quotas&member_id={member.id}"
+    assert created.headers["location"] == quota_url + "&quota_notice=grant_created"
     active_grant = db_session.scalar(select(UserQuotaPolicyEvent).where(UserQuotaPolicyEvent.operation_id == UUID("77777777-7777-4777-8777-777777777777")))
     assert active_grant is not None
     revoke = client.post(f"/admin/users/{member.id}/quota-grants/{active_grant.id}/revoke", data={
         "_csrf_token": _admin_csrf(client.get(created.headers["location"]).text), "revocation_operation_id": "88888888-8888-4888-8888-888888888888", "reason_code": "administrative_correction", "reason": "revoke active",
     }, headers={"Origin": "http://testserver"}, follow_redirects=False)
     assert revoke.status_code == 303
-    assert revoke.headers["location"].endswith("quota_notice=grant_revoked")
+    assert revoke.headers["location"] == quota_url + "&quota_notice=grant_revoked"
     db_session.refresh(active_grant)
     assert active_grant.revoked_at is not None
 
@@ -735,7 +887,7 @@ def test_admin_quota_panel_keeps_old_active_grant_visible_and_revocable_beyond_h
     page = client.get(_quota_panel_url(team, member))
     revoke_path = f"/admin/users/{member.id}/quota-grants/{active_grant.id}/revoke"
     assert page.status_code == 200
-    assert "Active allowances" in page.text
+    assert "Allowances" in page.text
     assert revoke_path in page.text
 
     response = client.post(revoke_path, data={
@@ -1723,7 +1875,7 @@ def test_leader_home_ai_service_errors_keep_inline_editor_open(client, make_team
 def test_admin_providers_panel_renders_deidentification_management(client, make_team, make_user, make_deidentification_provider):
     team = make_team(name="Clinic Deid Admin")
     admin = make_user(email="deid-panel-admin@example.com", password="password-1", is_system_admin=True)
-    make_deidentification_provider(
+    provider = make_deidentification_provider(
         actor=admin,
         label="Clinic REST Deid",
         adapter_kind=DeidentificationAdapterKind.generic_rest,
@@ -1739,6 +1891,17 @@ def test_admin_providers_panel_renders_deidentification_management(client, make_
     assert "Assign provider" in page.text
     assert "Clinic REST Deid" in page.text
     assert 'action="/admin/deidentification-selection"' in page.text
+
+    global_editor = client.get(
+        f"/admin?tab=deid-providers&deidentification_provider_id={provider.id}"
+    )
+    assert global_editor.status_code == 200
+    assert 'class="deid-provider-form global-admin-form"' in global_editor.text
+    assert '<select name="auth_mode">' in global_editor.text
+    assert 'name="clinical_detection_enabled"' in global_editor.text
+    assert 'class="deid-provider-checkbox"' in global_editor.text
+    assert '.deid-provider-form select[name="auth_mode"]' in global_editor.text
+    assert '.deid-provider-form label.deid-provider-checkbox' in global_editor.text
 
 
 def test_admin_can_provision_and_assign_deidentification_provider_from_web(
@@ -3193,6 +3356,7 @@ def test_invalid_or_absent_admin_return_view_defaults_to_canonical_workspace(ret
 )
 def test_admin_post_redirects_preserve_requested_workspace(
     client,
+    db_session,
     make_team,
     make_user,
     return_view,
@@ -3216,8 +3380,12 @@ def test_admin_post_redirects_preserve_requested_workspace(
         follow_redirects=False,
     )
 
+    created_team = db_session.scalar(select(Team).where(Team.name == f"Created Redirect {return_view}"))
     assert response.status_code == 303
-    assert response.headers["location"] == expected_location.format(team_id=team.id)
+    assert created_team is not None
+    # Team creation now selects the newly created team regardless of the
+    # retired directory return destination.
+    assert response.headers["location"] == f"/admin?team_id={created_team.id}&team_tab=overview"
 
 
 def test_admin_workspace_members_wire_existing_account_routes(client, db_session, make_team, make_user):
@@ -3284,7 +3452,41 @@ def test_admin_workspace_updates_future_team_retention_default(client, db_sessio
 
     page = client.get(f"/admin?team_id={team.id}&team_tab=defaults")
     assert page.status_code == 200
-    assert f'action="/admin/teams/{team.id}/retention"' in page.text
+    defaults_panel = page.text.split('data-panel="defaults"', 1)[1].split('data-panel="usage"', 1)[0]
+    overview_panel = page.text.split('data-panel="overview"', 1)[1].split('data-panel="members"', 1)[0]
+    assert 'action="/admin/teams/' in defaults_panel and "Quota defaults for new members" in defaults_panel
+    assert "Quota defaults for new members" not in overview_panel
+
+    class QuotaDefaultsFormParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack = []
+            self.form_panels = {}
+
+        def handle_starttag(self, tag, attrs):
+            attributes = dict(attrs)
+            if tag == "form" and attributes.get("action", "").endswith("/quota-defaults"):
+                self.form_panels["quota-defaults"] = next((panel for _, panel in reversed(self.stack) if panel), None)
+            if tag == "form" and attributes.get("action", "").endswith("/retention"):
+                self.form_panels["retention"] = next((panel for _, panel in reversed(self.stack) if panel), None)
+            if tag not in {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}:
+                self.stack.append((tag, attributes.get("data-panel")))
+
+        def handle_endtag(self, tag):
+            for index in range(len(self.stack) - 1, -1, -1):
+                if self.stack[index][0] == tag:
+                    del self.stack[index:]
+                    break
+
+    parser = QuotaDefaultsFormParser()
+    parser.feed(page.text)
+    assert parser.form_panels["quota-defaults"] == "defaults"
+    assert parser.form_panels["retention"] == "defaults"
+    assert f'action="/admin/teams/{team.id}/retention"' in defaults_panel
+    retention_anchor = 'id="retention-default"'
+    assert retention_anchor in defaults_panel
+    assert f'href="/admin?team_id={team.id}&amp;team_tab=defaults#retention-default"' in overview_panel
+    assert f'action="/admin/teams/{team.id}/retention"' not in overview_panel
     assert "Applies only to transcript roots created afterward" in page.text
 
     response = client.post(
@@ -3296,6 +3498,107 @@ def test_admin_workspace_updates_future_team_retention_default(client, db_sessio
     assert response.headers["location"] == f"/admin?team_id={team.id}&team_tab=defaults"
     db_session.refresh(team)
     assert team.default_retention_days == 45
+
+
+def test_admin_workspace_updates_finite_quota_defaults_for_future_members_only(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Quota Defaults")
+    existing_unlimited = make_user(email="quota-defaults-existing@example.com", team=team)
+    admin = make_user(email="quota-defaults-ui-admin@example.com", password="password-1", is_system_admin=True)
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+
+    page = client.get(f"/admin?team_id={team.id}&team_tab=defaults")
+    assert page.status_code == 200
+    assert f'action="/admin/teams/{team.id}/quota-defaults"' in page.text
+    assert 'name="default_daily_token_limit"' in page.text
+    assert 'name="default_daily_audio_hours" min="0" max="24" step="any" value="8"' in page.text
+    assert 'name="default_monthly_audio_hours" min="0" max="1000" step="any" value="72"' in page.text
+    csrf = _admin_csrf(page.text)
+    response = client.post(
+        f"/admin/teams/{team.id}/quota-defaults",
+        data={
+            "_csrf_token": csrf,
+            "default_daily_token_limit": "0",
+            "default_monthly_token_limit": "900000",
+            "default_daily_audio_hours": "8",
+            "default_monthly_audio_hours": "72",
+            "return_view": "workspace",
+            "return_tab": "defaults",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/admin?team_id={team.id}&team_tab=defaults"
+    db_session.refresh(team)
+    assert (
+        team.default_daily_token_limit,
+        team.default_monthly_token_limit,
+        team.default_daily_audio_seconds_limit,
+        team.default_monthly_audio_seconds_limit,
+    ) == (0, 900_000, 28_800, 259_200)
+    assert existing_unlimited.daily_token_limit is None
+    assert existing_unlimited.monthly_audio_seconds_limit is None
+
+
+def test_team_quota_default_audio_hours_round_trip_preserves_seconds(client, db_session, make_team, make_user):
+    team = make_team(name="Clinic Quota Audio Precision")
+    team.default_monthly_audio_seconds_limit = 3_599_999
+    db_session.commit()
+    admin = make_user(email="quota-audio-precision-admin@example.com", password="password-1", is_system_admin=True)
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+
+    page = client.get(f"/admin?team_id={team.id}&team_tab=defaults")
+    match = re.search(
+        r'name="default_monthly_audio_hours"[^>]*value="([^"]+)"',
+        page.text,
+    )
+    assert page.status_code == 200
+    assert match is not None
+    displayed_hours = match.group(1)
+    assert int((Decimal(displayed_hours) * Decimal(3600)).to_integral_value()) == 3_599_999
+
+    response = client.post(
+        f"/admin/teams/{team.id}/quota-defaults",
+        data={
+            "_csrf_token": _admin_csrf(page.text),
+            "default_daily_token_limit": str(team.default_daily_token_limit),
+            "default_monthly_token_limit": str(team.default_monthly_token_limit),
+            "default_daily_audio_hours": "8",
+            "default_monthly_audio_hours": displayed_hours,
+            "return_view": "workspace",
+            "return_tab": "defaults",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    db_session.refresh(team)
+    assert team.default_monthly_audio_seconds_limit == 3_599_999
+
+
+def test_team_quota_defaults_route_rejects_leaders_and_invalid_csrf(client, make_team, make_user):
+    team = make_team(name="Clinic Quota Defaults Authorization")
+    leader = make_user(email="quota-defaults-ui-leader@example.com", password="password-1", team=team, team_role=TeamRole.leader)
+    client.post("/login", data={"email": leader.email, "password": "password-1"}, follow_redirects=False)
+    payload = {
+        "default_daily_token_limit": "100000",
+        "default_monthly_token_limit": "1000000",
+        "default_daily_audio_hours": "8",
+        "default_monthly_audio_hours": "72",
+    }
+
+    forbidden = client.post(f"/admin/teams/{team.id}/quota-defaults", data=payload, follow_redirects=False)
+    assert forbidden.status_code == 403
+
+    admin = make_user(email="quota-defaults-csrf-admin@example.com", password="password-1", is_system_admin=True)
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+    csrf_rejected = client.post(
+        f"/admin/teams/{team.id}/quota-defaults",
+        data=payload,
+        headers={"Origin": "https://attacker.example"},
+        follow_redirects=False,
+    )
+    assert csrf_rejected.status_code == 403
 
 
 def test_admin_workspace_provider_policy_wires_existing_selection_routes(client, make_team, make_user, make_stt_config, make_llm_config):
@@ -3322,7 +3625,8 @@ def test_admin_workspace_provider_policy_wires_existing_selection_routes(client,
     assert 'name="return_tab"' in page.text and 'value="provider-policy"' in page.text
     assert page.text.count('data-policy-row=') == 7
     assert 'data-policy-row="writing-assistant-backup"' in page.text
-    assert 'class="policy-table" data-provider-policy-table' in page.text
+    assert 'class="policy-table table-scroll-region" data-provider-policy-table' in page.text
+    assert 'role="region" aria-label="Team provider policy table"' in page.text
     assert 'action="/admin/stt-selection/clear"' in page.text
     assert 'action="/admin/llm-selection/clear"' in page.text
     assert 'value="whisper-fast"' in page.text and 'value="en-GB"' in page.text
@@ -3354,7 +3658,7 @@ def test_admin_workspace_global_sidebar_areas_render_real_controls(client, make_
     request = make_account_request(requested_email="requested.workspace@example.com")
     client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
 
-    directory = client.get("/admin?tab=directory")
+    directory = client.get("/admin/usage?view=team&range=30d&create_team=1")
     requests = client.get("/admin?tab=requests")
     admins = client.get("/admin?tab=system-admins")
     defaults = client.get("/admin?tab=global-defaults")
@@ -3362,8 +3666,9 @@ def test_admin_workspace_global_sidebar_areas_render_real_controls(client, make_
     global_usage = client.get("/admin?tab=usage")
     team_usage = client.get(f"/admin?tab=usage&team_id={team.id}")
 
+    assert 'id="admin-create-team-modal" hidden' not in directory.text
     assert 'action="/admin/teams"' in directory.text
-    assert f"/admin?team_id={team.id}&amp;team_tab=overview" in directory.text
+    assert f"/admin/usage?team_id={team.id}&amp;view=team" in directory.text
     assert f'action="/admin/account-requests/{request.id}/approve"' in requests.text
     assert f'action="/admin/account-requests/{request.id}/reject"' in requests.text
     assert 'name="return_view"' in requests.text and 'value="workspace"' in requests.text
@@ -3372,9 +3677,165 @@ def test_admin_workspace_global_sidebar_areas_render_real_controls(client, make_
     assert '/admin/templates/editor?scope=default&amp;return_view=workspace' in defaults.text
     assert 'name="audit_since"' in audit.text
     assert "Service health and consumption across all teams. Metadata only." in global_usage.text
-    assert "Service health and consumption for Clinic Global Admin. Metadata only." in team_usage.text
-    assert "Service health and consumption across all teams. Metadata only." not in team_usage.text
+    assert "Consumption and health for Clinic Global Admin. Metadata only." in team_usage.text
+    assert "Consumption and health across all teams. Metadata only." not in team_usage.text
     assert "Team identity, status and operational summary" not in team_usage.text
+
+
+def test_admin_usage_standalone_route_scope_auth_and_legacy_redirects(
+    client, db_session, make_team, make_user, monkeypatch
+):
+    team = make_team(name="Standalone Usage Team")
+    other_team = make_team(name="Other Standalone Usage Team")
+    admin = make_user(email="standalone-usage-admin@example.com", password="password-1", is_system_admin=True)
+    ordinary = make_user(email="standalone-usage-user@example.com", password="password-1")
+    member = make_user(
+        email="standalone-usage-member@example.com", password="password-1", team=team, team_role=TeamRole.user
+    )
+    other_member = make_user(
+        email="other-standalone-usage-member@example.com", password="password-1", team=other_team,
+        team_role=TeamRole.user,
+    )
+    db_session.add_all(
+        [
+            ProviderUsageEvent(
+                team_id=team.id, owner_user_id=member.id, feature_type=ProviderFeatureType.llm_generation,
+                event_type=ProviderUsageEventType.completed, provider_adapter="synthetic",
+                model_name="synthetic-route-model", prompt_tokens=80, completion_tokens=20, total_tokens=100,
+            ),
+            ProviderUsageEvent(
+                team_id=other_team.id, owner_user_id=other_member.id, feature_type=ProviderFeatureType.llm_generation,
+                event_type=ProviderUsageEventType.completed, provider_adapter="synthetic",
+                model_name="synthetic-other-route-model", prompt_tokens=180, completion_tokens=20, total_tokens=200,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    assert client.get("/admin/usage", follow_redirects=False).status_code == 303
+    client.post("/login", data={"email": ordinary.email, "password": "password-1"}, follow_redirects=False)
+    assert client.get("/admin/usage").status_code == 403
+
+    _login_quota_admin(client, admin)
+    global_page = client.get("/admin/usage")
+    assert global_page.status_code == 200
+    assert "Service health and consumption across all teams. Metadata only." in global_page.text
+    assert 'aria-label="Usage workspace"' in global_page.text
+    assert 'class="usage-page usage-page--global"' in global_page.text
+    assert 'data-panel="quotas"' not in global_page.text
+    assert 'class="usage-user-table"' not in global_page.text
+    assert 'class="team-summary"' not in global_page.text
+    assert 'aria-label="Team settings"' not in global_page.text
+    assert "Total tokens" in global_page.text and "Audio hours" in global_page.text
+    assert "Generations" in global_page.text
+    assert re.search(r'<details class="tab-disclosure usage-range-disclosure"', global_page.text)
+    assert "Reporting range" in global_page.text and "Last 30 days" in global_page.text
+    assert '/admin/usage?view=team&amp;range=30d' in global_page.text
+    assert 'class="usage-range-scope-form"' not in global_page.text
+    assert not re.search(r'<select[^>]*name="range"', global_page.text)
+
+    team_page = client.get(f"/admin/usage?team_id={team.id}&view=unknown&range=90d")
+    assert team_page.status_code == 200
+    assert "Team usage" in team_page.text
+    assert not re.search(r'<select[^>]*name="team_id"', team_page.text)
+    assert "Apply scope" not in team_page.text
+    assert "User usage breakdown" not in team_page.text
+    assert 'class="usage-user-table"' not in team_page.text
+    assert 'data-panel="quotas"' not in team_page.text
+    assert 'class="usage-range-scope-form"' not in team_page.text
+    assert re.search(r'<details class="tab-disclosure usage-range-disclosure"', team_page.text)
+    assert "Last 90 days" in team_page.text
+    assert 'href="/admin/usage?view=team&amp;team_id=' + str(team.id) + '&amp;range=90d"' in team_page.text
+    assert not re.search(r'<button[^>]*>\s*Apply\s*</button>', team_page.text)
+    assert 'aria-label="Team settings"' not in team_page.text
+    assert 'role="region" aria-label="Usage summary table" tabindex="0"' in team_page.text
+    assert f"Usage summary for {team.name} · Last 90 days" in team_page.text
+    assert f"/admin/usage?team_id={other_team.id}&amp;view=team&amp;range=90d" in team_page.text
+
+    users_page = client.get(f"/admin/usage?team_id={team.id}&view=users")
+    assert users_page.status_code == 200
+    assert "User usage breakdown" in users_page.text
+    assert member.email in users_page.text
+    assert other_member.email not in users_page.text
+    assert 'data-panel="quotas"' not in users_page.text
+    assert f'href="/admin/usage?view=users&amp;team_id={team.id}&amp;range=30d"' in users_page.text
+    assert not re.search(r'<select[^>]*name="range"', users_page.text)
+
+    invalid_scope = client.get(
+        f"/admin/usage?team_id=not-a-uuid&view=users&member_id={member.id}"
+    )
+    assert invalid_scope.status_code == 200
+    assert "Service health and consumption across all teams. Metadata only." in invalid_scope.text
+    assert "User usage breakdown" not in invalid_scope.text
+    assert member.email not in invalid_scope.text
+    unknown_scope = client.get(
+        f"/admin/usage?team_id=00000000-0000-4000-8000-000000000001&view=quotas&member_id={member.id}"
+    )
+    assert unknown_scope.status_code == 200
+    assert "Service health and consumption across all teams. Metadata only." in unknown_scope.text
+    assert 'data-panel="quotas"' not in unknown_scope.text
+
+    usage_service_calls = []
+    original_usage_service = __import__("app.web.presentation", fromlist=["admin_usage_overview_service"]).admin_usage_overview_service
+    monkeypatch.setattr(
+        "app.web.presentation.admin_usage_overview_service",
+        lambda *args, **kwargs: usage_service_calls.append((args, kwargs)) or original_usage_service(*args, **kwargs),
+    )
+    quota_page = client.get(
+        f"/admin/usage?team_id={team.id}&view=quotas&member_id={member.id}"
+        "&quota_edit=limits&range=90d&reference=11111111-1111-4111-8111-111111111111"
+        "&monitor_since=2026-10-20T12%3A00"
+    )
+    assert quota_page.status_code == 200
+    assert 'data-panel="quotas"' in quota_page.text
+    assert 'id="quota-panel"' in quota_page.text
+    assert 'class="usage-user-table"' not in quota_page.text
+    assert not re.search(r'<select[^>]*name="team_id"', quota_page.text)
+    assert "Apply scope" not in quota_page.text
+    assert not re.search(r'<details[^>]*usage-range-disclosure', quota_page.text)
+    assert 'class="usage-range-scope-form"' not in quota_page.text
+    assert "Reporting range" not in quota_page.text
+    assert (
+        f"/admin/usage?team_id={other_team.id}&amp;view=quotas&amp;range=90d"
+        in quota_page.text
+    )
+    assert f"/admin/usage?view=team&amp;range=90d" in quota_page.text
+    assert usage_service_calls == []
+    for invalid_member in ("not-a-uuid", str(other_member.id), str(admin.id)):
+        invalid_quota = client.get(f"/admin/usage?team_id={team.id}&view=quotas&member_id={invalid_member}")
+        assert invalid_quota.status_code == 200
+        assert 'id="quota-panel"' not in invalid_quota.text
+        assert (
+            "That member is not available in this team." in invalid_quota.text
+            or "Choose an eligible member from this team." in invalid_quota.text
+        )
+        assert other_member.email not in invalid_quota.text
+
+    legacy_global = client.get("/admin?tab=usage", follow_redirects=False)
+    assert legacy_global.status_code == 303
+    assert legacy_global.headers["location"] == "/admin/usage?view=team"
+    legacy_users = client.get(
+        f"/admin?team_id={team.id}&team_tab=usage&usage_view=users&range=90d&reference=11111111-1111-4111-8111-111111111111&monitor_since=2026-10-20T12%3A00",
+        follow_redirects=False,
+    )
+    assert legacy_users.status_code == 303
+    assert legacy_users.headers["location"].startswith(
+        f"/admin/usage?view=users&team_id={team.id}&range=90d&reference="
+    )
+    assert "monitor_since=" in legacy_users.headers["location"]
+    legacy_quotas = client.get(
+        f"/admin?team_id={team.id}&team_tab=quotas&member_id={member.id}&range=90d", follow_redirects=False
+    )
+    assert legacy_quotas.status_code == 303
+    assert legacy_quotas.headers["location"] == (
+        f"/admin/usage?view=quotas&team_id={team.id}&member_id={member.id}&range=90d"
+    )
+    legacy_member = client.get(
+        f"/admin?team_id={team.id}&team_tab=members&member_id={member.id}", follow_redirects=True
+    )
+    assert legacy_member.status_code == 200
+    assert urlparse(str(legacy_member.url)).path == "/admin/usage"
+    assert 'data-panel="quotas"' in legacy_member.text
 
 
 def test_admin_directory_without_teams_renders_csrf_bootstrap(client, make_user):
@@ -3438,8 +3899,8 @@ def test_admin_workspace_provider_redesign_has_explicit_safe_actions(client, db_
     assert 'data-edit-llm-provider' in llm_page.text and '>Edit</button>' in llm_page.text
     assert 'name="revision_of_config_id"' in stt_page.text and f'data-config-id="{stt.id}"' in stt_page.text
     assert 'name="revision_of_config_id"' in llm_page.text and f'data-config-id="{llm.id}"' in llm_page.text
-    assert 'addSttProviderButton.addEventListener("click", () => openSttWizard());' in stt_page.text
-    assert 'addLlm.addEventListener("click", () => openLlm());' in llm_page.text
+    assert 'addSttProviderButton?.addEventListener("click", () => openSttWizard());' in stt_page.text
+    assert 'addLlm?.addEventListener("click", () => openLlm());' in llm_page.text
     assert 'const custom = llmProvider === "Custom OpenAI-compatible"' in llm_page.text
     assert 'document.getElementById("llm-base-url-field").hidden = !(' in llm_page.text
     assert 'document.getElementById("llm-region-field").hidden = !bedrock;' in llm_page.text
@@ -3528,26 +3989,23 @@ def test_admin_change_llm_connection_stages_selected_revision(client, db_session
     assert root.vault_secret_ref not in page.text
 
 
-def test_admin_provider_setup_keeps_team_scope_panel_before_team_selection(client, make_team, make_user):
+def test_admin_provider_setup_requires_selected_team_and_redirects_legacy_scope(client, make_team, make_user):
     team = make_team(name="Clinic Provider Entry")
     make_user(email="admin-provider-entry@example.com", password="password-1", is_system_admin=True)
 
     client.post("/login", data={"email": "admin-provider-entry@example.com", "password": "password-1"}, follow_redirects=False)
-    page = client.get("/admin?tab=providers")
-    invalid_team_page = client.get("/admin?tab=providers&team_id=00000000-0000-0000-0000-000000000000")
+    page = client.get("/admin?tab=providers", follow_redirects=False)
+    invalid_team_page = client.get(
+        "/admin?tab=providers&team_id=00000000-0000-0000-0000-000000000000",
+        follow_redirects=False,
+    )
     selected_team_page = client.get(f"/admin?tab=providers&team_id={team.id}")
 
-    assert page.status_code == 200
-    assert 'class="panel provider-scope"' in page.text
-    assert "Team scope" in page.text
-    assert "Choose target team before editing provider availability or active selections." in page.text
-    assert 'action="/admin"' in page.text
-    assert 'name="tab" value="providers"' in page.text
-    assert f'value="{team.id}"' in page.text
-    assert "Clinic Provider Entry" in page.text
+    assert page.status_code == 303
+    assert page.headers["location"] == "/admin/usage?view=team&range=30d"
+    assert invalid_team_page.status_code == 303
+    assert invalid_team_page.headers["location"] == "/admin/usage?view=team&range=30d"
     assert "Configure STT, LLM, and de-identification." not in page.text
-    assert invalid_team_page.status_code == 200
-    assert 'class="panel provider-scope"' in invalid_team_page.text
     assert selected_team_page.status_code == 200
     assert 'data-panel="provider-policy"' in selected_team_page.text
     assert re.search(r'class="tab active"[^>]*data-tab="provider-policy"', selected_team_page.text, re.S)
@@ -4210,7 +4668,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' not in page.text
     assert 'aria-label="Workspace navigation"' in page.text
     assert "My Library" in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20261023-batch-startup-ownership"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20261027-live-dictation"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -4645,7 +5103,7 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
 
     assert page.status_code == 200
     assert "/static/css/tokens.css?v=20260902-control-height" in page.text
-    assert "/static/css/transcribe.css?v=20261022-compact-diarized-turns" in page.text
+    assert "/static/css/transcribe.css?v=20261027-live-dictation" in page.text
     assert "/static/css/transcribe-mobile.css" in page.text
     assert "/static/js/workspace/app.js" in page.text
     assert page.text.count("/static/js/transcribe/mobile.js?v=20260823-mobile-toast") == 1
@@ -5071,7 +5529,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20261023-batch-startup-ownership" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261027-live-dictation" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -6700,7 +7158,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert 'data-dictation-compact' in workspace_html
     assert 'data-transcript-review-grid' in workspace_html
     assert 'Add dictation' in workspace_html
-    assert 'Save & generate note' in workspace_html
+    assert 'Save &amp; generate note' in workspace_html
     assert 'Upload audio' in workspace_html
     assert 'Recording unavailable. You can type dictation manually.' in workspace_html
     assert "data-new-session-block-message" not in sidebar_html
@@ -6879,7 +7337,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20261023-batch-startup-ownership" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261027-live-dictation" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():
@@ -6939,6 +7397,12 @@ def test_active_templates_route_flash_messages_through_top_right_toasts():
     assert "document.querySelectorAll('.flash').forEach((flash) => {" in home_html
     assert ".toast-container" not in transcribe_css
     assert "position: fixed;" in components_css and "data-toast-container" in admin_html
+    assert 'data-admin-live-status role="status" aria-live="polite"' in admin_html
+    assert 'data-admin-live-error role="alert" aria-live="assertive"' in admin_html
+    assert 'document.querySelectorAll(".flash").forEach' not in admin_html
+    assert "flash.hidden = true" not in admin_html
+    assert 'aria-label="Operator legal setup warnings"' in admin_html
+    assert '{% if standalone_usage %}aria-label="Usage workspace"{% else %}aria-label="Admin workspace"{% endif %}' in admin_html
     assert "top: 24px;" in components_css and "data-toast-container" in login_html
     assert "data-toast-container" in onboarding_html
     assert "data-toast-container" in request_access_html
@@ -8665,7 +9129,7 @@ def test_admin_page_can_delete_team_and_owned_records(
     deleted = client.post(f"/admin/teams/{team.id}/delete", data={"return_tab": "directory"}, follow_redirects=False)
 
     assert deleted.status_code == 303
-    assert deleted.headers["location"] == "/admin?tab=directory"
+    assert deleted.headers["location"] == "/admin/usage?view=team&range=30d"
     assert db_session.get(Team, team.id) is None
     assert db_session.get(AccountRequest, account_request.id) is None
     assert db_session.get(TeamSttConfig, stt_config.id) is None
@@ -9111,6 +9575,29 @@ def test_admin_page_renders_branded_llm_provider_defaults(client, make_team, mak
     assert "If OpenScribe runs in Docker, localhost points to the" in page.text
     assert "Use an address the container can" in page.text
     assert 'document.getElementById("llm-ollama-docker-help").hidden = !ollama;' in page.text
+    assert 'role="dialog" aria-modal="true" aria-labelledby="llm-wizard-title"' in page.text
+    for field_id in (
+        "llm-provider-name",
+        "llm-base-url",
+        "llm-region",
+        "llm-api-key",
+        "llm-google-project",
+        "llm-google-location",
+        "llm-google-auth",
+        "llm-google-service-account-file",
+        "llm-google-capacity",
+        "llm-final-provider-name",
+    ):
+        assert f'for="{field_id}"' in page.text
+    assert 'aria-labelledby="llm-default-model-label"' in page.text
+    assert 'id="admin-mobile-nav-toggle"' in page.text
+    assert 'aria-controls="admin-primary-nav"' in page.text
+    assert "activateAdminModal(sttWizard" in page.text
+    assert "activateAdminModal(llmWizard" in page.text
+    assert "deactivateAdminModal();" in page.text
+    assert 'choice.setAttribute("aria-pressed", String(selected));' in page.text
+    assert 'if (event.key === "Tab") {' in page.text
+    assert 'aria-live="assertive"' in page.text
 
 
 def test_admin_provider_save_errors_keep_matching_provider_tab(client, make_team, make_user):
@@ -9572,25 +10059,57 @@ def test_admin_page_usage_tab_shows_team_and_user_telemetry(client, db_session, 
             total_tokens=123,
         )
     )
+    db_session.add(
+        ProviderUsageEvent(
+            team_id=team.id,
+            owner_user_id=owner.id,
+            transcript_id=transcript.id,
+            feature_type=ProviderFeatureType.llm_generation,
+            event_type=ProviderUsageEventType.completed,
+            provider_adapter="ollama_chat",
+            model_name="large-token-model",
+            prompt_tokens=1_234_567,
+            completion_tokens=765_432,
+            total_tokens=12_345_678,
+        )
+    )
     db_session.commit()
 
     client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
     page = client.get(f"/admin?team_id={team.id}&team_tab=usage")
 
     assert page.status_code == 200
+    assert '<div class="usage-summary-table-wrap table-scroll-region" role="region" aria-label="Usage summary table" tabindex="0">' in page.text
+    assert all(f"<th scope=\"col\">{label}</th>" in page.text for label in (
+        "Total tokens", "Audio hours", "Input tokens", "Output tokens", "Generations"
+    ))
+    assert re.search(
+        r"<td>12,345,801</td>\s*<td>0\.50 h</td>\s*<td>1,234,647</td>"
+        r"\s*<td>765,475</td>\s*<td>2</td>",
+        page.text,
+    )
     assert "Consumption and health" in page.text
     assert "Last 30 days" in page.text
-    assert "User usage breakdown" in page.text
-    assert "owner-usage-ui@example.com" in page.text
     assert "123" in page.text
     assert "80" in page.text
     assert "43" in page.text
     assert "Input tokens" in page.text
     assert "Output tokens" in page.text
-    assert "2.0 MB" in page.text
+    assert "0.50 h" in page.text
     assert "0.50" in page.text
-    assert "Activity share" in page.text
     assert page.text.count('class="usage-echart"') == 4
+    assert "User usage breakdown" not in page.text
+    assert 'class="usage-user-table"' not in page.text
+
+    users_page = client.get(f"/admin?team_id={team.id}&team_tab=usage&usage_view=users")
+    assert users_page.status_code == 200
+    assert "User usage breakdown" in users_page.text
+    assert "owner-usage-ui@example.com" in users_page.text
+    assert "Activity share" in users_page.text
+    assert "Consumption and health" not in users_page.text
+    assert f'/admin/usage?team_id={team.id}&amp;view=users&amp;range=30d' in users_page.text
+    assert "80" in users_page.text
+    assert "43" in users_page.text
 
 
 def test_new_admin_usage_table_shows_metadata_only_team_comparison(client, db_session, make_team, make_user):
@@ -9626,9 +10145,10 @@ def test_new_admin_usage_table_shows_metadata_only_team_comparison(client, db_se
 
     assert page.status_code == 200
     assert "Team comparison · Last 30 days" in page.text
-    assert "vs previous equal period" in page.text
-    assert '<option value="30d" selected>Last 30 days</option>' in page.text
-    assert '<option value="all">All available data</option>' in page.text
+    assert "previous-period comparison" in page.text
+    assert 'aria-label="Reporting range options"' in page.text
+    assert 'href="/admin/usage?view=team&amp;range=30d" aria-current="page"' in page.text
+    assert 'href="/admin/usage?view=team&amp;range=all"' in page.text
     assert 'class="usage-table"' in page.text
     assert "Window comparison" in page.text
     assert "Consumption and health · Last 30 days" in page.text
@@ -9643,9 +10163,15 @@ def test_new_admin_usage_table_shows_metadata_only_team_comparison(client, db_se
     assert 'data-usage-chart="audio"' in page.text
     assert 'data-usage-chart="failure"' in page.text
     assert 'id="usage-chart-data"' in page.text
+    assert 'id="usage-chart-global-input"' in page.text
+    assert 'aria-describedby="usage-chart-summary-global"' in page.text
+    assert 'id="usage-chart-table-global"' in page.text
+    assert 'id="usage-chart-table-team"' not in page.text
+    assert not re.search(r'<select[^>]*name="range"', page.text)
+    assert 'class="usage-range-scope-form"' not in page.text
     assert "/static/vendor/echarts/6.1.0/echarts.min.js" in page.text
-    assert "/static/js/admin-usage-charts.js?v=20260713-range-submit" in page.text
-    assert f'/admin?team_id={team.id}&amp;team_tab=usage&amp;range=30d' in page.text
+    assert "/static/js/admin-usage-charts.js?v=20261025-usage-layout" in page.text
+    assert f'/admin/usage?team_id={team.id}&amp;view=team&amp;range=30d' in page.text
     assert "Clinic Table" in page.text
     assert "80.0 / 43.0" in page.text
     assert "Private title must stay hidden" not in page.text
@@ -9654,12 +10180,12 @@ def test_new_admin_usage_table_shows_metadata_only_team_comparison(client, db_se
 
     chart_js = Path("app/static/js/admin-usage-charts.js").read_text()
     assert 'renderer: "svg"' in chart_js
-    assert 'name: rangeLabel' in chart_js
+    assert 'name: currentName' in chart_js
     assert 'name: "Previous equal period"' in chart_js
     assert 'type: "slider"' in chart_js
-    assert 'aria: { enabled: true }' in chart_js
+    assert 'enabled: true,' in chart_js and 'label: {' in chart_js
     assert "ResizeObserver" in chart_js
-    assert 'control.form?.requestSubmit()' in chart_js
+    assert 'control.form?.requestSubmit()' not in chart_js
 
 
 @pytest.mark.parametrize(("range_key", "range_days"), (("30d", 30), ("90d", 90)))
@@ -9783,23 +10309,23 @@ def test_new_admin_usage_range_all_includes_retained_historical_metadata(client,
     all_page = client.get("/admin?tab=usage&range=all")
     invalid_page = client.get("/admin?tab=usage&range=invalid")
 
-    team_usage_link = f'/admin?team_id={team.id}&amp;team_tab=usage&amp;range='
-    assert team_usage_link not in default_page.text
-    assert team_usage_link not in ninety_day_page.text
-    assert team_usage_link in yearly_page.text
-    assert '<option value="1y" selected>Last year</option>' in yearly_page.text
+    range_link_prefix = '/admin/usage?view=team&amp;range='
+    assert f'{range_link_prefix}30d" aria-current="page"' in default_page.text
+    assert f'{range_link_prefix}90d" aria-current="page"' in ninety_day_page.text
+    assert f'{range_link_prefix}1y" aria-current="page"' in yearly_page.text
+    assert 'href="/admin/usage?view=team&amp;range=1y" aria-current="page"' in yearly_page.text
     assert 'data-range-label="Last year"' in yearly_page.text
-    assert team_usage_link in all_page.text
-    assert '<option value="all" selected>All available data</option>' in all_page.text
+    assert f'{range_link_prefix}all" aria-current="page"' in all_page.text
+    assert 'href="/admin/usage?view=team&amp;range=all" aria-current="page"' in all_page.text
     assert 'data-range-label="All available data"' in all_page.text
     assert 'data-has-comparison="false"' in all_page.text
     assert "historical-model" in all_page.text
     assert "Historical confidential title" not in all_page.text
     assert "historical-owner@example.com" not in all_page.text
-    assert '<option value="30d" selected>Last 30 days</option>' in invalid_page.text
+    assert 'href="/admin/usage?view=team&amp;range=30d" aria-current="page"' in invalid_page.text
 
 
-def test_new_admin_team_usage_tab_scopes_charts_and_user_table(client, db_session, make_team, make_user):
+def test_new_admin_team_usage_views_scope_charts_and_user_table(client, db_session, make_team, make_user):
     team = make_team(name="Scoped Clinic")
     other_team = make_team(name="Other Clinic")
     admin = make_user(email="admin-team-usage@example.com", password="password-1", is_system_admin=True)
@@ -9839,17 +10365,30 @@ def test_new_admin_team_usage_tab_scopes_charts_and_user_table(client, db_sessio
     assert page.status_code == 200
     assert 'data-panel="usage"' in page.text
     assert "Consumption and health for Scoped Clinic" in page.text
-    assert "User usage breakdown" in page.text
-    assert "scoped-user@example.com" in page.text
+    assert "User usage breakdown" not in page.text
+    assert 'class="usage-user-table"' not in page.text
     assert "other-user@example.com" not in page.text
     assert re.search(r'"current_input"\s*:\s*321\b', page.text)
     assert not re.search(r'"current_input"\s*:\s*987\b', page.text)
-    assert '<option value="90d" selected>Last 90 days</option>' in page.text
+    assert f'href="/admin/usage?view=team&amp;team_id={team.id}&amp;range=90d" aria-current="page"' in page.text
     assert f'name="team_id" value="{team.id}"' in page.text
-    assert 'name="team_tab" value="usage"' in page.text
+    assert 'name="view" value="team"' in page.text
     assert page.text.count('class="usage-echart"') == 4
     assert "Scoped confidential title" not in page.text
     assert "Other confidential title" not in page.text
+
+    users_page = client.get(
+        f"/admin?team_id={team.id}&team_tab=usage&usage_view=users&range=90d"
+    )
+    assert users_page.status_code == 200
+    assert "User usage breakdown" in users_page.text
+    assert "scoped-user@example.com" in users_page.text
+    assert "other-user@example.com" not in users_page.text
+    assert "Consumption and health for Scoped Clinic" not in users_page.text
+    assert f'href="/admin/usage?view=users&amp;team_id={team.id}&amp;range=90d"' in users_page.text
+    assert '<span class="usage-range-current">Last 90 days</span>' in users_page.text
+    assert "Scoped confidential title" not in users_page.text
+    assert "Other confidential title" not in users_page.text
 
 
 def test_admin_usage_split_failure_diagnostics_are_bounded_scoped_and_content_free(
@@ -9977,12 +10516,12 @@ def test_admin_usage_split_failure_diagnostics_are_bounded_scoped_and_content_fr
 
     assert page.status_code == 200
     assert "Recent split failures" in page.text
-    assert "<td>Analysis</td>" in page.text
-    assert "<td>Generation</td>" in page.text
+    assert re.search(r"<td[^>]*>Analysis</td>", page.text)
+    assert re.search(r"<td[^>]*>Generation</td>", page.text)
     assert "rate_limit_exceeded" in page.text
     assert "HTTP 429" in page.text
-    assert page.text.count("consultation_split_provider_failed") == 24
-    assert page.text.count("other_split_failure") == 1
+    assert page.text.count(">consultation_split_provider_failed</td>") == 24
+    assert page.text.count(">other_split_failure</td>") == 1
     assert str(visible[0].id) in page.text
     assert str(generation_execution.id) in page.text
     assert str(generation_batch.id) in page.text
@@ -10085,7 +10624,8 @@ def test_admin_page_usage_tab_compacts_empty_daily_activity(client, make_user):
     assert 'class="usage-chart__bars"' not in page.text
 
 
-def test_admin_page_non_usage_tabs_skip_usage_rollups(client, monkeypatch, make_user):
+def test_admin_page_non_usage_tabs_skip_usage_rollups(client, monkeypatch, make_team, make_user):
+    team = make_team(name="No Usage Rollup Provider Team")
     admin = make_user(email="admin-no-usage-rollup@example.com", password="password-1", is_system_admin=True)
 
     def fail_usage_rollup(*args, **kwargs):
@@ -10094,10 +10634,10 @@ def test_admin_page_non_usage_tabs_skip_usage_rollups(client, monkeypatch, make_
     monkeypatch.setattr("app.web.presentation.admin_usage_overview_service", fail_usage_rollup)
 
     client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
-    page = client.get("/admin?tab=providers")
+    page = client.get(f"/admin?team_id={team.id}&team_tab=provider-policy")
 
     assert page.status_code == 200
-    assert 'class="panel provider-scope"' in page.text
+    assert 'data-panel="provider-policy"' in page.text
 
 
 def test_active_admin_gemini_wizard_uses_typed_google_fields_and_file_input():
@@ -10363,3 +10903,120 @@ def test_admin_health_counts_each_failed_transport_once_across_failure_categorie
     assert health['http_503'] == 1
     assert health['timeouts'] == 1
     assert 'provider_errors_elevated' in health['alerts']
+
+
+def test_admin_legacy_home_and_directory_land_on_all_teams_usage(client, make_user):
+    make_user(email="admin-sidebar-landing@example.com", password="password-1", is_system_admin=True)
+    client.post(
+        "/login",
+        data={"email": "admin-sidebar-landing@example.com", "password": "password-1"},
+        follow_redirects=False,
+    )
+
+    for path in ("/admin", "/admin?tab=home", "/admin?tab=directory"):
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 303, path
+        assert response.headers["location"] == "/admin/usage?view=team&range=30d", path
+
+
+def test_admin_team_creation_success_selects_new_team_overview(client, db_session, make_user):
+    make_user(email="admin-sidebar-create@example.com", password="password-1", is_system_admin=True)
+    client.post(
+        "/login",
+        data={"email": "admin-sidebar-create@example.com", "password": "password-1"},
+        follow_redirects=False,
+    )
+
+    response = client.post(
+        "/admin/teams",
+        data={
+            "name": "Sidebar Created Team",
+            "status": "active",
+            "default_retention_days": "45",
+            "return_view": "workspace",
+            "return_tab": "directory",
+        },
+        follow_redirects=False,
+    )
+
+    team = db_session.scalar(select(Team).where(Team.name == "Sidebar Created Team"))
+    assert response.status_code == 303
+    assert team is not None
+    assert response.headers["location"] == f"/admin?team_id={team.id}&team_tab=overview"
+
+
+def test_admin_team_creation_validation_retains_modal_values(client, make_user):
+    make_user(email="admin-sidebar-invalid-create@example.com", password="password-1", is_system_admin=True)
+    client.post(
+        "/login",
+        data={"email": "admin-sidebar-invalid-create@example.com", "password": "password-1"},
+        follow_redirects=False,
+    )
+
+    response = client.post(
+        "/admin/teams",
+        data={
+            "name": "Retained Draft Team",
+            "status": "suspended",
+            "default_retention_days": "0",
+            "return_view": "workspace",
+            "return_tab": "overview",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 422
+    assert 'id="admin-create-team-modal"' in response.text
+    assert 'id="admin-create-team-modal" hidden' not in response.text
+    assert 'id="admin-create-team-name" name="name" required maxlength="255" value="Retained Draft Team"' in response.text
+    assert '<option value="suspended" selected>Suspended</option>' in response.text
+    assert 'id="admin-create-team-retention" name="default_retention_days" type="number" min="1" max="90" required value="0"' in response.text
+
+
+def test_admin_global_destination_does_not_apply_supplied_team_scope(client, make_team, make_user):
+    team = make_team(name="Unscoped System Admin Team")
+    member = make_user(
+        email="unscoped-team-member@example.com",
+        password="password-2",
+        team=team,
+        team_role=TeamRole.user,
+    )
+    make_user(email="admin-unscoped-global@example.com", password="password-1", is_system_admin=True)
+    client.post(
+        "/login",
+        data={"email": "admin-unscoped-global@example.com", "password": "password-1"},
+        follow_redirects=False,
+    )
+
+    response = client.get(f"/admin?tab=system-admins&team_id={team.id}", follow_redirects=False)
+
+    assert response.status_code == 200
+    assert "System administrators" in response.text
+    assert 'data-admin-team-id=""' in response.text
+    assert member.email not in response.text
+
+
+def test_admin_sidebar_has_server_rendered_picker_links_and_open_create_modal(
+    client, make_team, make_user
+):
+    team = make_team(name="No JavaScript Picker Team")
+    suspended = make_team(name="No JavaScript Suspended Team", status=TeamStatus.suspended)
+    make_user(email="admin-nojs-picker@example.com", password="password-1", is_system_admin=True)
+    client.post(
+        "/login",
+        data={"email": "admin-nojs-picker@example.com", "password": "password-1"},
+        follow_redirects=False,
+    )
+
+    response = client.get("/admin/usage?view=team&range=90d&create_team=1")
+
+    assert response.status_code == 200
+    assert 'id="admin-create-team-modal" hidden' not in response.text
+    assert 'id="admin-create-team-form" method="post" action="/admin/teams"' in response.text
+    assert 'data-all-teams-option href="/admin/usage?view=team&amp;range=90d"' in response.text
+    assert f'data-team-option data-team-id="{team.id}"' in response.text
+    assert f'data-team-option data-team-id="{suspended.id}"' in response.text
+    assert 'action="/logout"' in response.text and 'method="post"' in response.text
+    assert 'name="_csrf_token" value=' in response.text
+    assert '<div class="brand brand-static" aria-label="OpenScribe">' in response.text
+    assert '<a class="brand' not in response.text

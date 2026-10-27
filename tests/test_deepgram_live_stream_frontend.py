@@ -49,6 +49,28 @@ assert.deepEqual(JSON.parse(socket.sent[0]), { type: 'start', csrf_token: 'synth
 socket.json({ type: 'ready', stream_id: '11111111-1111-4111-8111-111111111111', sample_rate: 16000, encoding: 'pcm_s16le' });
 await ready;
 
+let dictationPreview = null;
+let dictationWindow = null;
+const dictationStream = new DeepgramLiveStream({
+  onDictationPreview: (message) => { dictationPreview = message; },
+  onWindowCommitted: (message) => { dictationWindow = message; },
+});
+const dictationReady = dictationStream.connect({
+  transcriptId: 'owner-transcript',
+  csrfToken: 'synthetic-csrf',
+  url: '/api/v1/transcripts/owner-transcript/post-consultation-dictation/deepgram-stream',
+});
+const dictationSocket = FakeWebSocket.last;
+assert.match(dictationSocket.url, /post-consultation-dictation\/deepgram-stream$/);
+dictationSocket.open();
+dictationSocket.json({ type: 'ready', stream_id: '22222222-2222-4222-8222-222222222222', sample_rate: 16000, encoding: 'pcm_s16le' });
+await dictationReady;
+dictationSocket.json({ type: 'dictation_preview', window_no: 0, confirmed_text: 'Confirmed', interim_text: ' interim' });
+assert.deepEqual(dictationPreview, { type: 'dictation_preview', window_no: 0, confirmed_text: 'Confirmed', interim_text: ' interim' });
+dictationSocket.json({ type: 'window_committed', window_no: 0, next_sample_offset: 0, text: 'Confirmed' });
+assert.equal(dictationWindow.text, 'Confirmed');
+dictationStream.cancelPending();
+
 stream.pushFrame(new Float32Array(512).fill(0.5), true, 1000);
 stream.speechStarted();
 for (let index = 0; index < 15; index += 1) stream.pushFrame(new Float32Array(512).fill(0.25), false, 1001 + index);

@@ -1,0 +1,208 @@
+<section
+  class="tab-panel quota-workspace"
+  data-panel="quotas"
+  {% if workspace_team_tab != "quotas" %}hidden{% endif %}
+>
+  {% set quota_editor_view = selected_quota_member and quota_detail and (quota_edit_mode or quota_open_form == 'limits') %}
+  {% if not quota_editor_view %}
+  <div class="section-intro">
+    <h2>Quotas</h2>
+    <p>Review usage and manage limits and allowances for eligible members of {{ selected_team.name }}.</p>
+  </div>
+  {% endif %}
+  {% set usage_navigation_range = request.query_params.get('range', '30d') %}
+  {% if usage_navigation_range not in ['30d', '90d', '1y', 'all'] %}{% set usage_navigation_range = usage_range_key|default('30d') %}{% endif %}
+  {% include "_admin_usage_navigation.html" %}
+
+  <form method="get" action="/admin/usage" class="quota-member-picker{% if quota_editor_view %} quota-member-picker--editing{% endif %}">
+    <input type="hidden" name="team_id" value="{{ selected_team.id }}">
+    <input type="hidden" name="view" value="quotas">
+    <input type="hidden" name="range" value="{{ usage_navigation_range }}">
+    {% if eligible_quota_users %}
+    <label for="quota-member-filter">Find a member
+      <input
+        class="member-search"
+        id="quota-member-filter"
+        type="search"
+        autocomplete="off"
+        placeholder="Search by name or email"
+        aria-controls="quota-member-select"
+      >
+    </label>
+    <label for="quota-member-select">Member
+    <select id="quota-member-select" name="member_id" required>
+      <option value="">Choose an eligible member</option>
+      {% for user in eligible_quota_users %}
+      <option
+        value="{{ user.id }}"
+        data-search="{{ (user.full_name or '')|lower }} {{ user.email|lower }}"
+        {% if selected_quota_member and selected_quota_member.id == user.id %}selected{% endif %}
+      >{{ user.full_name or user.email }} — {{ user.email }}</option>
+      {% endfor %}
+    </select>
+    </label>
+    <button class="btn primary" type="submit">View quotas</button>
+    {% else %}
+    <p class="usage-empty">This team has no eligible members to manage.</p>
+    {% endif %}
+  </form>
+
+  {% if quota_selection_error %}
+  <p class="flash error" role="alert">{{ quota_selection_error }}</p>
+  {% endif %}
+
+  {% if selected_quota_member and quota_detail %}
+  <article class="quota-member-detail" id="quota-panel">
+    {% set limits_editor_active = quota_editor_view %}
+    <header class="quota-member-heading">
+      <div>
+        <h3>{{ selected_quota_member.full_name or selected_quota_member.email }}</h3>
+        <p>{{ selected_quota_member.email }} · {{ selected_quota_member.team_role.value|title }} · {{ selected_quota_member.status.value|title }}</p>
+      </div>
+      <div class="quota-primary-actions">
+        {% if limits_editor_active %}
+        <a class="btn" href="/admin/usage?team_id={{ selected_team.id }}&amp;view=quotas&amp;member_id={{ selected_quota_member.id }}&amp;range={{ usage_navigation_range }}">← Back to quotas</a>
+        {% else %}
+        <a class="btn primary" href="/admin/usage?team_id={{ selected_team.id }}&amp;view=quotas&amp;member_id={{ selected_quota_member.id }}&amp;quota_edit=limits&amp;range={{ usage_navigation_range }}">Edit limits</a>
+        <details class="quota-action" {% if quota_open_form == 'grant' %}open{% endif %}>
+          <summary class="btn">Add allowance</summary>
+          <form method="post" action="/admin/users/{{ selected_quota_member.id }}/quota-grants" class="quota-form"{% if message_kind == 'error' and quota_open_form == 'grant' %} data-admin-dirty-on-load{% endif %}>
+            <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+            <input type="hidden" name="operation_id" value="{{ quota_operation_ids.grant }}">
+            <div class="form-grid">
+              <label class="field">Resource
+                <select name="resource"><option value="tokens" {% if quota_form_values.resource|default('tokens') == 'tokens' %}selected{% endif %}>AI tokens</option><option value="audio_seconds" {% if quota_form_values.resource|default('') == 'audio_seconds' %}selected{% endif %}>Transcription audio</option></select>
+              </label>
+              <fieldset><legend>Periods</legend>
+                <label><input type="checkbox" name="periods" value="daily" {% if 'daily' in quota_form_values.get('periods', []) %}checked{% endif %}> Daily</label>
+                <label><input type="checkbox" name="periods" value="monthly" {% if 'monthly' in quota_form_values.get('periods', []) %}checked{% endif %}> Monthly</label>
+              </fieldset>
+              <label class="field">Token amount<input type="number" min="1" name="amount" value="{{ quota_form_values.amount|default('') }}"></label>
+              <label class="field">Audio hours<input type="number" min=".01" step=".01" name="audio_hours" value="{{ quota_form_values.audio_hours|default('') }}"></label>
+              <label class="field">Expiry
+                <select name="expiry_preset">
+                  {% for value, label in [('none', 'No expiry'), ('24h', '24 hours'), ('7d', '7 days'), ('end_today', 'End today (UTC)'), ('end_month', 'End month (UTC)'), ('custom', 'Custom UTC')] %}<option value="{{ value }}" {% if quota_form_values.expiry_preset|default('none') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+                </select>
+              </label>
+              <label class="field">Custom expiry (UTC)<input type="datetime-local" name="expires_at" value="{{ quota_form_values.expires_at|default('') }}"></label>
+              <label class="field">Reason code
+                <select name="reason_code" required>{% for code in quota_reason_codes %}<option value="{{ code }}" {% if quota_form_values.reason_code|default('') == code %}selected{% endif %}>{{ code|replace('_', ' ')|title }}</option>{% endfor %}</select>
+              </label>
+              <label class="field">Reason<input name="reason" maxlength="500" required value="{{ quota_form_values.reason|default('') }}"></label>
+            </div>
+            <button class="btn primary" type="submit">Add allowance</button>
+          </form>
+        </details>
+        {% endif %}
+      </div>
+    </header>
+
+    {% if limits_editor_active %}
+    {% include "admin_quota_limits_editor.html" %}
+    {% else %}
+    <div class="quota-resource-grid">
+      {% for resource_key, resource_title, resource_description in [('tokens', 'AI tokens', 'Usage and limits for AI model tokens.'), ('audio_seconds', 'Transcription audio', 'Usage and limits for audio transcription.')] %}
+      <section class="quota-resource-card" aria-labelledby="quota-resource-{{ resource_key }}">
+        <header>
+          <span class="quota-resource-icon" aria-hidden="true">{% if resource_key == 'tokens' %}▤{% else %}∿{% endif %}</span>
+          <div><h3 id="quota-resource-{{ resource_key }}">{{ resource_title }}</h3><p>{{ resource_description }}</p></div>
+        </header>
+        {% for window in quota_detail.windows %}{% if window.resource.value == resource_key %}
+        {% set committed = window.consumed + window.pending_reserved %}
+        <section class="quota-period-card">
+          <div class="quota-period-heading">
+            <strong>{{ 'Daily' if window.period.value == 'daily' else 'Monthly' }}</strong>
+            <span>{% if window.period.value == 'daily' %}{{ window.natural_start.strftime('%d %b %Y UTC') }}{% else %}{{ window.natural_start.strftime('%d') }}–{{ window.natural_end.strftime('%d %b %Y UTC') }}{% endif %}</span>
+            <span>Resets {{ window.resets_at.strftime('%d %b, %H:%M UTC') }}</span>
+            <span class="quota-pending-summary">{{ window.pending_reserved|quota_units(resource_key) }} in progress</span>
+          </div>
+          <div class="quota-amount-line">
+            <strong>{{ window.consumed|quota_units(resource_key) }}</strong>
+            {% if window.effective_limit is none %}<span>of Unlimited</span>{% elif window.effective_limit == 0 %}<span>Disabled</span>{% else %}<span>of {{ window.effective_limit|quota_units(resource_key) }}</span>{% endif %}
+          </div>
+          <small class="quota-allowance-breakdown">{% if window.temporary_allowance %}Base {{ window.base_limit|quota_units(resource_key) }} + {{ window.temporary_allowance|quota_units(resource_key) }} allowance{% else %}&nbsp;{% endif %}</small>
+          <p class="quota-remaining">{% if window.remaining is none %}Unlimited{% else %}{{ window.remaining|quota_units(resource_key) }} remaining after in-progress work{% endif %}</p>
+          {% if window.effective_limit and window.effective_limit > 0 %}
+          {% set usage_percent = ((committed * 100) / window.effective_limit)|round|int %}
+          <div class="quota-progress" role="progressbar" aria-label="{{ 'Daily' if window.period.value == 'daily' else 'Monthly' }} {{ resource_title }} usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ 100 if usage_percent > 100 else usage_percent }}" aria-valuetext="{{ committed|quota_units(resource_key) }} committed of {{ window.effective_limit|quota_units(resource_key) }}{% if committed > window.effective_limit %}; over limit by {{ (committed - window.effective_limit)|quota_units(resource_key) }}{% endif %}">
+            <span data-style-width-pct="{{ 100 if usage_percent > 100 else usage_percent }}"></span>
+          </div>
+          <p class="quota-progress-copy">{{ usage_percent }}% committed{% if committed > window.effective_limit %} · Over limit by {{ (committed - window.effective_limit)|quota_units(resource_key) }}{% endif %}</p>
+          {% elif window.effective_limit == 0 %}
+          <p class="quota-progress-copy">Disabled{% if committed > 0 %} · {{ committed|quota_units(resource_key) }} already committed above the limit{% endif %}</p>
+          {% else %}
+          <p class="quota-progress-copy">No limit set{% if committed > 0 %} · {{ committed|quota_units(resource_key) }} committed{% endif %}</p>
+          {% endif %}
+        </section>
+        {% endif %}{% endfor %}
+      </section>
+      {% endfor %}
+    </div>
+    <p class="quota-cards-note">Remaining amounts and progress include accepted work not yet settled.</p>
+
+    <section class="quota-lifetime-strip" aria-label="Lifetime accounted usage">
+      <div><h3>Lifetime accounted usage</h3><p>Settled usage across all quota periods. Estimates are included when provider usage is unknown. Earlier activity may be unavailable.</p></div>
+      <div><span>AI tokens</span><strong>{{ quota_detail.lifetime_token_units|quota_units('tokens') }}</strong></div>
+      <div><span>Transcription audio</span><strong>{{ quota_detail.lifetime_audio_seconds|lifetime_audio_hours }} ({{ quota_detail.lifetime_audio_seconds|quota_units('audio_seconds') }})</strong></div>
+      <a href="/admin/usage?team_id={{ selected_team.id }}&amp;view=team&amp;range={{ usage_navigation_range }}">View team usage →</a>
+    </section>
+
+    <div class="quota-secondary-grid">
+      <details class="quota-disclosure" {% if quota_open_form == 'reset' %}open{% endif %}>
+        <summary>Reset usage</summary>
+        <p>Reset starts settled usage from now for selected windows. Accepted work already in progress remains counted until it settles or expires.</p>
+        <form method="post" action="/admin/users/{{ selected_quota_member.id }}/quota-resets" data-confirm-submit="Reset usage for the selected quota periods? Settled usage starts from now. Accepted work in progress remains counted until it settles or expires." class="quota-form"{% if message_kind == 'error' and quota_open_form == 'reset' %} data-admin-dirty-on-load{% endif %}>
+          <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+          <input type="hidden" name="operation_id" value="{{ quota_operation_ids.reset }}">
+          <fieldset><legend>Windows</legend>
+            {% for value, label in [('tokens:daily', 'Daily tokens'), ('tokens:monthly', 'Monthly tokens'), ('audio_seconds:daily', 'Daily audio'), ('audio_seconds:monthly', 'Monthly audio')] %}<label><input type="checkbox" name="windows" value="{{ value }}" {% if value in quota_form_values.get('windows', []) %}checked{% endif %}> {{ label }}</label>{% endfor %}
+          </fieldset>
+          <label class="field">Reason code<select name="reason_code" required>{% for code in quota_reason_codes %}<option value="{{ code }}" {% if quota_form_values.reason_code|default('') == code %}selected{% endif %}>{{ code|replace('_', ' ')|title }}</option>{% endfor %}</select></label>
+          <label class="field">Reason<input name="reason" maxlength="500" required value="{{ quota_form_values.reason|default('') }}"></label>
+          <button class="btn" type="submit">Reset selected</button>
+          <button class="btn danger-action" type="submit" name="reset_all" value="true">Reset all four</button>
+        </form>
+      </details>
+
+      <details class="quota-disclosure" {% if quota_open_form == 'allowances' or quota_open_form == 'revoke' %}open{% endif %}>
+        <summary>Allowances <span class="quota-count">{{ quota_detail.active_grants|length }} active</span></summary>
+        {% if quota_open_form == 'revoke' and quota_grant_id in quota_operation_ids.revoke %}
+        <form method="post" action="/admin/users/{{ selected_quota_member.id }}/quota-grants/{{ quota_grant_id }}/revoke" class="quota-form quota-revoke-retry"{% if message_kind == 'error' and quota_open_form == 'revoke' %} data-admin-dirty-on-load{% endif %}>
+          <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+          <input type="hidden" name="revocation_operation_id" value="{{ quota_operation_ids.revoke[quota_grant_id] }}">
+          <label class="field">Reason code<select name="reason_code" required>{% for code in quota_reason_codes %}<option value="{{ code }}" {% if quota_form_values.reason_code|default('') == code %}selected{% endif %}>{{ code|replace('_', ' ')|title }}</option>{% endfor %}</select></label>
+          <label class="field">Reason<input name="reason" maxlength="500" required value="{{ quota_form_values.reason|default('') }}"></label>
+          <button class="btn small danger-action" type="submit">Retry revoke</button>
+        </form>
+        {% endif %}
+        <div class="usage-table-wrap table-scroll-region" tabindex="0" role="region" aria-label="Active quota allowances">
+          <table class="usage-table" data-sortable-table><thead><tr><th scope="col" data-sort-type="date">Created</th><th scope="col" data-sort-type="text">Window</th><th scope="col" data-sort-type="resource-number" title="Sorts by resource, then amount within that resource">Amount</th><th scope="col" data-sort-type="date">Expires</th><th scope="col" data-sort-type="text">Actor</th><th scope="col" data-sort-type="text">Reason</th><th scope="col">Action</th></tr></thead><tbody>
+          {% for item in quota_detail.active_grants %}
+          <tr><td data-sort-value="{{ item.created_at.isoformat() }}">{{ item.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</td><td data-sort-value="{{ item.resource.value }} {{ item.period.value }}">{{ item.resource.value|replace('_', ' ')|title }} / {{ item.period.value|title }}</td><td data-sort-group="{{ item.resource.value }}" data-sort-value="{{ item.amount }}">{{ item.amount|quota_units(item.resource.value) }}</td><td data-sort-value="{{ item.expires_at.isoformat() if item.expires_at else '' }}">{{ item.expires_at.strftime('%Y-%m-%d %H:%M UTC') if item.expires_at else 'No expiry' }}</td><td data-sort-value="{{ (item.actor_email or item.actor_user_id_snapshot)|string|lower }}">{{ item.actor_email or item.actor_user_id_snapshot }}</td><td data-sort-value="{{ item.reason|lower }}">{{ item.reason }}</td><td>
+            <form method="post" action="/admin/users/{{ selected_quota_member.id }}/quota-grants/{{ item.id }}/revoke" data-confirm-submit="Revoke this active allowance?" class="quota-revoke-form">
+              <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}"><input type="hidden" name="revocation_operation_id" value="{{ quota_operation_ids.revoke[item.id|string] }}">
+              <label class="field">Reason code<select name="reason_code" required>{% for code in quota_reason_codes %}<option value="{{ code }}">{{ code|replace('_', ' ')|title }}</option>{% endfor %}</select></label>
+              <label class="field">Reason<input name="reason" maxlength="500" required aria-label="Revocation reason"></label>
+              <button class="btn small danger-action" type="submit">Revoke</button>
+            </form>
+          </td></tr>
+          {% else %}<tr><td colspan="7">No active allowances.</td></tr>{% endfor %}
+          </tbody></table>
+        </div>
+      </details>
+
+      <details class="quota-disclosure">
+        <summary>Quota history</summary>
+        <div class="usage-table-wrap table-scroll-region" tabindex="0" role="region" aria-label="Quota policy history">
+          <table class="usage-table" data-sortable-table><thead><tr><th scope="col" data-sort-type="date">When</th><th scope="col" data-sort-type="text">Change</th><th scope="col" data-sort-type="text">Window</th><th scope="col" data-sort-type="text" title="Sorts by the displayed details as text">Details</th><th scope="col" data-sort-type="text">Actor</th><th scope="col" data-sort-type="text">Reason</th><th scope="col" data-sort-type="text">Status</th></tr></thead><tbody>
+          {% for item in quota_detail.history %}
+          <tr><td data-sort-value="{{ item.created_at.isoformat() }}">{{ item.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</td><td data-sort-value="{{ item.event_type.value|lower }}">{{ item.event_type.value|replace('_', ' ')|title }}</td><td data-sort-value="{{ item.resource.value }} {{ item.period.value }}">{{ item.resource.value|replace('_', ' ')|title }} / {{ item.period.value|title }}</td><td data-sort-value="{% if item.amount is not none %}{{ item.amount|quota_units(item.resource.value)|lower }}{% elif item.new_limit is not none or item.previous_limit is not none %}{{ item.previous_limit if item.previous_limit is not none else 'Unlimited' }} {{ item.new_limit if item.new_limit is not none else 'Unlimited' }}{% else %}—{% endif %}{% if item.expires_at %} expires {{ item.expires_at.isoformat() }}{% endif %}">{% if item.amount is not none %}{{ item.amount|quota_units(item.resource.value) }}{% elif item.new_limit is not none or item.previous_limit is not none %}{{ item.previous_limit if item.previous_limit is not none else 'Unlimited' }} → {{ item.new_limit if item.new_limit is not none else 'Unlimited' }}{% else %}—{% endif %}{% if item.expires_at %}<br>Expires {{ item.expires_at.strftime('%Y-%m-%d %H:%M UTC') }}{% endif %}</td><td data-sort-value="{{ (item.actor_email or item.actor_user_id_snapshot)|string|lower }}">{{ item.actor_email or item.actor_user_id_snapshot }}</td><td data-sort-value="{{ item.reason|lower }}">{{ item.reason }}</td><td data-sort-value="{% if item.revoked_at %}revoked{% elif item.expires_at and item.expires_at <= quota_now %}expired{% elif item.event_type.value == 'grant' %}active{% else %}recorded{% endif %}">{% if item.revoked_at %}Revoked{% elif item.expires_at and item.expires_at <= quota_now %}Expired{% elif item.event_type.value == 'grant' %}Active{% else %}Recorded{% endif %}</td></tr>
+          {% else %}<tr><td colspan="7">No quota policy history.</td></tr>{% endfor %}
+          </tbody></table>
+        </div>
+      </details>
+    </div>
+    {% endif %}
+  </article>
+  {% endif %}
+</section>

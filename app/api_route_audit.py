@@ -6,6 +6,9 @@ from typing import Any
 
 from fastapi.routing import APIRoute
 
+# APIRoute excludes WebSockets; both owner Deepgram stream endpoints are
+# exercised separately for origin, session, ownership and CSRF in route tests.
+
 from app.main import app
 from app.services.csrf import CSRF_COOKIE_NAME, session_csrf_token
 from app.services.auth import SESSION_COOKIE_NAME

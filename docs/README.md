@@ -21,6 +21,7 @@ These documents are maintained as descriptions of implemented behavior or an exp
 | Database test behavior | [dbtesting.md](dbtesting.md) |
 | Persistence architecture | [DatabasePlan.md](DatabasePlan.md) |
 | Frontend styling architecture | [styling_condensation_plan.md](styling_condensation_plan.md) |
+| Visual design system and current surface differences | [`DESIGN.md`](../DESIGN.md) |
 | Frontend roadmap and current-runtime boundary | [frontend-roadmap.md](frontend-roadmap.md) |
 | Current focused backlog | [feature_todo.md](feature_todo.md) |
 | Contributor rules | [`AGENTS.md`](../AGENTS.md); [`brief.md`](../brief.md) is a contributor brief, not an operational source of truth. |
@@ -94,6 +95,10 @@ Other files whose names contain `roadmap`, `plan`, `brief`, `todo`, or `design` 
 ## Accessibility evidence
 
 The [human testing guide](accessibility/human-testing-guide.md) is a maintained procedure for accessibility reviewers, not an assessment result.
+
+The [admin WCAG review — 24 October 2026](accessibility/admin-review-2026-10-24.md) records source findings, isolated synthetic browser checks, remediation priorities, and remaining human checks for the admin workspace.
+
+The [admin accessibility remediation — 25 October 2026](accessibility/admin-verification-2026-10-25.md) records the subsequent implementation and focused regression verification. It supplements the original assessment rather than replacing its findings or claiming complete conformance.
 
 Dated local records include the [WCAG 2.2 A/AA manual checklist](accessibility/wcag-2.2-manual-checklist-2026-10-15.md), [interactive browser assessment](accessibility/interactive-browser-assessment-2026-10-15.md), [15 October evidence handoff manifest](accessibility/evidence-manifest-2026-10-15.md), [16 October WCAG evidence summary](accessibility/evidence-summary-2026-10-16.md), [16 October Scribe Guide verification](accessibility/scribe-guide-verification-2026-10-16.md), and [18 October Help verification](accessibility/help-verification-2026-10-18.md). These records do not establish current conformance. The 15 October record preserves findings from before remediation alongside separate verification after fixes. Preserve dated reports and add later assessments. The legal documentation destination remains to be confirmed in the manifest.
 

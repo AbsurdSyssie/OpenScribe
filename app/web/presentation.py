@@ -926,11 +926,52 @@ def render_admin(
     default_template_return_tab: str = "global-defaults",
     selected_quota_member_id: str | None = None,
     quota_form_values: dict[str, object] | None = None,
+    quota_selection_error: str | None = None,
+    quota_open_form: str | None = None,
+    quota_grant_id: str | None = None,
+    quota_edit_mode: bool = False,
+    standalone_usage: bool = False,
+    usage_page_view: str = "team",
+    admin_create_team_open: bool = False,
+    admin_create_team_values: dict[str, object] | None = None,
     legal_context: dict[str, object] | None = None,
 ):
-    workspace_team_tabs = {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"}
+    workspace_team_tabs = {"overview", "members", "quotas", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"}
     if admin_return_view == "workspace" and workspace_team_tab is None and active_admin_tab in workspace_team_tabs:
         workspace_team_tab = active_admin_tab
+    # The retired team directory and Admin home no longer have dedicated
+    # destinations. Legacy mutation error pages using those tabs fall back to
+    # the all-teams Usage page unless they already carry a team workspace tab.
+    if active_admin_tab in {"directory", "home"} and not standalone_usage:
+        if selected_team_id:
+            # Legacy team-scoped error returns should land in the selected
+            # team's Overview shell, not the retired directory/home page.
+            active_admin_tab = "providers"
+            workspace_team_tab = workspace_team_tab or "overview"
+            admin_page_route = "/admin"
+            admin_return_view = "workspace"
+        else:
+            active_admin_tab = "usage"
+            standalone_usage = True
+            usage_page_view = "team"
+            admin_page_route = "/admin/usage"
+            admin_return_view = "standalone_usage"
+    elif active_admin_tab == "defaults" and not selected_team_id:
+        # Team defaults have no unscoped page; the old tab URL falls back to
+        # the all-teams Usage landing like the retired directory links.
+        active_admin_tab = "usage"
+        standalone_usage = True
+        usage_page_view = "team"
+        admin_page_route = "/admin/usage"
+        admin_return_view = "standalone_usage"
+    global_admin_tabs = {
+        "requests", "system-admins", "global-defaults", "deid-providers",
+        "audit", "legal",
+    }
+    if active_admin_tab in global_admin_tabs:
+        # A remembered or stale team_id must never scope global administration.
+        selected_team_id = None
+        workspace_team_tab = None
     selected_uuid = UUID(selected_team_id) if selected_team_id else None
     stt_configs = list_stt_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
     edit_stt_config = next((config for config in stt_configs if str(config.id) == selected_stt_config_id), None)
@@ -1002,6 +1043,7 @@ def render_admin(
         resolved_provider_tab = "stt"
     usage_context = {
         "usage_scope_team": None,
+        "usage_summary": None,
         "usage_kpi_cards": [],
         "usage_window_summaries": [],
         "usage_trend_points": [],
@@ -1143,13 +1185,15 @@ def render_admin(
     ]
     selected_quota_member = None
     quota_detail = None
-    # Quota accounting is queried only for this explicit, validated Members panel.
-    if current_user.is_system_admin and workspace_team_tab == "members" and selected_team is not None and selected_quota_member_id:
+    eligible_quota_users = [user for user in selected_team_users if user.team_role is not None]
+    # Quota accounting is queried only for the explicit selected-team Quotas
+    # panel, and only after resolving the member inside that team's eligible set.
+    if current_user.is_system_admin and workspace_team_tab == "quotas" and selected_team is not None and selected_quota_member_id:
         try:
             quota_member_id = UUID(selected_quota_member_id)
         except ValueError:
             quota_member_id = None
-        selected_quota_member = next((user for user in selected_team_users if user.id == quota_member_id), None)
+        selected_quota_member = next((user for user in eligible_quota_users if user.id == quota_member_id), None)
         if selected_quota_member is not None:
             try:
                 quota_detail = get_admin_user_quota_detail(
@@ -1157,6 +1201,8 @@ def render_admin(
                 )
             except AppError:
                 selected_quota_member = None
+        if selected_quota_member is None and quota_selection_error is None:
+            quota_selection_error = "That member is not available in this team. Choose an eligible member."
     context = {
         "request": request,
         "current_user": current_user,
@@ -1165,6 +1211,11 @@ def render_admin(
         "selected_team": selected_team,
         "selected_team_users": selected_team_users,
         "selected_quota_member": selected_quota_member,
+        "eligible_quota_users": eligible_quota_users,
+        "quota_selection_error": quota_selection_error,
+        "quota_open_form": quota_open_form,
+        "quota_grant_id": quota_grant_id,
+        "quota_edit_mode": quota_edit_mode,
         "quota_detail": quota_detail,
         "quota_form_values": quota_form_values or {},
         "quota_operation_ids": {
@@ -1229,6 +1280,10 @@ def render_admin(
         "admin_page_route": admin_page_route,
         "admin_return_view": admin_return_view,
         "workspace_team_tab": workspace_team_tab,
+        "standalone_usage": standalone_usage,
+        "usage_page_view": usage_page_view,
+        "admin_create_team_open": admin_create_team_open,
+        "admin_create_team_values": admin_create_team_values or {},
         "default_template_return_tab": default_template_return_tab,
         "message": message,
         "message_kind": message_kind,
@@ -1267,6 +1322,8 @@ def admin_redirect_url(
     deidentification_provider_id: str | None = None,
 ) -> str:
     resolved_return_view = admin_return_view_value(return_view)
+    if resolved_return_view == "workspace" and return_tab in {"directory", "home"}:
+        return "/admin/usage?view=team&range=30d"
     base = admin_page_route_from_return_view(resolved_return_view)
     params: dict[str, str] = {}
     if team_id:

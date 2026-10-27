@@ -1727,7 +1727,6 @@ pointer-events: none;
 .dictation-modal__bars .mic-visualizer__bar {
 width: 0.44rem;
 height: 4.9rem;
-background: rgba(61, 122, 140, 0.9);
 }
 
 .dictation-modal__controls,
@@ -4305,4 +4304,479 @@ grid-row: 4;
 grid-row: 3;
 align-self: start;
 }
+}
+
+
+/*
+ * Option 2: compact, full-width, editor-first dictation modal.
+ * Append AFTER existing .dictation-modal rules in app/static/css/transcribe.css.
+ * Scoped so no other workspace controls or modals change.
+ */
+.dictation-modal--editor-first .dictation-modal__dialog {
+  width: min(65.625rem, 100%);
+  height: min(39rem, calc(100dvh - 2.5rem));
+  max-height: calc(100dvh - 2.5rem);
+  border-radius: 0.8rem;
+  background: #fff;
+}
+
+.dictation-modal--editor-first .dictation-modal__header {
+  flex: 0 0 auto;
+  min-height: 4.75rem;
+  padding: 1rem 1.5rem;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #e0e8ec;
+}
+
+.dictation-modal--editor-first .dictation-modal__header h2 {
+  margin: 0;
+  color: #263a47;
+  font-size: 1.15rem;
+  line-height: 1.3;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.dictation-modal--editor-first .dictation-modal__recording {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  padding: 0.75rem 1.5rem 0.5rem;
+  overflow: visible;
+  background: white;
+  border-bottom: 0;
+}
+
+.dictation-modal--editor-first .dictation-modal__controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.dictation-modal--editor-first .dictation-modal__record-button {
+  width: auto;
+  min-width: 5.875rem;
+  height: 2.35rem;
+  padding: 0 0.85rem;
+  display: inline-flex;
+  flex-direction: row;
+  gap: 0.45rem;
+  border: 1px solid #2d5264;
+  border-radius: 0.5rem;
+  background: #2d5264;
+  box-shadow: none;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.dictation-modal--editor-first .dictation-modal__record-button[data-state="recording"] {
+  background: #b74743;
+  border-color: #b74743;
+}
+
+.dictation-modal--editor-first .dictation-modal__record-button svg,
+.dictation-modal--editor-first .dictation-modal__pause-button svg,
+.dictation-modal--editor-first .dictation-modal__upload-button svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.dictation-modal--editor-first .dictation-modal__pause-button {
+  width: 2.35rem;
+  height: 2.35rem;
+  border: 1px solid #d4e0e5;
+  border-radius: 0.5rem;
+  box-shadow: none;
+}
+
+.dictation-modal--editor-first .dictation-modal__upload-button,
+.dictation-modal--editor-first .dictation-modal__retry-button {
+  min-height: 2.35rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid #d5e1e7;
+  border-radius: 0.5rem;
+  background: #fff;
+  color: #345568;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.dictation-modal--editor-first .dictation-modal__live-toggle {
+  min-height: 2.35rem;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid #d5e1e7;
+  border-radius: 0.5rem;
+  background: #fff;
+  color: #345568;
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
+.dictation-modal--editor-first .dictation-modal__live-toggle[aria-pressed="true"] {
+  border-color: #345568;
+  background: #e8f0f3;
+}
+
+.dictation-modal--editor-first .dictation-modal__live-tail {
+  flex: 0 0 auto;
+  max-height: 7rem;
+  overflow: auto;
+  padding: 0.55rem 1.25rem 0.7rem;
+  border: 1px solid #dce6ea;
+  border-top: 0;
+  border-radius: 0 0 0.6rem 0.6rem;
+  background: #fff;
+  font-size: 0.88rem;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.dictation-modal__live-tail-confirmed { color: #111827; }
+.dictation-modal__live-tail-interim { color: #62717f; }
+
+.dictation-modal--editor-first .dictation-modal__live-failure {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.45rem 0 0;
+}
+
+.dictation-modal--editor-first [data-dictation-live-tail][hidden],
+.dictation-modal--editor-first [data-dictation-live-failure][hidden] { display: none; }
+
+/* Dynamic recorder indicators stay on the right; they can wrap on small screens. */
+.dictation-modal--editor-first .dictation-modal__live-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  min-width: 0;
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: #68808b;
+}
+
+.dictation-modal--editor-first .dictation-modal__timer {
+  color: #455d6a;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dictation-modal--editor-first .dictation-modal__status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0;
+  max-width: 18rem;
+  font-size: 0.76rem;
+  line-height: 1.35;
+  color: #526a76;
+}
+
+.dictation-modal--editor-first .dictation-modal__status::before {
+  content: "";
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #a4b6bd;
+}
+
+.dictation-modal--editor-first:has([data-dictation-record-toggle][data-state="recording"]) .dictation-modal__status::before {
+  background: #cc6358;
+}
+
+.dictation-modal--editor-first .dictation-modal__bars {
+  position: static;
+  inset: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0;
+  min-width: 0;
+  height: 1.7rem;
+  padding: 0;
+  gap: 0.16rem;
+  opacity: 0;
+  overflow: hidden;
+  border: 0;
+  background: none;
+  pointer-events: none;
+}
+
+.dictation-modal--editor-first:has([data-dictation-record-toggle][data-state="recording"]) .dictation-modal__bars {
+  width: 5rem;
+  opacity: 1;
+}
+
+.dictation-modal--editor-first .dictation-modal__bars .mic-visualizer__bar {
+width: 0.18rem;
+height: 1.25rem;
+}
+
+.dictation-modal--editor-first .dictation-modal__progress {
+  flex: 1 0 100%;
+  margin: 0;
+  padding: 0.2rem 0;
+  color: #677e89;
+  font-size: 0.78rem;
+  text-align: left;
+}
+
+.dictation-modal--editor-first .dictation-modal__body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0.35rem 1.5rem 1.15rem;
+  overflow: hidden;
+}
+
+.dictation-modal--editor-first .dictation-modal__body textarea {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 7rem;
+  height: 100%;
+  resize: none;
+  margin: 0;
+  padding: 1.15rem 1.25rem;
+  border: 1px solid #dce6ea;
+  border-radius: 0.6rem;
+  background: #fff;
+  color: #354e5d;
+  font-size: 0.88rem;
+  line-height: 1.75;
+}
+
+.dictation-modal--editor-first .dictation-modal__body textarea::placeholder {
+  color: #617985;
+}
+
+.dictation-modal--editor-first .dictation-modal__footer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  gap: 0.6rem;
+  min-height: 4.7rem;
+  padding: 0.75rem 1.5rem;
+  border-top: 1px solid #e0e8ec;
+  background: #fafcfc;
+}
+
+.dictation-modal--editor-first .dictation-modal__template {
+  display: flex;
+  width: auto;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0;
+  white-space: nowrap;
+  font-size: 0.77rem;
+  font-weight: 700;
+}
+
+.dictation-modal--editor-first .dictation-modal__template select {
+  min-width: 10.5rem;
+  width: auto;
+  min-height: 2.35rem;
+  border: 1px solid #d4e0e6;
+  border-radius: 0.5rem;
+  padding: 0.35rem 0.65rem;
+  background: white;
+  color: #2b4453;
+  font-size: 0.78rem;
+}
+
+.dictation-modal--editor-first .dictation-modal__word-count {
+  margin-left: auto;
+  white-space: nowrap;
+  color: #5a707b;
+  font-size: 0.73rem;
+}
+
+.dictation-modal--editor-first .dictation-modal__actions {
+  display: flex;
+  width: auto;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.dictation-modal--editor-first .dictation-modal__actions > button {
+  flex: 0 0 auto;
+  min-height: 2.4rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.5rem;
+  font-size: 0.77rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.dictation-modal--editor-first .dictation-modal__actions .dictation-modal__save-button {
+  border: 1px solid #d4e0e6;
+  background: #fff;
+  color: #34576a;
+}
+
+.dictation-modal--editor-first .dictation-modal__actions [data-dictation-save-generate] {
+  border: 1px solid #2d5264;
+  background: #2d5264;
+  color: white;
+}
+
+.dictation-modal--editor-first .dictation-modal__actions > button:disabled,
+.dictation-modal--editor-first .dictation-modal__controls > button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Important: respect JS-driven hidden state despite display overrides. */
+.dictation-modal--editor-first [hidden] {
+  display: none !important;
+}
+
+/* Keep the provenance hook available to assistive technology, but not visually prominent. */
+.dictation-modal--editor-first .dictation-modal__provenance.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+@media (max-width: 800px) {
+  .dictation-modal--editor-first .dictation-modal__recording {
+    gap: 0.7rem;
+  }
+  .dictation-modal--editor-first .dictation-modal__live-meta {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+  .dictation-modal--editor-first .dictation-modal__footer {
+    flex-wrap: wrap;
+  }
+  .dictation-modal--editor-first .dictation-modal__word-count {
+    display: none;
+  }
+  .dictation-modal--editor-first .dictation-modal__actions {
+    margin-left: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .dictation-modal--editor-first .dictation-modal__dialog {
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0;
+  }
+  .dictation-modal--editor-first .dictation-modal__header,
+  .dictation-modal--editor-first .dictation-modal__recording,
+  .dictation-modal--editor-first .dictation-modal__body,
+  .dictation-modal--editor-first .dictation-modal__footer {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+  .dictation-modal--editor-first .dictation-modal__header {
+    flex-direction: row;
+    align-items: center;
+  }
+  .dictation-modal--editor-first .dictation-modal__header h2 {
+    font-size: 1.02rem;
+  }
+  .dictation-modal--editor-first .dictation-modal__footer {
+    flex-wrap: wrap;
+    align-items: stretch;
+    padding-block: 0.75rem;
+  }
+  .dictation-modal--editor-first .dictation-modal__template {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+  .dictation-modal--editor-first .dictation-modal__template select {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: auto;
+  }
+  .dictation-modal--editor-first .dictation-modal__actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 0;
+    width: 100%;
+  }
+  .dictation-modal--editor-first .dictation-modal__actions > button {
+    min-width: 0;
+    width: 100%;
+    white-space: normal;
+  }
+  .dictation-modal--editor-first .dictation-modal__actions > button:first-child {
+    grid-column: 1 / -1;
+    justify-self: end;
+    width: auto;
+  }
+  .dictation-modal--editor-first .dictation-modal__body textarea {
+    font-size: 1rem;
+    padding: 0.8rem;
+  }
+}
+
+@media (max-width: 375px) {
+  .dictation-modal--editor-first .dictation-modal__recording {
+    align-items: flex-start;
+  }
+  .dictation-modal--editor-first .dictation-modal__actions {
+    grid-template-columns: 1fr;
+  }
+  .dictation-modal--editor-first .dictation-modal__actions > button:first-child {
+    grid-column: auto;
+  }
+}
+
+
+@media (max-height: 620px) {
+  .dictation-modal--editor-first .dictation-modal__dialog {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .dictation-modal--editor-first .dictation-modal__body {
+    flex: 0 0 auto;
+    overflow: visible;
+  }
+
+  .dictation-modal--editor-first .dictation-modal__body textarea {
+    flex: 0 0 7rem;
+    height: 7rem;
+  }
+}
+
+
+.dictation-modal--editor-first :is(button, select, textarea):focus-visible {
+  outline: 2px solid #2d5264;
+  outline-offset: 2px;
 }

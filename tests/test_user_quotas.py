@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.errors import AppError
 from app.models import (
     AttemptKind, AttemptOutcome, AttemptStatus, ProviderAttempt, QuotaPeriod,
-    QuotaResource, Transcript, TranscriptIngestionJob, TranscriptIngestionJobKind,
+    QuotaResource, TeamRole, Transcript, TranscriptIngestionJob, TranscriptIngestionJobKind,
     TranscriptIngestionMode, TranscriptStatus, TranscriptVersion, UserQuotaPolicyEvent,
     UserQuotaPolicyEventType, UserQuotaReasonCode,
 )
@@ -123,6 +123,63 @@ def test_activation_reset_and_pre_reset_pending(db_session, make_user):
                                     period=QuotaPeriod.daily, now=NOW)
     assert window.usage_start == NOW - timedelta(hours=1)
     assert window.pending_reserved == pending.reserved_units
+
+
+def test_unlimited_to_finite_counts_usage_from_activation_until_explicit_reset(db_session, make_team, make_user):
+    actor, team = _quota_admin(make_user), make_team()
+    user = make_user(email="quota-activation-window@example.com", team=team, team_role=TeamRole.user)
+    previous_month = NOW - timedelta(days=45)
+    current_month = NOW - timedelta(days=7)
+    current_day = NOW - timedelta(hours=1)
+
+    for amount, authorized_at in ((31, previous_month), (13, current_month), (5, current_day)):
+        attempt = _reserve(db_session, user, units=amount, now=authorized_at)
+        mark_provider_attempt_submitted(
+            db_session, attempt_id=attempt.id, deadline_at=authorized_at + timedelta(minutes=2), now=authorized_at,
+        )
+        settle_provider_attempt_tokens(
+            db_session, attempt_id=attempt.id, reported_total_tokens=amount, now=authorized_at,
+        )
+    db_session.commit()
+
+    update_user_base_quotas_batch(
+        db_session, actor=actor, user_id=user.id, daily_token_limit=100,
+        monthly_token_limit=100, daily_audio_seconds_limit=None, monthly_audio_seconds_limit=None,
+        operation_id=uuid4(), reason_code=UserQuotaReasonCode.policy_change,
+        reason="synthetic finite activation", now=NOW - timedelta(minutes=20),
+    )
+    post_activation = NOW - timedelta(minutes=10)
+    attempt = _reserve(db_session, user, units=3, now=post_activation)
+    mark_provider_attempt_submitted(
+        db_session, attempt_id=attempt.id, deadline_at=post_activation + timedelta(minutes=2), now=post_activation,
+    )
+    settle_provider_attempt_tokens(db_session, attempt_id=attempt.id, reported_total_tokens=3, now=post_activation)
+    db_session.commit()
+    before_reset = calculate_quota_window(
+        db_session, user=user, resource=QuotaResource.tokens, period=QuotaPeriod.monthly, now=NOW,
+    )
+    assert before_reset.consumed == 3
+    assert before_reset.usage_start == NOW - timedelta(minutes=20)
+    daily_before_reset = calculate_quota_window(
+        db_session, user=user, resource=QuotaResource.tokens, period=QuotaPeriod.daily, now=NOW,
+    )
+    assert daily_before_reset.consumed == 3
+    assert daily_before_reset.usage_start == NOW - timedelta(minutes=20)
+
+    reset_user_quota_batch(
+        db_session, actor=actor, user_id=user.id,
+        windows={(QuotaResource.tokens, QuotaPeriod.monthly)}, operation_id=uuid4(),
+        reason_code=UserQuotaReasonCode.administrative_correction, reason="synthetic reset", now=NOW,
+    )
+    after_reset = calculate_quota_window(
+        db_session, user=user, resource=QuotaResource.tokens, period=QuotaPeriod.monthly, now=NOW,
+    )
+    assert after_reset.consumed == 0
+    assert after_reset.usage_start == NOW
+    daily_after_monthly_reset = calculate_quota_window(
+        db_session, user=user, resource=QuotaResource.tokens, period=QuotaPeriod.daily, now=NOW,
+    )
+    assert daily_after_monthly_reset.consumed == 3
 
 
 def test_expired_reservation_excluded_and_disabled_error(db_session, make_user):
@@ -611,3 +668,67 @@ def test_reserve_provider_attempt_rejects_cross_scope_content_links_and_allows_o
             transcript_id=transcript.id,
         )
     assert error.value.code == "provider_attempt_owner_required"
+
+
+def test_quota_detail_lifetime_usage_is_all_time_settled_owner_scoped_and_reset_independent(db_session, make_team, make_user):
+    actor, team = _quota_admin(make_user), make_team()
+    target = make_user(email="quota-lifetime-target@example.com", team=team, team_role=TeamRole.user)
+    other = make_user(email="quota-lifetime-other@example.com", team=team, team_role=TeamRole.user)
+    token_attempt = _reserve(db_session, target, units=20, now=NOW - timedelta(days=45))
+    mark_provider_attempt_submitted(
+        db_session, attempt_id=token_attempt.id, deadline_at=NOW - timedelta(days=45) + timedelta(minutes=2),
+        now=NOW - timedelta(days=45),
+    )
+    settle_provider_attempt_unknown_tokens(db_session, attempt_id=token_attempt.id, now=NOW - timedelta(days=45))
+    recent_token_attempt = _reserve(db_session, target, units=7, now=NOW - timedelta(days=7))
+    mark_provider_attempt_submitted(
+        db_session, attempt_id=recent_token_attempt.id, deadline_at=NOW - timedelta(days=7) + timedelta(minutes=2),
+        now=NOW - timedelta(days=7),
+    )
+    settle_provider_attempt_tokens(
+        db_session, attempt_id=recent_token_attempt.id, reported_total_tokens=7, now=NOW - timedelta(days=7),
+    )
+    audio_attempt = _reserve(
+        db_session, target, resource=QuotaResource.audio_seconds, units=90,
+        measured_audio_seconds=Decimal("89.2"), now=NOW - timedelta(days=4),
+    )
+    mark_provider_attempt_submitted(
+        db_session, attempt_id=audio_attempt.id, deadline_at=NOW - timedelta(days=4) + timedelta(minutes=2),
+        now=NOW - timedelta(days=4),
+    )
+    settle_provider_attempt_audio(db_session, attempt_id=audio_attempt.id, measured_audio_seconds=Decimal("89.2"), now=NOW - timedelta(days=4))
+    _reserve(db_session, target, units=100, now=NOW)
+    cancelled = _reserve(db_session, target, units=200, now=NOW)
+    cancel_provider_attempt(db_session, attempt_id=cancelled.id, now=NOW)
+    other_attempt = _reserve(db_session, other, units=999, now=NOW - timedelta(days=2))
+    mark_provider_attempt_submitted(
+        db_session, attempt_id=other_attempt.id, deadline_at=NOW - timedelta(days=2) + timedelta(minutes=2),
+        now=NOW - timedelta(days=2),
+    )
+    settle_provider_attempt_tokens(db_session, attempt_id=other_attempt.id, reported_total_tokens=999, now=NOW - timedelta(days=2))
+    db_session.commit()
+
+    detail = get_admin_user_quota_detail(db_session, actor=actor, user_id=target.id, now=NOW)
+    assert (detail.lifetime_token_units, detail.lifetime_audio_seconds) == (27, 90)
+    assert detail.windows[1].consumed == 7
+    reset_user_quota_batch(
+        db_session, actor=actor, user_id=target.id,
+        windows={(QuotaResource.tokens, QuotaPeriod.monthly)}, operation_id=uuid4(),
+        reason_code=UserQuotaReasonCode.administrative_correction, reason="synthetic reset", now=NOW,
+    )
+    update_user_base_quotas_batch(
+        db_session, actor=actor, user_id=target.id, daily_token_limit=None,
+        monthly_token_limit=100, daily_audio_seconds_limit=None, monthly_audio_seconds_limit=None,
+        operation_id=uuid4(), reason_code=UserQuotaReasonCode.policy_change,
+        reason="synthetic finite activation", now=NOW,
+    )
+    after_reset = get_admin_user_quota_detail(db_session, actor=actor, user_id=target.id, now=NOW)
+    assert (after_reset.lifetime_token_units, after_reset.lifetime_audio_seconds) == (27, 90)
+    assert after_reset.windows[1].consumed == 0
+
+
+def test_quota_detail_lifetime_usage_defaults_to_zero(db_session, make_user):
+    actor, target = _quota_admin(make_user), make_user(email="quota-lifetime-zero@example.com")
+    detail = get_admin_user_quota_detail(db_session, actor=actor, user_id=target.id, now=NOW)
+    assert detail.lifetime_token_units == 0
+    assert detail.lifetime_audio_seconds == 0

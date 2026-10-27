@@ -2,12 +2,15 @@ import { attachTranscribeActions } from './actions.js?v=20261021-example-consult
 import { readTranscribeBootstrap } from './bootstrap.js?v=20261005-multiple-problems';
 import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261014-generation-status';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
-import { createAudioCaptureController } from './media.js?v=20261023-batch-startup-ownership';
+import { createAudioCaptureController } from './media.js?v=20261027-live-dictation';
+import { DeepgramLiveStream, trimPinnedVadSpeechBuffer } from './deepgramLiveStream.js?v=20261027-dictation-live-preview';
+import { createOwnedMicStream, createVadCaptureOptions } from './vadCapture.js?v=20261027-shared-vad-capture';
+import { createMicVisualizer } from './micVisualizer.js?v=20261026-shared-mic-visualizer';
 import { createStructuredEditor } from './structured.js?v=20260918-retired-note-workspace';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
 import { createGuidedTour } from './tour.js?v=20261016-accessible-manual-guide';
-import { csrfFetch } from '../csrf.js';
+import { csrfFetch, csrfToken } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
 import { createTemplateSuggestionController } from './templateSuggestions.js?v=20260830-template-suggestion-preference';
@@ -54,6 +57,7 @@ import {
       let hasLlmSelection = bootstrap.hasLlmSelection;
       let sttAvailable = bootstrap.sttAvailable;
       let deepgramLiveStreamingAvailable = Boolean(bootstrap.deepgramLiveStreamingAvailable);
+      let dictationLiveStreamingAvailable = Boolean(bootstrap.dictationLiveStreamingAvailable);
       let activeTranscriptStreamGap = bootstrap.activeTranscriptStreamGap || null;
       let activeTranscriptStreamGapRetryAvailable = false;
       let streamGapActionBusy = false;
@@ -105,6 +109,13 @@ import {
       let dictationMediaRecorder = null;
       let dictationMediaStream = null;
       let dictationCapture = null;
+      let dictationLiveMode = false;
+      let dictationLiveCapture = null;
+      let dictationLiveStartup = null;
+      let dictationLiveFailurePending = false;
+      let dictationLivePreview = { windowNo: null, confirmedText: '', interimText: '' };
+      let dictationLiveCommittedText = [];
+      let dictationLiveCommittedWindows = new Set();
       let dictationRecordingState = 'idle';
       let dictationCaptureGeneration = 0;
       let dictationModalGeneration = 0;
@@ -115,9 +126,6 @@ import {
       let dictationRecordingStartedAt = null;
       let dictationRecordedMs = 0;
       let dictationTimerId = null;
-      let dictationAudioContext = null;
-      let dictationAnalyser = null;
-      let dictationVisualizerFrameId = null;
       let currentDraftText = '';
       let workspaceStructuredTurns = null;
       let workspaceStructuredRevisionId = null;
@@ -157,8 +165,24 @@ import {
       const dictationMicStatus = document.querySelector('[data-dictation-mic-status]');
       const dictationMicTimer = document.querySelector('[data-dictation-mic-timer]');
       const dictationMicVisualizer = document.querySelector('[data-dictation-mic-visualizer]');
+      const dictationVisualizer = createMicVisualizer(dictationMicVisualizer);
+      const dictationLiveToggleButton = document.querySelector('[data-dictation-live-toggle]');
+      const dictationLiveTail = document.querySelector('[data-dictation-live-tail]');
+      const dictationLiveConfirmed = document.querySelector('[data-dictation-live-confirmed]');
+      const dictationLiveInterim = document.querySelector('[data-dictation-live-interim]');
+      const dictationLiveFailure = document.querySelector('[data-dictation-live-failure]');
+      const dictationLiveUseConfirmedButton = document.querySelector('[data-dictation-live-use-confirmed]');
+      const dictationLiveDiscardButton = document.querySelector('[data-dictation-live-discard]');
       const dictationSessionProgress = document.querySelector('[data-dictation-session-progress]');
       const dictationCombinedInput = document.querySelector('[data-dictation-combined-input]');
+      const dictationWordCount = document.querySelector('[data-dictation-word-count]');
+      const updateDictationWordCount = () => {
+        if (!dictationWordCount || !dictationCombinedInput) return;
+        const words = `${dictationCombinedInput.value} ${dictationLivePreview.confirmedText}`.trim().match(/\S+/g)?.length || 0;
+        dictationWordCount.textContent = `${words} ${words === 1 ? 'word' : 'words'}`;
+      };
+      dictationCombinedInput?.addEventListener('input', updateDictationWordCount);
+      updateDictationWordCount();
       const dictationProvenance = document.querySelector('[data-dictation-provenance]');
       const dictationModal = document.querySelector('[data-dictation-modal]');
       const dictationModalCloseButtons = [...document.querySelectorAll('[data-dictation-modal-close]')];
@@ -1357,6 +1381,7 @@ let statusDetailsHideTimer = null;
         || dictationRecordingState === 'recording'
         || dictationRecordingState === 'paused'
         || dictationRecordingState === 'transcribing'
+        || dictationLiveFailurePending
       );
 
       const syncDictationCtaState = () => {
@@ -1475,6 +1500,10 @@ let statusDetailsHideTimer = null;
           dictationPendingAudioBlob = null;
           dictationPendingAudioFilename = 'dictation.webm';
           dictationNeedsExplicitRetry = false;
+          dictationLiveMode = false;
+          dictationLiveFailurePending = false;
+          dictationLiveCommittedText = [];
+          clearDictationLivePreview();
           setDictationModalOpen(true);
           syncDictationControls();
           if (highlightRecord && dictationRecordToggleButton && !dictationRecordToggleButton.disabled) {
@@ -1497,15 +1526,21 @@ let statusDetailsHideTimer = null;
             return false;
           }
         }
-        if (dictationRecordingState === 'recording' || dictationRecordingState === 'paused' || dictationRecordingState === 'starting') {
-          stopDictationRecording({ keepAudio: false });
+        if (dictationLiveCapture || dictationLiveStartup || dictationRecordingState === 'recording' || dictationRecordingState === 'paused' || dictationRecordingState === 'starting') {
+          await stopDictationRecording({ keepAudio: false });
         }
         dictationCaptureGeneration += 1;
         dictationPendingAudioBlob = null;
         dictationPendingAudioFilename = 'dictation.webm';
         dictationNeedsExplicitRetry = false;
+        dictationLiveMode = false;
+        dictationLiveFailurePending = false;
+        dictationLiveCommittedText = [];
+        dictationLiveCommittedWindows = new Set();
+        clearDictationLivePreview();
         if (dictationCombinedInput) {
           dictationCombinedInput.value = lastSavedDictationText || '';
+          updateDictationWordCount();
         }
         dictationDirty = false;
         dictationRecordingState = 'idle';
@@ -1530,7 +1565,8 @@ let statusDetailsHideTimer = null;
         }
         if (dictationRecordToggleButton) {
           const busyState = dictationRecordingState === 'starting' || Boolean(dictationCaptureStartPromise) || dictationRecordingState === 'transcribing' || dictationPendingAudioBlob || dictationUiBusy || dictationSaveInFlight !== null;
-          dictationRecordToggleButton.disabled = !canUseDictationInput() || busyState;
+          const stopAvailable = dictationRecordingState === 'recording' || dictationRecordingState === 'paused';
+          dictationRecordToggleButton.disabled = (!canUseDictationInput() && !stopAvailable) || busyState;
           dictationRecordToggleButton.title = (!canUseDictationInput() && dictationSttStatusMessage) ? dictationSttStatusMessage : '';
         }
         syncDictationCtaState();
@@ -1555,68 +1591,12 @@ let statusDetailsHideTimer = null;
         }
       };
 
-      const ensureDictationVisualizerBars = () => {
-        if (!dictationMicVisualizer || dictationMicVisualizer.childElementCount > 0) return;
-        const fragment = document.createDocumentFragment();
-        for (let index = 0; index < 16; index += 1) {
-          const bar = document.createElement('span');
-          bar.className = 'mic-visualizer__bar';
-          bar.style.setProperty('--level', '0.14');
-          fragment.appendChild(bar);
-        }
-        dictationMicVisualizer.appendChild(fragment);
-      };
-
-      const setDictationVisualizerIdle = () => {
-        if (!dictationMicVisualizer) return;
-        ensureDictationVisualizerBars();
-        dictationMicVisualizer.dataset.vadActive = 'false';
-        dictationMicVisualizer.querySelectorAll('.mic-visualizer__bar').forEach((bar) => {
-          bar.style.setProperty('--level', '0.14');
-        });
-      };
-
       const stopDictationVisualizer = () => {
-        if (dictationVisualizerFrameId) {
-          window.cancelAnimationFrame(dictationVisualizerFrameId);
-          dictationVisualizerFrameId = null;
-        }
-        try {
-          dictationAudioContext?.close?.();
-        } catch (_) {}
-        dictationAudioContext = null;
-        dictationAnalyser = null;
-        setDictationVisualizerIdle();
+        dictationVisualizer.stop();
       };
 
       const startDictationVisualizer = (stream) => {
-        stopDictationVisualizer();
-        if (!dictationMicVisualizer || !window.AudioContext && !window.webkitAudioContext) return;
-        ensureDictationVisualizerBars();
-        const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-        dictationAudioContext = new AudioContextCtor();
-        const source = dictationAudioContext.createMediaStreamSource(stream);
-        dictationAnalyser = dictationAudioContext.createAnalyser();
-        dictationAnalyser.fftSize = 256;
-        source.connect(dictationAnalyser);
-        const data = new Uint8Array(dictationAnalyser.frequencyBinCount);
-        const bars = [...dictationMicVisualizer.querySelectorAll('.mic-visualizer__bar')];
-        const render = () => {
-          if (!dictationAnalyser || dictationRecordingState === 'idle') return;
-          dictationAnalyser.getByteTimeDomainData(data);
-          let total = 0;
-          for (let index = 0; index < data.length; index += 1) {
-            total += Math.abs(data[index] - 128);
-          }
-          const level = Math.min(1, Math.max(0.14, (total / data.length) / 18));
-          dictationMicVisualizer.dataset.vadActive = level > 0.22 ? 'true' : 'false';
-          bars.forEach((bar, index) => {
-            const wave = 0.78 + (Math.sin(Date.now() / 110 + index) * 0.22);
-            bar.style.setProperty('--level', String(Math.max(0.14, Math.min(1, level * wave))));
-          });
-          dictationVisualizerFrameId = window.requestAnimationFrame(render);
-        };
-        render();
+        dictationVisualizer.startStream(stream);
       };
 
       const stopDictationStream = () => {
@@ -1633,7 +1613,7 @@ let statusDetailsHideTimer = null;
         const isBusy = dictationUiBusy || dictationSaveInFlight !== null || noteGenerationBusy;
         const activeCapture = isRecording || isPaused || isStarting;
         const hasRetryableAudio = Boolean(dictationPendingAudioBlob) && !activeCapture && !isTranscribing;
-        const canRecord = canUseDictationInput() && !isBusy && !isTranscribing && !dictationCaptureStartPromise && !hasRetryableAudio;
+        const canRecord = canUseDictationInput() && !isBusy && !isTranscribing && !dictationCaptureStartPromise && !hasRetryableAudio && !dictationLiveFailurePending;
         if (dictationRecordToggleButton) {
           dictationRecordToggleButton.disabled = (!canRecord && !activeCapture) || isTranscribing;
           dictationRecordToggleButton.dataset.state = isTranscribing ? 'transcribing' : (activeCapture ? 'recording' : 'idle');
@@ -1645,7 +1625,7 @@ let statusDetailsHideTimer = null;
           dictationRecordToggleIcon.dataset.lucide = isTranscribing ? 'loader-2' : (activeCapture ? 'square' : 'mic');
         }
         if (dictationPauseRecordingButton) {
-          dictationPauseRecordingButton.hidden = !isRecording && !isPaused;
+          dictationPauseRecordingButton.hidden = (!isRecording && !isPaused);
           dictationPauseRecordingButton.disabled = isBusy || isTranscribing;
           dictationPauseRecordingButton.setAttribute('aria-label', isPaused ? 'Resume dictation' : 'Pause dictation');
           dictationPauseRecordingButton.title = isPaused ? 'Resume' : 'Pause';
@@ -1675,12 +1655,310 @@ let statusDetailsHideTimer = null;
         if (dictationTemplateSelect) {
           dictationTemplateSelect.disabled = isBusy || isTranscribing || !hasLlmSelection || !hasSelectableOptions(dictationTemplateSelect);
         }
+        if (dictationLiveToggleButton) {
+          dictationLiveToggleButton.hidden = !dictationLiveStreamingAvailable && !activeCapture;
+          dictationLiveToggleButton.disabled = !dictationLiveStreamingAvailable || activeCapture || isTranscribing || isBusy || Boolean(dictationLiveCapture || dictationLiveStartup || dictationCaptureStartPromise) || dictationLiveFailurePending;
+          dictationLiveToggleButton.setAttribute('aria-pressed', dictationLiveMode ? 'true' : 'false');
+        }
+        if (dictationLiveFailure) dictationLiveFailure.hidden = !dictationLiveFailurePending;
+        if (dictationLiveUseConfirmedButton) dictationLiveUseConfirmedButton.disabled = !dictationLivePreview.confirmedText;
+        if (dictationSaveButton) dictationSaveButton.disabled = isBusy || !transcriptId || dictationLiveFailurePending;
+        if (dictationSaveGenerateButton) dictationSaveGenerateButton.disabled = isBusy || dictationLiveFailurePending || multipleProblemsSavePending || !transcriptId || !hasLlmSelection || !hasSelectableOptions(generateOutputTemplateSelect);
         setDictationMicButtons(activeCapture || isTranscribing);
         refreshIcons?.(dictationModal || document);
         renderDictationTimer();
       }
 
+      const renderDictationLivePreview = () => {
+        const confirmed = dictationLivePreview.confirmedText;
+        const interim = dictationLivePreview.interimText;
+        if (dictationLiveConfirmed) dictationLiveConfirmed.textContent = confirmed;
+        if (dictationLiveInterim) dictationLiveInterim.textContent = interim;
+        if (dictationLiveTail) dictationLiveTail.hidden = !confirmed && !interim;
+        updateDictationWordCount();
+      };
+
+      const clearDictationLivePreview = () => {
+        dictationLivePreview = { windowNo: null, confirmedText: '', interimText: '' };
+        renderDictationLivePreview();
+      };
+
+      const appendDictationLiveWindow = (text) => {
+        const next = String(text || '').trim();
+        if (!next || !dictationCombinedInput) return false;
+        const existing = dictationCombinedInput.value.trimEnd();
+        dictationCombinedInput.value = existing ? `${existing}\n\n${next}` : next;
+        updateDictationWordCount();
+        dictationDirty = dictationCombinedInput.value !== lastSavedDictationText;
+        return true;
+      };
+
+      const cleanupDictationLiveCapture = async (capture, { cancel = false } = {}) => {
+        if (!capture) return;
+        try { await capture.vad?.pause(); } catch (_) {}
+        try { await Promise.resolve(capture.vad?.destroy?.()).catch(() => {}); } catch (_) {}
+        if (cancel) capture.stream?.cancelPending?.();
+        await capture.micOwner?.pauseStream?.();
+        stopDictationVisualizer();
+        if (dictationLiveCapture === capture) dictationLiveCapture = null;
+      };
+
+      const finishDictationLiveCapture = async ({ keepAudio = true } = {}) => {
+        const capture = dictationLiveCapture;
+        if (!capture) {
+          if (dictationLiveStartup) {
+            const startup = dictationLiveStartup;
+            dictationLiveStartup = null;
+            dictationCaptureGeneration += 1;
+            startup.stream.cancelPending();
+            void startup.vadPromise.then(async (vad) => {
+              try { await vad?.pause?.(); } catch (_) {}
+              try { await Promise.resolve(vad?.destroy?.()).catch(() => {}); } catch (_) {}
+            }, () => {});
+            await startup.micOwner.pauseStream();
+          }
+          if (!keepAudio) {
+            dictationCaptureGeneration += 1;
+            clearDictationLivePreview();
+            dictationLiveFailurePending = false;
+            dictationRecordingState = 'idle';
+            syncDictationControls();
+          } else if (dictationRecordingState === 'starting') {
+            dictationRecordingState = 'idle';
+            setDictationMicStatus('Microphone request canceled before recording started.');
+            syncDictationControls();
+          }
+          return null;
+        }
+        if (!keepAudio) {
+          capture.discardOnStop = true;
+          dictationCaptureGeneration += 1;
+          await cleanupDictationLiveCapture(capture, { cancel: true });
+          dictationLiveFailurePending = false;
+          dictationLiveCommittedText = [];
+          clearDictationLivePreview();
+          dictationRecordingStartedAt = null;
+          if (dictationTimerId) window.clearInterval(dictationTimerId);
+          dictationTimerId = null;
+          dictationRecordingState = 'idle';
+          setDictationMicStatus('Live dictation discarded.');
+          syncDictationControls();
+          capture.resolveStopped?.(null);
+          return null;
+        }
+        if (capture.stopPromise) return capture.stopPromise;
+        capture.stopRequested = true;
+        dictationRecordingState = 'transcribing';
+        dictationRecordedMs = currentDictationDurationMs();
+        dictationRecordingStartedAt = null;
+        setDictationMicStatus('Finalizing live dictation...');
+        if (dictationTimerId) window.clearInterval(dictationTimerId);
+        dictationTimerId = null;
+        syncDictationControls();
+        capture.stopPromise = (async () => {
+          try {
+            await capture.vad?.pause();
+            const result = await capture.stream.finish();
+            if (!isCurrentDictationContext(capture.transcriptId, capture.modalGeneration, capture.generation)) return null;
+            dictationLiveCapture = null;
+            await cleanupDictationLiveCapture(capture);
+            dictationRecordingState = 'idle';
+            dictationLiveFailurePending = false;
+            if (!dictationLiveStreamingAvailable) dictationLiveMode = false;
+            clearDictationLivePreview();
+            setDictationMicStatus('Live dictation ready.', 'success');
+            const text = dictationLiveCommittedText.join('\n\n');
+            dictationLiveCommittedText = [];
+            syncDictationControls();
+            const output = text ? { text } : null;
+            capture.resolveStopped?.(output);
+            return output;
+          } catch (_) {
+            capture.stream?.interrupt?.();
+            return null;
+          }
+        })();
+        return capture.stopPromise;
+      };
+
+      const startDictationLiveRecording = async () => {
+        if (!dictationLiveStreamingAvailable || !canUseDictationInput() || !window.vad?.MicVAD || !navigator.mediaDevices?.getUserMedia) {
+          setDictationMicStatus('Live dictation is unavailable with the current speech-service settings.', 'error');
+          return;
+        }
+        if (dictationCaptureStartPromise || dictationLiveCapture || dictationRecordingState !== 'idle') return;
+        const generation = ++dictationCaptureGeneration;
+        const modalGeneration = dictationModalGeneration;
+        const targetTranscriptId = transcriptId;
+        dictationRecordingState = 'starting';
+        dictationLiveFailurePending = false;
+        dictationLiveCommittedText = [];
+        dictationLiveCommittedWindows = new Set();
+        clearDictationLivePreview();
+        setDictationMicStatus('Connecting live dictation...');
+        syncDictationControls();
+        const current = () => isCurrentDictationContext(targetTranscriptId, modalGeneration, generation);
+        let frameProcessor = null;
+        let capture = null;
+        const micOwner = createOwnedMicStream({
+          acquire: () => navigator.mediaDevices.getUserMedia({ audio: true }),
+          canAcquire: current,
+          onAcquire: (stream) => { dictationMediaStream = stream; },
+          onRelease: (stream) => { if (dictationMediaStream === stream) dictationMediaStream = null; },
+        });
+        const liveStream = new DeepgramLiveStream({
+          onDictationPreview: (message) => {
+            if (!current() || !dictationLiveCapture || dictationLiveCapture.stream !== liveStream) return;
+            dictationLivePreview = {
+              windowNo: message.window_no,
+              confirmedText: message.confirmed_text.trim(),
+              interimText: message.interim_text.trim(),
+            };
+            renderDictationLivePreview();
+          },
+          onWindowCommitted: (message) => {
+            if (!current() || !dictationLiveCapture || dictationLiveCapture.stream !== liveStream) return;
+            if (!Number.isSafeInteger(message.window_no) || dictationLiveCommittedWindows.has(message.window_no)) return;
+            dictationLiveCommittedWindows.add(message.window_no);
+            const committed = String(message.text || '').trim();
+            if (dictationLivePreview.windowNo === message.window_no) clearDictationLivePreview();
+            if (committed) {
+              appendDictationLiveWindow(committed);
+              dictationLiveCommittedText.push(committed);
+            }
+          },
+          onState: (state) => {
+            if (!current()) return;
+            if (state === 'listening') setDictationMicStatus('Listening...');
+            else if (state === 'streaming') setDictationMicStatus('Recording dictation...', 'success');
+          },
+          onError: (error) => {
+            if (!current()) return;
+            const hadActiveCapture = Boolean(dictationLiveCapture || capture);
+            const pendingStartup = dictationLiveStartup?.stream === liveStream;
+            if (pendingStartup) {
+              dictationCaptureGeneration += 1;
+              dictationLiveStartup = null;
+              liveStream.cancelPending();
+            }
+            dictationLivePreview.interimText = '';
+            dictationLiveFailurePending = hadActiveCapture;
+            dictationLiveCommittedText = [];
+            dictationRecordingStartedAt = null;
+            if (dictationTimerId) window.clearInterval(dictationTimerId);
+            dictationTimerId = null;
+            dictationRecordingState = 'idle';
+            dictationLiveCapture = null;
+            if (!dictationLiveStreamingAvailable) dictationLiveMode = false;
+            if (capture) void cleanupDictationLiveCapture(capture, { cancel: true });
+            renderDictationLivePreview();
+            const failureMessage = error?.code === 'quota_exceeded'
+              ? 'Live transcription stopped because your team has no transcription quota available. Contact your team administrator.'
+              : ['unauthorized', 'forbidden', 'not_found', 'stream_csrf_invalid', 'stream_session_expired'].includes(error?.code)
+                ? 'Your session expired or access changed. Sign in again, then reopen this consultation.'
+                : ['stt_config_secret_missing', 'stream_provider_ineligible'].includes(error?.code)
+                  ? 'Live transcription is unavailable with the selected speech-service settings. Ask your team administrator to review them.'
+                  : 'Live transcription stopped. Check the connection and try again.';
+            setDictationMicStatus(failureMessage, 'error');
+            if (dictationLiveFailurePending) setDictationSessionProgress('Choose whether to use confirmed words or discard unfinished audio.');
+            syncDictationControls();
+          },
+        });
+        const vadOptions = createVadCaptureOptions({
+          model: liveVadModel,
+          startOnLoad: false,
+          positiveSpeechThreshold: 0.3,
+          preSpeechPadMs: livePreRollMs,
+          redemptionMs: liveSilenceThresholdMs,
+          minSpeechMs: liveMinChunkMs,
+          baseAssetPath: liveVadAssetBasePath,
+          onnxWASMBasePath: liveVadOnnxBasePath,
+          getStream: micOwner.getStream,
+          resumeStream: micOwner.resumeStream,
+          pauseStream: micOwner.pauseStream,
+          isCurrent: current,
+          isCurrentSpeechEnd: () => current() || Boolean(capture?.stopRequested),
+          onFrameProcessed: (probabilities, frame) => {
+            dictationVisualizer.updateFrame(frame);
+            dictationVisualizer.setVadActive(Number(probabilities?.isSpeech) >= 0.3);
+            if (!trimPinnedVadSpeechBuffer(frameProcessor, frame, liveVadSampleRate, 5)) {
+              liveStream.interrupt();
+              return;
+            }
+            liveStream.pushFrame(frame, Number(probabilities?.isSpeech) >= 0.3);
+          },
+          onSpeechStart: () => liveStream.speechStarted(),
+          onSpeechEnd: () => {
+            dictationVisualizer.setVadActive(false);
+            if (capture?.stopRequested) return;
+          },
+          onVADMisfire: () => dictationVisualizer.setVadActive(false),
+        });
+        const vadPreparation = window.vad.MicVAD.new(vadOptions);
+        dictationLiveStartup = { stream: liveStream, micOwner, vadPromise: vadPreparation };
+        const startPromise = (async () => {
+          try {
+            const [_, vad] = await Promise.all([
+              liveStream.connect({
+                transcriptId: targetTranscriptId,
+                csrfToken: csrfToken(),
+                url: `/api/v1/transcripts/${encodeURIComponent(targetTranscriptId)}/post-consultation-dictation/deepgram-stream`,
+              }),
+              vadPreparation,
+            ]);
+            if (liveStream.stopped) throw new Error('Live dictation ended during startup.');
+            frameProcessor = vad?.frameProcessor;
+            if (!Array.isArray(frameProcessor?.audioBuffer)) throw new Error('Live audio detector buffer is unavailable.');
+            if (!current()) {
+              await vad.pause?.();
+              vad.destroy?.();
+              liveStream.cancelPending();
+              await micOwner.pauseStream();
+              return;
+            }
+            capture = { generation, modalGeneration, transcriptId: targetTranscriptId, stream: liveStream, vad, micOwner, stopPromise: null, stopRequested: false };
+            dictationLiveStartup = null;
+            dictationLiveCapture = capture;
+            dictationMediaStream = micOwner.current;
+            await vad.start();
+            if (!current() || dictationLiveCapture !== capture) {
+              await cleanupDictationLiveCapture(capture, { cancel: true });
+              return;
+            }
+            dictationRecordingState = 'recording';
+            dictationRecordingStartedAt = Date.now();
+            dictationRecordedMs = 0;
+            dictationTimerId = window.setInterval(renderDictationTimer, 250);
+            setDictationMicStatus('Recording dictation...', 'success');
+            syncDictationControls();
+          } catch (_) {
+            if (dictationLiveStartup?.stream === liveStream) dictationLiveStartup = null;
+            liveStream.cancelPending();
+            await micOwner.pauseStream();
+            void vadPreparation.then(async (lateVad) => {
+              if (capture?.vad === lateVad) return;
+              try { await lateVad?.pause?.(); } catch (_) {}
+              try { await Promise.resolve(lateVad?.destroy?.()).catch(() => {}); } catch (_) {}
+            }, () => {});
+            if (!current()) return;
+            dictationRecordingState = 'idle';
+            if (!dictationLiveStreamingAvailable) dictationLiveMode = false;
+            setDictationMicStatus('Live dictation could not start.', 'error');
+            syncDictationControls();
+          }
+        })();
+        dictationCaptureStartPromise = startPromise;
+        try { await startPromise; }
+        finally {
+          if (dictationCaptureStartPromise === startPromise) {
+            dictationCaptureStartPromise = null;
+            syncDictationControls();
+          }
+        }
+      };
+
       const startDictationRecording = async () => {
+        if (dictationLiveMode) return startDictationLiveRecording();
         if (!canUseDictationInput()) {
           setDictationMicStatus(dictationUnavailableCopy(), 'error');
           return;
@@ -1796,35 +2074,73 @@ let statusDetailsHideTimer = null;
         try {
           await startPromise;
         } finally {
-          if (dictationCaptureStartPromise === startPromise) dictationCaptureStartPromise = null;
+          if (dictationCaptureStartPromise === startPromise) {
+            dictationCaptureStartPromise = null;
+            syncDictationControls();
+          }
         }
       };
 
-      const pauseDictationRecording = () => {
-        if (dictationRecordingState !== 'recording' || !dictationMediaRecorder) return;
+      const pauseDictationRecording = async () => {
+        if (dictationRecordingState !== 'recording') return;
         dictationRecordedMs = currentDictationDurationMs();
         dictationRecordingStartedAt = null;
+        if (dictationLiveCapture) {
+          const capture = dictationLiveCapture;
+          dictationRecordingState = 'paused';
+          if (dictationTimerId) window.clearInterval(dictationTimerId);
+          dictationTimerId = null;
+          try { await capture.vad.pause(); } catch (_) {}
+          dictationVisualizer.pause();
+          setDictationMicStatus('Dictation paused.', '');
+          syncDictationControls();
+          return;
+        }
+        if (!dictationMediaRecorder) return;
         try {
           dictationMediaRecorder.pause();
         } catch (_) {}
         dictationRecordingState = 'paused';
         setDictationMicStatus('Dictation paused.', '');
-        setDictationVisualizerIdle();
+        dictationVisualizer.pause();
         syncDictationControls();
       };
 
-      const resumeDictationRecording = () => {
-        if (dictationRecordingState !== 'paused' || !dictationMediaRecorder) return;
+      const resumeDictationRecording = async () => {
+        if (dictationRecordingState !== 'paused') return;
+        if (dictationLiveCapture) {
+          const capture = dictationLiveCapture;
+          dictationRecordingState = 'starting';
+          syncDictationControls();
+          try {
+            await capture.vad.start();
+            if (dictationLiveCapture !== capture) return;
+            if (dictationMediaStream) dictationVisualizer.startStream(dictationMediaStream);
+            dictationRecordingState = 'recording';
+            dictationRecordingStartedAt = Date.now();
+            dictationTimerId = window.setInterval(renderDictationTimer, 250);
+            setDictationMicStatus('Recording dictation...', 'success');
+            syncDictationControls();
+          } catch (_) {
+            capture.stream.interrupt();
+          }
+          return;
+        }
+        if (!dictationMediaRecorder) return;
         dictationRecordingStartedAt = Date.now();
         try {
           dictationMediaRecorder.resume();
         } catch (_) {}
+        dictationVisualizer.resume();
         dictationRecordingState = 'recording';
         setDictationMicStatus('Recording dictation...', 'success');
         syncDictationControls();
       };
 
       function stopDictationRecording({ keepAudio = true } = {}) {
+        if (dictationLiveCapture || dictationLiveStartup || (dictationLiveMode && dictationRecordingState === 'starting')) {
+          return finishDictationLiveCapture({ keepAudio });
+        }
         if (dictationTimerId) {
           window.clearInterval(dictationTimerId);
           dictationTimerId = null;
@@ -1900,6 +2216,7 @@ let statusDetailsHideTimer = null;
         const next = String(text || '').trim();
         if (!next) return false;
         dictationCombinedInput.value = existing ? `${existing}\n\n${next}` : next;
+        updateDictationWordCount();
         dictationDirty = dictationCombinedInput.value !== lastSavedDictationText;
         dictationCombinedInput.focus();
         return true;
@@ -2016,11 +2333,15 @@ let statusDetailsHideTimer = null;
             let preview = null;
             let needsPreview = false;
             if (dictationRecordingState === 'starting') {
-              // getUserMedia cannot be aborted; invalidate this request so a late
-              // permission grant only stops its tracks and never starts recording.
-              dictationCaptureGeneration += 1;
-              dictationRecordingState = 'idle';
-              setDictationMicStatus('Microphone request canceled before recording started.');
+              if (dictationLiveMode || dictationLiveStartup) {
+                await stopDictationRecording({ keepAudio: true });
+              } else {
+                // getUserMedia cannot be aborted; invalidate this request so a late
+                // permission grant only stops its tracks and never starts recording.
+                dictationCaptureGeneration += 1;
+                dictationRecordingState = 'idle';
+                setDictationMicStatus('Microphone request canceled before recording started.');
+              }
             } else if (dictationRecordingState === 'recording' || dictationRecordingState === 'paused') {
               needsPreview = true;
               preview = await stopDictationRecording({ keepAudio: true });
@@ -2097,6 +2418,7 @@ let statusDetailsHideTimer = null;
         const nextText = dictation?.effective_text || '';
         if (dictationCombinedInput && document.activeElement !== dictationCombinedInput && !dictationDirty) {
           dictationCombinedInput.value = nextText;
+          updateDictationWordCount();
         }
         if (!dictationDirty) {
           lastSavedDictationText = nextText;
@@ -4485,6 +4807,11 @@ let statusDetailsHideTimer = null;
         nextLiveChunkSequenceNo = transcript?.next_live_chunk_sequence_no_upload || 1;
         hasSttSelection = Boolean(workspace.stt_selected);
         deepgramLiveStreamingAvailable = nextDeepgramLiveStreamingAvailable;
+        const nextDictationLiveStreamingAvailable = Boolean(workspace.dictation_live_streaming_available);
+        if (!nextDictationLiveStreamingAvailable && !dictationLiveCapture && dictationRecordingState === 'idle') {
+          dictationLiveMode = false;
+        }
+        dictationLiveStreamingAvailable = nextDictationLiveStreamingAvailable;
         const nextDiarizationAvailable = Boolean(workspace.diarization_available);
         const capabilityKey = [
           activeIngestionMode || userAppPreferences.preferred_recording_mode || 'whole_file',
@@ -5060,6 +5387,33 @@ let statusDetailsHideTimer = null;
         button.addEventListener('click', () => void closeDictationModal());
       });
       dictationCancelButton?.addEventListener('click', () => void closeDictationModal());
+      dictationLiveToggleButton?.addEventListener('click', () => {
+        if (!dictationLiveStreamingAvailable || dictationRecordingState !== 'idle' || dictationLiveCapture || dictationLiveFailurePending) return;
+        dictationLiveMode = !dictationLiveMode;
+        setDictationMicStatus(dictationLiveMode ? 'Live dictation selected.' : 'Ready for dictation.');
+        syncDictationControls();
+      });
+      dictationLiveUseConfirmedButton?.addEventListener('click', () => {
+        if (!dictationLiveFailurePending || !dictationLivePreview.confirmedText) return;
+        appendDictationLiveWindow(dictationLivePreview.confirmedText);
+        dictationLiveFailurePending = false;
+        if (!dictationLiveStreamingAvailable) dictationLiveMode = false;
+        dictationLiveCommittedText = [];
+        clearDictationLivePreview();
+        setDictationSessionProgress('');
+        setDictationMicStatus('Confirmed words added to dictation.', 'success');
+        syncDictationControls();
+      });
+      dictationLiveDiscardButton?.addEventListener('click', () => {
+        if (!dictationLiveFailurePending) return;
+        dictationLiveFailurePending = false;
+        if (!dictationLiveStreamingAvailable) dictationLiveMode = false;
+        dictationLiveCommittedText = [];
+        clearDictationLivePreview();
+        setDictationSessionProgress('');
+        setDictationMicStatus('Unfinished live audio discarded.');
+        syncDictationControls();
+      });
       const prepareExampleDictationCapture = async () => {
         if (!activeTranscriptIsExample) return true;
         if (dictationDirty) {

@@ -52,7 +52,7 @@ def _synthetic_pcm_wav(sample_count: int, pcm_bytes: bytes | None = None) -> byt
 
 
 def _stream_fixture(db_session, make_team, make_user, monkeypatch, *, now=None, lease_seconds=15,
-                    ingestion_mode=TranscriptIngestionMode.live_chunked, start_stream=True):
+                    ingestion_mode=TranscriptIngestionMode.live_chunked, start_stream=True, purpose="conversation"):
     team = make_team(name=f"Synthetic stream {uuid4()}")
     owner = make_user(email=f"stream-{uuid4()}@example.com", team=team)
     admin = make_user(email=f"stream-admin-{uuid4()}@example.com", is_system_admin=True)
@@ -85,7 +85,7 @@ def _stream_fixture(db_session, make_team, make_user, monkeypatch, *, now=None, 
                 "adapter_kind": SttAdapterKind.generic_rest.value, "base_url": DEEPGRAM_GLOBAL_BASE_URL,
                 "model_name": "nova-3", "language": "en", "mip_opt_out": True,
                 "extra_query_params": {"mip_opt_out": "true"},
-            }, now=now, lease_seconds=lease_seconds,
+            }, now=now, lease_seconds=lease_seconds, purpose=purpose,
         )
     return owner, transcript, started, config
 
@@ -747,3 +747,76 @@ def test_failed_window_commit_rollback_durably_queues_orphan_vault_cleanup(
     ))
     assert cleanup is not None
     assert window is not None and window.recovery_audio_vault_ref is None
+
+
+def test_dictation_stream_never_persists_preview_or_changes_transcript(db_session, make_team, make_user, monkeypatch):
+    from app.services.transcripts import transcript_draft_text, assert_no_unresolved_stream_session
+    owner, transcript, started, _ = _stream_fixture(db_session, make_team, make_user, monkeypatch, purpose="post_consultation_dictation", ingestion_mode=TranscriptIngestionMode.whole_file)
+    original_status = transcript.status
+    before = transcript_draft_text(db_session, transcript=transcript)
+    assert_no_unresolved_stream_session(db_session, transcript_id=transcript.id)
+    auth = authorize_stream_batch(db_session, owner.id, transcript_id=transcript.id, session_id=started.session_id, connection_fence=started.connection_fence, fence_token=started.fence_token, first_sample_offset=0, sample_count=1, pcm_bytes=b"\x00\x00")
+    commit_stream_window(db_session, owner.id, transcript_id=transcript.id, session_id=started.session_id, connection_fence=started.connection_fence, fence_token=started.fence_token, window_no=auth.window_no, source_end_sample_offset=1, forwarded_sample_count=1, finalized_text="synthetic dictation", final_segment_count=1)
+    repeated = commit_stream_window(db_session, owner.id, transcript_id=transcript.id, session_id=started.session_id, connection_fence=started.connection_fence, fence_token=started.fence_token, window_no=auth.window_no, source_end_sample_offset=1, forwarded_sample_count=1, finalized_text="synthetic dictation", final_segment_count=1)
+    assert repeated.already_committed
+    finish_transcript_stream(db_session, owner.id, transcript_id=transcript.id, session_id=started.session_id, connection_fence=started.connection_fence, fence_token=started.fence_token)
+    db_session.refresh(transcript)
+    assert transcript.status == original_status
+    assert transcript_draft_text(db_session, transcript=transcript) == before
+    from app.models import PostConsultationDictation
+    assert db_session.scalar(select(PostConsultationDictation.id).where(
+        PostConsultationDictation.transcript_id == transcript.id,
+    ).limit(1)) is None
+
+
+def test_dictation_stream_failure_discards_without_recovery_audio(db_session, make_team, make_user, monkeypatch):
+    owner, transcript, started, _ = _stream_fixture(db_session, make_team, make_user, monkeypatch, purpose="post_consultation_dictation")
+    original_status = transcript.status
+    authorize_stream_batch(db_session, owner.id, transcript_id=transcript.id, session_id=started.session_id, connection_fence=started.connection_fence, fence_token=started.fence_token, first_sample_offset=0, sample_count=1, pcm_bytes=b"\x00\x00")
+    result = fail_transcript_stream(db_session, owner.id, transcript_id=transcript.id, session_id=started.session_id, connection_fence=started.connection_fence, fence_token=started.fence_token, error_code="stream_provider_failed", recovery_audio_bytes=_synthetic_pcm_wav(1))
+    assert result.status is TranscriptStreamStatus.discarded
+    assert not result.recovery_available
+    db_session.refresh(transcript)
+    assert transcript.status == original_status
+
+
+def test_expired_dictation_session_settles_without_transcript_failure(db_session, make_team, make_user, monkeypatch):
+    owner, transcript, started, _ = _stream_fixture(db_session, make_team, make_user, monkeypatch, purpose="post_consultation_dictation")
+    old_status = transcript.status
+    authorize_stream_batch(db_session, owner.id, transcript_id=transcript.id, session_id=started.session_id, connection_fence=started.connection_fence, fence_token=started.fence_token, first_sample_offset=0, sample_count=1, pcm_bytes=b"\x00\x00")
+    assert reconcile_expired_stream_sessions(db_session, now=utcnow() + timedelta(minutes=1)) == 1
+    db_session.refresh(transcript)
+    session = db_session.get(TranscriptStreamSession, started.session_id)
+    attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.transcript_stream_session_id == started.session_id))
+    assert transcript.status == old_status
+    assert session.status is TranscriptStreamStatus.discarded
+    assert attempt.status is AttemptStatus.settled and attempt.outcome is AttemptOutcome.unknown
+
+
+@pytest.mark.parametrize("operation", ["retry", "discard"])
+def test_conversation_recovery_services_reject_dictation_streams(
+    db_session, make_team, make_user, monkeypatch, operation,
+):
+    owner, transcript, started, _ = _stream_fixture(
+        db_session, make_team, make_user, monkeypatch,
+        purpose="post_consultation_dictation",
+    )
+    with pytest.raises(AppError) as denied:
+        if operation == "retry":
+            queue_transcript_stream_recovery(
+                db_session, owner.id, transcript_id=transcript.id,
+                session_id=started.session_id, window_no=0,
+            )
+        else:
+            discard_transcript_stream_gap(
+                db_session, owner.id, transcript_id=transcript.id,
+                session_id=started.session_id,
+            )
+    assert denied.value.status_code == 404
+    assert denied.value.code == "not_found"
+    session = db_session.get(TranscriptStreamSession, started.session_id)
+    assert session.purpose == "post_consultation_dictation"
+    assert session.status is TranscriptStreamStatus.active
+    assert db_session.scalar(select(TranscriptIngestionJob.id).where(
+        TranscriptIngestionJob.transcript_id == transcript.id,
+    ).limit(1)) is None

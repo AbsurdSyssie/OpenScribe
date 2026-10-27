@@ -278,10 +278,11 @@ def _lock_session(
     return session
 
 
-def _live_session_blocker(db: Session, *, transcript_id: UUID) -> TranscriptStreamSession | None:
+def _live_session_blocker(db: Session, *, transcript_id: UUID, conversation_only: bool = False) -> TranscriptStreamSession | None:
     return db.scalar(
         select(TranscriptStreamSession).where(
             TranscriptStreamSession.transcript_id == transcript_id,
+            *([TranscriptStreamSession.purpose == "conversation"] if conversation_only else []),
             TranscriptStreamSession.status.in_(
                 [TranscriptStreamStatus.active, TranscriptStreamStatus.finalizing,
                  TranscriptStreamStatus.failed, TranscriptStreamStatus.recovering]
@@ -296,17 +297,20 @@ def start_transcript_stream(
     *,
     transcript_id: UUID,
     selection_snapshot: Mapping[str, object],
+    purpose: str = "conversation",
     lease_seconds: int = STREAM_LEASE_SECONDS,
     now: datetime | None = None,
 ) -> StreamSessionStarted:
     now = _now(now)
     if not 1 <= lease_seconds <= 60:
         raise ValueError("stream lease must be between 1 and 60 seconds")
+    if purpose not in {"conversation", "post_consultation_dictation"}:
+        raise ValueError("invalid stream purpose")
     snapshot = _selection_snapshot(selection_snapshot)
     locked_owner, transcript = _lock_owner_transcript(db, owner_user_id=owner.id, transcript_id=transcript_id, now=now)
-    if transcript.ingestion_mode is not TranscriptIngestionMode.live_chunked:
+    if purpose == "conversation" and transcript.ingestion_mode is not TranscriptIngestionMode.live_chunked:
         raise AppError(409, "stream_transcript_mode_unsupported", "Transcript is not configured for live capture")
-    if transcript.status not in {TranscriptStatus.recording, TranscriptStatus.ready, TranscriptStatus.transcribing}:
+    if purpose == "conversation" and transcript.status not in {TranscriptStatus.recording, TranscriptStatus.ready, TranscriptStatus.transcribing}:
         raise AppError(409, "stream_transcript_unavailable", "Transcript is not available for live capture")
     pending_job = db.scalar(
         select(TranscriptIngestionJob.id).where(
@@ -314,16 +318,17 @@ def start_transcript_stream(
             TranscriptIngestionJob.status.in_([TranscriptIngestionJobStatus.queued, TranscriptIngestionJobStatus.processing]),
         ).limit(1)
     )
-    if pending_job is not None or _live_session_blocker(db, transcript_id=transcript.id) is not None:
+    if (purpose == "conversation" and pending_job is not None) or _live_session_blocker(db, transcript_id=transcript.id) is not None:
         raise AppError(409, "stream_transcript_busy", "Transcript has unfinished transcription work")
     session = TranscriptStreamSession(
         id=uuid4(), transcript_id=transcript.id, owner_user_id=locked_owner.id, team_id=transcript.team_id,
-        selection_snapshot_json=snapshot, status=TranscriptStreamStatus.active,
+        purpose=purpose, selection_snapshot_json=snapshot, status=TranscriptStreamStatus.active,
         stt_diarisation_enabled=bool(snapshot.get("stt_diarisation_enabled", False)),
         connection_fence=1, fence_token=uuid4(), lease_expires_at=now + timedelta(seconds=lease_seconds),
         started_at=now, created_at=now, updated_at=now,
     )
-    transcript.status = TranscriptStatus.transcribing
+    if purpose == "conversation":
+        transcript.status = TranscriptStatus.transcribing
     db.add(session)
     db.add(transcript)
     db.commit()
@@ -627,7 +632,7 @@ def commit_stream_window(
     session = _lock_session(db, session_id=session_id, transcript_id=transcript.id, owner_user_id=owner_user_id,
                             connection_fence=connection_fence, fence_token=fence_token)
     has_structured_source = bool(getattr(transcript, "current_draft_turns_encrypted", None))
-    structured_commit = bool(session.stt_diarisation_enabled or has_structured_source)
+    structured_commit = session.purpose == "conversation" and bool(session.stt_diarisation_enabled or has_structured_source)
     canonical_turns = None
     if structured_commit:
         canonical_turns = finalized_turns or (
@@ -696,7 +701,7 @@ def commit_stream_window(
             db, transcript=transcript, turns=canonical_turns, scope_id=scope_id,
             fallback_text=finalized_text,
         )
-    elif finalized_text.strip():
+    elif session.purpose == "conversation" and finalized_text.strip():
         from app.services.transcripts import _append_chunk_text, set_transcript_draft_text, transcript_draft_text
         updated_text = _append_chunk_text(transcript_draft_text(db, transcript=transcript), finalized_text)
         set_transcript_draft_text(db, transcript=transcript, plaintext=updated_text)
@@ -723,7 +728,7 @@ def _resolve_transcript_after_stream_change(db: Session, *, transcript: Transcri
         TranscriptIngestionJob.transcript_id == transcript.id,
         TranscriptIngestionJob.status.in_([TranscriptIngestionJobStatus.queued, TranscriptIngestionJobStatus.processing]),
     ).limit(1))
-    blocker = _live_session_blocker(db, transcript_id=transcript.id)
+    blocker = _live_session_blocker(db, transcript_id=transcript.id, conversation_only=True)
     if blocker is not None:
         transcript.status = TranscriptStatus.failed if blocker.status is TranscriptStreamStatus.failed else TranscriptStatus.transcribing
     elif pending_ingestion is not None:
@@ -766,10 +771,11 @@ def finish_transcript_stream(
     session.completed_at = now
     session.lease_expires_at = now
     session.updated_at = now
-    _resolve_transcript_after_stream_change(db, transcript=transcript, now=now)
+    if session.purpose == "conversation":
+        _resolve_transcript_after_stream_change(db, transcript=transcript, now=now)
     db.add(session)
     db.commit()
-    if transcript.status is TranscriptStatus.ready:
+    if session.purpose == "conversation" and transcript.status is TranscriptStatus.ready:
         from app.services.transcripts import _preview_redact_current_draft_if_ready
         _preview_redact_current_draft_if_ready(db, transcript=transcript)
     return StreamFinished(session.status, session.next_source_sample_offset)
@@ -812,6 +818,19 @@ def fail_transcript_stream(
         )
         db.commit()
         return StreamFailed(session.status, recovery_available, session.next_source_sample_offset)
+    if session.purpose == "post_consultation_dictation":
+        if current_window is not None:
+            current_window.status = TranscriptStreamWindowStatus.discarded
+            db.add(current_window)
+        _settle_session_attempts(db, session_id=session.id, outcome="unknown", now=now)
+        session.status = TranscriptStreamStatus.discarded
+        session.failure_code = safe_code
+        session.completed_at = now
+        session.lease_expires_at = now
+        session.updated_at = now
+        db.add(session)
+        db.commit()
+        return StreamFailed(session.status, False, session.next_source_sample_offset)
     recovery_available = False
     newly_written_recovery_ref = None
     unresolved_window = (
@@ -899,6 +918,8 @@ def discard_transcript_stream_gap(
     now = _now(now)
     _owner, transcript = _lock_owner_transcript(db, owner_user_id=owner_user_id, transcript_id=transcript_id, now=now)
     session = _lock_session(db, session_id=session_id, transcript_id=transcript.id, owner_user_id=owner_user_id)
+    if session.purpose != "conversation":
+        raise AppError(404, "not_found", "Stream session not found")
     if session.status not in {TranscriptStreamStatus.failed, TranscriptStreamStatus.recovering}:
         raise AppError(409, "stream_gap_not_discardable", "There is no unresolved stream gap to discard")
     windows = db.scalars(select(TranscriptStreamWindow).where(
@@ -955,6 +976,8 @@ def queue_transcript_stream_recovery(
     now = _now(now)
     owner, transcript = _lock_owner_transcript(db, owner_user_id=owner_user_id, transcript_id=transcript_id, now=now)
     session = _lock_session(db, session_id=session_id, transcript_id=transcript.id, owner_user_id=owner.id)
+    if session.purpose != "conversation":
+        raise AppError(404, "not_found", "Stream session not found")
     window = db.scalar(select(TranscriptStreamWindow).where(
         TranscriptStreamWindow.session_id == session.id,
         TranscriptStreamWindow.window_no == window_no,
@@ -1046,6 +1069,18 @@ def reconcile_expired_stream_sessions(
             TranscriptStreamWindow.window_no == session.window_no,
             TranscriptStreamWindow.status == TranscriptStreamWindowStatus.active,
         ).with_for_update())
+        if session.purpose == "post_consultation_dictation":
+            if window is not None:
+                window.status = TranscriptStreamWindowStatus.discarded
+                db.add(window)
+            _settle_session_attempts(db, session_id=session.id, outcome="unknown", now=now)
+            session.status = TranscriptStreamStatus.discarded
+            session.completed_at = now
+            session.lease_expires_at = now
+            session.updated_at = now
+            db.add(session)
+            changed += 1
+            continue
         unresolved_audio_window = (
             window is not None
             and window.forwarded_sample_count > 0

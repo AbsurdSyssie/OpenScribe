@@ -54,6 +54,11 @@ class QuotaWindow:
     usage_start: datetime
     resets_at: datetime
 
+    @property
+    def natural_end(self) -> datetime:
+        """Last instant in the calendar period before the exclusive reset boundary."""
+        return self.resets_at - timedelta(microseconds=1)
+
 
 @dataclass(frozen=True, slots=True)
 class QuotaSummary:

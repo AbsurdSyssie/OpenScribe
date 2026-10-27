@@ -641,19 +641,21 @@ def _ws_cookies(client):
     return {SESSION_COOKIE_NAME: client.cookies.get(SESSION_COOKIE_NAME)}
 
 
-def test_websocket_rejects_wrong_origin_before_auth_or_provider_work(client, db_session):
+@pytest.mark.parametrize("dictation", [False, True])
+def test_websocket_rejects_wrong_origin_before_auth_or_provider_work(client, db_session, dictation):
     app = _route_test_app(db_session)
     with TestClient(app) as ws_client:
         with pytest.raises(WebSocketDisconnect) as raised:
             with ws_client.websocket_connect(
-                f"/api/v1/transcripts/{uuid4()}/deepgram-stream",
+                f"/api/v1/transcripts/{uuid4()}/{"post-consultation-dictation/" if dictation else ""}deepgram-stream",
                 headers={"Origin": "https://attacker.example"},
             ):
                 pass
     assert raised.value.code == 1008
 
 
-def test_websocket_rejects_anonymous_even_with_valid_origin(db_session, make_team, make_user):
+@pytest.mark.parametrize("dictation", [False, True])
+def test_websocket_rejects_anonymous_even_with_valid_origin(db_session, make_team, make_user, dictation):
     team = make_team(name="Deepgram WS anonymous team")
     owner = make_user(email="deepgram-ws-anonymous@example.com", team=team)
     transcript = _new_transcript(db_session, owner)
@@ -661,7 +663,7 @@ def test_websocket_rejects_anonymous_even_with_valid_origin(db_session, make_tea
     with TestClient(app) as ws_client:
         with pytest.raises(WebSocketDisconnect) as raised:
             with ws_client.websocket_connect(
-                f"/api/v1/transcripts/{transcript.id}/deepgram-stream",
+                f"/api/v1/transcripts/{transcript.id}/{"post-consultation-dictation/" if dictation else ""}deepgram-stream",
                 headers={"Origin": "http://testserver"},
             ):
                 pass
@@ -859,7 +861,8 @@ def test_checkpoint_wait_expiry_uses_safe_finalization_error(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_websocket_rejects_cross_owner_transcript(client, db_session, make_team, make_user):
+@pytest.mark.parametrize("dictation", [False, True])
+def test_websocket_rejects_cross_owner_transcript(client, db_session, make_team, make_user, dictation):
     team = make_team(name="Deepgram WS owner team")
     owner = make_user(email="deepgram-ws-owner@example.com", password="password-1", team=team)
     other = make_user(email="deepgram-ws-other@example.com", password="password-2", team=team)
@@ -870,14 +873,15 @@ def test_websocket_rejects_cross_owner_transcript(client, db_session, make_team,
         ws_client.cookies.update(_ws_cookies(client))
         with pytest.raises(WebSocketDisconnect) as raised:
             with ws_client.websocket_connect(
-                f"/api/v1/transcripts/{transcript.id}/deepgram-stream",
+                f"/api/v1/transcripts/{transcript.id}/{"post-consultation-dictation/" if dictation else ""}deepgram-stream",
                 headers={"Origin": "http://testserver"},
             ):
                 pass
     assert raised.value.code == 1008
 
 
-def test_websocket_rejects_partial_onboarding_session(client, db_session, make_team, make_user):
+@pytest.mark.parametrize("dictation", [False, True])
+def test_websocket_rejects_partial_onboarding_session(client, db_session, make_team, make_user, dictation):
     team = make_team(name="Deepgram WS onboarding team")
     owner = make_user(
         email="deepgram-ws-onboarding@example.com", password="password-1", team=team,
@@ -892,7 +896,7 @@ def test_websocket_rejects_partial_onboarding_session(client, db_session, make_t
         ws_client.cookies.update(_ws_cookies(client))
         with pytest.raises(WebSocketDisconnect) as raised:
             with ws_client.websocket_connect(
-                f"/api/v1/transcripts/{transcript.id}/deepgram-stream",
+                f"/api/v1/transcripts/{transcript.id}/{"post-consultation-dictation/" if dictation else ""}deepgram-stream",
                 headers={"Origin": "http://testserver"},
             ):
                 pass
@@ -925,7 +929,8 @@ def test_websocket_full_session_requires_session_bound_csrf_before_start(monkeyp
             assert websocket.receive_json() == {"type": "finalized"}
 
 
-def test_websocket_invalid_csrf_does_not_start_stream(monkeypatch, client, db_session, make_team, make_user):
+@pytest.mark.parametrize("dictation", [False, True])
+def test_websocket_invalid_csrf_does_not_start_stream(monkeypatch, client, db_session, make_team, make_user, dictation):
     team = make_team(name="Deepgram WS invalid CSRF team")
     owner = make_user(email="deepgram-ws-invalid-csrf@example.com", password="password-1", team=team)
     transcript = _new_transcript(db_session, owner)
@@ -941,7 +946,7 @@ def test_websocket_invalid_csrf_does_not_start_stream(monkeypatch, client, db_se
     with TestClient(app) as ws_client:
         ws_client.cookies.update(_ws_cookies(client))
         with ws_client.websocket_connect(
-            f"/api/v1/transcripts/{transcript.id}/deepgram-stream",
+            f"/api/v1/transcripts/{transcript.id}/{"post-consultation-dictation/" if dictation else ""}deepgram-stream",
             headers={"Origin": "http://testserver"},
         ) as websocket:
             websocket.send_text('{"type":"start","csrf_token":"invalid-synthetic-token"}')
@@ -1188,7 +1193,8 @@ def test_session_revocation_before_provider_result_blocks_text_delivery(monkeypa
             assert "text" not in response
 
 
-def test_live_websocket_real_stream_lifecycle_saves_encrypted_text_and_settles_audio(monkeypatch, client, db_session, make_team, make_user):
+@pytest.mark.parametrize("dictation", [False, True])
+def test_live_websocket_real_stream_lifecycle_saves_encrypted_text_and_settles_audio(monkeypatch, client, db_session, make_team, make_user, dictation):
     from sqlalchemy import select
     from app.services.deepgram_streaming import DeepgramMetadataEvent, DeepgramResultEvent, DeepgramStreamConfig
     from app.services.transcripts import transcript_draft_text
@@ -1199,6 +1205,11 @@ def test_live_websocket_real_stream_lifecycle_saves_encrypted_text_and_settles_a
         mfa_required=False, mfa_enabled=False,
     )
     transcript = _new_transcript(db_session, owner)
+    if dictation:
+        transcript.ingestion_mode = TranscriptIngestionMode.whole_file
+        db_session.commit()
+    original_status = transcript.status
+    purposes = []
     raw_session = _login_full_ws(client, email=owner.email, password="password-1")
     provider_instances = []
     provider_order = []
@@ -1247,12 +1258,15 @@ def test_live_websocket_real_stream_lifecycle_saves_encrypted_text_and_settles_a
         "base_url": "https://api.deepgram.com", "model_name": "nova-3", "language": "en",
         "mip_opt_out": True, "extra_query_params": {"mip_opt_out": "true"},
     }
-    monkeypatch.setattr(live, "_preflight", lambda *_args: live._Preflight(
+    def fake_preflight(*args):
+        purposes.append(args[-1])
+        return live._Preflight(
         config=DeepgramStreamConfig(
             base_url=snapshot["base_url"], model_name=snapshot["model_name"],
             language=snapshot["language"], extra_query_params=snapshot["extra_query_params"],
         ), snapshot=snapshot, api_key="synthetic-server-only-key",
-    ))
+    )
+    monkeypatch.setattr(live, "_preflight", fake_preflight)
     monkeypatch.setattr("app.services.deepgram_streaming.DeepgramLiveStream", ProviderContext)
     from app.services import transcript_streaming
     commit_window = transcript_streaming.commit_stream_window
@@ -1279,7 +1293,7 @@ def test_live_websocket_real_stream_lifecycle_saves_encrypted_text_and_settles_a
     with TestClient(app) as ws_client:
         ws_client.cookies.update(_ws_cookies(client))
         with ws_client.websocket_connect(
-            f"/api/v1/transcripts/{transcript.id}/deepgram-stream",
+            f"/api/v1/transcripts/{transcript.id}/" + ("post-consultation-dictation/" if dictation else "") + "deepgram-stream",
             headers={"Origin": "http://testserver"},
         ) as websocket:
             websocket.send_text(json.dumps({"type": "start", "csrf_token": session_csrf_token(raw_session)}))
@@ -1289,10 +1303,13 @@ def test_live_websocket_real_stream_lifecycle_saves_encrypted_text_and_settles_a
             while True:
                 message = websocket.receive_json()
                 messages.append(message)
-                if message["type"] == "interim":
+                if message["type"] == ("dictation_preview" if dictation else "interim"):
                     break
                 assert message["type"] == "received"
-            assert message == {"type": "interim", "text": "synthetic finalized phrase"}
+            if dictation:
+                assert message == {"type": "dictation_preview", "window_no": 0, "confirmed_text": "synthetic finalized phrase", "interim_text": ""}
+            else:
+                assert message == {"type": "interim", "text": "synthetic finalized phrase"}
             websocket.send_text('{"type":"stop"}')
             while True:
                 message = websocket.receive_json()
@@ -1309,9 +1326,16 @@ def test_live_websocket_real_stream_lifecycle_saves_encrypted_text_and_settles_a
     assert stream_session is not None
     assert ready["stream_id"] == str(stream_session.id)
     db_session.refresh(transcript)
-    assert transcript.current_draft_text_encrypted
-    assert "synthetic finalized phrase" not in transcript.current_draft_text_encrypted
-    assert transcript_draft_text(db_session, transcript=transcript) == "synthetic finalized phrase"
+    if dictation:
+        assert purposes == [live.SttSelectionPurpose.post_consultation_dictation]
+        assert transcript.status == original_status
+        assert not transcript.current_draft_text_encrypted
+        assert not transcript_draft_text(db_session, transcript=transcript)
+        assert next(m for m in messages if m["type"] == "window_committed")["text"] == "synthetic finalized phrase"
+    else:
+        assert transcript.current_draft_text_encrypted
+        assert "synthetic finalized phrase" not in transcript.current_draft_text_encrypted
+        assert transcript_draft_text(db_session, transcript=transcript) == "synthetic finalized phrase"
     attempt = db_session.scalar(select(ProviderAttempt).where(
         ProviderAttempt.transcript_stream_session_id == stream_session.id,
         ProviderAttempt.attempt_kind == AttemptKind.stt_deepgram_live_stream,
@@ -1327,5 +1351,24 @@ def test_live_websocket_real_stream_lifecycle_saves_encrypted_text_and_settles_a
     assert attempt.measured_audio_seconds is None
     assert provider_instances[0].media == [pcm]
     assert provider_order.index("close_stream") < provider_order.index("metadata") < provider_order.index("commit") < provider_order.index("finish")
-    assert [message["type"] for message in messages] == ["received", "interim", "window_committed", "finalized"]
+    assert [message["type"] for message in messages] == ["received", "dictation_preview" if dictation else "interim", "window_committed", "finalized"]
     assert vault_audio_writes == []
+
+
+def test_dictation_relay_distinguishes_final_and_provisional(monkeypatch):
+    async def scenario():
+        socket = _FakeSocket()
+        relay = live._Relay(socket, uuid4(), _started(), dictation=True)
+        provider = _FakeProvider([_result(duration=0.5, text="confirmed"), _result(start=0.5, duration=0.5, text="provisional", final=False)])
+        relay.provider = provider
+        monkeypatch.setattr(live, "_owner_call", _async_noop_owner_call)
+        relay.media_samples = 16000
+        relay.provider_task = asyncio.create_task(provider.receive(timeout_seconds=1))
+        await relay.provider_event()
+        await relay.provider_event()
+        assert socket.sent == [
+            {"type": "dictation_preview", "window_no": 0, "confirmed_text": "confirmed", "interim_text": ""},
+            {"type": "dictation_preview", "window_no": 0, "confirmed_text": "confirmed", "interim_text": "provisional"},
+        ]
+        await relay.close()
+    asyncio.run(scenario())

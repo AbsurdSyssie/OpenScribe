@@ -158,7 +158,9 @@ System-admin-only:
 
 `default_retention_days` is system-admin-managed policy constrained to `1..MAX_RETENTION_DAYS` (default maximum 90). Transcript creation snapshots server-owned team retention; transcript payloads cannot extend it.
 
-Quota administration is currently browser-only under CSRF-protected `/admin` member forms. There is no JSON quota-management API under `/api/v1`. Quota policy/usage remains system-admin-only metadata.
+Team create/detail responses also include four finite quota defaults: daily/monthly tokens and daily/monthly audio seconds. New team defaults are 100,000 tokens/day, 1,000,000 tokens/month, 28,800 audio seconds/day (8 hours), and 259,200 audio seconds/month (72 hours). All values are bounded by the existing user quota ceilings; zero disables that resource for that period. These are defaults for newly created normal team users, including users created by account-request approval. User creation snapshots the four values into the user's own limits. Later team-default edits do not alter existing users; system administrators can still set an individual user's quota, including Unlimited, through the browser quota panel.
+
+Quota-default editing and individual quota administration are browser-only under CSRF-protected `/admin` forms. There is no JSON quota-management API under `/api/v1`. Quota policy/usage remains system-admin-only metadata.
 
 ## STT configuration and selection
 
@@ -422,6 +424,8 @@ Cross-cutting transcript rules:
 - deletion is immediate and cascades through transcript-derived children/queued cleanup.
 
 See [transcript-capture.md](transcript-capture.md), [live_stt.md](live_stt.md), and [workspace.md](workspace.md).
+
+The owner-only dictation Deepgram WebSocket is `/api/v1/transcripts/{transcript_id}/post-consultation-dictation/deepgram-stream`; it uses the dictation provider selection and the same owner, origin, session, and CSRF checks. Its `dictation_preview` messages contain confirmed and provisional text, and each `window_committed` includes the finalized window text. The server stores no preview text or recovery audio; the existing dictation PATCH is the explicit save boundary. Failed dictation sessions are discarded and cannot use conversation retry or discard routes. Provider audio usage remains metered.
 
 The owner-only Deepgram WebSocket is `/api/v1/transcripts/{transcript_id}/deepgram-stream`. It checks the session cookie, same-origin `Origin`, and a session-bound CSRF token in the initial WebSocket message. Its `retry` and `discard` HTTP routes require a full session and use the normal API CSRF checks. These routes apply only to the Deepgram stream lifecycle; the chunk-upload routes above remain a separate live-capture path.
 

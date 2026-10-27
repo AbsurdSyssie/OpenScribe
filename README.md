@@ -72,7 +72,7 @@ Primary references:
 - permanent user workspace and Scribe: [docs/workspace.md](docs/workspace.md), [docs/transcript-capture.md](docs/transcript-capture.md)
 - STT/LLM provider configuration: [docs/stt-config.md](docs/stt-config.md), [docs/llm-providers.md](docs/llm-providers.md)
 - Team LLM backup: system administrators can select an optional provider/model in Provider policy; see [backup behavior and accounting](docs/llm-providers.md#team-backup-provider).
-- admin workspace and Usage reporting: [docs/admin_workspace_function_map.md](docs/admin_workspace_function_map.md), [docs/usage_tab.md](docs/usage_tab.md)
+- admin workspace: `/admin`; dedicated Usage route: `/admin/usage`; see [docs/admin_workspace_function_map.md](docs/admin_workspace_function_map.md) and [docs/usage_tab.md](docs/usage_tab.md)
 - testing and database-test safety: [docs/testing.md](docs/testing.md), [docs/dbtesting.md](docs/dbtesting.md)
 - role-based product tutorials: [docs/tutorials/README.md](docs/tutorials/README.md)
 - current focused backlog: [docs/feature_todo.md](docs/feature_todo.md)

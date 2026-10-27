@@ -1156,6 +1156,7 @@ def _resolved_transcript_status(db: Session, *, transcript: Transcript) -> Trans
         return TranscriptStatus.failed
     stream = db.scalar(select(TranscriptStreamSession.status).where(
         TranscriptStreamSession.transcript_id == transcript.id,
+        TranscriptStreamSession.purpose == "conversation",
         TranscriptStreamSession.status.in_((TranscriptStreamStatus.active, TranscriptStreamStatus.finalizing,
                                              TranscriptStreamStatus.recovering)),
     ).order_by(TranscriptStreamSession.created_at.desc()).limit(1))
@@ -1163,6 +1164,7 @@ def _resolved_transcript_status(db: Session, *, transcript: Transcript) -> Trans
         return TranscriptStatus.transcribing
     failed_stream = db.scalar(select(TranscriptStreamSession.id).where(
         TranscriptStreamSession.transcript_id == transcript.id,
+        TranscriptStreamSession.purpose == "conversation",
         TranscriptStreamSession.status == TranscriptStreamStatus.failed,
     ).limit(1))
     if failed_stream is not None:
@@ -1271,6 +1273,7 @@ def can_switch_transcript_ingestion_mode(
         return transcript, False, "Stop the active recording before switching input mode"
     if db.scalar(select(TranscriptStreamSession.id).where(
         TranscriptStreamSession.transcript_id == transcript.id,
+        TranscriptStreamSession.purpose == "conversation",
         TranscriptStreamSession.status.in_((TranscriptStreamStatus.active, TranscriptStreamStatus.finalizing,
                                             TranscriptStreamStatus.failed, TranscriptStreamStatus.recovering)),
     ).limit(1)) is not None:
@@ -1295,6 +1298,7 @@ def assert_no_unresolved_stream_session(db: Session, *, transcript_id: UUID) -> 
     stream_id = db.scalar(
         select(TranscriptStreamSession.id).where(
             TranscriptStreamSession.transcript_id == transcript_id,
+            TranscriptStreamSession.purpose == "conversation",
             TranscriptStreamSession.status.in_(
                 (TranscriptStreamStatus.active, TranscriptStreamStatus.finalizing,
                  TranscriptStreamStatus.failed, TranscriptStreamStatus.recovering)

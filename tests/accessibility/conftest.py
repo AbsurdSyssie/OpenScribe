@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import socket
 import threading
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import pytest
 from sqlalchemy.orm import sessionmaker
@@ -22,6 +22,7 @@ from tests.accessibility.audit import (
     STATE_LOGIN_VALIDATION,
     STATE_ANONYMOUS_LOGIN,
 )
+from tests.accessibility.redirects import fetch_validated_redirect_chain
 
 SYNTHETIC_AUDIT_STREAM_BODY = ": synthetic accessibility audit stream; no workspace updates\n\n"
 
@@ -171,25 +172,19 @@ def audit_browser(audit_settings, audit_report):
             if urlparse(url).path == "/api/v1/transcribe/workspace/stream":
                 route.fulfill(status=200, content_type="text/event-stream", body=SYNTHETIC_AUDIT_STREAM_BODY)
                 return
-            response = route.fetch(max_redirects=0)
-            for _ in range(10):
-                if response.status not in {301, 302, 303, 307, 308}:
-                    break
-                location = response.headers.get("location")
-                destination = urljoin(url, location or "")
-                if not location or not same_origin(destination, audit_settings.base_url):
-                    blocked.append(blocked_request_reason(destination))
-                    route.abort("blockedbyclient")
-                    return
-                url = destination
-                # Browsers convert a POST after 301/302/303 into a GET. Preserve
-                # that semantic while retaining POST only for 307/308.
-                if response.status in {301, 302, 303}:
-                    response = route.fetch(url=url, method="GET", max_redirects=0)
-                else:
-                    response = route.fetch(url=url, max_redirects=0)
-            else:
-                blocked.append("blocked redirect chain exceeding audit limit")
+            # route.fetch() does not commit cookies until fulfill. The API
+            # request client shares this context's cookie jar and lets each
+            # validated same-origin hop observe Set-Cookie immediately.
+            response, blocked_reason = fetch_validated_redirect_chain(
+                context.request,
+                url,
+                audit_settings.base_url,
+                route.request.method,
+                route.request.headers,
+                route.request.post_data_buffer,
+            )
+            if blocked_reason:
+                blocked.append(blocked_reason)
                 route.abort("blockedbyclient")
                 return
             route.fulfill(response=response)

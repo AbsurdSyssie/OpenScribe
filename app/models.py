@@ -8,6 +8,16 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
+from .quota_policy import (
+    DEFAULT_DAILY_AUDIO_SECONDS_LIMIT,
+    DEFAULT_DAILY_TOKEN_LIMIT,
+    DEFAULT_MONTHLY_AUDIO_SECONDS_LIMIT,
+    DEFAULT_MONTHLY_TOKEN_LIMIT,
+    MAX_DAILY_AUDIO_SECONDS,
+    MAX_DAILY_TOKENS,
+    MAX_MONTHLY_AUDIO_SECONDS,
+    MAX_MONTHLY_TOKENS,
+)
 
 
 class TeamRole(str, enum.Enum):
@@ -465,12 +475,22 @@ def utcnow() -> datetime:
 
 class Team(Base):
     __tablename__ = "teams"
+    __table_args__ = (
+        CheckConstraint(f"default_daily_token_limit BETWEEN 0 AND {MAX_DAILY_TOKENS}", name="ck_teams_default_daily_token_limit_range"),
+        CheckConstraint(f"default_monthly_token_limit BETWEEN 0 AND {MAX_MONTHLY_TOKENS}", name="ck_teams_default_monthly_token_limit_range"),
+        CheckConstraint(f"default_daily_audio_seconds_limit BETWEEN 0 AND {MAX_DAILY_AUDIO_SECONDS}", name="ck_teams_default_daily_audio_seconds_limit_range"),
+        CheckConstraint(f"default_monthly_audio_seconds_limit BETWEEN 0 AND {MAX_MONTHLY_AUDIO_SECONDS}", name="ck_teams_default_monthly_audio_seconds_limit_range"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     name_key: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     status: Mapped[TeamStatus] = mapped_column(Enum(TeamStatus), default=TeamStatus.active, nullable=False)
     default_retention_days: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    default_daily_token_limit: Mapped[int] = mapped_column(Integer, default=DEFAULT_DAILY_TOKEN_LIMIT, server_default=text(str(DEFAULT_DAILY_TOKEN_LIMIT)), nullable=False)
+    default_monthly_token_limit: Mapped[int] = mapped_column(Integer, default=DEFAULT_MONTHLY_TOKEN_LIMIT, server_default=text(str(DEFAULT_MONTHLY_TOKEN_LIMIT)), nullable=False)
+    default_daily_audio_seconds_limit: Mapped[int] = mapped_column(Integer, default=DEFAULT_DAILY_AUDIO_SECONDS_LIMIT, server_default=text(str(DEFAULT_DAILY_AUDIO_SECONDS_LIMIT)), nullable=False)
+    default_monthly_audio_seconds_limit: Mapped[int] = mapped_column(Integer, default=DEFAULT_MONTHLY_AUDIO_SECONDS_LIMIT, server_default=text(str(DEFAULT_MONTHLY_AUDIO_SECONDS_LIMIT)), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
@@ -1688,6 +1708,7 @@ class TranscriptStreamSession(Base):
     __tablename__ = "transcript_stream_sessions"
     __table_args__ = (
         CheckConstraint("char_length(failure_code) <= 128 OR failure_code IS NULL", name="ck_transcript_stream_sessions_failure_code_length"),
+        CheckConstraint("purpose IN ('conversation', 'post_consultation_dictation')", name="ck_transcript_stream_sessions_purpose"),
         CheckConstraint("connection_fence > 0", name="ck_transcript_stream_sessions_connection_fence_positive"),
         CheckConstraint("next_source_sample_offset >= 0", name="ck_transcript_stream_sessions_next_offset_nonnegative"),
         CheckConstraint("received_sample_count >= 0", name="ck_transcript_stream_sessions_received_samples_nonnegative"),
@@ -1708,6 +1729,7 @@ class TranscriptStreamSession(Base):
     transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False)
     owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(40), nullable=False, default="conversation", server_default="conversation")
     selection_snapshot_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
     stt_diarisation_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
     status: Mapped[TranscriptStreamStatus] = mapped_column(Enum(TranscriptStreamStatus), nullable=False, default=TranscriptStreamStatus.active)

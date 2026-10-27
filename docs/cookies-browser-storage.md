@@ -2,7 +2,7 @@
 
 This document records the browser-side storage used by the current OpenScribe application. It supports the operator cookie/browser-storage notice and DSPT evidence. It does not describe every cookie or log that a reverse proxy, CDN, identity provider, or modified deployment may add.
 
-Last reviewed: 18 October 2026.
+Last reviewed: 26 October 2026.
 
 ## Scope and method
 
@@ -48,8 +48,9 @@ The two transcript-linked entries are not authentication authority and cannot by
 | Key | Value and purpose | Lifetime | Classification |
 | --- | --- | --- | --- |
 | `openscribe.workspace.lastTranscriptId` | Active transcript UUID used only as an untrusted navigation hint. Every use repeats server-side owner and retention checks. | Current browser tab/session | Transcript-linked navigation metadata |
+| `openscribe.admin.navigation.v1:<system-admin-user-id>` | JSON containing only a validated `teamId`, an allowlisted team section or Usage view, and an allowlisted reporting `range`. It restores the admin's return destination when moving between a team workspace and global administration. Every team ID is checked against the server-rendered team registry; the URL remains authoritative. | Current browser tab/session; removed on explicit All teams selection and logout | Admin navigation metadata |
 
-No session, trusted-device, CSRF, provider credential, audio, transcript text, Working note, generated note, prompt, or PII value is intentionally stored in Web Storage.
+The admin navigation value does not contain team names, member IDs, quota edit state, notices, monitoring filters, form drafts, credentials, or transcript-derived content. It is scoped by the system-administrator account ID and is separate per tab. No session, trusted-device, CSRF, provider credential, audio, transcript text, Working note, generated note, prompt, or PII value is intentionally stored in Web Storage.
 
 During eligible Deepgram live capture, the browser temporarily holds a bounded pre-roll ring and uncommitted recovery audio in JavaScript memory for the open tab. This is volatile capture state, not Web Storage; it is cleared after a committed window or successful explicit recovery and can be lost on refresh, tab closure, or process loss. If a stream window fails before it is committed, OpenScribe can store matching recovery audio in Vault for an owner-requested retry. That audio expires within 24 hours, subject to the transcript's earlier retention deadline. Successful stream windows retain finalized transcript text and metadata, not PCM audio.
 

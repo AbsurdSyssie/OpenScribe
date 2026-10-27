@@ -14,7 +14,9 @@ def test_deepgram_startup_prepares_vad_in_parallel_and_waits_for_capture(tmp_pat
     source_root = Path(__file__).parents[1]
     (root / "app/static/js/csrf.js").write_text((source_root / "app/static/js/csrf.js").read_text())
     (transcribe / "media.js").write_text((source_root / "app/static/js/transcribe/media.js").read_text())
+    (transcribe / "micVisualizer.js").write_text((source_root / "app/static/js/transcribe/micVisualizer.js").read_text())
     (transcribe / "deepgramLiveStream.js").write_text((source_root / "app/static/js/transcribe/deepgramLiveStream.js").read_text())
+    (transcribe / "vadCapture.js").write_text((source_root / "app/static/js/transcribe/vadCapture.js").read_text())
 
     script = r"""
 import assert from 'node:assert/strict';

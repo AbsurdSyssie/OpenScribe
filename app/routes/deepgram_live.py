@@ -107,17 +107,18 @@ class _Preflight:
     api_key: str = field(repr=False)
 
 
-def _preflight(db, owner, root) -> _Preflight:
+def _preflight(db, owner, root, purpose=SttSelectionPurpose.conversation) -> _Preflight:
     from app.models import SttAdapterKind
     from app.services.deepgram_streaming import DeepgramStreamConfig, validate_stream_config
     from app.services.stt_presets import is_deepgram_stt_base_url
     from app.services.preferences import diarization_preference_enabled
 
-    _, config, model, language = resolve_selected_team_stt(db, team_id=owner.team_id, purpose=SttSelectionPurpose.conversation)
+    _, config, model, language = resolve_selected_team_stt(db, team_id=owner.team_id, purpose=purpose)
     if config.adapter_kind is not SttAdapterKind.generic_rest or not is_deepgram_stt_base_url(config.base_url):
         raise AppError(422, "stream_provider_ineligible", "The selected provider does not support this stream")
     effective_diarization = bool(
-        getattr(config, "diarization_live_enabled", False)
+        purpose == SttSelectionPurpose.conversation
+        and getattr(config, "diarization_live_enabled", False)
         and diarization_preference_enabled(db, owner)
     )
     from app.services.stt import _deepgram_query_fields
@@ -147,8 +148,9 @@ def _preflight(db, owner, root) -> _Preflight:
 
 
 class _Relay:
-    def __init__(self, socket: WebSocket, transcript_id: UUID, started):
+    def __init__(self, socket: WebSocket, transcript_id: UUID, started, *, dictation: bool = False):
         self.socket = socket
+        self.dictation = dictation
         self.transcript_id = transcript_id
         self.started = started
         self.provider = None
@@ -302,7 +304,12 @@ class _Relay:
         if len(provisional) > 64000:
             raise AppError(502, "stream_result_invalid", "Transcription checkpoint exceeds its limit")
         if deliver_interim:
-            await self.send({"type": "interim", "text": provisional})
+            if self.dictation:
+                await self.send({"type": "dictation_preview", "window_no": self.window_no,
+                                 "confirmed_text": " ".join(text for _, text in sorted(self.finals.items()) if text),
+                                 "interim_text": "" if event.is_final else event.text})
+            else:
+                await self.send({"type": "interim", "text": provisional})
         return event
 
     def _window_has_final_coverage(self, start: int, end: int) -> bool:
@@ -432,10 +439,11 @@ class _Relay:
         ack_started = monotonic()
         self.active_phase = "browser_ack"
         try:
-            await self.send({
-                "type": "window_committed", "window_no": committed.window_no,
-                "next_sample_offset": committed.next_source_sample_offset,
-            })
+            payload = {"type": "window_committed", "window_no": committed.window_no,
+                       "next_sample_offset": committed.next_source_sample_offset}
+            if self.dictation:
+                payload["text"] = text
+            await self.send(payload)
         except Exception:
             self.last_failure_code = "browser_ack_failed"
             self.diagnostic(
@@ -701,6 +709,15 @@ class _Relay:
 
 @router.websocket("/api/v1/transcripts/{transcript_id}/deepgram-stream")
 async def deepgram_live(socket: WebSocket, transcript_id: UUID):
+    await _deepgram_live(socket, transcript_id, dictation=False)
+
+
+@router.websocket("/api/v1/transcripts/{transcript_id}/post-consultation-dictation/deepgram-stream")
+async def deepgram_dictation_live(socket: WebSocket, transcript_id: UUID):
+    await _deepgram_live(socket, transcript_id, dictation=True)
+
+
+async def _deepgram_live(socket: WebSocket, transcript_id: UUID, *, dictation: bool):
     relay = None
     accepted = False
     phase = "origin_check"
@@ -740,7 +757,8 @@ async def deepgram_live(socket: WebSocket, transcript_id: UUID):
         )
         phase = "preflight"
         phase_started = monotonic()
-        preflight = await _owner_call(socket, transcript_id, _preflight)
+        purpose = SttSelectionPurpose.post_consultation_dictation if dictation else SttSelectionPurpose.conversation
+        preflight = await _owner_call(socket, transcript_id, lambda db, owner, root: _preflight(db, owner, root, purpose))
         deepgram_diagnostics.emit(
             "phase", phase="preflight", outcome="success",
             duration_ms=min(3_600_000, round((monotonic() - phase_started) * 1000)),
@@ -752,10 +770,10 @@ async def deepgram_live(socket: WebSocket, transcript_id: UUID):
         started = await _owner_call(
             socket, transcript_id,
             lambda db, owner, root: start_transcript_stream(
-                db, owner, transcript_id=transcript_id, selection_snapshot=preflight.snapshot, lease_seconds=30,
+                db, owner, transcript_id=transcript_id, selection_snapshot=preflight.snapshot, purpose=purpose.value, lease_seconds=30,
             ),
         )
-        relay = _Relay(socket, transcript_id, started)
+        relay = _Relay(socket, transcript_id, started, dictation=dictation)
         relay.diagnostic(
             "recording_started", phase="recording", outcome="started", window_no=relay.window_no,
             duration_ms=min(3_600_000, round((monotonic() - phase_started) * 1000)),
@@ -806,7 +824,7 @@ async def deepgram_live(socket: WebSocket, transcript_id: UUID):
             try:
                 failed = await relay.service(
                     "fail_transcript_stream", error_code=failure_code,
-                    recovery_audio_bytes=relay.recovery_wav(),
+                    recovery_audio_bytes=None if dictation else relay.recovery_wav(),
                 )
                 recovery_info = {
                     "stream_id": str(relay.started.session_id), "window_no": relay.window_no,
@@ -893,6 +911,7 @@ def _recovery_session(db: Session, owner, transcript_id: UUID, session_id: UUID)
         TranscriptStreamSession.transcript_id == transcript_id,
         TranscriptStreamSession.owner_user_id == owner.id,
         TranscriptStreamSession.team_id == owner.team_id,
+        TranscriptStreamSession.purpose == "conversation",
     ))
     if session is None or owner.is_system_admin:
         raise AppError(404, "not_found", "Stream session not found")

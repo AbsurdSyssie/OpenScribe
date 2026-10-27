@@ -24,7 +24,11 @@ export function trimPinnedVadSpeechBuffer(frameProcessor, frame, sampleRate = 16
   return true;
 }
 
-export function deepgramStreamWebSocketUrl(transcriptId, location = window.location) {
+export function deepgramStreamWebSocketUrl(transcriptId, location = window.location, url = null) {
+  if (typeof url === 'string' && url.startsWith('/api/v1/transcripts/')) {
+    const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${scheme}//${location.host}${url}`;
+  }
   const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${scheme}//${location.host}/api/v1/transcripts/${encodeURIComponent(transcriptId)}/deepgram-stream`;
 }
@@ -65,8 +69,9 @@ const copyRecordSlice = (record, startOffset, endOffset) => {
 };
 
 export class DeepgramLiveStream {
-  constructor({ onInterim = () => {}, onWindowCommitted = () => {}, onState = () => {}, onError = () => {} } = {}) {
+  constructor({ onInterim = () => {}, onDictationPreview = () => {}, onWindowCommitted = () => {}, onState = () => {}, onError = () => {} } = {}) {
     this.onInterim = onInterim;
+    this.onDictationPreview = onDictationPreview;
     this.onWindowCommitted = onWindowCommitted;
     this.onState = onState;
     this.onError = onError;
@@ -101,7 +106,7 @@ export class DeepgramLiveStream {
     this.rejectFinalize = null;
   }
 
-  connect({ transcriptId, csrfToken }) {
+  connect({ transcriptId, csrfToken, url = null }) {
     if (!transcriptId || !csrfToken || this.socket) throw protocolError('Could not start live transcription.');
     this.transcriptId = transcriptId;
     this.readyPromise = new Promise((resolve, reject) => {
@@ -110,7 +115,7 @@ export class DeepgramLiveStream {
     });
     this.readyTimeoutId = window.setTimeout(() => this._fail(protocolError('Live transcription did not become ready.')), 20000);
     try {
-      this.socket = new WebSocket(deepgramStreamWebSocketUrl(transcriptId));
+      this.socket = new WebSocket(deepgramStreamWebSocketUrl(transcriptId, window.location, url));
       this.socket.binaryType = 'arraybuffer';
       this.socket.addEventListener('open', () => {
         if (this.stopped) return;
@@ -176,6 +181,15 @@ export class DeepgramLiveStream {
     }
     if (message.type === 'interim') {
       this.onInterim(typeof message.text === 'string' ? message.text : '');
+      return;
+    }
+    if (message.type === 'dictation_preview') {
+      if (!Number.isSafeInteger(message.window_no) || message.window_no < 0
+        || typeof message.confirmed_text !== 'string' || typeof message.interim_text !== 'string') {
+        this._fail(protocolError('Live transcription returned an invalid dictation preview.'));
+        return;
+      }
+      this.onDictationPreview(message);
       return;
     }
     if (message.type === 'window_committed') {

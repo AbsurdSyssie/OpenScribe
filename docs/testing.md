@@ -100,6 +100,23 @@ Dictation modal actions use a synthetic browser harness to verify that Save and 
 pytest -q tests/test_dictation_modal_actions.py
 ```
 
+Live dictation reuses the consultation microphone/VAD and streaming primitives.
+Its focused checks cover grey provisional versus black provider-final words,
+ordered checkpoint insertion without overwriting edits, explicit failure resolution,
+Save/Generate finalization, and cancellation during startup. Backend coverage
+checks owner/session/origin/CSRF boundaries, dictation-specific provider selection,
+quota settlement, transient preview content, and separation from consultation text.
+Run these files sequentially with other database-backed checks:
+
+```bash
+pytest -q tests/test_dictation_stream_capability.py tests/test_dictation_stream_migration.py tests/test_transcript_streaming.py tests/test_deepgram_live_route.py tests/test_stream_generation_barrier.py
+```
+
+The migration suite also checks upgrade to head. The stream-purpose downgrade
+refuses to discard the source distinction while dictation stream sessions exist.
+These checks use synthetic audio/provider responses and do not establish live
+provider connectivity.
+
 Consultation deletion confirmation and Scribe sidebar resizing have synthetic
 Node-backed behavioral tests:
 
@@ -217,8 +234,10 @@ synthetic owner, synthetic encrypted transcript/draft data for editor states,
 and an empty transcript root for the dictation-dialog path. It never records
 audio or submits provider work. `real_db_connections` tests use the isolated
 pytest database; application tables are truncated after each such test. The
-harness does not use a running local service or seeded account, save browser
-authentication state, or capture screenshots. Service workers are disabled.
+harness does not use a running local service or seeded account or save browser
+authentication state. Service workers are disabled. Admin regression tests can
+optionally save synthetic screenshots when
+`OPENSCRIBE_ACCESSIBILITY_SCREENSHOT_DIR` is set; they contain no live user data.
 The browser permits only the exact ephemeral server origin, checks redirect
 destinations before each request, and receives a marked synthetic empty
 workspace event stream response. This stub does not exercise live workspace stream updates.
@@ -270,6 +289,87 @@ screenshots, authentication state, or clinical content. The result is an
 automated test record, not a WCAG conformance certification. Review sanitized
 reports before preserving or transferring them; dated historical reports are
 not overwritten.
+
+### Admin accessibility regressions
+
+Run the admin browser checks separately with the same isolated infrastructure:
+
+```bash
+APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app \
+  .venv/bin/pytest -q --accessibility-audit tests/accessibility/test_admin.py
+
+APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app \
+  .venv/bin/pytest -q tests/test_admin_ui.py -k 'future_team_retention_default or finite_quota_defaults_for_future_members_only'
+```
+
+These checks use synthetic system-administrator, member and provider metadata.
+They verify the All teams Usage landing and legacy redirects, the compact
+team picker (including suspended-team ordering/search), validated per-tab
+return context across global pages, All teams clearing, independent tabs,
+team-creation modal success and validation drafts, unsaved-form Stay/Discard,
+POST logout and mobile keyboard behavior. Navigation storage is checked to
+contain only the allowlisted team ID, section/view and range. They also verify
+requested global/team route context, the dedicated `/admin/usage`
+scope and its legacy redirects, local axe results, quota form errors, 320
+CSS-pixel reflow and text-spacing overrides, responsive navigation,
+provider-dialog names/labels/focus containment and return, disclosure states,
+keyboard-operable reporting-range links with Escape/outside-click dismissal,
+full usage tables, and keyboard chart controls. Populated global Teams, System Administrators, Defaults and De-ID
+pages plus assigned/available team De-ID providers are also checked at 320,
+390, 768, 1024 and 1440 CSS pixels for labels, input fit, panel sizing and
+horizontal overflow. Creation disclosures start closed, open by keyboard, and
+the Quick Action editor opens for an edit URL. The suite checks the 390px
+content-to-footer gap and records a synthetic screenshot-height comparison for
+the compact Defaults page versus the earlier always-open form capture. Empty
+Global Defaults and empty team De-ID lists are checked separately; the
+write-only token stays blank in the browser fixture.
+The populated Usage regression checks global and selected-team scopes at
+320–1440 CSS pixels, the five-column summary table (including provider-reported
+total tokens, grouped counts, and zero audio), the Team/Users/Quotas
+destinations, sidebar scope/range preservation and context clearing, keyboard
+chart controls, and that the Users table contains only members of the selected
+team. The range disclosure contains no team selector; select a team through the sidebar.
+Usage range changes use a native disclosure with ordinary GET links for 30d,
+90d, 1y and all; opening it is keyboard operable, Escape closes it and returns
+focus to its summary, outside click closes it, and each destination marks the
+current range. Quotas omits the reporting-range control while its local and
+sidebar navigation retain the last report range. The separate operational
+search form keeps its own reference/date filters.
+The same audit also checks the multi-row table sorter with synthetic DOM and
+rendered Usage/Quota records: raw numeric/date ordering, stable ties, missing
+values last in both directions, resource-grouped allowance amounts, independent
+table state, keyboard activation, `aria-sort`, row-action attachment, and the
+server-rendered order when the sorter script is unavailable.
+The standalone route omits selected-team workspace chrome;
+unscoped or malformed Users/Quotas requests resolve to global Team, while an
+invalid member in a valid Quotas scope yields no quota detail. It checks that
+Quota rendering skips Usage telemetry, and that old Usage, Quotas, and member
+detail URLs redirect to the canonical route. Quota mutation regressions retain
+the same POST fields, CSRF handling, 303 success location, and 422 draft values
+in the standalone Quotas view. Global Usage must not render a user table.
+Usage screenshots use synthetic telemetry and are written to the optional
+screenshot directory. The focused admin UI tests also cover retention and
+finite quota default form placement and persistence for future members. Optional admin
+screenshots are written only to the directory named by the screenshot
+environment variable. These checks do not submit provider work or inspect real
+user content.
+
+The audit browser manually follows only prevalidated redirects to the exact
+ephemeral server origin. Its browser-context request client preserves session
+cookies and CSRF headers between hops. The redirect helper and network guard
+have local synthetic regressions:
+
+```bash
+APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app \
+  .venv/bin/pytest -q --accessibility-audit \
+  tests/accessibility/test_network_guard.py tests/accessibility/test_harness.py
+```
+
+The chart-control logic also has a synthetic Node-backed regression in
+`tests/test_admin_usage_charts_js.py`. The general pytest infrastructure lock
+still applies to that command even though its test body does not use the
+database. Admin browser checks supplement human screen-reader and actual zoom
+testing; they do not establish complete WCAG conformance.
 
 ## Consultation-split intent progression
 

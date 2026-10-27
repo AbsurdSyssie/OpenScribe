@@ -198,6 +198,16 @@ def ensure_local_demo_user(
             onboarding_state=UserOnboardingState.complete,
             mfa_required=False,
             mfa_enabled=False,
+            **(
+                {
+                    "daily_token_limit": team.default_daily_token_limit,
+                    "monthly_token_limit": team.default_monthly_token_limit,
+                    "daily_audio_seconds_limit": team.default_daily_audio_seconds_limit,
+                    "monthly_audio_seconds_limit": team.default_monthly_audio_seconds_limit,
+                }
+                if team is not None and not is_system_admin
+                else {}
+            ),
         )
         db.add(user)
         db.commit()

@@ -1,5 +1,55 @@
 # Discovered issues
 
+### ADMIN-WCAG22AA-REVIEW — 2026-10-24
+
+- Status: Remediation implemented 2026-10-25; focused verification and remaining human assessment are recorded in [the follow-up](docs/accessibility/admin-verification-2026-10-25.md).
+- Discovery baseline: `4603b1ec929fded6eb222a6e21878eca8a9fdfdb` plus the current working tree.
+- Locations: `app/templates/admin_mockup.html` shared palette/focus styles, responsive navigation, provider wizards and member disclosures; `app/static/js/admin-usage-charts.js`.
+- Exact examples: `--muted: #718096`, `.sidebar .nav-group { display: none; }` within the mobile media query, and the LLM wizard's unnamed `role="dialog"`.
+- Impact: contrast, responsive access, dialog focus/naming, field associations and widget-state barriers affect administrators using low vision, keyboard and assistive technology.
+- Original disposition: the 24 October request was for review only; remediation was subsequently authorized and implemented separately, preserving authorization, provider and quota contracts.
+- Resolution: restored responsive navigation, strengthened contrast/focus, corrected dialog focus/labels and disclosure states, provided complete usage tables and keyboard chart controls, made reporting-range changes explicit, and contained wide data grids.
+- Follow-up: complete the human checks listed in the dated verification. The original assessment is preserved as pre-remediation evidence; this entry does not establish full conformance.
+
+### TEAM-QUOTA-DEFAULTS-WRONG-TAB — 2026-10-23
+
+- Status: Resolved 2026-10-24; team Quotas tab added and quota defaults moved to Defaults.
+- Resolution: added the system-admin-only team Quotas tab with an eligible-member selector, resource cards, on-demand quota actions, lifetime totals, allowance and history disclosures. Legacy selected-member links redirect to Quotas. Moved team quota defaults from Overview to Defaults and added a UI assertion for panel placement.
+- Verification: focused quota UI tests and operational-document validation (see final implementation report).
+- Discovery commit: `4603b1ec929fded6eb222a6e21878eca8a9fdfdb` plus the current working tree.
+- Location: `app/templates/admin_mockup.html`, team workspace `data-panel="overview"` around line 3641; quota-defaults form around line 3711. The actual `data-panel="defaults"` starts around line 4107.
+- Exact excerpt: `<header><h3>Quota defaults for new members</h3></header>` appears inside the Overview panel, while `docs/admin_workspace_function_map.md` says: “Each team's Defaults tab manages finite daily/monthly token and audio quota defaults for newly created members.”
+- Observation: the form for editing team quota defaults is placed in Overview instead of the team's Defaults tab. The current markup-oriented test checks that quota-defaults content exists but does not verify which tab contains it.
+- Impact: administrators looking for quota defaults in the documented Defaults tab will not find the form, and the maintained function map describes a different location from the rendered interface.
+
+### ADMIN-LEGAL-SETUP-WARNING-OBSCURES-WORKSPACE — 2026-10-24
+
+- Status: Resolved in the 2026-10-25 admin accessibility remediation; the required warning remains visible in page flow with a Review legal content link.
+- Discovery baseline: `4603b1e` plus the current working tree; observed during quota-panel screenshot QA on 2026-10-24.
+- Location: `app/templates/admin_mockup.html`, shared `.flash` styling around line 1420 and operator legal setup warning around line 2038.
+- Exact excerpt: shared flash treatment and the warning container:
+
+  ```css
+  .operation-result,
+  .flash {
+    margin-bottom: 16px;
+    padding: 14px 16px;
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--success);
+    border-radius: 8px;
+    background: var(--card);
+  }
+  ```
+
+  ```html
+  <aside class="flash warning" role="status" aria-label="Operator legal setup warnings">
+  ```
+- Observation: when operator legal setup is incomplete, the long warning is rendered as a large shared flash that overlays a substantial part of the admin workspace, especially at a 390-pixel mobile viewport. Screenshot QA found it obscures quota controls and navigation.
+- Impact: administrators may have difficulty reaching or reviewing workspace controls while the required operator setup warning is visible.
+- Not fixed here: changing the warning layout is outside the quota-panel scope. Its required visibility must remain intact; do not weaken or hide the legal setup warning as a workaround.
+- Follow-up: present the warning in a persistent in-flow or accessible collapsible layout that retains its status and review link, then verify visibility and workspace access on desktop and narrow mobile screens.
+- Resolution: the later accessibility task removed warning-to-toast conversion, retained status semantics and the legal-content link, and placed the admin storage notice in flow. See [25 October verification](docs/accessibility/admin-verification-2026-10-25.md).
+
 ### LIVE-STT-FAILURE-DIAGNOSTICS — 2026-10-22
 
 - Status: Open; diagnostic retention/correlation gap.
@@ -503,6 +553,7 @@ Reconciled on 19 October 2026 against `97da191926db1da74fdf741e01f4f8490d60f6c8`
 
 - Current status: Resolved as recorded below.
 - Reconciliation/resolution (2026-10-19): The current baseline already uses the Scribe guide wording and accessible-guide asset expectations. This pass updated app-module cache expectations for deletion confirmation; focused UI checks pass.
+- Reverification (2026-10-27): The workspace-shell check confirms the Scribe guide markup and the mobile asset check confirms the current stylesheet cache key. Both passed in the six-test transcribe assertion subset after updating cache-key expectations for the live-dictation assets.
 
 - Discovery commit: `717d2698a2ac268f830d99548068202a5de3f780`.
 - Locations: `tests/test_split_review_js.py::test_split_review_workspace_accessibility_hooks_and_cachebusters`; `tests/test_admin_ui.py::test_transcribe_page_contains_accessible_ui_controls`; source `app/templates/transcribe/_head_assets.html` and `app/templates/transcribe/_shell_extras.html`.

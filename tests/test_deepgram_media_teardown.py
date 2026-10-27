@@ -13,7 +13,9 @@ def test_deepgram_media_teardown_ignores_late_vad_callbacks_and_cancels_connecti
     (root / "package.json").write_text('{"type":"module"}')
     (root / "app/static/js/csrf.js").write_text((Path(__file__).parents[1] / "app/static/js/csrf.js").read_text())
     (transcribe / "media.js").write_text((Path(__file__).parents[1] / "app/static/js/transcribe/media.js").read_text())
+    (transcribe / "micVisualizer.js").write_text((Path(__file__).parents[1] / "app/static/js/transcribe/micVisualizer.js").read_text())
     (transcribe / "deepgramLiveStream.js").write_text((Path(__file__).parents[1] / "app/static/js/transcribe/deepgramLiveStream.js").read_text())
+    (transcribe / "vadCapture.js").write_text((Path(__file__).parents[1] / "app/static/js/transcribe/vadCapture.js").read_text())
 
     script = r"""
 import assert from 'node:assert/strict';

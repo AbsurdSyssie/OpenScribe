@@ -177,6 +177,8 @@ python -m pip install pip-audit
 python -m pip_audit -r requirements.txt
 ```
 
+The audit reports that the pinned `en-core-web-sm` wheel from GitHub cannot be audited as a package index dependency. This warning is expected for that direct wheel URL; keep the audit enabled and review any vulnerability findings normally.
+
 The Docker smoke workflow runs the runtime dependency audit. It does not prove that deployed image references are digest-locked or that all dependency artifacts use full hashes.
 
 Use the actual file names present on the branch when a focused area has been split or renamed; `pytest --collect-only -q` is the authoritative collection view.

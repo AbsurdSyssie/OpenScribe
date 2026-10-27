@@ -5,7 +5,7 @@ pydantic==2.12.5
 itsdangerous==2.2.0
 alembic==1.14.0
 argon2-cffi==23.1.0
-Authlib==1.7.2
+Authlib==1.9.1
 cryptography==50.0.0
 email-validator==2.2.0
 python-multipart==0.0.32
@@ -32,4 +32,4 @@ openapi-spec-validator==0.7.2
 prance==23.6.21.0
 jsonschema==4.23.0
 jsonpath-ng==1.7.0
-setuptools==83.0.0
+setuptools==84.1.0

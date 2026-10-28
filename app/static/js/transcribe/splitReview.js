@@ -1274,6 +1274,9 @@ export function createSplitReviewController({
   let sourceReady = false;
   let sourceReadinessMessage = '';
   let suggesting = false;
+  let templateAvailabilityFresh = false;
+  let templateAvailabilityRefreshing = false;
+  let templateRefreshGeneration = 0;
   let suggestGeneration = 0;
   const createNotesButton = createButton || confirmButton;
 
@@ -1325,10 +1328,16 @@ export function createSplitReviewController({
     if (modal) modal.setAttribute('aria-busy', String(saving || continuing || confirming));
     const validation = readOnly ? { valid: false } : validateSplitDraft(localDraft);
     const confirmationValidation = readOnly ? { valid: false } : validateSplitDraftForConfirmation(localDraft);
+    const availableTemplateIds = new Set(templates.map(templateId).filter(Boolean));
+    const missingSelectedTemplate = (localDraft?.topics || []).some((topic) => (
+      topic.disposition === 'separate_note'
+      && topic.template_id
+      && !availableTemplateIds.has(asString(topic.template_id))
+    ));
     const shouldContinueAsOneNote = continueAvailable && isAllMergedOneNoteDraft(localDraft);
     if (saveButton) {
       saveButton.textContent = shouldContinueAsOneNote ? 'Continue as one note' : 'Save split';
-      saveButton.disabled = controlsDisabled
+      saveButton.disabled = controlsDisabled || templateAvailabilityRefreshing
         || !validation.valid
         || (!dirty && !shouldContinueAsOneNote);
     }
@@ -1339,7 +1348,7 @@ export function createSplitReviewController({
     }
     if (continueButton) {
       continueButton.hidden = !continueAvailable || shouldContinueAsOneNote;
-      continueButton.disabled = !continueAvailable || shouldContinueAsOneNote || controlsDisabled;
+      continueButton.disabled = !continueAvailable || shouldContinueAsOneNote || controlsDisabled || templateAvailabilityRefreshing;
     }
     if (suggestButton) {
       const action = suggestionAction();
@@ -1349,6 +1358,7 @@ export function createSplitReviewController({
         && !saving
         && !continuing
         && !confirming
+        && !templateAvailabilityRefreshing
         && !batchGenerationActive()
         && !analysisPending
         && !suggesting
@@ -1358,9 +1368,14 @@ export function createSplitReviewController({
       suggestButton.disabled = !canSuggest || !sourceReady;
     }
     if (createNotesButton) {
-      const confirmable = !readOnly && !dirty && confirmationValidation.valid && Boolean(getConfirmIntentId());
+      const confirmable = !readOnly
+        && !dirty
+        && confirmationValidation.valid
+        && templateAvailabilityFresh
+        && !missingSelectedTemplate
+        && Boolean(getConfirmIntentId());
       createNotesButton.hidden = !confirmable && !confirming;
-      createNotesButton.disabled = controlsDisabled || !confirmable || confirming;
+      createNotesButton.disabled = controlsDisabled || templateAvailabilityRefreshing || !confirmable || confirming;
     }
     if (!readOnly && !validation.valid && dirty) {
       setStatus(validation.message, 'warning');
@@ -1407,6 +1422,16 @@ export function createSplitReviewController({
 
   const render = () => {
     if (!topicList) return;
+    const active = typeof document !== 'undefined' ? document.activeElement : null;
+    const topicKey = active?.dataset?.topicKey;
+    const focusAttribute = active?.hasAttribute?.('data-split-review-title')
+      ? 'data-split-review-title'
+      : active?.hasAttribute?.('data-split-review-template')
+        ? 'data-split-review-template'
+        : null;
+    const selection = focusAttribute === 'data-split-review-title' && Number.isInteger(active.selectionStart)
+      ? [active.selectionStart, active.selectionEnd, active.selectionDirection]
+      : null;
     topicList.replaceChildren();
     const readOnly = isReadOnly();
     const topics = localDraft?.topics || [];
@@ -1592,6 +1617,13 @@ export function createSplitReviewController({
     });
     updateSplitReviewCounts();
     updateControlState();
+    if (!focusAttribute || !topicKey) return;
+    const replacement = topicList?.querySelector(`[${focusAttribute}][data-topic-key="${topicKey}"]`);
+    if (!replacement) return;
+    safeFocus(replacement);
+    if (selection && typeof replacement.setSelectionRange === 'function') {
+      try { replacement.setSelectionRange(...selection); } catch (_) {}
+    }
   };
 
   const topicKey = (topic) => asString(topic?.client_key || topic?.topic_uuid);
@@ -1630,6 +1662,8 @@ export function createSplitReviewController({
       saveGeneration += 1;
       saving = false;
     }
+    templateRefreshGeneration += 1;
+    templateAvailabilityRefreshing = false;
     opened = false;
     dirty = false;
     localDraft = remoteDraft ? normalizeSplitDraft(remoteDraft) : null;
@@ -1660,6 +1694,41 @@ export function createSplitReviewController({
     setOpenState(true);
     if (typeof document !== 'undefined') document.body?.classList.add('modal-open');
     render();
+    templateAvailabilityFresh = false;
+    templateAvailabilityRefreshing = true;
+    const refreshGeneration = ++templateRefreshGeneration;
+    updateControlState();
+    const transcriptAtOpen = transcriptId;
+    Promise.resolve()
+      .then(() => refreshWorkspace(transcriptAtOpen))
+      .then((workspace) => {
+        if (refreshGeneration !== templateRefreshGeneration
+          || !opened
+          || transcriptId !== transcriptAtOpen) return;
+        if (workspace && Array.isArray(workspace.available_templates)) {
+          templates = workspace.available_templates;
+          templateAvailabilityFresh = true;
+        }
+        templateAvailabilityRefreshing = false;
+        render();
+        if (!templateAvailabilityFresh) {
+          setStatus('Could not refresh available templates. Close and reopen this review before creating notes.', 'error');
+        } else if ((localDraft?.topics || []).some((topic) => (
+          topic.disposition === 'separate_note'
+          && topic.template_id
+          && !templates.some((template) => templateId(template) === asString(topic.template_id))
+        ))) {
+          setStatus('A selected template is no longer available. Choose an available template, save the split, and select Create again.', 'warning');
+        }
+      })
+      .catch(() => {
+        if (refreshGeneration !== templateRefreshGeneration
+          || !opened
+          || transcriptId !== transcriptAtOpen) return;
+        templateAvailabilityRefreshing = false;
+        updateControlState();
+        setStatus('Could not refresh available templates. Close and reopen this review before creating notes.', 'error');
+      });
     const first = focusableElements(modal)[0];
     if (typeof window !== 'undefined') window.requestAnimationFrame?.(() => safeFocus(first));
     else safeFocus(first);
@@ -1683,6 +1752,7 @@ export function createSplitReviewController({
     const sameDraft = Boolean(incoming && remoteDraft && incoming.draft_id === remoteDraft.draft_id);
     const sameTranscript = transcriptId === nextTranscriptIdValue;
     templates = Array.isArray(availableTemplates) ? availableTemplates : [];
+    if (!opened) templateAvailabilityFresh = true;
     transcriptId = nextTranscriptIdValue;
     if (typeof nextCapabilityAvailable === 'boolean') {
       capabilityAvailable = nextCapabilityAvailable;
@@ -1693,6 +1763,9 @@ export function createSplitReviewController({
     if (typeof nextSourceReady === 'boolean') sourceReady = nextSourceReady;
     if (typeof nextSourceReadinessMessage === 'string') sourceReadinessMessage = nextSourceReadinessMessage;
     if (!sameTranscript) {
+      templateRefreshGeneration += 1;
+      templateAvailabilityRefreshing = false;
+      templateAvailabilityFresh = false;
       suggesting = false;
       suggestGeneration += 1;
     }
@@ -1739,6 +1812,7 @@ export function createSplitReviewController({
       || saving
       || continuing
       || confirming
+      || templateAvailabilityRefreshing
       || !capabilityAvailable
       || !transcriptId
       || !sourceReady
@@ -1780,7 +1854,7 @@ export function createSplitReviewController({
   };
 
   const save = async () => {
-    if (saving) return false;
+    if (saving || templateAvailabilityRefreshing) return false;
     const activeTranscriptId = transcriptId || getTranscriptId();
     const validation = validateSplitDraft(localDraft);
     if (!localDraft || isReadOnly() || !activeTranscriptId || !validation.valid) {
@@ -1876,7 +1950,7 @@ export function createSplitReviewController({
   };
 
   const consumeOneNote = async (expectedIntentId = null) => {
-    if (!continueAvailable || continuing) return false;
+    if (!continueAvailable || continuing || templateAvailabilityRefreshing) return false;
     if (expectedIntentId && getConfirmIntentId() !== expectedIntentId) return false;
     continuing = true;
     updateControlState();
@@ -1892,7 +1966,7 @@ export function createSplitReviewController({
   };
 
   const saveOrContinueOneNote = async () => {
-    if (continuing || confirming || saving) return false;
+    if (continuing || confirming || saving || templateAvailabilityRefreshing) return false;
     if (!continueAvailable || !isAllMergedOneNoteDraft(localDraft)) {
       return save();
     }
@@ -1928,7 +2002,14 @@ export function createSplitReviewController({
     const activeTranscriptId = transcriptId || getTranscriptId();
     const intentId = getConfirmIntentId();
     const validation = validateSplitDraftForConfirmation(localDraft);
-    if (!activeTranscriptId || !intentId || !expectedUpdatedAt || !validation.valid) return false;
+    const availableTemplateIds = new Set(templates.map(templateId).filter(Boolean));
+    const missingSelectedTemplate = (localDraft?.topics || []).some((topic) => (
+      topic.disposition === 'separate_note'
+      && topic.template_id
+      && !availableTemplateIds.has(asString(topic.template_id))
+    ));
+    if (!activeTranscriptId || !intentId || !expectedUpdatedAt || !validation.valid
+      || !templateAvailabilityFresh || missingSelectedTemplate) return false;
     const draftId = localDraft.draft_id;
     const confirmationTranscriptId = activeTranscriptId;
     confirming = true;

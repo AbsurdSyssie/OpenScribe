@@ -318,6 +318,13 @@ Before clinical production:
 
 The application changes do not complete edge or supply-chain work. Before relying on the related controls:
 
+- When Cloudflare Origin CA certificates are used, keep the private key on the
+  server, keep Cloudflare proxying enabled, and use SSL/TLS mode **Full
+  (strict)**. Rotate certificates before expiry by installing the replacement
+  certificate and matching key, validating the Nginx configuration, reloading
+  Nginx, and checking both the served origin certificate and public site.
+  Configure expiry and availability monitoring for the deployed environment.
+  See [Cloudflare Origin CA](https://developers.cloudflare.com/ssl/origin-configuration/origin-ca/).
 - restrict origin access and confirm Cloudflare overwrites client-IP headers before enabling `RATE_LIMIT_TRUST_CLOUDFLARE`;
 - add Cloudflare WAF rate rules for public abuse paths;
 - set and test proxy/CDN request-body limits;

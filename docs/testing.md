@@ -325,6 +325,9 @@ content-to-footer gap and records a synthetic screenshot-height comparison for
 the compact Defaults page versus the earlier always-open form capture. Empty
 Global Defaults and empty team De-ID lists are checked separately; the
 write-only token stays blank in the browser fixture.
+The quota editor browser regression also checks a synthetic assigned Gemini
+model, responsive 320–1440 CSS-pixel layout, a 10,000-token warning, and
+finite/Unlimited transitions as the limit crosses the 30,000-token output cap.
 The populated Usage regression checks global and selected-team scopes at
 320–1440 CSS pixels, the five-column summary table (including provider-reported
 total tokens, grouped counts, and zero audio), the Team/Users/Quotas

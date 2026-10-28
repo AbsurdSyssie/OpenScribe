@@ -117,6 +117,8 @@ from ..services.stt import (
     list_stt_configs as list_stt_configs_service,
 )
 from ..services.templates import (
+    GPT_OSS_CHECKER_MIN_COMPLETION_TOKENS,
+    NOTE_GENERATION_LENGTH_TOKEN_CAPS,
     generated_document_llm_request_payload as generated_document_llm_request_payload_service,
     generated_document_section_text as generated_document_section_text_service,
     generated_document_text as generated_document_text_service,
@@ -127,6 +129,7 @@ from ..services.templates import (
     list_team_templates as list_team_templates_service,
     list_team_templates_for_member as list_team_templates_for_member_service,
 )
+from ..services.llm_adapters.runtime import provider_output_token_cap
 from ..services.generation_presentation import generated_document_status_projection
 from ..services.smart_phrases import list_personal_smart_phrases as list_personal_smart_phrases_service
 from ..services.default_assets import (
@@ -137,6 +140,52 @@ from ..services.admin_quotas import get_admin_user_quota_detail
 from ..services.legal_content import operator_legal_setup_warnings
 from ..services.audit_retention import active_security_audit_holds
 from .templates import templates
+
+
+def _quota_provider_output_caps(*, primary, backup, checker) -> list[dict[str, object]]:
+    """Return non-secret output-cap metadata for models assigned to one team."""
+    caps: dict[str, int] = {}
+    note_cap = max(NOTE_GENERATION_LENGTH_TOKEN_CAPS.values())
+
+    def add(config, model: str | None, nominal_cap: int) -> None:
+        if (
+            config is None
+            or not config.is_active
+            or config.setup_status != LlmConfigSetupStatus.ready
+            or not model
+        ):
+            return
+        cap = provider_output_token_cap(
+            adapter_kind=config.adapter_kind,
+            model=model,
+            nominal_cap=nominal_cap,
+        )
+        caps[model] = max(cap, caps.get(model, 0))
+
+    if primary is not None:
+        config = primary.config
+        if config is not None:
+            models = list(primary.allowed_models_json or config.available_models_json or [])
+            selected = primary.model_name_override or config.model_name
+            if selected:
+                models.append(selected)
+            for model in dict.fromkeys(models):
+                add(config, model, note_cap)
+
+    if backup is not None:
+        add(backup.config, backup.model_name, note_cap)
+
+    if checker is not None:
+        config = checker.config
+        model = (checker.model_name_override or config.model_name) if config is not None else None
+        checker_cap = (
+            max(note_cap, GPT_OSS_CHECKER_MIN_COMPLETION_TOKENS)
+            if model and "gpt-oss" in model.lower()
+            else note_cap
+        )
+        add(config, model, checker_cap)
+
+    return [{"model": model, "cap": cap} for model, cap in sorted(caps.items())]
 
 
 def stt_config_response(config) -> SttConfigDetail:
@@ -1245,6 +1294,11 @@ def render_admin(
         "llm_selection": llm_selection,
         "llm_backup_selection": llm_backup_selection,
         "hallucination_check_selection": hallucination_check_selection,
+        "quota_provider_output_caps": _quota_provider_output_caps(
+            primary=llm_selection,
+            backup=llm_backup_selection,
+            checker=hallucination_check_selection,
+        ),
         "llm_inspection": llm_inspection,
         "llm_form": llm_form_override or llm_form_defaults(edit_llm_config, None),
         "selectable_llm_configs": list_selectable_llm_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else [],

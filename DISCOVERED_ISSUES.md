@@ -561,6 +561,8 @@ Reconciled on 19 October 2026 against `97da191926db1da74fdf741e01f4f8490d60f6c8`
 - Impact: these two UI expectation failures remain in the broader focused run after dictation work; the source changes are part of the existing accessible-guide worktree diff, not the dictation implementation.
 - Not changed here: changing guide markup or stylesheet versions, or rewriting unrelated UI expectations, would exceed this task’s scope. The dictation-related cache-key assertions were updated separately.
 - Follow-up: have the accessible-guide change owner reconcile the two expectations with the final guide design and rerun the focused UI tests.
+- Re-observed 2026-10-28 at base `4c91ab9`: `tests/test_split_review_js.py::test_split_review_workspace_accessibility_hooks_and_cachebusters`, `tests/test_web_refactor.py::test_followup_detailing_keeps_controls_aligned_and_output_scrollable`, and `tests/test_web_refactor.py::test_splash_and_transcribe_styles_are_cacheable_static_assets` still expect `transcribe.css?v=20261022-compact-diarized-turns`; `app/templates/transcribe/_head_assets.html` serves `transcribe.css?v=20261027-live-dictation`. These unchanged style assertions failed in the broader focused run and were left untouched because they are outside the split-template behavior.
+- Resolution during the 2026-10-28 uncommitted-change review: corrected these three stylesheet assertions and three stale app-module assertions in `tests/test_admin_ui.py` to match the served assets. Runtime cache keys were not changed to satisfy the tests.
 
 ### QUICK-ACTION-UTILITY-ATTRIBUTE-ORDER — 2026-10-18
 

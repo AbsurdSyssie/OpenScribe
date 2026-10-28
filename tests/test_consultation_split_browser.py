@@ -443,7 +443,8 @@ def test_browser_review_problems_is_passive_until_explicit_manual_suggestion(
 
         review.click()
         page.locator("[data-split-review-modal]").wait_for(state="visible")
-        assert page.get_by_role("button", name="Suggest problems", exact=True).is_enabled()
+        suggest_button = page.get_by_role("button", name="Suggest problems", exact=True)
+        playwright_sync.expect(suggest_button).to_be_enabled(timeout=6_000)
         with sessions() as db:
             assert db.scalar(select(func.count()).select_from(ConsultationSplitIntent).where(ConsultationSplitIntent.transcript_id == transcript_id)) == 0
             assert db.scalar(select(func.count()).select_from(ConsultationSplitAnalysis).where(ConsultationSplitAnalysis.transcript_id == transcript_id)) == 0
@@ -1108,7 +1109,7 @@ def test_browser_all_merged_review_continues_as_one_note_immediately(
         continue_button = page.locator("[data-split-review-modal]").get_by_role(
             "button", name="Continue as one note", exact=True
         )
-        assert continue_button.is_enabled()
+        playwright_sync.expect(continue_button).to_be_enabled(timeout=6_000)
         with page.expect_response(
             lambda response: "/consultation-split-draft" in response.url
             and response.request.method == "PUT"

@@ -24,10 +24,12 @@ def test_split_review_workspace_accessibility_hooks_and_cachebusters():
     assert 'data-split-review-problem-count' in workspace
     assert 'data-split-review-add' in workspace
     assert 'data-split-review-create' in workspace
-    assert 'splitReview.js?v=20261020-split-progress-feedback' in app_js
+    assert 'splitReview.js?v=20261028-template-availability-refresh' in app_js
     assert 'splitReviewController?.applyWorkspaceState' in app_js
-    assert 'app.js?v=20261023-batch-startup-ownership' in shell
-    assert 'transcribe.css?v=20261022-compact-diarized-turns' in head
+    assert 'refreshWorkspace: (nextTranscriptId) => fetchWorkspace(nextTranscriptId, {' in app_js
+    assert 'guardTranscriptId: nextTranscriptId' in app_js
+    assert 'app.js?v=20261028-split-template-refresh' in shell
+    assert 'transcribe.css?v=20261027-live-dictation' in head
     assert 'data-split-continue-one-note hidden' in workspace
     assert 'data-split-review-confirm' not in workspace
     assert 'data-split-review-continue' in workspace
@@ -820,6 +822,10 @@ trigger.click();
 if (modal.hidden || writes !== 0 || !status.textContent.includes('does not generate notes')) {{
   throw new Error('opening Review problems did not remain an explanatory read-only action');
 }}
+if (!suggest.disabled) throw new Error('Suggest was enabled during the opening workspace refresh');
+suggest.click();
+for (let tick = 0; tick < 6; tick++) await Promise.resolve();
+if (writes !== 0 || suggestions.length !== 0) throw new Error('pending workspace refresh started suggestion work');
 suggest.click(); await Promise.resolve();
 if (writes !== 0 || suggestions.length !== 1 || suggestions[0].retryFailedAnalysis || !suggestions[0].forceNewReview) {{
   throw new Error('Suggest problems was not the sole explicit work-start action');
@@ -1411,6 +1417,7 @@ const documentTarget = {{
   focusFallback: null,
   querySelector() {{ return this.focusFallback; }},
 }};
+const settleTemplateRefresh = async () => {{ for (let tick = 0; tick < 8; tick++) await Promise.resolve(); }};
 globalThis.document = documentTarget; globalThis.Element = FakeElement; globalThis.HTMLInputElement = FakeInput; globalThis.HTMLSelectElement = FakeSelect;
 globalThis.window = {{ confirm: () => true, requestAnimationFrame: (callback) => callback() }};
 const {{ createSplitReviewController }} = await import('{module_uri}');
@@ -1444,6 +1451,7 @@ if (createButton.hidden || createButton.disabled || status.textContent.includes(
 controller.applyWorkspaceState({{ draft: base, availableTemplates: [{{ id: 'tpl-1', name: 'General', latest_version: {{ mode: 'freeform' }} }}], nextTranscriptId: 'tx-1' }});
 if (trigger.hidden || trigger.getAttribute('aria-expanded') !== 'false') throw new Error('trigger state');
 trigger.click();
+await settleTemplateRefresh();
 if (modal.hidden || trigger.getAttribute('aria-expanded') !== 'true') throw new Error('open state');
 const topicRows = topicList.querySelectorAll('fieldset');
 if (topicRows.length !== 2) throw new Error('topic order');
@@ -1468,7 +1476,7 @@ refreshPayload = {{ consultation_split_draft: {{ ...base, status: 'stale', updat
 let staleController;
 const staleCloseButton = new FakeElement('button');
 staleController = createSplitReviewController({{ trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: new FakeElement('div'), status: new FakeElement('p'), saveButton: new FakeElement('button'), closeButtons: [staleCloseButton], fetcher: async () => ({{ status: 409, ok: false, json: async () => ({{ error: {{ code: 'consultation_split_source_stale' }} }}) }}), getTranscriptId: () => 'tx-1', refreshWorkspace: async () => {{ staleController.applyWorkspaceState({{ draft: refreshPayload.consultation_split_draft, nextTranscriptId: 'tx-1' }}); return refreshPayload; }} }});
-staleController.applyWorkspaceState({{ draft: base, nextTranscriptId: 'tx-1' }}); staleController.open(); staleController.getDraft().topics[0].title = 'dirty';
+staleController.applyWorkspaceState({{ draft: base, nextTranscriptId: 'tx-1' }}); staleController.open(); await settleTemplateRefresh(); staleController.getDraft().topics[0].title = 'dirty';
 await staleController.save(); if (staleController.getDraft().status !== 'stale' || staleController.getRemoteDraft().status !== 'stale') throw new Error('stale conflict handling');
 if (staleController.getDraft().status === 'active') throw new Error('stale remained editable');
 if (staleCloseButton.disabled) throw new Error('stale modal could not close'); staleCloseButton.click(); if (staleController.isOpen()) throw new Error('stale modal close failed');
@@ -1481,7 +1489,7 @@ const conflictSaveButton = new FakeElement('button');
 const conflictCalls = [];
 let conflictController;
 conflictController = createSplitReviewController({{ trigger: conflictTrigger, modal: conflictModal, topicList: conflictTopicList, status: conflictStatus, saveButton: conflictSaveButton, closeButtons: [], fetcher: async (_url, options) => {{ conflictCalls.push(JSON.parse(options.body)); return {{ status: 409, ok: false, json: async () => ({{ error: {{ code: 'consultation_split_draft_conflict' }} }}) }}; }}, getTranscriptId: () => 'tx-1', refreshWorkspace: async () => {{ conflictController.applyWorkspaceState({{ draft: conflictRefresh.consultation_split_draft, nextTranscriptId: 'tx-1' }}); return conflictRefresh; }} }});
-conflictController.applyWorkspaceState({{ draft: base, nextTranscriptId: 'tx-1' }}); conflictController.open();
+conflictController.applyWorkspaceState({{ draft: base, nextTranscriptId: 'tx-1' }}); conflictController.open(); await settleTemplateRefresh();
 const conflictTemplate = conflictTopicList.querySelector('select[data-split-review-template]'); conflictTemplate.value = 'tpl-2'; conflictTemplate.fire('change');
 await conflictController.save();
 if (conflictCalls.length !== 1 || conflictController.getDraft().topics[0].title !== 'Main problem server' || conflictController.getRemoteDraft().topics[0].title !== 'Main problem server') throw new Error('conflict edits merged or latest draft not loaded');
@@ -1489,7 +1497,7 @@ if (conflictController.getDraft().status !== 'active' || !conflictStatus.textCon
 const unicodeTopicList = new FakeElement('div');
 let unicodeCalls = 0;
 const unicodeController = createSplitReviewController({{ trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: unicodeTopicList, status: new FakeElement('p'), saveButton: new FakeElement('button'), closeButtons: [], fetcher: async () => {{ unicodeCalls += 1; throw new Error('duplicate Unicode titles fetched'); }}, getTranscriptId: () => 'tx-1' }});
-unicodeController.applyWorkspaceState({{ draft: {{ ...base, topics: [{{ ...base.topics[0], title: 'Alpha' }}, {{ ...base.topics[1], title: 'Beta', is_primary: false }}] }} }}); unicodeController.open();
+unicodeController.applyWorkspaceState({{ draft: {{ ...base, topics: [{{ ...base.topics[0], title: 'Alpha' }}, {{ ...base.topics[1], title: 'Beta', is_primary: false }}] }} }}); unicodeController.open(); await settleTemplateRefresh();
 unicodeController.getDraft().topics[0].title = 'Straße'; unicodeController.getDraft().topics[1].title = 'STRASSE';
 await unicodeController.save(); if (unicodeCalls !== 0 || !unicodeController.getDraft().topics[0].title.includes('Straße')) throw new Error('Unicode duplicate was not rejected locally');
 const pendingTopicList = new FakeElement('div');
@@ -1502,7 +1510,7 @@ let resolvePending;
 let pendingCalls = 0;
 const pendingResponse = new Promise((resolve) => {{ resolvePending = resolve; }});
 const pendingController = createSplitReviewController({{ trigger: pendingTrigger, modal: pendingModal, topicList: pendingTopicList, status: pendingStatus, saveButton: pendingSaveButton, closeButtons: [pendingCloseButton], fetcher: async () => {{ pendingCalls += 1; return pendingResponse; }}, getTranscriptId: () => 'tx-1' }});
-pendingController.applyWorkspaceState({{ draft: {{ ...base, draft_id: 'pending-draft' }}, nextTranscriptId: 'tx-1' }}); pendingController.open();
+pendingController.applyWorkspaceState({{ draft: {{ ...base, draft_id: 'pending-draft' }}, nextTranscriptId: 'tx-1' }}); pendingController.open(); await settleTemplateRefresh();
 const pendingSelect = pendingTopicList.querySelector('select[data-split-review-template]'); pendingSelect.value = 'tpl-2'; pendingSelect.fire('change');
 const pendingSave = pendingController.save(); if (!pendingSaveButton.disabled || !pendingCloseButton.disabled || !pendingSelect.disabled) throw new Error('save did not lock modal controls');
 pendingSelect.value = 'tpl-3'; pendingSelect.fire('change'); pendingCloseButton.click(); pendingSaveButton.click();
@@ -1513,12 +1521,12 @@ const errorTopicList = new FakeElement('div');
 const errorCloseButton = new FakeElement('button');
 const errorSaveButton = new FakeElement('button');
 const errorController = createSplitReviewController({{ trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: errorTopicList, status: new FakeElement('p'), saveButton: errorSaveButton, closeButtons: [errorCloseButton], fetcher: async () => ({{ status: 500, ok: false, json: async () => ({{}}) }}), getTranscriptId: () => 'tx-1' }});
-errorController.applyWorkspaceState({{ draft: {{ ...base, draft_id: 'error-draft' }}, nextTranscriptId: 'tx-1' }}); errorController.open(); errorController.getDraft().topics[0].title = 'error';
+errorController.applyWorkspaceState({{ draft: {{ ...base, draft_id: 'error-draft' }}, nextTranscriptId: 'tx-1' }}); errorController.open(); await settleTemplateRefresh(); errorController.getDraft().topics[0].title = 'error';
 await errorController.save(); if (errorCloseButton.disabled || errorTopicList.querySelector('select[data-split-review-template]').disabled || !errorSaveButton.disabled) throw new Error('save controls did not restore after error');
 let failedRefreshCalls = 0;
 const failedRefreshController = createSplitReviewController({{ trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: new FakeElement('div'), status: new FakeElement('p'), saveButton: new FakeElement('button'), closeButtons: [], fetcher: async () => ({{ status: 409, ok: false, json: async () => ({{ error: {{ code: 'consultation_split_draft_unavailable' }} }}) }}), getTranscriptId: () => 'tx-1', refreshWorkspace: async () => {{ failedRefreshCalls += 1; return null; }} }});
-failedRefreshController.applyWorkspaceState({{ draft: base, nextTranscriptId: 'tx-1' }}); failedRefreshController.open(); failedRefreshController.getDraft().topics[0].title = 'failed refresh';
-await failedRefreshController.save(); if (failedRefreshCalls !== 1 || failedRefreshController.getDraft().status !== 'unavailable' || failedRefreshController.getRemoteDraft().status !== 'unavailable') throw new Error('409 did not fail closed before failed refresh');
+failedRefreshController.applyWorkspaceState({{ draft: base, nextTranscriptId: 'tx-1' }}); failedRefreshController.open(); await settleTemplateRefresh(); failedRefreshController.getDraft().topics[0].title = 'failed refresh';
+await failedRefreshController.save(); if (failedRefreshCalls < 2 || failedRefreshController.getDraft().status !== 'unavailable' || failedRefreshController.getRemoteDraft().status !== 'unavailable') throw new Error('409 did not fail closed before failed refresh');
 failedRefreshController.close({{ force: true }}); failedRefreshController.open(); if (failedRefreshController.getDraft().status !== 'unavailable') throw new Error('failed refresh reopened as editable');
 const forcedCloseTrigger = new FakeElement('button');
 const forcedCloseController = createSplitReviewController({{ trigger: forcedCloseTrigger, modal: new FakeElement('div'), topicList: new FakeElement('div'), status: new FakeElement('p'), saveButton: new FakeElement('button'), closeButtons: [], getTranscriptId: () => 'tx-1' }});
@@ -1529,22 +1537,44 @@ let resolveSwitch;
 const switchResponse = new Promise((resolve) => {{ resolveSwitch = resolve; }});
 const switchTrigger = new FakeElement('button');
 const switchController = createSplitReviewController({{ trigger: switchTrigger, modal: new FakeElement('div'), topicList: new FakeElement('div'), status: new FakeElement('p'), saveButton: new FakeElement('button'), closeButtons: [], fetcher: async () => switchResponse, getTranscriptId: () => 'tx-1' }});
-switchController.applyWorkspaceState({{ draft: {{ ...base, draft_id: 'switch-old' }}, nextTranscriptId: 'tx-1' }}); switchTrigger.focus(); switchController.open(); switchController.getDraft().topics[0].title = 'old save';
+switchController.applyWorkspaceState({{ draft: {{ ...base, draft_id: 'switch-old' }}, nextTranscriptId: 'tx-1' }}); switchTrigger.focus(); switchController.open(); await settleTemplateRefresh(); switchController.getDraft().topics[0].title = 'old save';
 const switchSave = switchController.save(); switchController.applyWorkspaceState({{ draft: {{ ...base, draft_id: 'switch-new', updated_at: 'new' }}, nextTranscriptId: 'tx-2' }}); switchController.close({{ force: true }});
 resolveSwitch({{ status: 200, ok: true, json: async () => ({{ ...base, draft_id: 'switch-old', updated_at: 'old-saved' }}) }}); await switchSave;
 if (switchController.getDraft()?.draft_id !== 'switch-new' || documentTarget.activeElement !== switchTrigger) throw new Error('stale save response resurrected switched draft or focus was lost');
 let activeConfirmTranscript = 'tx-confirm'; let resolveConfirm; let confirmCalls = 0;
 const confirmResponse = new Promise((resolve) => {{ resolveConfirm = resolve; }});
-const confirmStatus = new FakeElement('p'); const confirmModal = new FakeElement('div'); const confirmCloseButton = new FakeElement('button');
+let confirmTemplateRefresh = [];
+const confirmStatus = new FakeElement('p'); const confirmModal = new FakeElement('div'); const confirmTopicList = new FakeElement('div'); const confirmCloseButton = new FakeElement('button'); const confirmCreateButton = new FakeElement('button');
 const confirmController = createSplitReviewController({{
-  trigger: new FakeElement('button'), modal: confirmModal, topicList: new FakeElement('div'),
-  status: confirmStatus, saveButton: new FakeElement('button'), confirmButton: new FakeElement('button'),
+  trigger: new FakeElement('button'), modal: confirmModal, topicList: confirmTopicList,
+  status: confirmStatus, saveButton: new FakeElement('button'), confirmButton: confirmCreateButton,
   closeButtons: [confirmCloseButton], getTranscriptId: () => activeConfirmTranscript, getConfirmIntentId: () => 'intent-confirm',
+  refreshWorkspace: async () => ({{ available_templates: confirmTemplateRefresh }}),
   fetcher: async (_url, options) => {{ confirmCalls += 1; const body = JSON.parse(options.body); if (body.intent_id !== 'intent-confirm' || body.expected_updated_at !== 'confirm-v1') throw new Error('confirm body leaked or missed optimistic fields'); return confirmResponse; }},
 }});
 const confirmDraft = {{ ...base, draft_id: 'confirm-draft', updated_at: 'confirm-v1', topics: base.topics.map((topic) => ({{ ...topic, disposition: 'separate_note' }})) }};
-confirmController.applyWorkspaceState({{ draft: confirmDraft, nextTranscriptId: 'tx-confirm' }});
+confirmController.applyWorkspaceState({{ draft: confirmDraft, availableTemplates: [], nextTranscriptId: 'tx-confirm' }});
 confirmController.open();
+if (confirmController.getDraft().topics[0].template_id !== 'tpl-1' || confirmController.getDraft().topics[1].template_id !== 'tpl-1') throw new Error('synthetic stale template selection missing');
+if (!confirmTopicList.querySelector('select[data-split-review-template]').children.some((option) => option.value === 'tpl-1' && option.textContent === 'Unavailable template')) throw new Error('stale template was not visibly marked unavailable');
+if (!confirmCreateButton.disabled || await confirmController.confirm()) throw new Error('Create remained available before template refresh');
+await Promise.resolve(); await Promise.resolve();
+if (!confirmCreateButton.disabled || confirmCalls !== 0) throw new Error('unavailable selected template was confirmed');
+confirmController.close({{ force: true }});
+const rejectedRefreshCreate = new FakeElement('button');
+const rejectedRefreshController = createSplitReviewController({{
+  trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: new FakeElement('div'),
+  status: new FakeElement('p'), saveButton: new FakeElement('button'), confirmButton: rejectedRefreshCreate, closeButtons: [],
+  getTranscriptId: () => 'tx-rejected', getConfirmIntentId: () => 'intent-rejected',
+  refreshWorkspace: async () => {{ throw new Error('synthetic refresh failure'); }},
+  fetcher: async () => {{ throw new Error('confirmation must stay blocked'); }},
+}});
+rejectedRefreshController.applyWorkspaceState({{ draft: {{ ...confirmDraft, draft_id: 'rejected-refresh' }}, availableTemplates: [{{ id: 'tpl-1' }}], nextTranscriptId: 'tx-rejected' }});
+rejectedRefreshController.open(); await Promise.resolve(); await Promise.resolve();
+if (!rejectedRefreshCreate.disabled || rejectedRefreshController.getDraft()?.draft_id !== 'rejected-refresh') throw new Error('failed template refresh did not keep Create blocked');
+confirmTemplateRefresh = [{{ id: 'tpl-1', name: 'General', latest_version: {{ mode: 'freeform' }} }}];
+confirmController.open(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+if (confirmCreateButton.disabled) throw new Error(`available template did not re-enable Create after refresh: status=${{confirmStatus.textContent}}, kind=${{confirmStatus.dataset.statusKind}}, hidden=${{confirmCreateButton.hidden}}`);
 const firstConfirm = confirmController.confirm(); const secondConfirm = confirmController.confirm();
 if (confirmCalls !== 1) throw new Error('confirm was not single-flight');
 if (!confirmStatus.textContent.includes('Starting note creation') || confirmStatus.dataset.statusKind !== 'progress' || confirmModal.getAttribute('aria-busy') !== 'true' || !confirmCloseButton.disabled) throw new Error('pending split creation gave no progress feedback or allowed the review to close');
@@ -1553,6 +1583,96 @@ confirmModal.fire('keydown', {{ key: 'Escape' }});
 if (confirmModal.hidden) throw new Error('Escape closed the review while confirmation was pending');
 activeConfirmTranscript = 'tx-other'; resolveConfirm({{ status: 202, ok: true, json: async () => ({{ idempotency_replayed: false }}) }});
 if (await firstConfirm || await secondConfirm || confirmController.getDraft().status !== 'active') throw new Error('stale transcript confirm response changed draft');
+let resolveTemplateRefresh;
+const templateRefreshWait = new Promise((resolve) => {{ resolveTemplateRefresh = resolve; }});
+let refreshingController;
+const refreshingDraft = {{ ...confirmDraft, draft_id: 'refreshing-draft' }};
+const refreshingTopicList = new FakeElement('div');
+refreshingController = createSplitReviewController({{
+  trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: refreshingTopicList,
+  status: new FakeElement('p'), saveButton: new FakeElement('button'), closeButtons: [], getTranscriptId: () => 'tx-confirm',
+  refreshWorkspace: async () => {{
+    await templateRefreshWait;
+    const workspace = {{ available_templates: [{{ id: 'tpl-1', name: 'General' }}] }};
+    refreshingController.applyWorkspaceState({{ draft: refreshingDraft, availableTemplates: workspace.available_templates, nextTranscriptId: 'tx-confirm' }});
+    return workspace;
+  }},
+}});
+refreshingController.applyWorkspaceState({{ draft: refreshingDraft, availableTemplates: [], nextTranscriptId: 'tx-confirm' }});
+refreshingController.open();
+const refreshingTitle = refreshingTopicList.querySelector('input[data-split-review-title]');
+refreshingTitle.value = 'Unsaved title'; refreshingTitle.focus(); refreshingTitle.fire('input');
+resolveTemplateRefresh(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+if (refreshingController.getDraft().topics[0].title !== 'Unsaved title') throw new Error('open refresh overwrote a local edit');
+if (documentTarget.activeElement !== refreshingTopicList.querySelector('input[data-split-review-title]')) throw new Error('open refresh dropped focus from the active problem title');
+if (!refreshingTopicList.querySelector('select[data-split-review-template]').children.some((option) => option.value === 'tpl-1' && option.selected)) throw new Error('open refresh lost selected template');
+let resolveSaveRefresh;
+const saveRefreshWait = new Promise((resolve) => {{ resolveSaveRefresh = resolve; }});
+let saveDuringRefreshCalls = 0;
+const saveDuringRefreshTopicList = new FakeElement('div');
+const saveDuringRefreshButton = new FakeElement('button');
+const saveDuringRefreshBody = {{ ...refreshingDraft, updated_at: 'refresh-save-v2', topics: refreshingDraft.topics.map((topic, index) => ({{ ...topic, title: index ? topic.title : 'Saved while refresh pending' }})) }};
+const saveDuringRefreshController = createSplitReviewController({{
+  trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: saveDuringRefreshTopicList,
+  status: new FakeElement('p'), saveButton: saveDuringRefreshButton, closeButtons: [], getTranscriptId: () => 'tx-save-refresh',
+  refreshWorkspace: async () => {{
+    await saveRefreshWait;
+    const workspace = {{ consultation_split_draft: {{ ...refreshingDraft }}, available_templates: [{{ id: 'tpl-1', name: 'General' }}] }};
+    saveDuringRefreshController.applyWorkspaceState({{ draft: workspace.consultation_split_draft, availableTemplates: workspace.available_templates, nextTranscriptId: 'tx-save-refresh' }});
+    return workspace;
+  }},
+  fetcher: async (_url, options) => {{
+    saveDuringRefreshCalls += 1;
+    const submitted = JSON.parse(options.body);
+    if (submitted.topics[0].title !== 'Saved while refresh pending') throw new Error('stale workspace state replaced the clinician edit before save');
+    return {{ status: 200, ok: true, json: async () => saveDuringRefreshBody }};
+  }},
+}});
+saveDuringRefreshController.applyWorkspaceState({{ draft: refreshingDraft, availableTemplates: [{{ id: 'tpl-1', name: 'General' }}], nextTranscriptId: 'tx-save-refresh' }});
+saveDuringRefreshController.open();
+const saveDuringRefreshInput = saveDuringRefreshTopicList.querySelector('input[data-split-review-title]');
+saveDuringRefreshInput.value = 'Saved while refresh pending'; saveDuringRefreshInput.fire('input');
+if (await saveDuringRefreshController.save() || saveDuringRefreshCalls !== 0 || !saveDuringRefreshButton.disabled) throw new Error('save was allowed during the pending workspace refresh');
+resolveSaveRefresh();
+for (let tick = 0; tick < 6; tick += 1) await Promise.resolve();
+if (saveDuringRefreshButton.disabled || !await saveDuringRefreshController.save()
+  || saveDuringRefreshCalls !== 1 || saveDuringRefreshController.getDraft().topics[0].title !== 'Saved while refresh pending') throw new Error('save after pending refresh lost the clinician edit');
+let resolveReplacedDraftRefresh;
+const replacedDraftRefresh = new Promise((resolve) => {{ resolveReplacedDraftRefresh = resolve; }});
+const replacedDraftCreate = new FakeElement('button');
+let replacedDraftConfirmCalls = 0;
+const replacedDraftRefreshController = createSplitReviewController({{
+  trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: new FakeElement('div'),
+  status: new FakeElement('p'), saveButton: new FakeElement('button'), confirmButton: replacedDraftCreate, closeButtons: [],
+  getTranscriptId: () => 'tx-replaced-draft', getConfirmIntentId: () => 'intent-replaced-draft',
+  refreshWorkspace: async () => replacedDraftRefresh,
+  fetcher: async () => {{ replacedDraftConfirmCalls += 1; throw new Error('unexpected confirmation'); }},
+}});
+replacedDraftRefreshController.applyWorkspaceState({{ draft: {{ ...confirmDraft, draft_id: 'draft-before-refresh' }}, availableTemplates: [], nextTranscriptId: 'tx-replaced-draft' }});
+replacedDraftRefreshController.open();
+replacedDraftRefreshController.applyWorkspaceState({{ draft: {{ ...confirmDraft, draft_id: 'draft-replaced-during-refresh' }}, availableTemplates: [{{ id: 'tpl-1', name: 'General' }}], nextTranscriptId: 'tx-replaced-draft' }});
+resolveReplacedDraftRefresh({{ available_templates: [{{ id: 'tpl-1', name: 'General' }}] }});
+for (let tick = 0; tick < 6; tick += 1) await Promise.resolve();
+if (replacedDraftCreate.disabled || replacedDraftConfirmCalls !== 0) throw new Error('same-transcript draft replacement left the freshly loaded template list unusable');
+let resolveSwitchedTemplateRefresh;
+const switchedTemplateWait = new Promise((resolve) => {{ resolveSwitchedTemplateRefresh = resolve; }});
+const switchedTemplateButton = new FakeElement('button');
+const switchedTemplateTopicList = new FakeElement('div');
+const switchedTemplateController = createSplitReviewController({{
+  trigger: switchedTemplateButton, modal: new FakeElement('div'), topicList: switchedTemplateTopicList,
+  status: new FakeElement('p'), saveButton: new FakeElement('button'), confirmButton: new FakeElement('button'), closeButtons: [],
+  getTranscriptId: () => 'tx-new', getConfirmIntentId: () => 'intent-new',
+  refreshWorkspace: async () => switchedTemplateWait,
+}});
+switchedTemplateController.applyWorkspaceState({{ draft: {{ ...confirmDraft, draft_id: 'old-refresh-draft' }}, availableTemplates: [{{ id: 'tpl-1' }}], nextTranscriptId: 'tx-old' }});
+switchedTemplateController.open();
+switchedTemplateController.applyWorkspaceState({{ draft: {{ ...confirmDraft, draft_id: 'new-refresh-draft' }}, availableTemplates: [{{ id: 'tpl-new' }}], nextTranscriptId: 'tx-new' }});
+resolveSwitchedTemplateRefresh({{ available_templates: [{{ id: 'tpl-1' }}] }}); await Promise.resolve(); await Promise.resolve();
+if (switchedTemplateController.getDraft().draft_id !== 'new-refresh-draft' || switchedTemplateController.getDraft().topics[0].template_id !== 'tpl-1') throw new Error('late template refresh changed switched draft');
+if (!switchedTemplateController.getDraft() || switchedTemplateController.isOpen()) throw new Error('transcript switch did not close the old review');
+const switchedTemplateOptions = switchedTemplateTopicList.querySelector('select[data-split-review-template]').children;
+if (!switchedTemplateOptions.some((option) => option.value === 'tpl-new')) throw new Error('late refresh overwrote the current template list');
+if (!switchedTemplateOptions.some((option) => option.value === 'tpl-1' && option.textContent === 'Unavailable template')) throw new Error('current draft selection was not preserved after switch');
 const savedGuidanceTopicList = new FakeElement('div');
 const savedGuidanceStatus = new FakeElement('p');
 const savedGuidanceDraft = {{ ...base, draft_id: 'saved-guidance', updated_at: 'saved-guidance-v1' }};
@@ -1562,7 +1682,7 @@ const savedGuidanceController = createSplitReviewController({{
   fetcher: async () => ({{ status: 200, ok: true, json: async () => savedGuidanceDraft }}),
 }});
 savedGuidanceController.applyWorkspaceState({{ draft: savedGuidanceDraft, nextTranscriptId: 'tx-1' }});
-savedGuidanceController.open();
+savedGuidanceController.open(); await settleTemplateRefresh();
 const savedGuidanceTemplate = savedGuidanceTopicList.querySelector('select[data-split-review-template]');
 savedGuidanceTemplate.value = 'tpl-2'; savedGuidanceTemplate.fire('change');
 await savedGuidanceController.save();
@@ -1587,7 +1707,7 @@ const mergedController = createSplitReviewController({{
   getConfirmIntentId: () => mergedIntent, continueAsOneNote: async () => {{ mergedContinues += 1; return true; }},
   fetcher: async () => {{ mergedPutCalls += 1; return mergedSaveResponse; }},
 }});
-mergedController.applyWorkspaceState({{ draft: mergedDraft, nextTranscriptId: 'tx-1' }}); mergedController.setContinueAvailable(true); mergedController.open();
+mergedController.applyWorkspaceState({{ draft: mergedDraft, nextTranscriptId: 'tx-1' }}); mergedController.setContinueAvailable(true); mergedController.open(); await settleTemplateRefresh();
 mergedTopicList.querySelectorAll('fieldset')[1].querySelector('[data-split-review-merge]').click();
 if (mergedSaveButton.textContent !== 'Continue as one note' || mergedSaveButton.disabled || !mergedContinueButton.hidden) throw new Error('all-merged draft did not expose exactly one immediate one-note action');
 mergedSaveButton.click(); mergedSaveButton.click();
@@ -1604,7 +1724,7 @@ const replacedController = createSplitReviewController({{
   getConfirmIntentId: () => replacedIntent, continueAsOneNote: async () => {{ replacedContinues += 1; return true; }},
   fetcher: async () => replacedSaveResponse,
 }});
-replacedController.applyWorkspaceState({{ draft: {{ ...mergedDraft, draft_id: 'intent-replaced' }}, nextTranscriptId: 'tx-1' }}); replacedController.setContinueAvailable(true); replacedController.open();
+replacedController.applyWorkspaceState({{ draft: {{ ...mergedDraft, draft_id: 'intent-replaced' }}, nextTranscriptId: 'tx-1' }}); replacedController.setContinueAvailable(true); replacedController.open(); await settleTemplateRefresh();
 replacedIntentTopicList.querySelectorAll('fieldset')[1].querySelector('[data-split-review-merge]').click(); replacedIntentSaveButton.click();
 replacedIntent = 'intent-replacement';
 resolveReplacedSave({{ status: 200, ok: true, json: async () => ({{ ...mergedDraft, draft_id: 'intent-replaced', updated_at: 'replacement-saved', topics: mergedDraft.topics.map((topic, index) => ({{ ...topic, disposition: index ? 'include_in_primary' : 'separate_note' }})) }}) }});
@@ -1618,7 +1738,7 @@ const failedMergeController = createSplitReviewController({{
   getConfirmIntentId: () => 'intent-failed-save', continueAsOneNote: async () => {{ failedMergeContinues += 1; return true; }},
   fetcher: async () => {{ failedMergeCalls += 1; return {{ status: 500, ok: false, json: async () => ({{}}) }}; }},
 }});
-failedMergeController.applyWorkspaceState({{ draft: {{ ...mergedDraft, draft_id: 'failed-merge' }}, nextTranscriptId: 'tx-1' }}); failedMergeController.setContinueAvailable(true); failedMergeController.open();
+failedMergeController.applyWorkspaceState({{ draft: {{ ...mergedDraft, draft_id: 'failed-merge' }}, nextTranscriptId: 'tx-1' }}); failedMergeController.setContinueAvailable(true); failedMergeController.open(); await settleTemplateRefresh();
 failedMergeTopicList.querySelectorAll('fieldset')[1].querySelector('[data-split-review-merge]').click(); failedMergeSaveButton.click();
 for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
 if (failedMergeCalls !== 1 || failedMergeContinues !== 0 || !failedMergeController.isOpen() || failedMergeSaveButton.textContent !== 'Continue as one note') throw new Error('failed all-merged save consumed or lost its retry action');
@@ -1630,7 +1750,7 @@ const retryController = createSplitReviewController({{
   getConfirmIntentId: () => 'intent-retry', continueAsOneNote: async () => ++retryContinues > 1,
 }});
 const savedMergedDraft = {{ ...mergedDraft, draft_id: 'saved-merged', topics: mergedDraft.topics.map((topic, index) => ({{ ...topic, disposition: index ? 'include_in_primary' : 'separate_note' }})) }};
-retryController.applyWorkspaceState({{ draft: savedMergedDraft, nextTranscriptId: 'tx-1' }}); retryController.setContinueAvailable(true); retryController.open();
+retryController.applyWorkspaceState({{ draft: savedMergedDraft, nextTranscriptId: 'tx-1' }}); retryController.setContinueAvailable(true); retryController.open(); await settleTemplateRefresh();
 if (retrySaveButton.textContent !== 'Continue as one note' || retrySaveButton.disabled) throw new Error('saved all-merged draft did not remain immediately continuable');
 retrySaveButton.click(); for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
 if (retryContinues !== 1 || !retryController.isOpen()) throw new Error('failed continuation did not remain retryable');
@@ -1657,10 +1777,11 @@ const addedController = createSplitReviewController({{
   trigger: new FakeElement('button'), modal: new FakeElement('div'), topicList: addedTopicList,
   status: new FakeElement('p'), addButton: addedAddButton, saveButton: addedSaveButton, createButton: addedCreateButton,
   closeButtons: [], getTranscriptId: () => 'tx-1', getConfirmIntentId: () => 'intent-added',
+  refreshWorkspace: async () => ({{ available_templates: [{{ id: 'tpl-1', name: 'General', latest_version: {{ mode: 'freeform' }} }}] }}),
   fetcher: async (_url, options) => {{ addedCalls.push(JSON.parse(options.body)); return {{ status: 200, ok: true, json: async () => addedSaved }}; }},
 }});
 addedController.applyWorkspaceState({{ draft: addedBase, availableTemplates: [{{ id: 'tpl-1', name: 'General', latest_version: {{ mode: 'freeform' }} }}], nextTranscriptId: 'tx-1' }});
-addedController.open(); addedAddButton.click(); addedAddButton.click();
+addedController.open(); await settleTemplateRefresh(); addedAddButton.click(); addedAddButton.click();
 if (addedController.getDraft().topics.length !== 6 || !addedAddButton.disabled) throw new Error('add problem did not enforce the six-topic limit');
 const addedTitles = addedTopicList.querySelectorAll('input[data-split-review-title]');
 const addedTemplates = addedTopicList.querySelectorAll('select[data-split-review-template]');

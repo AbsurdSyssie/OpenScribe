@@ -1,0 +1,507 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-25T10:02:10Z",
+  "title": "Design System: OpenScribe",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Deep Teal",
+        "canonical": "#1D4F5E",
+        "tonalRamp": [
+          "oklch(15% 0.027 220.9)",
+          "oklch(25% 0.046 220.9)",
+          "oklch(35% 0.058 220.9)",
+          "oklch(45% 0.058 220.9)",
+          "oklch(55% 0.058 220.9)",
+          "oklch(65% 0.058 220.9)",
+          "oklch(80% 0.058 220.9)",
+          "oklch(95% 0.034 220.9)"
+        ]
+      },
+      "primary-soft": {
+        "role": "secondary",
+        "displayName": "Soft Teal",
+        "canonical": "#3D7A8C",
+        "tonalRamp": [
+          "oklch(15% 0.027 219.5)",
+          "oklch(25% 0.045 219.5)",
+          "oklch(35% 0.064 219.5)",
+          "oklch(45% 0.069 219.5)",
+          "oklch(55% 0.069 219.5)",
+          "oklch(65% 0.069 219.5)",
+          "oklch(80% 0.069 219.5)",
+          "oklch(95% 0.035 219.5)"
+        ]
+      },
+      "primary-pale": {
+        "role": "secondary",
+        "displayName": "Pale Teal",
+        "canonical": "#E0F2F5",
+        "tonalRamp": [
+          "oklch(15% 0.019 208.8)",
+          "oklch(25% 0.019 208.8)",
+          "oklch(35% 0.019 208.8)",
+          "oklch(45% 0.019 208.8)",
+          "oklch(55% 0.019 208.8)",
+          "oklch(65% 0.019 208.8)",
+          "oklch(80% 0.019 208.8)",
+          "oklch(95% 0.019 208.8)"
+        ]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "canonical": "#FAF8F5",
+        "tonalRamp": [
+          "oklch(15% 0.005 78.3)",
+          "oklch(25% 0.005 78.3)",
+          "oklch(35% 0.005 78.3)",
+          "oklch(45% 0.005 78.3)",
+          "oklch(55% 0.005 78.3)",
+          "oklch(65% 0.005 78.3)",
+          "oklch(80% 0.005 78.3)",
+          "oklch(95% 0.005 78.3)"
+        ]
+      },
+      "parchment": {
+        "role": "neutral",
+        "displayName": "Parchment",
+        "canonical": "#F5F1EB",
+        "tonalRamp": [
+          "oklch(15% 0.009 78.3)",
+          "oklch(25% 0.009 78.3)",
+          "oklch(35% 0.009 78.3)",
+          "oklch(45% 0.009 78.3)",
+          "oklch(55% 0.009 78.3)",
+          "oklch(65% 0.009 78.3)",
+          "oklch(80% 0.009 78.3)",
+          "oklch(95% 0.009 78.3)"
+        ]
+      },
+      "card": {
+        "role": "neutral",
+        "displayName": "White Card",
+        "canonical": "#FFFFFF",
+        "tonalRamp": [
+          "oklch(15% 0.000 89.9)",
+          "oklch(25% 0.000 89.9)",
+          "oklch(35% 0.000 89.9)",
+          "oklch(45% 0.000 89.9)",
+          "oklch(55% 0.000 89.9)",
+          "oklch(65% 0.000 89.9)",
+          "oklch(80% 0.000 89.9)",
+          "oklch(95% 0.000 89.9)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "#1A202C",
+        "tonalRamp": [
+          "oklch(15% 0.025 264.0)",
+          "oklch(25% 0.025 264.0)",
+          "oklch(35% 0.025 264.0)",
+          "oklch(45% 0.025 264.0)",
+          "oklch(55% 0.025 264.0)",
+          "oklch(65% 0.025 264.0)",
+          "oklch(80% 0.025 264.0)",
+          "oklch(95% 0.024 264.0)"
+        ]
+      },
+      "slate": {
+        "role": "neutral",
+        "displayName": "Slate",
+        "canonical": "#2D3748",
+        "tonalRamp": [
+          "oklch(15% 0.033 260.9)",
+          "oklch(25% 0.033 260.9)",
+          "oklch(35% 0.033 260.9)",
+          "oklch(45% 0.033 260.9)",
+          "oklch(55% 0.033 260.9)",
+          "oklch(65% 0.033 260.9)",
+          "oklch(80% 0.033 260.9)",
+          "oklch(95% 0.024 260.9)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted",
+        "canonical": "#718096",
+        "tonalRamp": [
+          "oklch(15% 0.038 257.9)",
+          "oklch(25% 0.038 257.9)",
+          "oklch(35% 0.038 257.9)",
+          "oklch(45% 0.038 257.9)",
+          "oklch(55% 0.038 257.9)",
+          "oklch(65% 0.038 257.9)",
+          "oklch(80% 0.038 257.9)",
+          "oklch(95% 0.024 257.9)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Warm Border",
+        "canonical": "#E2DED6",
+        "tonalRamp": [
+          "oklch(15% 0.012 84.6)",
+          "oklch(25% 0.012 84.6)",
+          "oklch(35% 0.012 84.6)",
+          "oklch(45% 0.012 84.6)",
+          "oklch(55% 0.012 84.6)",
+          "oklch(65% 0.012 84.6)",
+          "oklch(80% 0.012 84.6)",
+          "oklch(95% 0.012 84.6)"
+        ]
+      },
+      "border-strong": {
+        "role": "neutral",
+        "displayName": "Soft Border",
+        "canonical": "#D8D2C8",
+        "tonalRamp": [
+          "oklch(15% 0.015 80.7)",
+          "oklch(25% 0.015 80.7)",
+          "oklch(35% 0.015 80.7)",
+          "oklch(45% 0.015 80.7)",
+          "oklch(55% 0.015 80.7)",
+          "oklch(65% 0.015 80.7)",
+          "oklch(80% 0.015 80.7)",
+          "oklch(95% 0.015 80.7)"
+        ]
+      },
+      "warm-accent": {
+        "role": "tertiary",
+        "displayName": "Warm Accent",
+        "canonical": "#F6E8BB",
+        "tonalRamp": [
+          "oklch(15% 0.031 92.8)",
+          "oklch(25% 0.051 92.8)",
+          "oklch(35% 0.060 92.8)",
+          "oklch(45% 0.060 92.8)",
+          "oklch(55% 0.060 92.8)",
+          "oklch(65% 0.060 92.8)",
+          "oklch(80% 0.060 92.8)",
+          "oklch(95% 0.060 92.8)"
+        ]
+      },
+      "green-accent": {
+        "role": "tertiary",
+        "displayName": "Green Accent",
+        "canonical": "#DFF2E2",
+        "tonalRamp": [
+          "oklch(15% 0.029 150.1)",
+          "oklch(25% 0.029 150.1)",
+          "oklch(35% 0.029 150.1)",
+          "oklch(45% 0.029 150.1)",
+          "oklch(55% 0.029 150.1)",
+          "oklch(65% 0.029 150.1)",
+          "oklch(80% 0.029 150.1)",
+          "oklch(95% 0.029 150.1)"
+        ]
+      },
+      "success": {
+        "role": "tertiary",
+        "displayName": "Success",
+        "canonical": "#38A169",
+        "tonalRamp": [
+          "oklch(15% 0.036 156.2)",
+          "oklch(25% 0.060 156.2)",
+          "oklch(35% 0.085 156.2)",
+          "oklch(45% 0.109 156.2)",
+          "oklch(55% 0.128 156.2)",
+          "oklch(65% 0.128 156.2)",
+          "oklch(80% 0.128 156.2)",
+          "oklch(95% 0.078 156.2)"
+        ]
+      },
+      "warning": {
+        "role": "tertiary",
+        "displayName": "Warning",
+        "canonical": "#D69E2E",
+        "tonalRamp": [
+          "oklch(15% 0.031 80.0)",
+          "oklch(25% 0.052 80.0)",
+          "oklch(35% 0.072 80.0)",
+          "oklch(45% 0.093 80.0)",
+          "oklch(55% 0.114 80.0)",
+          "oklch(65% 0.135 80.0)",
+          "oklch(80% 0.138 80.0)",
+          "oklch(95% 0.046 80.0)"
+        ]
+      },
+      "error": {
+        "role": "tertiary",
+        "displayName": "Error",
+        "canonical": "#C53030",
+        "tonalRamp": [
+          "oklch(15% 0.061 26.0)",
+          "oklch(25% 0.102 26.0)",
+          "oklch(35% 0.142 26.0)",
+          "oklch(45% 0.183 26.0)",
+          "oklch(55% 0.186 26.0)",
+          "oklch(65% 0.186 26.0)",
+          "oklch(80% 0.114 26.0)",
+          "oklch(95% 0.025 26.0)"
+        ]
+      },
+      "status-ready": {
+        "role": "tertiary",
+        "displayName": "Ready Teal",
+        "canonical": "#0E6B76",
+        "tonalRamp": [
+          "oklch(15% 0.026 207.7)",
+          "oklch(25% 0.043 207.7)",
+          "oklch(35% 0.060 207.7)",
+          "oklch(45% 0.077 207.7)",
+          "oklch(55% 0.080 207.7)",
+          "oklch(65% 0.080 207.7)",
+          "oklch(80% 0.080 207.7)",
+          "oklch(95% 0.047 207.7)"
+        ]
+      },
+      "admin-muted": {
+        "role": "neutral",
+        "displayName": "Admin Muted Text",
+        "canonical": "#56616F",
+        "tonalRamp": [
+          "oklch(15% 0.026 254.5)",
+          "oklch(25% 0.026 254.5)",
+          "oklch(35% 0.026 254.5)",
+          "oklch(45% 0.026 254.5)",
+          "oklch(55% 0.026 254.5)",
+          "oklch(65% 0.026 254.5)",
+          "oklch(80% 0.026 254.5)",
+          "oklch(95% 0.024 254.5)"
+        ]
+      },
+      "admin-border-strong": {
+        "role": "neutral",
+        "displayName": "Admin Control Border",
+        "canonical": "#81776B",
+        "tonalRamp": [
+          "oklch(15% 0.022 72.4)",
+          "oklch(25% 0.022 72.4)",
+          "oklch(35% 0.022 72.4)",
+          "oklch(45% 0.022 72.4)",
+          "oklch(55% 0.022 72.4)",
+          "oklch(65% 0.022 72.4)",
+          "oklch(80% 0.022 72.4)",
+          "oklch(95% 0.022 72.4)"
+        ]
+      },
+      "admin-success": {
+        "role": "tertiary",
+        "displayName": "Admin Success",
+        "canonical": "#246B46",
+        "tonalRamp": [
+          "oklch(15% 0.036 157.0)",
+          "oklch(25% 0.060 157.0)",
+          "oklch(35% 0.083 157.0)",
+          "oklch(45% 0.093 157.0)",
+          "oklch(55% 0.093 157.0)",
+          "oklch(65% 0.093 157.0)",
+          "oklch(80% 0.093 157.0)",
+          "oklch(95% 0.078 157.0)"
+        ]
+      },
+      "admin-warning": {
+        "role": "tertiary",
+        "displayName": "Admin Warning",
+        "canonical": "#80520A",
+        "tonalRamp": [
+          "oklch(15% 0.032 70.7)",
+          "oklch(25% 0.054 70.7)",
+          "oklch(35% 0.076 70.7)",
+          "oklch(45% 0.097 70.7)",
+          "oklch(55% 0.099 70.7)",
+          "oklch(65% 0.099 70.7)",
+          "oklch(80% 0.099 70.7)",
+          "oklch(95% 0.037 70.7)"
+        ]
+      },
+      "admin-focus": {
+        "role": "primary",
+        "displayName": "Admin Focus Teal",
+        "canonical": "#0B667B",
+        "tonalRamp": [
+          "oklch(15% 0.027 219.2)",
+          "oklch(25% 0.045 219.2)",
+          "oklch(35% 0.063 219.2)",
+          "oklch(45% 0.081 219.2)",
+          "oklch(55% 0.083 219.2)",
+          "oklch(65% 0.083 219.2)",
+          "oklch(80% 0.083 219.2)",
+          "oklch(95% 0.036 219.2)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Quiet Editorial Serif",
+        "purpose": "Declared serif fallback stack for shared brand and section headings; font files are not bundled/imported."
+      },
+      "body": {
+        "displayName": "Practical Sans",
+        "purpose": "Declared sans-serif stack for controls, navigation and body copy; DM Sans may fall back to the system face."
+      },
+      "label": {
+        "displayName": "Compact Utility Label",
+        "purpose": "Small tracked uppercase labels for navigation groups and table headings."
+      }
+    },
+    "shadows": [
+      {
+        "name": "shared-button-lift",
+        "value": "0 12px 24px rgba(29, 79, 94, 0.18)",
+        "purpose": "Shared primary-action emphasis."
+      },
+      {
+        "name": "shared-menu-lift",
+        "value": "0 4px 16px rgba(31, 42, 53, 0.07), 0 1px 3px rgba(31, 42, 53, 0.04)",
+        "purpose": "Shared popover layering."
+      },
+      {
+        "name": "admin-dialog-lift",
+        "value": "0 24px 70px rgba(26, 32, 44, 0.18)",
+        "purpose": "Admin dialog separation from the workspace."
+      }
+    ],
+    "motion": [
+      {
+        "name": "shared-state-transition",
+        "value": "0.2s cubic-bezier(0.4, 0, 0.2, 1)",
+        "purpose": "Shared color, border, shadow and transform transitions."
+      },
+      {
+        "name": "admin-menu-entry",
+        "value": "0.15s ease",
+        "purpose": "Short vertical fade/slide for admin menus."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "admin-usage-mobile",
+        "value": "600px"
+      },
+      {
+        "name": "quota-card-stack",
+        "value": "760px"
+      },
+      {
+        "name": "admin-navigation-disclosure",
+        "value": "820px"
+      },
+      {
+        "name": "admin-tab-scroll",
+        "value": "861px"
+      },
+      {
+        "name": "admin-sidebar-compact",
+        "value": "1180px"
+      },
+      {
+        "name": "scribe-mobile-drawer",
+        "value": "767px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The main confirm or commit action.",
+      "html": "<button class=\"ds-btn-primary\" type=\"button\">Save changes</button>",
+      "css": ".ds-btn-primary { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:44px; padding:11px 17px; border:1px solid transparent; border-radius:var(--radius-sm, 11px); background:var(--accent, #1D4F5E); color:white; font:inherit; font-size:.9rem; font-weight:700; line-height:1.1; cursor:pointer; box-shadow:0 12px 24px rgba(29,79,94,.18); transition:transform var(--transition, .2s cubic-bezier(.4, 0, .2, 1)), background-color var(--transition, .2s cubic-bezier(.4, 0, .2, 1)), border-color var(--transition, .2s cubic-bezier(.4, 0, .2, 1)), box-shadow var(--transition, .2s cubic-bezier(.4, 0, .2, 1)), color var(--transition, .2s cubic-bezier(.4, 0, .2, 1)); } .ds-btn-primary:hover,.ds-btn-primary:focus-visible { background:var(--accent-soft, #3D7A8C); color:white; transform:translateY(-1px); outline:none; } .ds-btn-primary:active { transform:translateY(0); }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A lower-emphasis action with a clear boundary.",
+      "html": "<button class=\"ds-btn-secondary\" type=\"button\">Cancel</button>",
+      "css": ".ds-btn-secondary { display:inline-flex; align-items:center; justify-content:center; min-height:44px; padding:11px 17px; border:1px solid var(--border-strong, #D8D2C8); border-radius:var(--radius-sm, 11px); background:rgba(255,255,255,.74); color:var(--ink, #1A202C); font:inherit; font-size:.9rem; font-weight:700; cursor:pointer; transition:background-color var(--transition, .2s cubic-bezier(.4, 0, .2, 1)), border-color var(--transition, .2s cubic-bezier(.4, 0, .2, 1)), color var(--transition, .2s cubic-bezier(.4, 0, .2, 1)); } .ds-btn-secondary:hover,.ds-btn-secondary:focus-visible { background:white; border-color:rgba(61,122,140,.36); color:var(--accent, #1D4F5E); }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "A quiet action that does not compete with the primary action.",
+      "html": "<button class=\"ds-btn-ghost\" type=\"button\">View details</button>",
+      "css": ".ds-btn-ghost { display:inline-flex; align-items:center; justify-content:center; min-height:44px; padding:11px 17px; border:1px solid rgba(29,79,94,.5); border-radius:var(--radius-sm, 11px); background:transparent; color:var(--accent, #1D4F5E); font:inherit; font-size:.9rem; font-weight:700; cursor:pointer; transition:background-color var(--transition, .2s cubic-bezier(.4, 0, .2, 1)), color var(--transition, .2s cubic-bezier(.4, 0, .2, 1)); } .ds-btn-ghost:hover,.ds-btn-ghost:focus-visible { background:rgba(29,79,94,.06); color:var(--accent, #1D4F5E); }"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "A destructive action with muted red fill and explicit wording.",
+      "html": "<button class=\"ds-btn-danger\" type=\"button\">Remove member</button>",
+      "css": ".ds-btn-danger { display:inline-flex; align-items:center; justify-content:center; min-height:44px; padding:11px 17px; border:1px solid rgba(197,48,48,.15); border-radius:var(--radius-sm, 11px); background:rgba(197,48,48,.08); color:var(--error, #C53030); font:inherit; font-size:.9rem; font-weight:700; cursor:pointer; transition:background-color var(--transition, .2s cubic-bezier(.4, 0, .2, 1)), color var(--transition, .2s cubic-bezier(.4, 0, .2, 1)); } .ds-btn-danger:hover,.ds-btn-danger:focus-visible { background:rgba(197,48,48,.14); color:var(--error, #C53030); }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input-text",
+      "description": "A shared single-line field with a warm surface and teal focus treatment.",
+      "html": "<label class=\"ds-field\">Email<input class=\"ds-input\" type=\"email\" value=\"name@example.org\"></label>",
+      "css": ".ds-field { display:grid; gap:6px; color:var(--slate, #2D3748); font-size:.9rem; font-weight:700; } .ds-input { width:100%; height:var(--control-height, 44px); padding:0 13px; border:1px solid transparent; border-radius:10px; background:var(--parchment, #F5F1EB); color:var(--ink, #1A202C); font:inherit; transition:background var(--transition, .2s cubic-bezier(.4, 0, .2, 1)), border-color var(--transition, .2s cubic-bezier(.4, 0, .2, 1)), box-shadow var(--transition, .2s cubic-bezier(.4, 0, .2, 1)); } .ds-input:hover { background:#f1ece5; } .ds-input:focus { border-color:var(--accent, #1D4F5E); background:var(--card, #FFFFFF); box-shadow:0 0 0 3px var(--accent-pale, #E0F2F5); outline:none; }"
+    },
+    {
+      "name": "Workspace Navigation Link",
+      "kind": "nav",
+      "refersTo": "nav-link",
+      "description": "A full-width workspace destination with a pale teal current state.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Workspace\"><a class=\"ds-nav-link\" href=\"#notes\">Notes</a><a class=\"ds-nav-link ds-nav-link-current\" href=\"#scribe\" aria-current=\"page\">Scribe</a></nav>",
+      "css": ".ds-nav { display:grid; gap:3px; } .ds-nav-link { display:flex; align-items:center; min-height:2.5rem; padding:.55rem .7rem; border-radius:.45rem; color:var(--slate, #2D3748); text-decoration:none; font:inherit; } .ds-nav-link:hover,.ds-nav-link:focus-visible,.ds-nav-link-current { background:rgba(29,79,94,.1); color:var(--accent, #1D4F5E); } .ds-nav-link-current { font-weight:700; }"
+    },
+    {
+      "name": "Neutral Status Badge",
+      "kind": "chip",
+      "refersTo": "status-chip",
+      "description": "A compact textual state label with a supporting dot.",
+      "html": "<span class=\"ds-status-badge\"><span class=\"ds-status-dot\" aria-hidden=\"true\"></span>Not set</span>",
+      "css": ".ds-status-badge { display:inline-flex; align-items:center; gap:.5rem; padding:.375rem .75rem; border:1px solid var(--border, #E2DED6); border-radius:999px; background:white; color:var(--slate, #2D3748); font-size:.875rem; font-weight:500; line-height:1; } .ds-status-dot { width:.5rem; height:.5rem; border-radius:999px; background:var(--slate, #2D3748); }"
+    },
+    {
+      "name": "Settings Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "A softly layered settings container with padded content rows.",
+      "html": "<section class=\"ds-card\"><div class=\"ds-card-row\"><h2>Preferences</h2><p>Review your workspace settings.</p></div></section>",
+      "css": ".ds-card { display:grid; gap:0; padding:0; overflow:hidden; border:1px solid var(--border, #E2DED6); border-radius:var(--radius-lg, 22px); background:rgba(255,255,255,.94); color:var(--ink, #1A202C); } .ds-card-row { padding:18px; } .ds-card-row + .ds-card-row { border-top:1px solid var(--border, #E2DED6); } .ds-card h2 { margin:0; font:500 1.35rem/1.2 var(--font-display, Georgia, \"Times New Roman\", serif); } .ds-card p { margin:.4rem 0 0; color:var(--muted, #718096); }"
+    },
+    {
+      "name": "Quota Limit Selector",
+      "kind": "custom",
+      "refersTo": "quota-limit-selector",
+      "description": "Admin-only native radio choice between a finite quota and Unlimited.",
+      "html": "<fieldset class=\"ds-quota-period\"><legend>Daily tokens</legend><div class=\"ds-quota-segments\"><label><input type=\"radio\" name=\"quota\" value=\"finite\" checked><span>Set limit</span></label><label><input type=\"radio\" name=\"quota\" value=\"unlimited\"><span>Unlimited</span></label></div></fieldset>",
+      "css": ".ds-quota-period { margin:0; padding:12px 0; border:0; border-bottom:1px solid var(--border, #E2DED6); } .ds-quota-period legend { margin-bottom:8px; color:var(--ink, #1A202C); font-weight:600; } .ds-quota-segments { display:flex; width:max-content; padding:2px; border:1px solid var(--admin-border-strong,var(--border-strong, #D8D2C8)); border-radius:7px; background:var(--card, #FFFFFF); } .ds-quota-segments label { position:relative; display:inline-flex; cursor:pointer; } .ds-quota-segments input { position:absolute; inset:0; width:100%; height:100%; margin:0; opacity:0; cursor:pointer; } .ds-quota-segments span { display:inline-block; padding:7px 13px; border-radius:5px; color:var(--slate, #2D3748); font-weight:600; white-space:nowrap; } .ds-quota-segments input:checked + span { background:var(--accent, #1D4F5E); color:white; } .ds-quota-segments input:focus-visible + span { outline:3px solid var(--admin-focus,#0b667b); outline-offset:2px; } @media (max-width:760px) { .ds-quota-segments { width:100%; } .ds-quota-segments label { flex:1; justify-content:center; } }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Quiet Study",
+    "overview": "OpenScribe’s visual language is calm, trustworthy and practical. It pairs paper-like warm surfaces with precise dark text and a restrained teal accent, leaving the content and the next useful action easy to find. The interface should feel considered and steady rather than like a flashy dashboard.\n\nThe product serves clinicians preparing reviewable drafts and technical administrators operating a deployment. This system records the current shared web styling and calls out the admin workspace’s deliberate accessibility overrides; those overrides are not global token replacements. Typography lists declared stacks, not a guarantee that a named font file is loaded. Maintain the product’s established terminology and target WCAG 2.2 AA without claiming certification.",
+    "keyCharacteristics": [
+      "Warm paper and parchment surfaces with dark, readable text.",
+      "Deep Teal is a focused action and navigation accent.",
+      "Restrained and softly layered: borders define cards; shadows lift menus and dialogs.",
+      "Shared site values and admin-specific accessibility values remain distinct."
+    ],
+    "rules": [],
+    "dos": [
+      "Do use Paper, Parchment, Ink and Deep Teal as names for the existing shared values.",
+      "Do use borders to define resting cards and reserve larger shadows for menus and dialogs.",
+      "Do keep admin accessibility overrides scoped to admin until shared styles are separately reviewed.",
+      "Do keep the Scribe mobile drawer and admin mobile navigation disclosure distinct.",
+      "Do keep status labels textual and semantic, with color as supporting information.",
+      "Do preserve visible focus and forced-colors behavior in the admin workspace."
+    ],
+    "donts": [
+      "Don't turn admin-specific muted, border, status or focus values into global tokens by copying them into shared styles.",
+      "Don't claim a named font is loaded; the styles declare fallback stacks without loading font assets.",
+      "Don't add flashy dashboard styling; the confirmed visual language is calm, trustworthy and practical.",
+      "Don't treat automated accessibility results as WCAG certification."
+    ]
+  }
+}

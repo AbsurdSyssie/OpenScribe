@@ -17,7 +17,7 @@ import { createTemplateSuggestionController } from './templateSuggestions.js?v=2
 import { createExampleConsultationBoundary, createExampleConsultationInitializer } from './exampleConsultation.js?v=20261021-example-consultation';
 import { createTranscriptTurnsEditor } from './transcriptTurnsEditor.js?v=20261022-recording-headings';
 import { createAutosaveController } from './autosaveController.js?v=20261022-diarized-turn-editor';
- import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261020-split-progress-feedback';
+ import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261028-template-availability-refresh';
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,
@@ -5157,7 +5157,9 @@ let statusDetailsHideTimer = null;
         };
        splitReviewController = createSplitReviewController({
          getTranscriptId: () => transcriptId,
-         refreshWorkspace: () => fetchWorkspace(),
+         refreshWorkspace: (nextTranscriptId) => fetchWorkspace(nextTranscriptId, {
+           guardTranscriptId: nextTranscriptId,
+         }),
          showMessage: showFlash,
          continueAsOneNote: () => splitGenerateController?.continueAsOneNote?.({
            transcriptId,

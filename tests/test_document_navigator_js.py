@@ -701,7 +701,7 @@ def test_note_regeneration_controls_and_scroll_rail_contract():
     assert "actions.js?v=20261021-example-consultation" in app
     assert "documents.js?v=20261014-generation-status" in app
     assert "structured.js?v=20260918-retired-note-workspace" in app
-    assert "app.js?v=20261023-batch-startup-ownership" in shell
+    assert "app.js?v=20261028-split-template-refresh" in shell
 
 
 def test_retired_note_workspace_compatibility_plumbing_is_absent():

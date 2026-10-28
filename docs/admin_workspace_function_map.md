@@ -150,6 +150,15 @@ change existing members. Zero disables the relevant resource and period.
 Existing members can still receive individual finite limits or Unlimited
 through Manage quotas.
 
+When an active team LLM selection, backup, or checker has an assigned model, the
+member limit editor and team defaults show an advisory when a finite token
+limit is at or below that model's known output cap. The message explains that
+one generation or check can reserve that many output tokens plus variable
+input tokens, so the limit may block generation or checks; longer and split
+requests may need more. This warning is advisory and does not change quota
+validation or enforcement. Zero and Unlimited do not trigger it, and global
+defaults without a selected team do not infer a model.
+
 Daily usage follows the current UTC calendar date; monthly usage follows the current UTC calendar month. Setting a previously unlimited window to a finite limit does not restart it: settled usage already recorded in the current natural period counts toward the new limit. An explicit reset starts usage from its reset time. Accepted work still in progress remains counted across a reset until it settles or its unused reservation expires. The quota cards show each calendar period's UTC dates and its next reset boundary.
 
 The selected-member panel also shows lifetime accounted tokens and audio. For the calculation, settlement and estimate rules, and lifecycle limits, see [Lifetime accounted usage](usage_tab.md#lifetime-accounted-usage).

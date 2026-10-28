@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from app.models import (
     DeidentificationAdapterKind,
+    LlmAdapterKind,
     ProviderFeatureType,
     ProviderUsageEvent,
     ProviderUsageEventType,
@@ -21,6 +22,7 @@ from app.models import (
     QuotaResource,
     TeamRole,
     Team,
+    TeamLlmSelection,
     TeamStatus,
     TemplateScope,
     User,
@@ -961,7 +963,56 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
         "&quota_edit=limits&range=90d&reference=11111111-1111-4111-8111-111111111111"
         "&monitor_since=2026-10-20T12%3A00"
     )
+    team = db_session.get(Team, UUID(admin["team_id"]))
+    member = db_session.get(User, UUID(admin["member_id"]))
+    selection = db_session.scalar(
+        select(TeamLlmSelection).where(TeamLlmSelection.team_id == UUID(admin["team_id"]))
+    )
+    assert team is not None and member is not None and selection is not None and selection.config is not None
+    model = "publishers/google/models/gemini-quota-ui-test"
+    selection.config.adapter_kind = LlmAdapterKind.gemini_enterprise
+    selection.config.model_name = model
+    selection.config.available_models_json = [model]
+    selection.allowed_models_json = [model]
+    selection.model_name_override = model
+    member.daily_token_limit = 10_000
+    member.monthly_token_limit = 30_000
+    team.default_daily_token_limit = 10_000
+    team.default_monthly_token_limit = 30_000
+    db_session.commit()
+
+    quota_edit_path = (
+        f"/admin/usage?team_id={admin['team_id']}&view=quotas&member_id={admin['member_id']}"
+        "&quota_edit=limits&range=90d"
+    )
     page.set_viewport_size({"width": 1440, "height": 900})
+    response = page.goto(quota_edit_path, wait_until="domcontentloaded")
+    assert response is not None and response.status == 200
+    daily_warning = page.locator("#quota-token-warning-daily")
+    assert daily_warning.is_visible()
+    assert f"{model} can reserve up to 30,000 tokens for output" in daily_warning.inner_text()
+    assert "for output in one generation or check" in daily_warning.inner_text()
+    assert "plus variable input tokens" in daily_warning.inner_text()
+    daily_limit = page.locator("#quota-daily_token_limit")
+    for width in (1440, 390, 320):
+        page.set_viewport_size({"width": width, "height": 900})
+        _assert_no_horizontal_overflow(page, width)
+        if screenshot_dir and width in (1440, 390):
+            page.screenshot(
+                path=str(Path(screenshot_dir) / f"quota-reservation-warning-{width}.png"),
+                full_page=True,
+                animations="disabled",
+            )
+    page.locator('input[name="daily_token_unlimited"][value="true"]').check()
+    assert not daily_warning.is_visible()
+    page.locator('input[name="daily_token_unlimited"][value=""]').check()
+    assert daily_warning.is_visible()
+    daily_limit.fill("30001")
+    assert not daily_warning.is_visible()
+    daily_limit.fill("10000")
+    assert daily_warning.is_visible()
+    assert "for output in one generation or check" in daily_warning.inner_text()
+
     response = page.goto(quota_context_path, wait_until="domcontentloaded")
     assert response is not None and response.status == 200
     expected_team_scope_link = f"/admin/usage?team_id={other_team.id}&view=quotas&range=90d"

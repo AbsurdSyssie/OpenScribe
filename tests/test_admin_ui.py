@@ -62,6 +62,7 @@ from app.models import (
     MfaMethodType,
     SessionStatus,
     TeamHallucinationCheckSelection,
+    TeamLlmBackupSelection,
     TeamLlmConfig,
     TeamLlmSelection,
     TeamRole,
@@ -557,6 +558,165 @@ def test_admin_quota_limits_editor_keeps_mixed_current_modes_and_cancel_discards
     assert "quota-resource-grid" in back.text
     db_session.refresh(member)
     assert (member.daily_token_limit, member.monthly_token_limit, member.daily_audio_seconds_limit, member.monthly_audio_seconds_limit) == (0, None, 1800, None)
+
+
+def test_quota_editors_warn_when_assigned_gemini_cap_meets_or_exceeds_finite_limit(
+    client, db_session, make_team, make_user, make_llm_config, make_llm_selection
+):
+    team = make_team(name="Quota reservation warning team")
+    admin = make_user(email="quota-reservation-warning-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(email="quota-reservation-warning-member@example.com", password="password-1", team=team, team_role=TeamRole.user)
+    model = "publishers/google/models/gemini-warning-test"
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        adapter_kind=LlmAdapterKind.gemini_enterprise,
+        model_name=model,
+        available_models_json=[model],
+        has_secret=False,
+    )
+    selection = make_llm_selection(config=config, actor=admin, allowed_models_json=[model], model_name_override=model)
+    member.daily_token_limit = 10_000
+    member.monthly_token_limit = 30_000
+    team.default_daily_token_limit = 10_000
+    team.default_monthly_token_limit = 30_001
+    db_session.commit()
+    _login_quota_admin(client, admin)
+
+    editor = client.get(_quota_panel_url(team, member) + "&quota_edit=limits")
+    assert editor.status_code == 200
+    warning = re.search(r'<p id="quota-token-warning-daily".*?</p>', editor.text)
+    assert warning is not None and f"{model} can reserve up to 30,000 tokens for output" in warning.group(0), warning.group(0) if warning else editor.text[-1000:]
+    assert "for output in one generation or check, plus variable input tokens" in editor.text
+    assert "plus variable input tokens" in editor.text
+    assert "may block generation or checks" in editor.text
+    assert 'aria-describedby="quota-token-warning-daily"' in editor.text
+    assert 'aria-describedby="quota-token-warning-monthly"' in editor.text
+    # Equality warns because input reservation is additional to the output cap.
+    assert "A monthly limit of 30,000 tokens may block generation or checks." in editor.text
+    assert "secret:openscribe" not in editor.text
+
+    unsafe_model = "model <script>alert(1)</script>"
+    config.available_models_json = [model, unsafe_model]
+    selection.allowed_models_json = [model, unsafe_model]
+    db_session.commit()
+    escaped_models = client.get(_quota_panel_url(team, member) + "&quota_edit=limits")
+    assert escaped_models.status_code == 200
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in escaped_models.text
+    assert "<script>alert(1)</script>" not in escaped_models.text
+
+    defaults = client.get(f"/admin?team_id={team.id}&team_tab=defaults")
+    assert defaults.status_code == 200
+    assert "A daily limit of 10,000 tokens may block generation or checks." in defaults.text
+    assert 'id="quota-default-token-warning-monthly" class="quota-reservation-warning"' in defaults.text
+    assert re.search(r'id="quota-default-token-warning-monthly"[^>]*hidden', defaults.text)
+
+    member.daily_token_limit = 0
+    member.monthly_token_limit = None
+    db_session.commit()
+    disabled_and_unlimited = client.get(_quota_panel_url(team, member) + "&quota_edit=limits")
+    assert disabled_and_unlimited.status_code == 200
+    assert re.search(r'id="quota-token-warning-daily"[^>]*hidden', disabled_and_unlimited.text)
+    assert re.search(r'id="quota-token-warning-monthly"[^>]*hidden', disabled_and_unlimited.text)
+
+    unassigned_team = make_team(name="Quota reservation warning unassigned team")
+    unassigned_member = make_user(
+        email="quota-reservation-warning-unassigned@example.com",
+        password="password-1",
+        team=unassigned_team,
+        team_role=TeamRole.user,
+    )
+    unassigned_member.daily_token_limit = 10_000
+    db_session.commit()
+    unassigned = client.get(_quota_panel_url(unassigned_team, unassigned_member) + "&quota_edit=limits")
+    assert unassigned.status_code == 200
+    assert re.search(r'id="quota-token-warning-daily"[^>]*hidden', unassigned.text)
+
+
+def test_quota_provider_output_caps_match_runtime_primary_backup_and_checker_selections(
+    db_session, make_team, make_user, make_llm_config, make_llm_selection
+):
+    from app.services.llm_adapters.runtime import provider_output_token_cap
+    from app.services.templates import GPT_OSS_CHECKER_MIN_COMPLETION_TOKENS, NOTE_GENERATION_LENGTH_TOKEN_CAPS
+    from app.web.presentation import _quota_provider_output_caps
+
+    team = make_team(name="Quota provider cap semantics team")
+    admin = make_user(email="quota-provider-cap-admin@example.com", password="password-1", is_system_admin=True)
+    note_cap = max(NOTE_GENERATION_LENGTH_TOKEN_CAPS.values())
+
+    primary_config = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Primary cap test provider",
+        model_name="gpt-4o-mini",
+        available_models_json=["gpt-4o-mini"],
+        has_secret=False,
+    )
+    primary = make_llm_selection(
+        config=primary_config,
+        actor=admin,
+        allowed_models_json=["gpt-4o-mini"],
+        model_name_override="gpt-4o-mini",
+    )
+
+    backup_config = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Backup cap test provider",
+        adapter_kind=LlmAdapterKind.gemini_enterprise,
+        model_name="backup-model",
+        available_models_json=["backup-model"],
+        has_secret=False,
+    )
+    backup = TeamLlmBackupSelection(
+        team_id=team.id,
+        llm_config_id=backup_config.id,
+        model_name="backup-model",
+        config=backup_config,
+    )
+    db_session.add(backup)
+    checker_config = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Checker cap test provider",
+        model_name="gpt-oss-20b",
+        available_models_json=["gpt-oss-20b"],
+        has_secret=False,
+    )
+    checker = TeamHallucinationCheckSelection(
+        team_id=team.id,
+        llm_config_id=checker_config.id,
+        model_name_override="gpt-oss-20b",
+        selected_by_user_id=admin.id,
+        config=checker_config,
+    )
+    db_session.add(checker)
+
+    caps = _quota_provider_output_caps(primary=primary, backup=backup, checker=checker)
+    expected = {
+        "gpt-4o-mini": provider_output_token_cap(
+            adapter_kind=primary_config.adapter_kind,
+            model="gpt-4o-mini",
+            nominal_cap=note_cap,
+        ),
+        "backup-model": provider_output_token_cap(
+            adapter_kind=backup_config.adapter_kind,
+            model="backup-model",
+            nominal_cap=note_cap,
+        ),
+        "gpt-oss-20b": provider_output_token_cap(
+            adapter_kind=checker_config.adapter_kind,
+            model="gpt-oss-20b",
+            nominal_cap=max(note_cap, GPT_OSS_CHECKER_MIN_COMPLETION_TOKENS),
+        ),
+    }
+    assert {item["model"]: item["cap"] for item in caps} == expected
+
+    backup_config.is_active = False
+    checker_config.setup_status = LlmConfigSetupStatus.pending_model_selection
+    db_session.flush()
+    unavailable_caps = _quota_provider_output_caps(primary=primary, backup=backup, checker=checker)
+    assert [item["model"] for item in unavailable_caps] == ["gpt-4o-mini"]
 
 
 def test_admin_quota_limits_editor_preserves_invalid_draft_and_saves_empty_radio_as_finite(client, db_session, make_team, make_user):
@@ -4668,7 +4828,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' not in page.text
     assert 'aria-label="Workspace navigation"' in page.text
     assert "My Library" in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20261027-live-dictation"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20261028-split-template-refresh"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -5529,7 +5689,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20261027-live-dictation" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261028-split-template-refresh" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -7337,7 +7497,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20261027-live-dictation" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261028-split-template-refresh" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():

@@ -328,6 +328,34 @@ def test_confirm_split_draft_freezes_encrypted_batch_and_replays_before_timestam
     ).all() == []
     unassigned_topic.template_id = template.id
     unassigned_topic.template_version_id = version.id
+    version_two = PromptTemplateVersion(
+        template_id=template.id,
+        version_no=2,
+        mode=TemplateMode.freeform,
+        prompt_text="Later saved version",
+        created_by_user_id=owner.id,
+    )
+    db_session.add(version_two)
+    db_session.flush()
+    # Reproduce a template save after the Generate intent froze v1, followed
+    # by a draft save that selected the same template at its new latest v2.
+    topics = db_session.scalars(
+        select(ConsultationSplitDraftTopic).where(ConsultationSplitDraftTopic.draft_id == draft.id)
+    ).all()
+    for topic in topics:
+        topic.template_version_id = version_two.id
+    db_session.commit()
+    with pytest.raises(AppError) as stale_template_version:
+        confirm_split_draft(
+            db_session, owner, transcript_id=transcript.id,
+            payload=ConsultationSplitDraftConfirmRequest(intent_id=intent.id, expected_updated_at=draft.updated_at),
+        )
+    assert stale_template_version.value.code == "consultation_split_template_unavailable"
+    assert "inconsistent versions" in stale_template_version.value.message
+    assert db_session.query(ConsultationSplitBatch).filter_by(intent_id=intent.id).count() == 0
+    assert db_session.get(ConsultationSplitIntent, intent.id).status is ConsultationSplitIntentStatus.analysis_pending
+    for topic in topics:
+        topic.template_version_id = version.id
     db_session.commit()
 
     # A failure after the batch and first child have flushed must roll the

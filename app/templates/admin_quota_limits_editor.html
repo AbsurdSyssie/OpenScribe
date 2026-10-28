@@ -26,21 +26,25 @@
         {% set is_unlimited = quota_form_values[unlimited_name] if unlimited_name in quota_form_values else saved_limit is none %}
         {% set field_value = quota_form_values[field_name] if field_name in quota_form_values else (saved_limit if saved_limit is not none else '') %}
         {% set label = 'Daily tokens' if period == 'daily' else 'Monthly tokens' %}
-      <fieldset class="quota-limit-period" data-quota-period>
+      <fieldset class="quota-limit-period" data-quota-period data-token-quota-scope>
         <legend class="visually-hidden">{{ label }}</legend>
         <div class="quota-limit-heading">
           <span aria-hidden="true">{{ label }}</span>
           <div class="quota-segmented-control">
             <label><input type="radio" name="{{ unlimited_name }}" value="" data-quota-choice="finite" {% if not is_unlimited %}checked{% endif %}><span>Set limit</span></label>
-            <label><input type="radio" name="{{ unlimited_name }}" value="true" data-quota-choice="unlimited" {% if is_unlimited %}checked{% endif %}><span>Unlimited</span></label>
+            <label><input type="radio" name="{{ unlimited_name }}" value="true" data-quota-choice="unlimited" data-token-quota-unlimited {% if is_unlimited %}checked{% endif %}><span>Unlimited</span></label>
           </div>
         </div>
         <div class="quota-limit-amount" data-quota-amount>
           <label class="visually-hidden" for="quota-{{ field_name }}">{{ label }} limit</label>
-          <input id="quota-{{ field_name }}" type="number" min="0" step="1" name="{{ field_name }}" value="{{ field_value }}" aria-label="{{ label }} limit">
+          <input id="quota-{{ field_name }}" type="number" min="0" step="1" name="{{ field_name }}" value="{{ field_value }}" aria-label="{{ label }} limit" aria-describedby="quota-token-warning-{{ period }}" data-token-quota-limit>
           <span>tokens</span>
         </div>
         <p class="quota-unlimited-note" data-quota-unlimited-note {% if not is_unlimited %}hidden{% endif %}>∞ &nbsp;No {{ period }} limit</p>
+        {% set parsed_limit = field_value|int(-1) %}
+        {% set quota_warning_models = [] %}
+        {% if not is_unlimited and parsed_limit > 0 %}{% for item in quota_provider_output_caps %}{% if parsed_limit <= item.cap %}{% set _ = quota_warning_models.append(item) %}{% endif %}{% endfor %}{% endif %}
+        <p id="quota-token-warning-{{ period }}" class="quota-reservation-warning" data-token-quota-warning data-period-label="{{ period }}" data-model-caps='{{ quota_provider_output_caps|tojson|forceescape }}' {% if not quota_warning_models %}hidden{% endif %} role="status" aria-live="polite">{% for item in quota_warning_models %}{{ item.model }} can reserve up to {{ item.cap|quota_units('tokens') }} for output in one generation or check, plus variable input tokens. A {{ period }} limit of {{ parsed_limit|quota_units('tokens') }} may block generation or checks. Longer or split requests may need more.{% if not loop.last %} {% endif %}{% endfor %}</p>
       </fieldset>
       {% endfor %}
     </section>
@@ -81,7 +85,7 @@
     </section>
   </div>
 
-  <p class="quota-editor-help">Use 0 to disable a period. Unlimited has no limit. Changes take effect when saved; values already used in the current period still count.</p>
+  <p class="quota-editor-help">Use 0 to disable a period. Unlimited has no limit. Changes take effect when saved; values already used in the current period still count.{% if quota_provider_output_caps %} Generation also reserves estimated input tokens; larger or split requests may need more than these output allowances.{% endif %}</p>
   <section class="quota-reason-section" aria-labelledby="quota-reason-heading">
     <h3 id="quota-reason-heading">Change details</h3>
     <div class="quota-reason-fields">

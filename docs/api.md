@@ -472,9 +472,15 @@ Working note:
 
 - one owner transcript note in `freeform` or `structured` mode;
 - mode locks on first non-empty save and unlocks when cleared;
-- optimistic concurrency uses `expected_updated_at`;
+- owner GET, PATCH, and workspace projections include the monotonic `revision`, including for an empty note;
+- new PATCH/DELETE clients send `expected_revision` and `operation_id` together. The revision must match the current note; an exact retry of the latest accepted operation is acknowledged without writing again;
+- only the latest operation UUID is retained. Reuse with a different operation type, base revision, or normalized payload conflicts, as does a retry superseded by a later save, clear, or structured-context write;
+- older clients may continue using `expected_updated_at`; timestamps remain for display and compatibility, not ordering;
+- DELETE remains `204 No Content` and returns the acknowledged revision in `X-Working-Note-Revision`;
 - generation snapshots the saved note used for the request;
 - source is redacted before LLM dispatch.
+
+Save replay compares the normalized submitted note with the current owner-encrypted note. The server stores no note history, content hash, plaintext receipt, or request body for this protocol. Working-note content remains inside the owner's existing encryption boundary and transcript-root retention/deletion lifecycle.
 
 Post-consultation dictation:
 

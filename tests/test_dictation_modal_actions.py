@@ -25,6 +25,7 @@ import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 const sourcePath = process.argv[1];
 const { createAutosaveController } = await import(pathToFileURL(sourcePath.replace(/app\.js$/, 'autosaveController.js')).href);
+const { createWorkingNoteAttemptStore } = await import(pathToFileURL(sourcePath.replace(/app\.js$/, 'workingNoteSaveRecovery.js')).href);
 const { createMicVisualizer } = await import(pathToFileURL(sourcePath.replace(/app\.js$/, 'micVisualizer.js')).href);
 const { DeepgramLiveStream, trimPinnedVadSpeechBuffer } = await import(pathToFileURL(sourcePath.replace(/app\.js$/, 'deepgramLiveStream.js')).href);
 const { createOwnedMicStream, createVadCaptureOptions } = await import(pathToFileURL(sourcePath.replace(/app\.js$/, 'vadCapture.js')).href);
@@ -52,9 +53,12 @@ class El {
 const elements = new Map();
 const get = (selector) => { if (!elements.has(selector)) elements.set(selector,new El()); return elements.get(selector); };
 const document = {body:new El(),activeElement:null,visibilityState:'visible',addEventListener(){},dispatchEvent(){return true},querySelector:get,querySelectorAll(){return []},createElement(){return new El()},createDocumentFragment(){return new El()},getElementById(){return null}};
-const window = {document,location:{href:'http://testserver/transcribe',origin:'http://testserver',protocol:'http:',host:'testserver',search:''},history:{pushState(){},replaceState(){}},localStorage:{getItem(){return null},setItem(){}},setTimeout(){return 1},clearTimeout(){},setInterval(){return 1},clearInterval(){},requestAnimationFrame(){return 1},cancelAnimationFrame(){},matchMedia(){return {matches:false,addEventListener(){}}},addEventListener(){},confirm(){return true},URL,EventSource:class {addEventListener(){} close(){}},lucide:{createIcons(){}}};
+const windowListeners={};
+const window = {document,location:{href:'http://testserver/transcribe',origin:'http://testserver',protocol:'http:',host:'testserver',search:''},history:{pushState(){},replaceState(){}},localStorage:{getItem(){return null},setItem(){}},setTimeout(){return 1},clearTimeout(){},setInterval(){return 1},clearInterval(){},requestAnimationFrame(){return 1},cancelAnimationFrame(){},matchMedia(){return {matches:false,addEventListener(){}}},addEventListener(type,fn){(windowListeners[type]??=[]).push(fn)},confirm(){return true},URL,EventSource:class {addEventListener(){} close(){}},lucide:{createIcons(){}}};
 globalThis.document=document; globalThis.window=window;
-const bootstrap={activeTranscriptId:'tx-a',activeIngestionMode:'whole_file',nextLiveChunkSequenceNo:1,hasSttSelection:true,hasDictationSttSelection:true,dictationLiveStreamingAvailable:scenario.startsWith('live-'),hasLlmSelection:true,sttAvailable:true,dictationSttAvailable:true,dictationSttSelected:true,dictationSttStatusMessage:'',llmAvailable:true,dictation:{effective_text:'typed words',segment_count:0},userAppPreferences:{},activeTranscriptHasContent:false};
+let workingNoteText='synthetic working note';
+const workingNoteScenario=scenario.startsWith('working-note-');
+const bootstrap={activeTranscriptId:'tx-a',activeIngestionMode:'whole_file',nextLiveChunkSequenceNo:1,hasSttSelection:true,hasDictationSttSelection:true,dictationLiveStreamingAvailable:scenario.startsWith('live-'),hasLlmSelection:true,sttAvailable:true,dictationSttAvailable:true,dictationSttSelected:true,dictationSttStatusMessage:'',llmAvailable:true,dictation:{effective_text:'typed words',segment_count:0},userAppPreferences:{},activeTranscriptHasContent:false,activeWorkingNote:workingNoteScenario?{mode:'freeform',updated_at:'synthetic-time-0',revision:0,freeform_text:'synthetic working note'}:null};
 let recorder;
 class Recorder {
   constructor(stream){this.stream=stream;this.state='inactive';this.mimeType='audio/webm';this.listeners={};this.stopCount=0;recorder=this;}
@@ -96,26 +100,45 @@ const previewResolvers=[];
 let previewResult='recognized synthetic words';
 let deferPatch=false;
 let patchResolve;
+let resolveLateWorkingNoteClear;
 let fetchWorkspaceCount=0;
-const response=(payload={})=>({ok:true,json:async()=>payload});
+const response=(payload={})=>({ok:true,status:200,json:async()=>payload});
 const csrfFetch=async (url,options={})=>{
   const method=options.method||'GET';
   calls.push({url,method,body:options.body});
+  if(workingNoteScenario && url.endsWith('/working-note')) {
+    const payload=options.body?JSON.parse(options.body):{};
+    if(method==='DELETE') {
+      if(scenario==='working-note-clear-retry' && calls.filter(call=>call.method==='DELETE').length<=2) throw new Error('synthetic lost clear response');
+      if(scenario==='working-note-clear-conflict') return {ok:false,status:409,json:async()=>({error:{message:'synthetic conflict'}})};
+      if(scenario==='working-note-clear-late-target') return new Promise(resolve=>{resolveLateWorkingNoteClear=()=>resolve({ok:true,status:204,headers:{get:(name)=>name==='X-Working-Note-Revision'?'1':null}})});
+      return {ok:true,status:204,headers:{get:(name)=>name==='X-Working-Note-Revision'?'1':null}};
+    }
+    if(method==='PATCH') {
+      const patchCount=calls.filter(call=>call.method==='PATCH'&&call.url.endsWith('/working-note')).length;
+      if(scenario==='working-note-save-retry' && patchCount<=2) throw new Error('synthetic lost save response after commit');
+      return response({mode:payload.mode,revision:Number(payload.expected_revision)+1,updated_at:'synthetic-time-saved',freeform_text:payload.freeform_text||''});
+    }
+  }
   if(url.includes('/preview-audio-file')) return deferPreview ? new Promise((resolve,reject)=>previewResolvers.push({resolve,reject})) : response({text:previewResult});
   if(url.endsWith('/post-consultation-dictation')) return deferPatch ? new Promise(resolve=>{patchResolve=resolve}) : response({effective_text:'typed words\n\n'+previewResult,segment_count:0});
   if(url.endsWith('/generate-output')) return response({id:'generated-draft'});
   return response({});
 };
 const no=()=>{}; const proxy=new Proxy({}, {get(_t,k){return (..._a)=> k==='isMarked' ? false : undefined}});
-const structured=new Proxy({serializeCurrentNoteEditor:()=>({mode:'freeform',edited_output_text:''}),bootstrapFromDom:no},{get:(t,k)=>t[k]??no});
-const deps={attachTranscribeActions:no,readTranscribeBootstrap:()=>bootstrap,clearDelayedGenerationStatus:no,createDocumentNavigator:()=>proxy,createInitialNoteRenderPreserver:()=>()=>false,formatWorkspaceCreatedAt:()=>'',generationFailureDetailsHtml:()=>'',generationFailureMessage:()=>'',generationLoadingHtml:()=>'',scheduleDelayedGenerationStatus:no,createTranscribeLayout:()=>({attach:no}),createAudioCaptureController:()=>({attachDomListeners:no,isLiveCaptureUiActive:()=>false,isCaptureUiActive:()=>false,shouldPreserveLiveMicStatus:()=>false}),createStructuredEditor:()=>structured,attachSmartPhraseExpander:no,attachNoteReordering:no,createGuidedTour:()=>({attach:no}),csrfFetch,csrfToken:()=> 'synthetic-csrf',DeepgramLiveStream,trimPinnedVadSpeechBuffer,createOwnedMicStream,createVadCaptureOptions,isWorkingNoteTargetId:()=>false,workingNoteTargetId:()=>'',captureNoteDirtyBaseline:()=>'',noteBaselineForSave:()=>'',createTemplateSuggestionController:()=>({onTranscriptChanged:no,attach:no}),createExampleConsultationBoundary:exampleHelperSandbox.createExampleConsultationBoundary,createExampleConsultationInitializer:exampleHelperSandbox.createExampleConsultationInitializer,createMultipleProblemsController:()=>proxy,createSplitAnalysisRestorationPoller:()=>proxy,createSplitGenerateController:()=>proxy,createSplitPartialActionsController:()=>proxy,createSplitReviewController:()=>proxy,createWorkspaceFetchCoordinator:()=>proxy,dispatchTemplateGeneration:async()=>false,isConsultationSplitCreateEnabled:()=>false,splitDiagnosticMessage:()=>'',formatSessionRailCreatedAt:()=>'',keepSessionRailItemVisible:no,reconcileSessionRailItems:()=>[],sessionRailGroup:()=>'',sortSessionRailItems:()=>[],syncSessionRailCreatedAt:no};
+const appActions={}; let onWorkingNoteChange=no;
+const structured=new Proxy({serializeCurrentNoteEditor:()=>({mode:'freeform',edited_output_text:workingNoteText}),bootstrapFromDom:no},{get:(t,k)=>t[k]??no});
+const deps={attachTranscribeActions:(options)=>{Object.assign(appActions,options);},readTranscribeBootstrap:()=>bootstrap,clearDelayedGenerationStatus:no,createDocumentNavigator:()=>proxy,createInitialNoteRenderPreserver:()=>()=>false,formatWorkspaceCreatedAt:()=>'',generationFailureDetailsHtml:()=>'',generationFailureMessage:()=>'',generationLoadingHtml:()=>'',scheduleDelayedGenerationStatus:no,createTranscribeLayout:()=>({attach:no}),createAudioCaptureController:()=>({attachDomListeners:no,isLiveCaptureUiActive:()=>false,isCaptureUiActive:()=>false,shouldPreserveLiveMicStatus:()=>false}),createStructuredEditor:(options)=>{onWorkingNoteChange=options.onNoteEditorChanged||no;return structured;},attachSmartPhraseExpander:no,attachNoteReordering:no,createGuidedTour:()=>({attach:no}),csrfFetch,csrfToken:()=> 'synthetic-csrf',DeepgramLiveStream,trimPinnedVadSpeechBuffer,createOwnedMicStream,createVadCaptureOptions,isWorkingNoteTargetId:(targetId)=>String(targetId||'').startsWith('working:'),workingNoteTargetId:(transcriptId)=>`working:${transcriptId}`,captureNoteDirtyBaseline:()=>'',noteBaselineForSave:()=>'',createWorkingNoteAttemptStore,createTemplateSuggestionController:()=>({onTranscriptChanged:no,attach:no}),createExampleConsultationBoundary:exampleHelperSandbox.createExampleConsultationBoundary,createExampleConsultationInitializer:exampleHelperSandbox.createExampleConsultationInitializer,createMultipleProblemsController:()=>proxy,createSplitAnalysisRestorationPoller:()=>proxy,createSplitGenerateController:()=>proxy,createSplitPartialActionsController:()=>proxy,createSplitReviewController:()=>proxy,createWorkspaceFetchCoordinator:()=>proxy,dispatchTemplateGeneration:async()=>false,isConsultationSplitCreateEnabled:()=>false,splitDiagnosticMessage:()=>'',formatSessionRailCreatedAt:()=>'',keepSessionRailItemVisible:no,reconcileSessionRailItems:()=>[],sessionRailGroup:()=>'',sortSessionRailItems:()=>[],syncSessionRailCreatedAt:no};
 // Exercise the actual shared save controller; the unrelated transcript-turn
 // editor stays inactive in these dictation-only scenarios.
 deps.createAutosaveController = (options) => createAutosaveController({ ...options, timers: window });
 deps.createMicVisualizer = createMicVisualizer;
 deps.createTranscriptTurnsEditor = () => ({ dirty: false, flush: async () => null });
 class Evt{constructor(type,init={}){this.type=type;Object.assign(this,init);this.defaultPrevented=false} preventDefault(){this.defaultPrevented=true}}
-const sandbox={...deps,document,window,globalThis:null,navigator:{mediaDevices:{getUserMedia:()=>{mediaRequests++;return useDeferredMedia?mediaPromise:(denyMedia?Promise.reject(new Error('synthetic denial')):Promise.resolve({getTracks:()=>[{stop(){trackStops++}}]}))}}},MediaRecorder:Recorder,console,URL,Event:Evt,CustomEvent:Evt,HTMLElement:El,HTMLInputElement:El,HTMLTextAreaElement:El,Element:El,Blob,FormData,Date,Math,Number,String,Boolean,Array,Object,JSON,Map,Set,Promise,WeakMap,WeakSet,Intl,AbortController,fetch:async()=>{fetchWorkspaceCount++;return response({})},setTimeout:window.setTimeout,clearTimeout:window.clearTimeout}; sandbox.globalThis=sandbox; vm.createContext(sandbox); vm.runInContext(source,sandbox,{filename:sourcePath});
+let operationIdCounter=0;
+const sandbox={...deps,document,window,globalThis:null,crypto:{randomUUID:()=>`00000000-0000-4000-8000-${String(++operationIdCounter).padStart(12,'0')}`},navigator:{mediaDevices:{getUserMedia:()=>{mediaRequests++;return useDeferredMedia?mediaPromise:(denyMedia?Promise.reject(new Error('synthetic denial')):Promise.resolve({getTracks:()=>[{stop(){trackStops++}}]}))}}},MediaRecorder:Recorder,console,URL,Event:Evt,CustomEvent:Evt,HTMLElement:El,HTMLInputElement:El,HTMLTextAreaElement:El,Element:El,Blob,FormData,Date,Math,Number,String,Boolean,Array,Object,JSON,Map,Set,Promise,WeakMap,WeakSet,Intl,AbortController,fetch:async()=>{fetchWorkspaceCount++;return response({})},setTimeout:window.setTimeout,clearTimeout:window.clearTimeout}; sandbox.globalThis=sandbox; vm.createContext(sandbox);
+if(workingNoteScenario){const output=get('[data-latest-generated-output]');output.dataset.latestGeneratedId='working:tx-a';output.dataset.latestGeneratedKind='working_note';output.dataset.latestGeneratedMode='freeform';output.dataset.latestGeneratedUpdatedAt='synthetic-time-0';output.dataset.latestGeneratedRevision='0';}
+vm.runInContext(source,sandbox,{filename:sourcePath});
 const modal=get('[data-dictation-modal]'); modal.hidden=false;
 const input=get('[data-dictation-combined-input]'); input.value='typed words';
 const selector=get('[data-template-select]'); selector.value='template-a'; selector.options=[{value:'template-a',dataset:{templateMode:'freeform',templateName:'Synthetic'},textContent:'Synthetic'}]; selector.selectedOptions=selector.options;
@@ -231,6 +254,68 @@ if(scenario==='live-save' || scenario==='live-generate' || scenario==='live-paus
   save.click(); await waitFor(()=>calls.some(c=>c.method==='PATCH'));
   assert.deepEqual(calls.filter(c=>c.method==='POST').map(c=>c.url),[]);
   assert.equal(calls.filter(c=>c.method==='PATCH').length,1);
+} else if(scenario==='working-note-clear-retry'){
+  const firstClear=appActions.clearWorkingNote();
+  await turns(20);
+  const deleteCalls=()=>calls.filter(call=>call.method==='DELETE'&&call.url.endsWith('/working-note'));
+  assert.equal(deleteCalls().length,2,'uncertain DELETE gets one immediate exact replay');
+  assert.equal(deleteCalls()[0].body,deleteCalls()[1].body);
+  const unload={preventDefault(){this.prevented=true;}};
+  for(const listener of windowListeners.beforeunload||[]) listener(unload);
+  assert.equal(unload.prevented,true,'unresolved clear protects the page from accidental navigation');
+  await assert.rejects(appActions.saveWorkingNoteBeforeGeneration('tx-a'),/Retry clearing the working note/);
+  assert.equal(await appActions.persistPendingEditorsBeforeWorkspaceSwitch(),false,'unresolved clear blocks consultation switching');
+  workingNoteText='synthetic edit typed during uncertain clear';
+  onWorkingNoteChange();
+  const retry=appActions.clearWorkingNote();
+  await turns(20);
+  await Promise.all([firstClear,retry]);
+  assert.equal(deleteCalls().length,3,'retry resolves the frozen clear without first saving later edits');
+  assert.equal(deleteCalls()[0].body,deleteCalls()[2].body,'all retries preserve the exact original clear body and ID');
+  await appActions.saveWorkingNoteBeforeGeneration('tx-a');
+  const saveCall=calls.find(call=>call.method==='PATCH'&&call.url.endsWith('/working-note'));
+  const savedPayload=JSON.parse(saveCall.body);
+  assert.equal(savedPayload.expected_revision,1,'later edits use the acknowledged clear revision');
+  assert.notEqual(savedPayload.operation_id,JSON.parse(deleteCalls()[0].body).operation_id);
+  assert.equal(savedPayload.freeform_text,'synthetic edit typed during uncertain clear');
+} else if(scenario==='working-note-clear-late-target'){
+  const clearPromise=appActions.clearWorkingNote();
+  await turns(20);
+  const output=get('[data-latest-generated-output]');
+  output.dataset.latestGeneratedId='working:tx-b';
+  resolveLateWorkingNoteClear();
+  await clearPromise;
+  assert.equal(output.dataset.latestGeneratedRevision,'0','late ACK for another target cannot advance the rendered target revision');
+} else if(scenario==='working-note-clear-conflict'){
+  await appActions.clearWorkingNote();
+  const deleteCalls=()=>calls.filter(call=>call.method==='DELETE'&&call.url.endsWith('/working-note'));
+  assert.equal(deleteCalls().length,1,'409 does not trigger an automatic retry');
+  assert.match(get('[data-flash]').textContent,/changed elsewhere/);
+  await assert.rejects(appActions.saveWorkingNoteBeforeGeneration('tx-a'),/Retry clearing the working note/);
+  assert.equal(await appActions.persistPendingEditorsBeforeWorkspaceSwitch(),false,'a conflicted clear remains unresolved for barriers');
+  await appActions.clearWorkingNote();
+  assert.equal(deleteCalls().length,2,'explicit retry replays the same clear attempt');
+  assert.equal(deleteCalls()[0].body,deleteCalls()[1].body);
+} else if(scenario==='working-note-save-retry'){
+  workingNoteText='synthetic first save';
+  onWorkingNoteChange();
+  await assert.rejects(appActions.saveWorkingNoteBeforeGeneration('tx-a'),/Save the working note before generating/);
+  assert.equal(calls.filter(call=>call.method==='PATCH'&&call.url.endsWith('/working-note')).length,2);
+  workingNoteText='synthetic later edit';
+  onWorkingNoteChange();
+  const saved=await appActions.saveWorkingNoteBeforeGeneration('tx-a');
+  const patchCalls=calls.filter(call=>call.method==='PATCH'&&call.url.endsWith('/working-note'));
+  assert.equal(patchCalls.length,4,'resolve the original attempt before draining the later edit');
+  assert.equal(patchCalls[0].body,patchCalls[1].body);
+  assert.equal(patchCalls[0].body,patchCalls[2].body,'retry keeps the original submitted payload and operation ID');
+  const firstPayload=JSON.parse(patchCalls[0].body);
+  const secondPayload=JSON.parse(patchCalls[3].body);
+  assert.equal(firstPayload.freeform_text,'synthetic first save');
+  assert.equal(secondPayload.freeform_text,'synthetic later edit');
+  assert.equal(firstPayload.operation_id,patchCalls.map(call=>JSON.parse(call.body))[2].operation_id);
+  assert.notEqual(secondPayload.operation_id,firstPayload.operation_id);
+  assert.equal(secondPayload.expected_revision,1);
+  assert.equal(saved.freeform_text,'synthetic later edit');
 } else if(scenario==='recording-save' || scenario==='recording-generate' || scenario==='paused-save' || scenario==='stop-save-race'){
   record.click(); await waitFor(()=>recorder);
   recorder.emit('dataavailable',{data:new Blob(['first'])});

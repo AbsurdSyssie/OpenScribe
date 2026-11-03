@@ -149,11 +149,15 @@ class StructuredWorkingNotePayload(BaseModel):
 class WorkingNoteUpdate(BaseModel):
     mode: TranscriptWorkingNoteMode
     expected_updated_at: datetime | None = None
+    expected_revision: int | None = Field(default=None, ge=0, strict=True)
+    operation_id: UUID | None = None
     freeform_text: str | None = Field(default=None, max_length=20000)
     structured_note: StructuredWorkingNotePayload | None = None
 
     @model_validator(mode="after")
     def validate_matching_content(self) -> "WorkingNoteUpdate":
+        if (self.expected_revision is None) != (self.operation_id is None):
+            raise ValueError("expected_revision and operation_id must be provided together")
         if self.mode is TranscriptWorkingNoteMode.freeform:
             if self.structured_note is not None:
                 raise ValueError("Freeform working note cannot include structured content")
@@ -169,10 +173,19 @@ class WorkingNoteUpdate(BaseModel):
 
 class WorkingNoteClear(BaseModel):
     expected_updated_at: datetime | None = None
+    expected_revision: int | None = Field(default=None, ge=0, strict=True)
+    operation_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_revision_operation_pair(self) -> "WorkingNoteClear":
+        if (self.expected_revision is None) != (self.operation_id is None):
+            raise ValueError("expected_revision and operation_id must be provided together")
+        return self
 
 
 class WorkingNoteDetail(BaseModel):
     transcript_id: UUID
+    revision: int = Field(ge=0)
     mode: TranscriptWorkingNoteMode | None = None
     freeform_text: str = ""
     structured_note: dict | None = None

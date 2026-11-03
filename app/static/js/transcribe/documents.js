@@ -169,6 +169,7 @@ export function workingNoteToEditorDocument({ transcriptId, workingNote, selecte
     mode_locked: Boolean(note.mode),
     edited_output_text: note.freeform_text || '',
     updated_at: note.updated_at || '',
+    revision: Number.isInteger(note.revision) ? note.revision : 0,
     structured_section_definitions_json: sectionDefinitionsSnapshot,
     sections: Object.entries(sections).map(([sectionKey, lines], index) => ({
       section_key: sectionKey,
@@ -457,25 +458,34 @@ export function createDocumentNavigator({
     window.document.dispatchEvent(new window.CustomEvent('transcribe:followup-history-rendered'));
   };
 
-  const renderSelectedNote = ({ forcePreserveEditor = false } = {}) => {
+  const renderSelectedNote = ({ forcePreserveEditor = false, forceRenderEditor = false } = {}) => {
     const state = getState();
     const documents = noteTargets(state);
     const selectedNote = selectedDocumentFromList(documents, state.selectedNoteDocumentId);
     const selectedNoteId = selectedNote?.id || '';
     const selectedEditorId = selectedNoteId || (state.hasActiveTranscript ? workingNoteTargetId(state.activeTranscriptId || '') : null);
     const preserveCurrentEditorRender = Boolean(
-      forcePreserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId, selectedNote)
+      forcePreserveEditor || (!forceRenderEditor && shouldPreserveNoteEditorRender?.(selectedEditorId, selectedNote))
     );
     setState({
       selectedNoteDocumentId: selectedEditorId,
       selectedNoteSlotKey: selectedNote?.split_slot_key || null,
     });
     if (latestGeneratedOutput) {
-      latestGeneratedOutput.dataset.latestGeneratedStatus = selectedNote?.status || "";
-      latestGeneratedOutput.dataset.latestGeneratedId = selectedNoteId;
-      latestGeneratedOutput.dataset.latestGeneratedMode = selectedNote?.document_mode || "";
-      latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || "";
-      latestGeneratedOutput.dataset.latestGeneratedKind = selectedNote?.kind || "generated_note";
+      const preserveRenderedVersion = Boolean(
+        preserveCurrentEditorRender
+        && latestGeneratedOutput.dataset.latestGeneratedId === selectedEditorId
+      );
+      if (!preserveRenderedVersion) {
+        latestGeneratedOutput.dataset.latestGeneratedStatus = selectedNote?.status || "";
+        latestGeneratedOutput.dataset.latestGeneratedId = selectedNoteId;
+        latestGeneratedOutput.dataset.latestGeneratedMode = selectedNote?.document_mode || "";
+        latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || "";
+        latestGeneratedOutput.dataset.latestGeneratedRevision = selectedNote?.kind === "working_note"
+          ? String(selectedNote.revision ?? 0)
+          : "";
+        latestGeneratedOutput.dataset.latestGeneratedKind = selectedNote?.kind || "generated_note";
+      }
       if (preserveCurrentEditorRender && shouldInitializeHydratedNoteEditor?.(selectedNote)) {
         initializeHydratedGeneratedDocument?.(selectedNote);
       } else if (!preserveCurrentEditorRender) {

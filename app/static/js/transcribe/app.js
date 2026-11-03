@@ -1,6 +1,6 @@
 import { attachTranscribeActions } from './actions.js?v=20261021-example-consultation';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20261005-multiple-problems';
-import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261014-generation-status';
+import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261103-working-note-revision';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
 import { createAudioCaptureController } from './media.js?v=20261027-live-dictation';
 import { DeepgramLiveStream, trimPinnedVadSpeechBuffer } from './deepgramLiveStream.js?v=20261027-dictation-live-preview';
@@ -12,11 +12,12 @@ import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder
 import { createGuidedTour } from './tour.js?v=20261016-accessible-manual-guide';
 import { csrfFetch, csrfToken } from '../csrf.js';
 import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';
-import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';
+import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20261029-empty-note-version';
 import { createTemplateSuggestionController } from './templateSuggestions.js?v=20260830-template-suggestion-preference';
 import { createExampleConsultationBoundary, createExampleConsultationInitializer } from './exampleConsultation.js?v=20261021-example-consultation';
 import { createTranscriptTurnsEditor } from './transcriptTurnsEditor.js?v=20261022-recording-headings';
 import { createAutosaveController } from './autosaveController.js?v=20261022-diarized-turn-editor';
+import { createWorkingNoteAttemptStore } from './workingNoteSaveRecovery.js?v=20261103-working-note-save-recovery';
  import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261028-template-availability-refresh';
 import {
   formatSessionRailCreatedAt,
@@ -84,6 +85,7 @@ import {
       let dirtyNoteTargetId = null;
       let dirtyNoteMode = null;
       let dirtyNoteExpectedUpdatedAt = null;
+      let dirtyNoteExpectedRevision = null;
       let noteEditVersion = 0;
       let noteSaveConflictShown = false;
       let noteGenerationInFlight = null;
@@ -103,6 +105,15 @@ import {
       let dictationUiBusy = false;
       let lastSavedDictationText = '';
       let activeWorkingNote = bootstrap.activeWorkingNote || null;
+      const workingNoteSaveAttempts = createWorkingNoteAttemptStore();
+      const workingNoteClearAttempts = createWorkingNoteAttemptStore();
+      let workingNoteClearInFlight = null;
+      const newWorkingNoteOperationId = () => {
+        if (typeof globalThis.crypto?.randomUUID !== 'function') {
+          throw new Error('Secure operation IDs are unavailable. Keep this working-note draft open and try again later.');
+        }
+        return globalThis.crypto.randomUUID();
+      };
       let dictationPendingAudioBlob = null;
       let dictationPendingAudioFilename = 'dictation.webm';
       let dictationNeedsExplicitRetry = false;
@@ -500,11 +511,16 @@ let statusDetailsHideTimer = null;
       const markNoteEditorDirty = () => {
         const targetId = currentRenderedNoteTargetId();
         if (!noteEditorDirty || dirtyNoteTargetId !== targetId) {
+          const renderedUpdatedAt = currentNoteUpdatedAt(targetId);
           dirtyNoteExpectedUpdatedAt = captureNoteDirtyBaseline({
-            currentUpdatedAt: currentNoteUpdatedAt(),
+            currentUpdatedAt: renderedUpdatedAt ?? '',
+            currentUpdatedAtAvailable: renderedUpdatedAt !== null,
             workingNoteUpdatedAt: activeWorkingNote?.updated_at || '',
             isWorkingNote: isWorkingNoteTargetId(targetId),
           });
+          dirtyNoteExpectedRevision = isWorkingNoteTargetId(targetId)
+            ? currentNoteRevision(targetId)
+            : null;
         }
         noteEditorDirty = true;
         dirtyNoteTargetId = targetId;
@@ -523,6 +539,7 @@ let statusDetailsHideTimer = null;
 
       const clearNoteDirtyBaseline = () => {
         dirtyNoteExpectedUpdatedAt = null;
+        dirtyNoteExpectedRevision = null;
       };
 
       const markFollowupEditorDirty = () => {
@@ -550,7 +567,8 @@ let statusDetailsHideTimer = null;
 
       const hasPendingGeneratedNoteEdits = () => {
         const currentTargetId = currentRenderedNoteTargetId();
-        return Boolean(noteEditorDirty && currentTargetId && dirtyNoteTargetId === currentTargetId);
+        return Boolean(workingNoteClearAttempts.pending || workingNoteSaveAttempts.pending)
+          || Boolean(noteEditorDirty && currentTargetId && dirtyNoteTargetId === currentTargetId);
       };
 
       let hydratedInitialNoteTargetId = null;
@@ -582,17 +600,32 @@ let statusDetailsHideTimer = null;
         hydratedInitialNoteTargetId = null;
         return true;
       };
-      const currentNoteUpdatedAt = () => latestGeneratedOutput?.dataset?.latestGeneratedUpdatedAt || '';
+      const currentNoteUpdatedAt = (targetId = currentRenderedNoteTargetId()) => {
+        if (latestGeneratedOutput?.dataset?.latestGeneratedId !== targetId) return null;
+        return latestGeneratedOutput.dataset.latestGeneratedUpdatedAt || '';
+      };
 
-      const noteSaveExpectedUpdatedAtForTarget = (targetId) => noteBaselineForSave({
-        targetId,
-        noteEditorDirty,
-        dirtyNoteTargetId,
-        dirtyNoteExpectedUpdatedAt,
-        currentUpdatedAt: currentNoteUpdatedAt(),
-        workingNoteUpdatedAt: activeWorkingNote?.updated_at || '',
-        isWorkingNoteTarget: isWorkingNoteTargetId,
-      });
+      const currentNoteRevision = (targetId = currentRenderedNoteTargetId()) => {
+        if (latestGeneratedOutput?.dataset?.latestGeneratedId !== targetId) return null;
+        const rawRevision = latestGeneratedOutput.dataset.latestGeneratedRevision;
+        if (rawRevision === undefined || rawRevision === null || rawRevision === '') return null;
+        const revision = Number(rawRevision);
+        return Number.isInteger(revision) && revision >= 0 ? revision : null;
+      };
+
+      const noteSaveExpectedUpdatedAtForTarget = (targetId) => {
+        const renderedUpdatedAt = currentNoteUpdatedAt(targetId);
+        return noteBaselineForSave({
+          targetId,
+          noteEditorDirty,
+          dirtyNoteTargetId,
+          dirtyNoteExpectedUpdatedAt,
+          currentUpdatedAt: renderedUpdatedAt ?? '',
+          currentUpdatedAtAvailable: renderedUpdatedAt !== null,
+          workingNoteUpdatedAt: activeWorkingNote?.updated_at || '',
+          isWorkingNoteTarget: isWorkingNoteTargetId,
+        });
+      };
 
       const currentRenderedFollowupDocumentId = () => latestFollowupOutput?.dataset?.latestFollowupId || '';
 
@@ -812,50 +845,107 @@ let statusDetailsHideTimer = null;
       };
 
       const persistNoteEditsSilently = async ({ keepalive = false, targetTranscriptId = transcriptId } = {}) => {
-        if (!noteEditorDirty) {
+        if (workingNoteClearAttempts.pending) return null;
+        if (!noteEditorDirty && !workingNoteSaveAttempts.pending) {
           return null;
         }
-        if (discardEmptyWorkingNoteDraft()) {
+        if (!workingNoteSaveAttempts.pending && discardEmptyWorkingNoteDraft()) {
           return { kind: 'working_note_empty_draft_discarded' };
         }
-        const saveRequest = buildNoteSaveRequest({ workingNoteTranscriptId: targetTranscriptId });
-        if (!saveRequest) {
-          return null;
+        let saveRequest = buildNoteSaveRequest({ workingNoteTranscriptId: targetTranscriptId });
+        const pendingAttempt = workingNoteSaveAttempts.pending;
+        if (!pendingAttempt && saveRequest?.kind === 'working_note' && noteSaveConflictShown) return null;
+        if (pendingAttempt) {
+          if (pendingAttempt.transcriptId !== targetTranscriptId) return null;
+          saveRequest = { kind: 'working_note', targetId: pendingAttempt.targetId, endpoint: pendingAttempt.endpoint };
         }
-        const requestVersion = noteEditVersion;
+        if (!saveRequest) return null;
+        if (saveRequest.kind === 'working_note' && !targetTranscriptId) return null;
+        let attempt = pendingAttempt;
+        if (saveRequest.kind === 'working_note' && !attempt) {
+          const expectedRevision = dirtyNoteTargetId === saveRequest.targetId
+            ? dirtyNoteExpectedRevision
+            : currentNoteRevision(saveRequest.targetId);
+          if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
+            showFlash('The working note revision is unavailable. Refresh before saving.', 'error');
+            return null;
+          }
+          let operationId;
+          try {
+            operationId = newWorkingNoteOperationId();
+          } catch (error) {
+            showFlash(error instanceof Error ? error.message : 'Secure operation IDs are unavailable.', 'error');
+            return null;
+          }
+          attempt = workingNoteSaveAttempts.prepare({
+            endpoint: saveRequest.endpoint,
+            payload: saveRequest.payload,
+            expectedRevision,
+            editVersion: noteEditVersion,
+            operationId,
+            targetId: saveRequest.targetId,
+            transcriptId: targetTranscriptId,
+          });
+        }
+        const requestVersion = attempt?.editVersion ?? noteEditVersion;
         try {
-            if (saveRequest.kind === 'working_note' && !targetTranscriptId) return null;
-            const response = await csrfFetch(saveRequest.endpoint, {
-              method: 'PATCH',
+            const request = (frozenAttempt) => csrfFetch(frozenAttempt.endpoint, {
+              method: frozenAttempt.method,
               credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
               keepalive,
-              body: JSON.stringify(saveRequest.payload),
+              body: frozenAttempt.body,
             });
+            const outcome = saveRequest.kind === 'working_note'
+              ? await workingNoteSaveAttempts.transmit(attempt, request)
+              : null;
+            if (saveRequest.kind === 'working_note' && workingNoteSaveAttempts.pending !== attempt) return null;
+            const response = saveRequest.kind === 'working_note'
+              ? outcome.response
+              : await csrfFetch(saveRequest.endpoint, {
+                method: 'PATCH',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                keepalive,
+                body: JSON.stringify(saveRequest.payload),
+              });
+            if (saveRequest.kind === 'working_note' && outcome.kind === 'uncertain') {
+              throw new Error('The working note save could not be confirmed. It will be retried before later edits.');
+            }
+            if (saveRequest.kind === 'working_note' && outcome.kind === 'rejected' && response.status !== 409) {
+              workingNoteSaveAttempts.reject(attempt);
+            }
             if (response.status === 409) {
+              if (saveRequest.kind === 'working_note') workingNoteSaveAttempts.reject(attempt);
               if (!noteSaveConflictShown) {
                 noteSaveConflictShown = true;
-                showFlash('Note changed elsewhere. Reload note before saving again.', 'error');
+                showFlash('Note changed elsewhere. Your edits remain here but are not saved. Copy any unsaved edits before reloading.', 'error');
               }
               return null;
             }
             if (!response.ok) {
               throw new Error(await parseErrorMessage(response, 'Could not save note edits.'));
             }
-            const savedDocument = await response.json();
+            const savedDocument = saveRequest.kind === 'working_note' ? outcome.result : await response.json();
             if (saveRequest.kind === 'working_note') {
-              if (transcriptId !== targetTranscriptId) return savedDocument;
+              workingNoteSaveAttempts.acknowledge(attempt);
+              if (transcriptId !== attempt.transcriptId) return savedDocument;
               activeWorkingNote = savedDocument;
               noteSaveConflictShown = false;
-              if (requestVersion === noteEditVersion) {
+              if (latestGeneratedOutput && currentRenderedNoteTargetId() === attempt.targetId) {
+                latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = savedDocument.updated_at || '';
+                latestGeneratedOutput.dataset.latestGeneratedRevision = String(savedDocument.revision);
+              }
+              if (requestVersion === noteEditVersion && attempt.targetId === dirtyNoteTargetId) {
                 clearNoteEditorDirty();
-              } else if (saveRequest.targetId === dirtyNoteTargetId) {
+              } else if (attempt.targetId === dirtyNoteTargetId) {
                 dirtyNoteExpectedUpdatedAt = savedDocument.updated_at || '';
+                dirtyNoteExpectedRevision = savedDocument.revision;
+              }
+              if (requestVersion !== noteEditVersion && attempt.targetId === dirtyNoteTargetId) {
+                noteAutosave.schedule({ immediate: true });
               }
               setWorkingNoteStatus(`Saved ${savedDocument.mode || selectedWorkingNoteMode()} working note`);
-              if (latestGeneratedOutput && saveRequest.targetId === currentRenderedNoteTargetId()) {
-                latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = savedDocument.updated_at || '';
-              }
               return savedDocument;
             }
             workspaceNoteDocuments = workspaceNoteDocuments.map((document) => (
@@ -889,6 +979,9 @@ let statusDetailsHideTimer = null;
       });
 
       const persistNoteEditsUntilDrained = async ({ keepalive = false, targetTranscriptId = transcriptId } = {}) => {
+        if (workingNoteSaveAttempts.pending && !noteEditorDirty) {
+          return persistNoteEditsSilently({ keepalive, targetTranscriptId });
+        }
         return noteAutosave.flush({ keepalive, targetTranscriptId });
       };
 
@@ -978,9 +1071,9 @@ let statusDetailsHideTimer = null;
           const savedTranscript = await transcriptTurnsEditor.flush({ keepalive: false });
           if (!savedTranscript && transcriptTurnsEditor.dirty) return false;
         }
-        if (noteEditorDirty || noteAutosave.pending) {
+        if (noteEditorDirty || noteAutosave.pending || workingNoteSaveAttempts.pending || workingNoteClearAttempts.pending) {
           const savedNote = await persistNoteEditsUntilDrained({ keepalive: false });
-          if (!savedNote && noteEditorDirty) return false;
+          if (!savedNote && (noteEditorDirty || workingNoteSaveAttempts.pending || workingNoteClearAttempts.pending)) return false;
         }
         if (followupEditorDirty || followupSaveInFlight) {
           const savedFollowup = await persistFollowupEditsUntilDrained({ keepalive: false });
@@ -3035,7 +3128,10 @@ let statusDetailsHideTimer = null;
 
       const collectWorkingNote = () => {
         const mode = dirtyNoteMode || currentRenderedNoteMode();
-        const expectedUpdatedAt = currentNoteUpdatedAt() || activeWorkingNote?.updated_at || null;
+        const renderedUpdatedAt = currentNoteUpdatedAt();
+        const expectedUpdatedAt = renderedUpdatedAt === null
+          ? activeWorkingNote?.updated_at || null
+          : renderedUpdatedAt || null;
         const serializedEditor = structuredEditor?.serializeCurrentNoteEditor?.({
           mode,
         }) || { mode };
@@ -4515,6 +4611,15 @@ let statusDetailsHideTimer = null;
       });
 
       const saveWorkingNoteBeforeGeneration = async (targetTranscriptId = transcriptId) => {
+        if (workingNoteClearAttempts.pending) {
+          throw new Error('Retry clearing the working note before generating.');
+        }
+        if (workingNoteSaveAttempts.pending) {
+          const saved = await persistNoteEditsUntilDrained({ keepalive: false, targetTranscriptId });
+          if (!saved || workingNoteSaveAttempts.pending) {
+            throw new Error('Resolve the pending working-note save before generating.');
+          }
+        }
         if (!targetTranscriptId || transcriptId !== targetTranscriptId) {
           throw new Error('Keep this consultation open until note creation starts.');
         }
@@ -4761,6 +4866,10 @@ let statusDetailsHideTimer = null;
         const nextTranscriptId = transcript?.id || null;
         const activeTranscriptChanged = nextTranscriptId !== lastRenderedTranscriptId;
         if (activeTranscriptChanged) {
+          const previousWorkingTargetId = workingNoteTargetId(lastRenderedTranscriptId || '');
+          if (workingNoteSaveAttempts.pending?.transcriptId !== nextTranscriptId) workingNoteSaveAttempts.discard();
+          if (workingNoteClearAttempts.pending?.transcriptId !== nextTranscriptId) workingNoteClearAttempts.discard();
+          if (dirtyNoteTargetId === previousWorkingTargetId) clearNoteEditorDirty();
           if (splitOperationStatus) {
             splitOperationStatus.textContent = '';
             splitOperationStatus.hidden = true;
@@ -5618,31 +5727,100 @@ let statusDetailsHideTimer = null;
         saveWorkingNoteBeforeGeneration,
         saveDictationBeforeGeneration,
         clearWorkingNote: async () => {
-          if (!transcriptId) return;
-          if (!workingNoteHasContent() && !activeWorkingNote?.mode) {
-            if (discardEmptyWorkingNoteDraft()) {
-              showFlash('Working note draft cleared.', 'success');
+          if (workingNoteClearInFlight) return workingNoteClearInFlight;
+          workingNoteClearInFlight = (async () => {
+            if (!transcriptId) return;
+            const targetTranscriptId = transcriptId;
+            const targetId = workingNoteTargetId(targetTranscriptId);
+            const pendingClear = workingNoteClearAttempts.pending;
+            if (!pendingClear && (noteEditorDirty || workingNoteSaveAttempts.pending) && transcriptId === targetTranscriptId) {
+              const saved = await persistNoteEditsUntilDrained({ keepalive: false, targetTranscriptId });
+              if (!saved || transcriptId !== targetTranscriptId || noteEditorDirty) return;
             }
-            return;
+            if (!pendingClear && !workingNoteHasContent() && !activeWorkingNote?.mode) {
+              if (discardEmptyWorkingNoteDraft()) {
+                showFlash('Working note draft cleared.', 'success');
+              }
+              return;
+            }
+            if (!window.confirm('Clear this working note? This cannot be undone.')) return;
+            const endpoint = `/api/v1/transcripts/${targetTranscriptId}/working-note`;
+            let attempt = pendingClear;
+            if (attempt && attempt.transcriptId !== targetTranscriptId) {
+              showFlash('The earlier working-note clear could not be resolved. Reopen that consultation to retry it.', 'error');
+              return;
+            }
+            if (!attempt) {
+              const expectedRevision = currentNoteRevision(targetId);
+              if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
+                showFlash('The working note revision is unavailable. Refresh before clearing.', 'error');
+                return;
+              }
+              let operationId;
+              try {
+                operationId = newWorkingNoteOperationId();
+              } catch (error) {
+                showFlash(error instanceof Error ? error.message : 'Secure operation IDs are unavailable.', 'error');
+                return;
+              }
+              attempt = workingNoteClearAttempts.prepare({
+                endpoint,
+                method: 'DELETE',
+                payload: { expected_updated_at: noteSaveExpectedUpdatedAtForTarget(targetId) },
+                expectedRevision,
+                operationId,
+                targetId,
+                transcriptId: targetTranscriptId,
+                editVersion: noteEditVersion,
+              });
+            }
+            const outcome = await workingNoteClearAttempts.transmit(attempt, (frozenAttempt) => csrfFetch(frozenAttempt.endpoint, {
+              method: frozenAttempt.method,
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: frozenAttempt.body,
+            }));
+            if (workingNoteClearAttempts.pending !== attempt) return;
+            if (outcome.kind === 'uncertain') {
+              showFlash('The clear could not be confirmed. Retry clearing this working note to resolve it safely.', 'error');
+              return;
+            }
+            if (outcome.kind === 'rejected') {
+              if (outcome.response.status === 409) {
+                noteSaveConflictShown = true;
+                showFlash('Working note changed elsewhere. The clear was not applied. Reload to review the latest note before trying again.', 'error');
+              } else {
+                showFlash(await parseErrorMessage(outcome.response, 'Could not clear working note.'), 'error');
+              }
+              return;
+            }
+            workingNoteClearAttempts.acknowledge(attempt);
+            if (transcriptId !== targetTranscriptId || currentRenderedNoteTargetId() !== targetId) return;
+            activeWorkingNote = { revision: outcome.result.revision };
+            const clearHadLaterEdits = attempt.editVersion !== noteEditVersion;
+            if (clearHadLaterEdits) {
+              dirtyNoteTargetId = targetId;
+              dirtyNoteMode = currentRenderedNoteMode();
+              dirtyNoteExpectedUpdatedAt = '';
+              dirtyNoteExpectedRevision = outcome.result.revision;
+              noteEditorDirty = true;
+              latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = '';
+              latestGeneratedOutput.dataset.latestGeneratedRevision = String(outcome.result.revision);
+              noteAutosave.markDirty({ immediate: true });
+            } else {
+              resetWorkingNoteEditorContent(activeWorkingNote);
+              clearNoteEditorDirty();
+              selectedNoteDocumentId = targetId;
+              renderSelectedNote({ forceRenderEditor: true });
+            }
+            showFlash('Working note cleared.', 'success');
+            void fetchWorkspace();
+          })();
+          try {
+            return await workingNoteClearInFlight;
+          } finally {
+            workingNoteClearInFlight = null;
           }
-          if (!window.confirm('Clear this working note? This cannot be undone.')) return;
-          const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/working-note`, {
-            method: 'DELETE',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ expected_updated_at: activeWorkingNote?.updated_at || null }),
-          });
-          if (!response.ok) {
-            showFlash(await parseErrorMessage(response, 'Could not clear working note.'), 'error');
-            return;
-          }
-          activeWorkingNote = null;
-          resetWorkingNoteEditorContent();
-          clearNoteEditorDirty();
-          selectedNoteDocumentId = workingNoteTargetId(transcriptId || '');
-          renderSelectedNote();
-          showFlash('Working note cleared.', 'success');
-          void fetchWorkspace();
         },
       });
 
@@ -5750,7 +5928,8 @@ let statusDetailsHideTimer = null;
       }
 
       window.addEventListener('beforeunload', (event) => {
-        if (!transcriptTurnsEditor?.dirty) return;
+        if (!transcriptTurnsEditor?.dirty && !noteEditorDirty && !noteAutosave.pending
+          && !workingNoteSaveAttempts.pending && !workingNoteClearAttempts.pending) return;
         event.preventDefault();
         event.returnValue = '';
       });

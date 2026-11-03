@@ -1745,13 +1745,15 @@ def delete_transcript_working_note(
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
-    clear_working_note_service(
+    revision = clear_working_note_service(
         db,
         context.user,
         transcript_id=transcript_id,
         expected_updated_at=payload.expected_updated_at if payload else None,
+        expected_revision=payload.expected_revision if payload else None,
+        operation_id=payload.operation_id if payload else None,
     )
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return Response(status_code=status.HTTP_204_NO_CONTENT, headers={"X-Working-Note-Revision": str(revision)})
 
 
 @api.post("/transcripts/{transcript_id}/finalize-live-capture", response_model=TranscriptDetail, responses=error_responses)

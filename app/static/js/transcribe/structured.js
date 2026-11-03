@@ -1,4 +1,4 @@
-import { clearDelayedGenerationStatus, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261014-generation-status';
+import { clearDelayedGenerationStatus, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261029-preserved-note-version';
 
 export function createStructuredEditor({
   dom,

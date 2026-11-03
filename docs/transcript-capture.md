@@ -166,6 +166,9 @@ Working note is clinician-authored source content separate from transcript and g
 - One mode is active per transcript: `freeform` or `structured`.
 - Mode locks on the first non-empty save.
 - Clearing the working note removes content and unlocks the mode.
+- Owner Working note projections include a monotonic revision, including when empty. PATCH/DELETE accept `expected_revision` and `operation_id` as a pair; legacy timestamp-only clients remain supported.
+- The server acknowledges an exact replay only for the latest operation while its result remains current. A superseded retry conflicts. This is bounded retry protection, not wall-clock last-write-wins or note history.
+- The browser retains an uncertain frozen attempt in page memory and replays it once; an actual conflict preserves edits and blocks dependent actions. An acknowledged clear resets the editor to the returned revision.
 - Clearing it does not delete transcript text or generated outputs.
 - It follows transcript-root retention/deletion.
 - Generation snapshots the exact working-note input used.

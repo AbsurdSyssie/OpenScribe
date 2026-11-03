@@ -190,6 +190,170 @@ def test_document_navigator_preserves_matching_server_note_once_but_updates_meta
     subprocess.run(["node", str(runner)], check=True, cwd=root)
 
 
+def test_preserved_working_note_editor_keeps_its_revision_token(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    runner = tmp_path / "preserved_working_note_revision_runner.mjs"
+    runner.write_text(
+        textwrap.dedent(
+            """
+            import assert from 'node:assert/strict';
+            import fs from 'node:fs';
+            import vm from 'node:vm';
+
+            const root = __OPENSCRIBE_ROOT__;
+            const documentsPath = `${root}/app/static/js/transcribe/documents.js`;
+            const noteTargetsPath = `${root}/app/static/js/transcribe/noteTargets.js`;
+            const saveStatePath = `${root}/app/static/js/transcribe/noteSaveState.js`;
+            const noteTargetsSource = fs.readFileSync(noteTargetsPath, 'utf8').replaceAll('export const ', 'var ');
+            const saveStateSource = fs.readFileSync(saveStatePath, 'utf8').replaceAll('export function ', 'function ');
+            const documentsSource = fs.readFileSync(documentsPath, 'utf8')
+              .replace("import { workingNoteTargetId } from './noteTargets.js?v=20260520-working-note-template-guard';", '')
+              .replaceAll('export const ', 'var ')
+              .replaceAll('export function ', 'function ')
+              .replace('export function createDocumentNavigator', 'function createDocumentNavigator');
+            const makeElement = () => ({
+              dataset: {}, hidden: false, innerHTML: '', textContent: '', children: [],
+              append(...children) { this.children.push(...children); },
+              appendChild(child) { this.children.push(child); },
+              insertAdjacentHTML() {}, querySelectorAll() { return []; },
+              setAttribute(name, value) { this[name] = value; },
+            });
+            const fakeDocument = {
+              activeElement: null, createElement: makeElement, dispatchEvent() {},
+              querySelector() { return null; },
+            };
+            const sandbox = {
+              Array, Boolean, CustomEvent: class CustomEvent {}, Date, JSON, Map, Number, Object, String,
+              window: { document: fakeDocument },
+            };
+            sandbox.globalThis = sandbox;
+            vm.createContext(sandbox);
+            vm.runInContext(noteTargetsSource, sandbox, { filename: noteTargetsPath });
+            vm.runInContext(saveStateSource, sandbox, { filename: saveStatePath });
+            vm.runInContext(documentsSource, sandbox, { filename: documentsPath });
+
+            const targetId = 'working:transcript-1';
+            const output = makeElement();
+            const renderedDocuments = [];
+            output.dataset.latestGeneratedId = targetId;
+            output.dataset.latestGeneratedMode = 'freeform';
+            output.dataset.latestGeneratedUpdatedAt = 'revision-B';
+            output.dataset.latestGeneratedRevision = '5';
+            let activeWorkingNote = {
+              mode: 'freeform', updated_at: 'revision-A', revision: 4, freeform_text: 'content A',
+            };
+            const navigator = sandbox.createDocumentNavigator({
+              dom: {
+                latestGeneratedOutput: output,
+                noteMeta: makeElement(), noteSelector: makeElement(),
+                noteSelectorCount: makeElement(), noteSelectorWrap: makeElement(),
+                outputLlmRequestSlot: makeElement(), outputRedactionSlot: makeElement(),
+              },
+              helpers: {
+                escapeHtml: String, refreshIcons() {}, renderGeneratedOutput: (document) => renderedDocuments.push(document),
+                initializeHydratedGeneratedDocument() {}, renderRedactionDebugPanel() {},
+              },
+              getState: () => ({
+                hasActiveTranscript: true, activeTranscriptId: 'transcript-1',
+                activeWorkingNote, workspaceNoteDocuments: [], workspaceStructuredContext: {},
+                selectedNoteDocumentId: targetId, selectedTemplateMode: 'freeform',
+              }),
+              setState() {},
+              shouldPreserveNoteEditorRender: () => true,
+              shouldInitializeHydratedNoteEditor: () => false,
+            });
+
+            // A successful local save advanced the editor's rendered token to B.
+            // A workspace request started before that save now returns snapshot A.
+            navigator.renderSelectedNote();
+            assert.equal(output.dataset.latestGeneratedUpdatedAt, 'revision-B',
+              'a stale workspace snapshot must not roll back the token for retained editor content');
+            assert.equal(output.dataset.latestGeneratedRevision, '5',
+              'a stale workspace snapshot must not roll back the revision for retained editor content');
+            const localBaseline = sandbox.captureNoteDirtyBaseline({
+              currentUpdatedAt: output.dataset.latestGeneratedUpdatedAt,
+              currentUpdatedAtAvailable: output.dataset.latestGeneratedId === targetId,
+              workingNoteUpdatedAt: activeWorkingNote.updated_at,
+              isWorkingNote: true,
+            });
+            assert.equal(localBaseline, 'revision-B');
+
+            // A clean but focused freeform editor can be preserved while the
+            // workspace knows about a newer structured note B. Keep its content,
+            // mode and token A together so the server rejects a stale edit.
+            output.dataset.latestGeneratedUpdatedAt = 'revision-A';
+            output.dataset.latestGeneratedRevision = '4';
+            activeWorkingNote = {
+              mode: 'structured', updated_at: 'revision-B', revision: 5, freeform_text: '',
+              structured_note: { profile: 'emis', sections: { problem: ['content B'] } },
+            };
+            navigator.renderSelectedNote();
+            assert.equal(output.dataset.latestGeneratedUpdatedAt, 'revision-A');
+            assert.equal(output.dataset.latestGeneratedMode, 'freeform');
+            assert.equal(output.dataset.latestGeneratedRevision, '4');
+            const staleBaseline = sandbox.captureNoteDirtyBaseline({
+              currentUpdatedAt: output.dataset.latestGeneratedUpdatedAt,
+              currentUpdatedAtAvailable: output.dataset.latestGeneratedId === targetId,
+              workingNoteUpdatedAt: activeWorkingNote.updated_at,
+              isWorkingNote: true,
+            });
+            assert.equal(staleBaseline, 'revision-A');
+            const syntheticPatch = (expectedUpdatedAt, serverRevision = 'revision-B') => (
+              expectedUpdatedAt === serverRevision ? 200 : 409
+            );
+            assert.equal(syntheticPatch(staleBaseline), 409,
+              'the preserved editor must retain its stale token and rely on server concurrency protection');
+
+            // A remote clear advances the server revision. Keep the old
+            // rendered revision beside retained content until the editor reloads.
+            activeWorkingNote = { revision: 5 };
+            navigator.renderSelectedNote();
+            assert.equal(output.dataset.latestGeneratedUpdatedAt, 'revision-A');
+            assert.equal(output.dataset.latestGeneratedRevision, '4');
+            assert.equal(syntheticPatch(output.dataset.latestGeneratedUpdatedAt, null), 409);
+
+            // Empty is also an authoritative revision for a new note. A stale
+            // workspace payload must not make an empty editor adopt remote B.
+            output.dataset.latestGeneratedUpdatedAt = '';
+            output.dataset.latestGeneratedRevision = '0';
+            activeWorkingNote = { mode: 'freeform', updated_at: 'revision-B', revision: 3, freeform_text: 'content B' };
+            navigator.renderSelectedNote();
+            const emptyBaseline = sandbox.captureNoteDirtyBaseline({
+              currentUpdatedAt: output.dataset.latestGeneratedUpdatedAt,
+              currentUpdatedAtAvailable: output.dataset.latestGeneratedId === targetId,
+              workingNoteUpdatedAt: activeWorkingNote.updated_at,
+              isWorkingNote: true,
+            });
+            assert.equal(emptyBaseline, '', 'an empty rendered token must not fall back to a newer note revision');
+            assert.equal(syntheticPatch(emptyBaseline || null, 'revision-B'), 409);
+
+            // Explicit owner-initiated clear resets the baseline even while
+            // the editor is focused; creating a fresh note then uses null.
+            output.dataset.latestGeneratedUpdatedAt = 'revision-A';
+            output.dataset.latestGeneratedRevision = '7';
+            activeWorkingNote = null;
+            navigator.renderSelectedNote({ forceRenderEditor: true });
+            assert.equal(output.dataset.latestGeneratedUpdatedAt, '');
+            assert.equal(output.dataset.latestGeneratedRevision, '0');
+            assert.equal(renderedDocuments.at(-1).edited_output_text, '',
+              'an explicit clear must replace the retained editor contents as well as its token');
+            const resetBaseline = sandbox.captureNoteDirtyBaseline({
+              currentUpdatedAt: output.dataset.latestGeneratedUpdatedAt,
+              currentUpdatedAtAvailable: output.dataset.latestGeneratedId === targetId,
+              workingNoteUpdatedAt: '',
+              isWorkingNote: true,
+            });
+            assert.equal(resetBaseline, '');
+            assert.equal(syntheticPatch(resetBaseline || null, null), 200,
+              'the first save after explicit clear uses the empty-note version');
+            """
+        ).replace("__OPENSCRIBE_ROOT__", repr(str(root))),
+        encoding="utf-8",
+    )
+
+    subprocess.run(["node", str(runner)], check=True, cwd=root)
+
+
 def test_document_switch_flushes_serialized_note_autosave_after_intervening_edit(tmp_path):
     root = Path(__file__).resolve().parents[1]
     runner = tmp_path / "note_autosave_document_switch_runner.mjs"
@@ -699,9 +863,9 @@ def test_note_regeneration_controls_and_scroll_rail_contract():
     app = (root / "app/static/js/transcribe/app.js").read_text(encoding="utf-8")
     shell = (root / "app/templates/transcribe/_shell_extras.html").read_text(encoding="utf-8")
     assert "actions.js?v=20261021-example-consultation" in app
-    assert "documents.js?v=20261014-generation-status" in app
+    assert "documents.js?v=20261103-working-note-revision" in app
     assert "structured.js?v=20260918-retired-note-workspace" in app
-    assert "app.js?v=20261028-split-template-refresh" in shell
+    assert "app.js?v=20261103-working-note-save-recovery" in shell
 
 
 def test_retired_note_workspace_compatibility_plumbing_is_absent():

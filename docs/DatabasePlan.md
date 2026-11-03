@@ -169,7 +169,7 @@ Creation/retry uses transactional durable task-dispatch metadata. Provider-attem
 
 ## Working note and dictation
 
-One living Working note per transcript stores mode and encrypted freeform/structured content with optimistic-concurrency metadata. Mode locks after first non-empty save and unlocks when cleared.
+One living Working note per transcript stores mode and encrypted freeform/structured content. Its transcript root holds a non-negative monotonic revision and only the UUID of the latest accepted revision-aware operation. Existing timestamped notes are backfilled to revision 1; empty roots start at 0. Saves, clears, and legacy structured-context writes increment the revision under the existing source-writer lock; clears never reset it. The latest operation UUID is bounded replay metadata, not a content history or digest. Exact replay checks compare normalized request content with the current decrypted owner note; no plaintext receipt or content hash is stored. Mode locks after first non-empty save and unlocks when cleared. Both fields follow transcript-root retention/deletion, and note content remains within the owner's established encryption boundary.
 
 Post-consultation dictation persists transcript-owned aggregate metadata, immutable segment sources, and encrypted combined/edited text. An intentionally empty edited combined value suppresses segment fallback.
 

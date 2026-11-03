@@ -1,5 +1,5 @@
 import { csrfFetch } from '../csrf.js';
-import { CHECKER_UNAVAILABLE_MESSAGE, generationFailureDetailsHtml, generationFailureMessage } from './documents.js?v=20261014-generation-status';
+import { CHECKER_UNAVAILABLE_MESSAGE, generationFailureDetailsHtml, generationFailureMessage } from './documents.js?v=20261029-preserved-note-version';
 
 const VALID_DISPOSITIONS = new Set([
   'separate_note',

@@ -622,6 +622,7 @@ def _create_transcript_row(
         ),
         working_note_mode=TranscriptWorkingNoteMode.structured if normalized_structured_context is not None else None,
         working_note_updated_at=utcnow() if normalized_structured_context is not None else None,
+        working_note_revision=1 if normalized_structured_context is not None else 0,
         ingestion_mode=ingestion_mode,
         status=TranscriptStatus.ready,
         next_live_chunk_sequence_no_applied=1,
@@ -950,6 +951,7 @@ def working_note_detail(db: Session, actor: User, *, transcript_id: UUID) -> dic
         mode = TranscriptWorkingNoteMode.structured if structured_note is not None else None
     return {
         "transcript_id": transcript.id,
+        "revision": transcript.working_note_revision,
         "mode": mode,
         "freeform_text": freeform_text if mode is TranscriptWorkingNoteMode.freeform else "",
         "structured_note": structured_note if mode is TranscriptWorkingNoteMode.structured else None,
@@ -971,9 +973,84 @@ def _assert_working_note_update_current(transcript: Transcript, expected_updated
         raise AppError(409, "conflict", "Working note changed elsewhere. Reload before saving again.")
 
 
+def _working_note_conflict() -> AppError:
+    return AppError(409, "conflict", "Working note changed elsewhere. Reload before saving again.")
+
+
+def _working_note_operation_matches(
+    db: Session,
+    *,
+    transcript: Transcript,
+    operation_type: str,
+    payload: WorkingNoteUpdate | None = None,
+) -> bool:
+    """Compare a latest-operation replay against the current decrypted note."""
+    current_mode = transcript_working_note_mode(db, transcript=transcript)
+    if operation_type == "clear":
+        return current_mode is None
+    assert payload is not None
+    if payload.mode is TranscriptWorkingNoteMode.freeform:
+        return (
+            current_mode is TranscriptWorkingNoteMode.freeform
+            and freeform_working_note_text(db, transcript=transcript) == (payload.freeform_text or "").strip()
+        )
+    expected = normalize_structured_working_note(
+        payload.structured_note.model_dump() if payload.structured_note else None
+    )
+    current = normalize_structured_working_note(transcript_structured_context(db, transcript=transcript))
+    return current_mode is TranscriptWorkingNoteMode.structured and current == expected
+
+
+def _check_revision_or_replay(
+    db: Session,
+    *,
+    transcript: Transcript,
+    expected_revision: int | None,
+    operation_id: UUID | None,
+    operation_type: str,
+    payload: WorkingNoteUpdate | None = None,
+) -> bool:
+    """Return True for an exact latest replay; otherwise validate the base revision."""
+    if (expected_revision is None) != (operation_id is None):
+        raise AppError(422, "validation_error", "expected_revision and operation_id must be provided together")
+    if expected_revision is None:
+        return False
+    if type(expected_revision) is not int or expected_revision < 0 or not isinstance(operation_id, UUID):
+        raise AppError(422, "validation_error", "Working note revision operation is invalid")
+    if transcript.working_note_last_operation_id == operation_id:
+        if (
+            expected_revision + 1 != transcript.working_note_revision
+            or not _working_note_operation_matches(
+                db,
+                transcript=transcript,
+                operation_type=operation_type,
+                payload=payload,
+            )
+        ):
+            raise _working_note_conflict()
+        return True
+    if expected_revision != transcript.working_note_revision:
+        raise _working_note_conflict()
+    return False
+
+
 def save_working_note(db: Session, actor: User, *, transcript_id: UUID, payload: WorkingNoteUpdate) -> Transcript:
     transcript = _lock_split_source_writer_transcript(db, actor, transcript_id=transcript_id)
-    _assert_working_note_update_current(transcript, payload.expected_updated_at)
+    replay = _check_revision_or_replay(
+        db,
+        transcript=transcript,
+        expected_revision=payload.expected_revision,
+        operation_id=payload.operation_id,
+        operation_type="save",
+        payload=payload,
+    )
+    if replay:
+        # End the transaction and release the source-writer lock on acknowledgement.
+        db.commit()
+        db.refresh(transcript)
+        return transcript
+    if payload.expected_revision is None:
+        _assert_working_note_update_current(transcript, payload.expected_updated_at)
     if transcript.working_note_mode is not None and transcript.working_note_mode is not payload.mode and transcript_has_working_note(db, transcript=transcript):
         raise AppError(
             409,
@@ -996,21 +1073,47 @@ def save_working_note(db: Session, actor: User, *, transcript_id: UUID, payload:
         set_freeform_working_note_text(db, transcript=transcript, plaintext=None)
         set_transcript_structured_context(db, transcript=transcript, plaintext=structured_note)
     transcript.working_note_updated_at = utcnow()
+    transcript.working_note_revision += 1
+    transcript.working_note_last_operation_id = payload.operation_id
     db.add(transcript)
     db.commit()
     db.refresh(transcript)
     return transcript
 
 
-def clear_working_note(db: Session, actor: User, *, transcript_id: UUID, expected_updated_at: datetime | None = None) -> None:
+def clear_working_note(
+    db: Session,
+    actor: User,
+    *,
+    transcript_id: UUID,
+    expected_updated_at: datetime | None = None,
+    expected_revision: int | None = None,
+    operation_id: UUID | None = None,
+) -> int:
     transcript = _lock_split_source_writer_transcript(db, actor, transcript_id=transcript_id)
-    _assert_working_note_update_current(transcript, expected_updated_at)
+    replay = _check_revision_or_replay(
+        db,
+        transcript=transcript,
+        expected_revision=expected_revision,
+        operation_id=operation_id,
+        operation_type="clear",
+    )
+    if replay:
+        acknowledged_revision = transcript.working_note_revision
+        db.commit()
+        return acknowledged_revision
+    if expected_revision is None:
+        _assert_working_note_update_current(transcript, expected_updated_at)
     transcript.working_note_mode = None
     set_freeform_working_note_text(db, transcript=transcript, plaintext=None)
     set_transcript_structured_context(db, transcript=transcript, plaintext=None)
     transcript.working_note_updated_at = None
+    transcript.working_note_revision += 1
+    transcript.working_note_last_operation_id = operation_id
+    acknowledged_revision = transcript.working_note_revision
     db.add(transcript)
     db.commit()
+    return acknowledged_revision
 
 
 def set_transcript_draft_text(db: Session, *, transcript: Transcript, plaintext: str | None) -> None:
@@ -1375,9 +1478,9 @@ def redacted_transcript_copy_text(db: Session, owner: User, *, transcript_id: UU
 def _lock_split_source_writer_transcript(db: Session, owner: User, *, transcript_id: UUID) -> Transcript:
     """Re-check access, then use the runtime's owner/root/dictation order.
 
-    The helper is deliberately used only by writes that change a
-    consultation-split fingerprint.  Title and capture-state-only changes
-    retain their existing lighter paths.
+    Source-content writers use this lock so related source snapshots and
+    Working note revisions are serialized with consultation split analysis.
+    Title and capture-state-only changes retain their existing lighter paths.
     """
     _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
     scope = lock_consultation_split_source_scope(
@@ -1386,7 +1489,19 @@ def _lock_split_source_writer_transcript(db: Session, owner: User, *, transcript
         transcript_id=transcript_id,
     )
     if scope is None:
-        return _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+        raise AppError(
+            404,
+            "not_found",
+            "Transcript not found",
+            {"resource": "transcript", "transcript_id": str(transcript_id)},
+        )
+    if transcript_is_expired(scope.transcript):
+        raise AppError(
+            404,
+            "not_found",
+            "Transcript not found",
+            {"resource": "transcript", "transcript_id": str(transcript_id)},
+        )
     return scope.transcript
 
 
@@ -1839,6 +1954,8 @@ def update_transcript(
             raise AppError(409, "business_rule_violation", "Clear the working note before switching mode.", {"code": "working_note_mode_locked", "working_note_mode": transcript.working_note_mode.value})
         transcript.working_note_mode = TranscriptWorkingNoteMode.structured
         transcript.working_note_updated_at = utcnow()
+        transcript.working_note_revision += 1
+        transcript.working_note_last_operation_id = None
         set_freeform_working_note_text(db, transcript=transcript, plaintext=None)
         set_transcript_structured_context(db, transcript=transcript, plaintext=normalized_structured_context)
     # The source-writer lock refreshes the transcript from the database with

@@ -35,9 +35,11 @@ Important behavior:
 - non-empty saves require the matching mode/content shape;
 - whitespace-only or entirely empty saves are rejected and should use `DELETE`;
 - unsupported structured keys are rejected rather than silently discarded;
-- `expected_updated_at` provides optimistic concurrency for saves and clears;
+- revision-aware clients pair `expected_revision` with `operation_id`; `expected_updated_at` remains a compatibility path for older clients;
 - switching a locked mode returns a conflict until the note is cleared;
 - generic transcript metadata updates are not a substitute for the working-note routes.
+
+The current owner projection includes a monotonic revision even when the note is empty. The server remembers only the latest accepted operation UUID and acknowledges an exact retry only while that operation's resulting revision remains current and normalized content still matches. Reusing the UUID with a changed base, payload, or operation type conflicts; a superseded retry also conflicts. DELETE remains `204` and returns the acknowledged revision in `X-Working-Note-Revision`. There is no note history, hash, plaintext receipt, or wall-clock last-write-wins behavior. See [api.md](api.md), [workspace.md](workspace.md), and [transcript-capture.md](transcript-capture.md) for current contracts.
 
 ## Generation contract
 

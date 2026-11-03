@@ -697,6 +697,18 @@ Reconciled on 19 October 2026 against `97da191926db1da74fdf741e01f4f8490d60f6c8`
 - Not fixed now: repairing this unrelated harness is outside the live startup change.
 - Follow-up: update the source replacement to match the current imports, then rerun `tests/test_vad_inactivity_js.py` and confirm its behavioral assertions execute.
 
+### WORKING-NOTE-LOST-SAVE-ACKNOWLEDGMENT — 2026-10-29
+
+- Current status: Resolved for revision-aware Working note clients on 3 November 2026. No particular production incident has been attributed to this gap.
+- Discovery commit: `4c3f8e659635a5340d989f1fafe7daa35dea328b`.
+- Locations: `app/static/js/transcribe/app.js::persistNoteEditsSilently`; `app/services/transcripts.py::save_working_note` and `_assert_working_note_update_current`.
+- Exact sequence: the service commits a new `working_note_updated_at`; the browser advances its revision only after `const savedDocument = await response.json()` succeeds.
+- Observed problem: if a save commits but its response is lost, the browser retains the previous revision. Its next save can receive a conflict against its own committed update.
+- Likely impact: edits remain in page memory, but saving may require manual recovery even without another writer.
+- Not fixed on 29 October: the focused change repaired revision/content mismatches during editor-preserving workspace refreshes. Recovery from an uncertain save outcome required a separate design that distinguished an acknowledged prior payload from genuine concurrent edits and clears.
+- Resolution: the transcript root now carries a monotonic revision and the latest operation UUID. Exact retries of that current operation are acknowledged without another write; superseded retries conflict. The browser retains the original request and edit number in page memory, replays uncertain saves/clears once, and preserves later edits and dependent-action barriers. No content history, content hash, plaintext receipt, or persistent browser draft was added. Timestamp-only legacy clients retain the compatibility path; the recovery protocol requires the revision-aware browser/API fields.
+- Verification: `tests/test_working_note_revisions.py`, `tests/test_working_note_save_recovery_js.py`, and the migration round-trip suite pass, including synthetic lost-response recovery through the actual app handlers, later typing, clear conflicts, target fencing, owner/expiry/deletion checks, and concurrent writers. Final focused verification passed 144 tests and the 170-case authorization audit. The migration must be applied before deploying the new code; this entry does not claim live deployment.
+
 ### ADMIN-STT-ADAPTER-LABEL-OVERFLOW — 2026-10-29
 
 - Current status: Open; visual readability issue.

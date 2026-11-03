@@ -39,7 +39,7 @@ Owner-only routes:
 - `PATCH /api/v1/transcripts/{transcript_id}/working-note`
 - `DELETE /api/v1/transcripts/{transcript_id}/working-note`
 
-Saves/clears use optimistic concurrency through `expected_updated_at`. Empty content is cleared through `DELETE`, not a whitespace-only `PATCH`. A stale edit cannot recreate a note cleared by another tab.
+Owner GET/PATCH/workspace projections include a monotonic revision, including for empty notes. Revision-aware PATCH/DELETE requests pair `expected_revision` with a unique `operation_id`; an exact retry of the latest accepted operation is acknowledged once without a second write. Reusing that ID with a changed base, operation type, or normalized content conflicts, and retries superseded by later changes conflict. Legacy clients may continue using `expected_updated_at`, which remains display/compatibility metadata rather than a last-write-wins clock. DELETE stays `204` and returns its acknowledged revision in `X-Working-Note-Revision`. Revision and latest-operation UUID live on the transcript root; no content history, plaintext receipt, or content hash is stored. Empty content is cleared through `DELETE`, not a whitespace-only `PATCH`.
 
 ### Generation behavior
 
@@ -61,6 +61,7 @@ Each generated document stores an encrypted snapshot of the working-note input a
 - Freeform and structured editors use the same save/conflict machinery as generated-note editing but a separate endpoint/payload.
 - Generation waits for a successful working-note save.
 - Unsaved/failed-save state blocks generation and is protected during target/template changes.
+- Each browser attempt freezes its UUID, base revision, request payload, and local edit number in page memory. Uncertain outcomes receive one immediate exact replay; later edits use a fresh UUID after acknowledgement. A true conflict preserves the draft and blocks generation/navigation. Clear resets the editor only after its own acknowledgement.
 - After generation, the newest generated note may take focus; Working note remains available.
 - Default clinical copy/export actions use generated output, not Working note.
 - Freeform Working note supports personal Smart Phrases through the shared editor behavior.

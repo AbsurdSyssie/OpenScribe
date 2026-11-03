@@ -28,7 +28,7 @@ def test_split_review_workspace_accessibility_hooks_and_cachebusters():
     assert 'splitReviewController?.applyWorkspaceState' in app_js
     assert 'refreshWorkspace: (nextTranscriptId) => fetchWorkspace(nextTranscriptId, {' in app_js
     assert 'guardTranscriptId: nextTranscriptId' in app_js
-    assert 'app.js?v=20261028-split-template-refresh' in shell
+    assert 'app.js?v=20261103-working-note-save-recovery' in shell
     assert 'transcribe.css?v=20261027-live-dictation' in head
     assert 'data-split-continue-one-note hidden' in workspace
     assert 'data-split-review-confirm' not in workspace

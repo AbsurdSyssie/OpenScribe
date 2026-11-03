@@ -1625,6 +1625,7 @@ class DefaultQuickActionVersion(Base):
 class Transcript(Base):
     __tablename__ = "transcripts"
     __table_args__ = (
+        CheckConstraint("working_note_revision >= 0", name="ck_transcripts_working_note_revision_nonnegative"),
         Index(
             "uq_transcripts_owner_example",
             "owner_user_id",
@@ -1646,6 +1647,8 @@ class Transcript(Base):
     working_note_mode: Mapped[TranscriptWorkingNoteMode | None] = mapped_column(Enum(TranscriptWorkingNoteMode), nullable=True)
     freeform_working_note_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     working_note_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    working_note_revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default=text("0"))
+    working_note_last_operation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     ingestion_mode: Mapped[TranscriptIngestionMode] = mapped_column(
         Enum(TranscriptIngestionMode),
         default=TranscriptIngestionMode.whole_file,

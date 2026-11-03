@@ -1,8 +1,10 @@
 export function captureNoteDirtyBaseline({
   currentUpdatedAt = '',
+  currentUpdatedAtAvailable = false,
   workingNoteUpdatedAt = '',
   isWorkingNote = false,
 } = {}) {
+  if (currentUpdatedAtAvailable) return currentUpdatedAt || '';
   return currentUpdatedAt || (isWorkingNote ? workingNoteUpdatedAt || '' : '');
 }
 
@@ -12,6 +14,7 @@ export function noteBaselineForSave({
   dirtyNoteTargetId = null,
   dirtyNoteExpectedUpdatedAt = null,
   currentUpdatedAt = '',
+  currentUpdatedAtAvailable = false,
   workingNoteUpdatedAt = '',
   isWorkingNoteTarget = () => false,
 } = {}) {
@@ -22,5 +25,6 @@ export function noteBaselineForSave({
   ) {
     return dirtyNoteExpectedUpdatedAt || null;
   }
+  if (currentUpdatedAtAvailable) return currentUpdatedAt || null;
   return currentUpdatedAt || (isWorkingNoteTarget(targetId) ? workingNoteUpdatedAt || null : '');
 }

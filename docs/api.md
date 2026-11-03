@@ -474,6 +474,7 @@ Working note:
 - mode locks on first non-empty save and unlocks when cleared;
 - owner GET, PATCH, and workspace projections include the monotonic `revision`, including for an empty note;
 - new PATCH/DELETE clients send `expected_revision` and `operation_id` together. The revision must match the current note; an exact retry of the latest accepted operation is acknowledged without writing again;
+- PATCH returns a snapshot of its acknowledged revision and content captured under the transcript lock, even if a later write commits before the response reaches the caller;
 - only the latest operation UUID is retained. Reuse with a different operation type, base revision, or normalized payload conflicts, as does a retry superseded by a later save, clear, or structured-context write;
 - older clients may continue using `expected_updated_at`; timestamps remain for display and compatibility, not ordering;
 - DELETE remains `204 No Content` and returns the acknowledged revision in `X-Working-Note-Revision`;

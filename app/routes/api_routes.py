@@ -373,7 +373,7 @@ from ..services.transcripts import (
     queue_audio_file_ingestion,
     retry_audio_file_ingestion,
     retry_failed_audio_ingestion,
-    save_working_note as save_working_note_service,
+    save_working_note_detail as save_working_note_detail_service,
     start_transcript as start_transcript_service,
     transcript_is_expired,
     update_transcript as update_transcript_service,
@@ -1734,8 +1734,9 @@ def update_transcript_working_note(
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
-    save_working_note_service(db, context.user, transcript_id=transcript_id, payload=payload)
-    return WorkingNoteDetail.model_validate(working_note_detail_service(db, context.user, transcript_id=transcript_id))
+    return WorkingNoteDetail.model_validate(
+        save_working_note_detail_service(db, context.user, transcript_id=transcript_id, payload=payload)
+    )
 
 
 @api.delete("/transcripts/{transcript_id}/working-note", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)

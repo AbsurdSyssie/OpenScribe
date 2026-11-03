@@ -942,6 +942,10 @@ def transcript_working_note_mode(db: Session, *, transcript: Transcript) -> Tran
 
 def working_note_detail(db: Session, actor: User, *, transcript_id: UUID) -> dict:
     transcript = _get_owner_transcript_for_ingestion(db, actor, transcript_id=transcript_id)
+    return _working_note_detail_for_transcript(db, transcript=transcript)
+
+
+def _working_note_detail_for_transcript(db: Session, *, transcript: Transcript) -> dict:
     structured_note = normalize_structured_working_note(transcript_structured_context(db, transcript=transcript))
     freeform_text = ""
     if transcript.working_note_mode is TranscriptWorkingNoteMode.freeform:
@@ -1034,7 +1038,13 @@ def _check_revision_or_replay(
     return False
 
 
-def save_working_note(db: Session, actor: User, *, transcript_id: UUID, payload: WorkingNoteUpdate) -> Transcript:
+def _save_working_note_with_detail(
+    db: Session,
+    actor: User,
+    *,
+    transcript_id: UUID,
+    payload: WorkingNoteUpdate,
+) -> tuple[Transcript, dict]:
     transcript = _lock_split_source_writer_transcript(db, actor, transcript_id=transcript_id)
     replay = _check_revision_or_replay(
         db,
@@ -1045,10 +1055,10 @@ def save_working_note(db: Session, actor: User, *, transcript_id: UUID, payload:
         payload=payload,
     )
     if replay:
-        # End the transaction and release the source-writer lock on acknowledgement.
+        # Snapshot the acknowledged state before commit releases the source-writer lock.
+        detail = _working_note_detail_for_transcript(db, transcript=transcript)
         db.commit()
-        db.refresh(transcript)
-        return transcript
+        return transcript, detail
     if payload.expected_revision is None:
         _assert_working_note_update_current(transcript, payload.expected_updated_at)
     if transcript.working_note_mode is not None and transcript.working_note_mode is not payload.mode and transcript_has_working_note(db, transcript=transcript):
@@ -1075,10 +1085,34 @@ def save_working_note(db: Session, actor: User, *, transcript_id: UUID, payload:
     transcript.working_note_updated_at = utcnow()
     transcript.working_note_revision += 1
     transcript.working_note_last_operation_id = payload.operation_id
+    # The API acknowledgment must describe this mutation even if another
+    # writer commits immediately after this transaction releases its lock.
+    detail = _working_note_detail_for_transcript(db, transcript=transcript)
     db.add(transcript)
     db.commit()
+    return transcript, detail
+
+
+def save_working_note(db: Session, actor: User, *, transcript_id: UUID, payload: WorkingNoteUpdate) -> Transcript:
+    transcript, _detail = _save_working_note_with_detail(
+        db,
+        actor,
+        transcript_id=transcript_id,
+        payload=payload,
+    )
     db.refresh(transcript)
     return transcript
+
+
+def save_working_note_detail(db: Session, actor: User, *, transcript_id: UUID, payload: WorkingNoteUpdate) -> dict:
+    """Save or replay a Working note and return its locked-state acknowledgment."""
+    _transcript, detail = _save_working_note_with_detail(
+        db,
+        actor,
+        transcript_id=transcript_id,
+        payload=payload,
+    )
+    return detail
 
 
 def clear_working_note(

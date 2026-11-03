@@ -8,8 +8,9 @@ from sqlalchemy.orm import sessionmaker
 
 from app.errors import AppError
 from app.models import TeamRole, Transcript, TranscriptIngestionMode, TranscriptStatus, TranscriptWorkingNoteMode, User, utcnow
+from app.routes import api_routes
 from app.schemas.transcripts import WorkingNoteUpdate
-from app.services.transcripts import clear_working_note, save_working_note, update_transcript
+from app.services.transcripts import clear_working_note, save_working_note, save_working_note_detail, update_transcript
 
 
 def _login(client, email: str, password: str):
@@ -189,6 +190,74 @@ def test_working_note_revision_fields_must_be_paired(client, db_session, make_te
             expected_revision=0,
         )
     assert unpaired_service_call.value.status_code == 422
+
+
+@pytest.mark.parametrize("replay", [False, True], ids=["new-save", "replay"])
+def test_working_note_patch_returns_its_acknowledgment_if_later_write_commits(
+    client, db_session, make_team, make_user, monkeypatch, replay
+):
+    team = make_team(name=f"Working Note Acknowledgment {replay}")
+    owner = make_user(
+        email=f"working-ack-{replay}@example.com",
+        password="password-1",
+        team=team,
+        team_role=TeamRole.user,
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+    assert _login(client, owner.email, "password-1").status_code == 200
+    started = client.post("/api/v1/transcripts/start", json={"title": "Acknowledgment race", "ingestion_mode": "whole_file"})
+    assert started.status_code == 201
+    transcript_id = UUID(started.json()["id"])
+    operation_id = uuid4()
+    original_payload = WorkingNoteUpdate(
+        mode=TranscriptWorkingNoteMode.freeform,
+        freeform_text="First acknowledged note.",
+        expected_revision=0,
+        operation_id=operation_id,
+    )
+    if replay:
+        save_working_note(db_session, owner, transcript_id=transcript_id, payload=original_payload)
+
+    real_save_detail = save_working_note_detail
+
+    def save_then_commit_later_write(db, actor, *, transcript_id, payload):
+        real_commit = db.commit
+        injected = False
+
+        def commit_then_write_later():
+            nonlocal injected
+            real_commit()
+            if injected:
+                return
+            injected = True
+            later_payload = WorkingNoteUpdate(
+                mode=TranscriptWorkingNoteMode.freeform,
+                freeform_text="Later concurrent note.",
+                expected_revision=payload.expected_revision + 1,
+                operation_id=uuid4(),
+            )
+            save_working_note(db, actor, transcript_id=transcript_id, payload=later_payload)
+
+        monkeypatch.setattr(db, "commit", commit_then_write_later)
+        return real_save_detail(db, actor, transcript_id=transcript_id, payload=payload)
+
+    monkeypatch.setattr(api_routes, "save_working_note_detail_service", save_then_commit_later_write)
+    response = client.patch(
+        f"/api/v1/transcripts/{transcript_id}/working-note",
+        json=original_payload.model_dump(mode="json"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["revision"] == 1
+    assert response.json()["freeform_text"] == "First acknowledged note."
+    latest = client.get(f"/api/v1/transcripts/{transcript_id}/working-note")
+    assert latest.status_code == 200
+    assert latest.json()["revision"] == 2
+    assert latest.json()["freeform_text"] == "Later concurrent note."
+    db_session.expire_all()
+    persisted = db_session.get(Transcript, transcript_id)
+    assert persisted.working_note_revision == 2
 
 
 def test_replay_still_enforces_owner_expiry_and_root_existence(client, db_session, make_team, make_user):

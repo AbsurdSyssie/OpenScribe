@@ -121,30 +121,100 @@ def test_invalid_outputs_account_each_response_and_never_replay_delivery(
         requests.append(kwargs["request_body"]["messages"])
         if len(calls) == 1:
             return "not-json", _usage(5)
-        return (VALID_NOTE if backup_valid else "also-not-json"), _usage(12)
+        if len(calls) == 2:
+            return "also-not-json", _usage(7)
+        return (VALID_NOTE if backup_valid else "still-not-json"), _usage(12)
 
     monkeypatch.setattr(templates, "_invoke_frozen_llm", invoke)
     result = process_generated_document(db_session, document_id=backup_job.document.id)
 
-    assert calls == [backup_job.primary.id, backup_job.backup.id]
-    assert requests[0] == requests[1]
+    assert calls == [backup_job.primary.id, backup_job.primary.id, backup_job.backup.id]
+    assert requests[0] == requests[1] == requests[2]
     assert result.status is (GeneratedDocumentStatus.ready if backup_valid else GeneratedDocumentStatus.failed)
     attempts = _attempts(db_session, result.id)
-    assert len(attempts) == 2
-    primary = next(item for item in attempts if item.backup_of_attempt_id is None)
+    assert len(attempts) == 3
+    primary = next(item for item in attempts if item.backup_of_attempt_id is None and item.attempt_number == 1)
+    retry = next(item for item in attempts if item.backup_of_attempt_id is None and item.attempt_number == 2)
     child = next(item for item in attempts if item.backup_of_attempt_id is not None)
-    assert child.backup_of_attempt_id == primary.id
-    assert primary.status is child.status is AttemptStatus.settled
-    assert primary.outcome is AttemptOutcome.failed
+    assert child.backup_of_attempt_id == retry.id
+    assert primary.status is retry.status is child.status is AttemptStatus.settled
+    assert primary.outcome is retry.outcome is AttemptOutcome.failed
     assert primary.settled_units == 5
+    assert retry.settled_units == 7
     assert child.settled_units == 12
-    assert primary.settlement_basis is child.settlement_basis is ProviderSettlementBasis.reported
+    assert primary.settlement_basis is retry.settlement_basis is child.settlement_basis is ProviderSettlementBasis.reported
     assert child.outcome is (AttemptOutcome.succeeded if backup_valid else AttemptOutcome.failed)
 
     repeated = process_generated_document(db_session, document_id=result.id)
     assert repeated.status is result.status
-    assert calls == [backup_job.primary.id, backup_job.backup.id]
-    assert len(_attempts(db_session, result.id)) == 2
+    assert calls == [backup_job.primary.id, backup_job.primary.id, backup_job.backup.id]
+    assert len(_attempts(db_session, result.id)) == 3
+
+
+def test_retry_provider_failure_can_fall_back_to_frozen_backup(
+    db_session, backup_job, monkeypatch,
+):
+    calls = []
+    requests = []
+
+    def invoke(**kwargs):
+        calls.append(kwargs["config"].id)
+        requests.append(kwargs["request_body"]["messages"])
+        if len(calls) == 1:
+            return "not-json", _usage(5)
+        if len(calls) == 2:
+            raise AppError(502, "llm_provider_unreachable", "Synthetic retry provider failure")
+        return VALID_NOTE, _usage(12)
+
+    monkeypatch.setattr(templates, "_invoke_frozen_llm", invoke)
+    result = process_generated_document(db_session, document_id=backup_job.document.id)
+
+    assert result.status is GeneratedDocumentStatus.ready
+    assert result.model_used == "backup-model"
+    assert calls == [backup_job.primary.id, backup_job.primary.id, backup_job.backup.id]
+    assert requests[0] == requests[1] == requests[2]
+    attempts = _attempts(db_session, result.id)
+    assert len(attempts) == 3
+    primary = next(item for item in attempts if item.backup_of_attempt_id is None and item.attempt_number == 1)
+    retry = next(item for item in attempts if item.backup_of_attempt_id is None and item.attempt_number == 2)
+    child = next(item for item in attempts if item.backup_of_attempt_id is not None)
+    assert child.backup_of_attempt_id == retry.id
+    assert primary.status is retry.status is child.status is AttemptStatus.settled
+    assert primary.outcome is AttemptOutcome.failed
+    assert retry.outcome is AttemptOutcome.unknown
+    assert primary.settled_units == 5
+    assert retry.settled_units == retry.reserved_units
+    assert retry.settlement_basis is ProviderSettlementBasis.conservative_unknown
+    assert child.settled_units == 12
+    assert child.outcome is AttemptOutcome.succeeded
+
+    repeated = process_generated_document(db_session, document_id=result.id)
+    assert repeated.status is GeneratedDocumentStatus.ready
+    assert calls == [backup_job.primary.id, backup_job.primary.id, backup_job.backup.id]
+    assert len(_attempts(db_session, result.id)) == 3
+
+
+def test_expired_transcript_fences_same_primary_retry_and_backup_dispatch(
+    db_session, backup_job, monkeypatch,
+):
+    calls = []
+
+    def invoke(**kwargs):
+        calls.append(kwargs["config"].id)
+        backup_job.transcript.retention_expires_at = utcnow() - timedelta(seconds=1)
+        db_session.add(backup_job.transcript)
+        db_session.commit()
+        return "not-json", _usage(5)
+
+    monkeypatch.setattr(templates, "_invoke_frozen_llm", invoke)
+    result = process_generated_document(db_session, document_id=backup_job.document.id)
+
+    assert result.status is not GeneratedDocumentStatus.ready
+    assert calls == [backup_job.primary.id]
+    attempts = _attempts(db_session, result.id)
+    assert len(attempts) == 1
+    assert attempts[0].status is AttemptStatus.submitted
+    assert not generated_document_text(db_session, document=result, field="original_output_text_encrypted")
 
 
 def test_backup_quota_exhaustion_keeps_unknown_primary_accounted_without_second_dispatch(

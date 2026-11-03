@@ -56,11 +56,6 @@ def tag_provider_failure(error: AppError) -> AppError:
     return error
 
 
-def is_normalized_provider_failure(error: AppError) -> bool:
-    """Whether an error code is an allowlisted normalized provider failure."""
-    return error.code in _PROVIDER_FAILURE_CODES
-
-
 def tag_output_validation_failure(error: AppError) -> AppError:
     """Mark an explicit provider-output validation error for the caller."""
     details = dict(error.details or {})

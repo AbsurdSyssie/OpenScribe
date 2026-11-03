@@ -90,7 +90,7 @@ from app.services.llm_backup import (
     read_backup_provider, reserve_backup_attempt,
 )
 from app.services.llm_backup_policy import (
-    backup_is_distinct, can_failover, is_normalized_provider_failure, prepare_backup_request,
+    backup_is_distinct, can_failover, prepare_backup_request,
     tag_output_validation_failure, tag_provider_failure,
 )
 from app.services.llm_adapters import LlmGenerationRequest
@@ -7064,10 +7064,9 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
                     failure_output = retry_result.text
         backup_result = None
         if failure_exc is not None:
-            provider_failure = tag_provider_failure(failure_exc) if is_normalized_provider_failure(failure_exc) else failure_exc
             backup_result = _try_backup_generated_document(
                 db, document=document, primary_config=config, primary_request=llm_request_payload,
-                primary_attempt_id=active_attempt_id, primary_exc=provider_failure,
+                primary_attempt_id=active_attempt_id, primary_exc=failure_exc,
                 primary_usage=failure_usage,
                 response_json_schema=response_json_schema,
             )

@@ -7310,13 +7310,15 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "structuredEditor.syncTemplateModeBadge?.();" in app_js
     assert "const canContinue = await handleOutputTemplateChange?.();" in actions_js
     assert "dom.generateOutputTemplateSelect.addEventListener('change', async () => {\n      structuredEditor.syncStructuredTemplateUi();" not in actions_js
-    assert "const currentNoteUpdatedAt = () => latestGeneratedOutput?.dataset?.latestGeneratedUpdatedAt || '';" in app_js
-    assert "import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';" in app_js
+    assert "const currentNoteUpdatedAt = (targetId = currentRenderedNoteTargetId()) => {" in app_js
+    assert "if (latestGeneratedOutput?.dataset?.latestGeneratedId !== targetId) return null;" in app_js
+    assert "import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20261029-empty-note-version';" in app_js
     assert "let dirtyNoteExpectedUpdatedAt = null;" in app_js
     assert "dirtyNoteExpectedUpdatedAt = captureNoteDirtyBaseline({" in app_js
     assert "const clearNoteDirtyBaseline = () => {" in app_js
-    assert "const noteSaveExpectedUpdatedAtForTarget = (targetId) => noteBaselineForSave({" in app_js
-    assert "noteBaselineForSave({" in app_js
+    assert "const noteSaveExpectedUpdatedAtForTarget = (targetId) => {" in app_js
+    assert "return noteBaselineForSave({" in app_js
+    assert "currentUpdatedAtAvailable: renderedUpdatedAt !== null," in app_js
     assert "const expectedUpdatedAt = noteSaveExpectedUpdatedAtForTarget(targetId);" in app_js
     assert "const expectedUpdatedAt = noteSaveExpectedUpdatedAtForTarget(generatedDocumentId);" in app_js
     assert "dirtyNoteExpectedUpdatedAt = savedDocument.updated_at || '';" in app_js
@@ -7491,10 +7493,13 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const ensureFreeformHasEditableRow = () => {" in structured_js
     assert "onNoteEditorChanged?.();" in structured_js
     assert "const hasNoteInputContent = () => {" in structured_js
-    assert "const renderSelectedNote = ({ forcePreserveEditor = false } = {}) => {" in documents_js
+    assert "const renderSelectedNote = ({ forcePreserveEditor = false, forceRenderEditor = false } = {}) => {" in documents_js
+    assert "const preserveRenderedVersion = Boolean(" in documents_js
+    assert "if (!preserveRenderedVersion) {" in documents_js
     assert "latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || \"\";" in documents_js
+    assert "latestGeneratedOutput.dataset.latestGeneratedRevision = selectedNote?.kind === \"working_note\"" in documents_js
     assert "const preserveCurrentEditorRender = Boolean(" in documents_js
-    assert "forcePreserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId, selectedNote)" in documents_js
+    assert "forcePreserveEditor || (!forceRenderEditor && shouldPreserveNoteEditorRender?.(selectedEditorId, selectedNote))" in documents_js
     assert "if (!preserveCurrentEditorRender) {" in documents_js
     assert "wrapper.className = 'followup-output-card-v2 followup-llm-request-card-v2';" in documents_js
     assert "wrapper.dataset.generatedDocumentId = document.id || '';" in documents_js

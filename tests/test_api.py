@@ -12836,9 +12836,10 @@ def test_process_generated_document_fails_on_invalid_note_json(
     db_session.commit()
 
     document = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
+    provider_calls = []
     monkeypatch.setattr(
         "app.services.templates._generate_freeform_output_openai",
-        lambda **kwargs: ("not-json", {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
+        lambda **kwargs: (provider_calls.append(kwargs) or "not-json", {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12, "duration_ms": 9}),
     )
 
     processed = process_generated_document(db_session, document_id=document.id)
@@ -12846,6 +12847,7 @@ def test_process_generated_document_fails_on_invalid_note_json(
     assert processed.status is GeneratedDocumentStatus.failed
     assert processed.error_code == "llm_generation_invalid_json"
     assert processed.provider_error_code == "invalid_json"
+    assert len(provider_calls) == 2
 
 
 def test_local_dev_account_can_read_generated_document_redaction_debug(
@@ -23091,8 +23093,11 @@ def test_generation_invalid_json_and_provider_errors_settle_authoritative_attemp
     invalid = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
     monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", lambda **kwargs: ("not json", {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8, "duration_ms": 1}))
     assert process_generated_document(db_session, document_id=invalid.id).status is GeneratedDocumentStatus.failed
-    invalid_attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == invalid.id))
-    assert invalid_attempt is not None and invalid_attempt.outcome is AttemptOutcome.failed and invalid_attempt.settled_units == 8
+    invalid_attempts = list(db_session.scalars(select(ProviderAttempt).where(
+        ProviderAttempt.generated_document_id == invalid.id,
+    ).order_by(ProviderAttempt.attempt_number)))
+    assert len(invalid_attempts) == 2
+    assert all(attempt.outcome is AttemptOutcome.failed and attempt.settled_units == 8 for attempt in invalid_attempts)
     failed = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
     monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", lambda **kwargs: (_ for _ in ()).throw(AppError(502, "llm_generation_failed", "Synthetic provider failure")))
     assert process_generated_document(db_session, document_id=failed.id).status is GeneratedDocumentStatus.failed

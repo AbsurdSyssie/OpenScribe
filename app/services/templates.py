@@ -90,7 +90,7 @@ from app.services.llm_backup import (
     read_backup_provider, reserve_backup_attempt,
 )
 from app.services.llm_backup_policy import (
-    backup_is_distinct, can_failover, prepare_backup_request,
+    backup_is_distinct, can_failover, is_normalized_provider_failure, prepare_backup_request,
     tag_output_validation_failure, tag_provider_failure,
 )
 from app.services.llm_adapters import LlmGenerationRequest
@@ -2612,6 +2612,138 @@ def _validate_generation_provider_output(
             _parse_generated_note_json(text)
         except AppError as exc:
             raise tag_output_validation_failure(exc) from exc
+
+
+@dataclass(frozen=True, slots=True)
+class _SameModelRetryResult:
+    attempt_id: UUID
+    text: str | None = None
+    usage: GenerationUsage | None = None
+    error: AppError | None = None
+    terminal: bool = False
+
+
+def _retry_generated_note_after_invalid_json(
+    db: Session,
+    *,
+    document: GeneratedDocument,
+    config: TeamLlmConfig,
+    adapter_kind: LlmAdapterKind,
+    base_url: str,
+    provider_config: dict[str, object],
+    credential: object,
+    request_body: dict[str, object],
+    primary_attempt: ProviderAttempt,
+    primary_error: AppError,
+    primary_usage: GenerationUsage | None,
+) -> _SameModelRetryResult | None:
+    """Submit one separately accounted retry of invalid JSON for a template note."""
+    if (
+        primary_error.code != "llm_generation_invalid_json"
+        or document.generator_type is not GeneratedDocumentGeneratorType.template
+        or document.consultation_split_batch_topic_id is not None
+        or primary_attempt.backup_of_attempt_id is not None
+        or primary_attempt.attempt_number != 1
+        or primary_attempt.status is not AttemptStatus.submitted
+    ):
+        return None
+    # The first call must still own the live result fence. Expired roots and
+    # superseded/cancelled work cannot start another provider call.
+    if not _lock_live_generation_result(
+        db, document=document, submitted_attempt_id=primary_attempt.id,
+    ):
+        return None
+    require_supported_execution_context()
+
+    if "messages" in request_body:
+        messages = request_body.get("messages")
+        texts = tuple(
+            str(item.get("content", "")) for item in messages if isinstance(item, dict)
+        ) if isinstance(messages, list) else ()
+    else:
+        gemini_request = llm_runtime.gemini_request_from_snapshot(request_body)
+        texts = (gemini_request.system_message, gemini_request.user_message)
+    cap = _request_output_token_cap(request_body) or NOTE_GENERATION_LENGTH_TOKEN_CAPS[DEFAULT_NOTE_GENERATION_LENGTH]
+    units = estimate_token_reservation(texts, max_completion_tokens=cap)
+
+    # Settle the failed call and reserve the retry in the same transaction. If
+    # the retry cannot be reserved, the failure is terminal and must not fall
+    # through to a backup provider.
+    _settle_main_generation_terminal(
+        db, document=document, usage=primary_usage, success=False,
+        attempt_id=primary_attempt.id,
+    )
+    db.add(ProviderUsageEvent(
+        id=uuid4(), team_id=document.team_id, owner_user_id=document.owner_user_id,
+        generated_document_id=document.id, transcript_id=document.transcript_id,
+        llm_config_id=config.id, feature_type=ProviderFeatureType.llm_generation,
+        event_type=ProviderUsageEventType.failed, provider_adapter=config.adapter_kind.value,
+        model_name=str(request_body.get("model") or document.model_used), status="failed",
+        prompt_tokens=primary_usage.get("input_tokens") if primary_usage else None,
+        completion_tokens=primary_usage.get("output_tokens") if primary_usage else None,
+        total_tokens=primary_usage.get("total_tokens") if primary_usage else None,
+        error_code=primary_error.code,
+        provider_error_code=_usage_provider_error_code(
+            (primary_error.details or {}).get("provider_error_code"),
+            status=(primary_error.details or {}).get("provider_http_status"),
+        ),
+        provider_http_status=(primary_error.details or {}).get("provider_http_status")
+        if type((primary_error.details or {}).get("provider_http_status")) is int else None,
+    ))
+    now = utcnow()
+    try:
+        with db.begin_nested():
+            retry_attempt = reserve_provider_attempt(
+                db, team_id=document.team_id, owner_user_id=document.owner_user_id,
+                resource=QuotaResource.tokens, attempt_kind=AttemptKind.llm_generation,
+                correlation_id=document.id, attempt_number=2, reserved_units=units,
+                reservation_valid_until=now + timedelta(seconds=GENERATION_RESERVATION_VALIDITY_SECONDS),
+                authorized_at=now, transcript_id=document.transcript_id,
+                generated_document_id=document.id, provider_adapter=adapter_kind.value,
+                provider_model=str(request_body.get("model") or document.model_used),
+            )
+    except AppError as exc:
+        if exc.code not in {"quota_exceeded", "quota_disabled"}:
+            raise
+        document.status = GeneratedDocumentStatus.failed
+        document.error_code = exc.code
+        document.error_message = exc.message[:255]
+        document.completed_at = utcnow()
+        db.add(document)
+        db.commit()
+        _record_generation_usage_event(
+            db, event="llm_generation_failed", document=document, config=config,
+            status=document.status.value,
+        )
+        return _SameModelRetryResult(attempt_id=primary_attempt.id, terminal=True)
+
+    now = utcnow()
+    mark_provider_attempt_submitted(
+        db, attempt_id=retry_attempt.id,
+        deadline_at=now + timedelta(seconds=GENERATION_PROVIDER_DEADLINE_SECONDS), now=now,
+    )
+    document.status = GeneratedDocumentStatus.processing
+    document.completed_at = None
+    db.add(document)
+    db.commit()
+    try:
+        with provider_attempt_execution(db, attempt_id=retry_attempt.id, maximum_seconds=90):
+            text, usage = _invoke_frozen_llm(
+                config=config, adapter_kind=adapter_kind, base_url=base_url,
+                provider_config=provider_config, credential=credential, request_body=request_body,
+            )
+        _validate_generation_provider_output(db, document=document, text=text)
+        return _SameModelRetryResult(attempt_id=retry_attempt.id, text=text, usage=usage)
+    except AppError as exc:
+        return _SameModelRetryResult(
+            attempt_id=retry_attempt.id, text=locals().get("text"),
+            usage=locals().get("usage"), error=exc,
+        )
+    except Exception:
+        _fail_generated_document_after_submit(
+            db, document=document, config=config, submitted_attempt_id=retry_attempt.id,
+        )
+        return _SameModelRetryResult(attempt_id=retry_attempt.id, terminal=True)
 
 
 def _try_backup_generated_document(
@@ -6906,24 +7038,49 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
             )
         _validate_generation_provider_output(db, document=document, text=generated_text)
     except AppError as exc:
-        backup_result = _try_backup_generated_document(
-            db, document=document, primary_config=config, primary_request=llm_request_payload,
-            primary_attempt_id=active_attempt_id, primary_exc=exc,
-            primary_usage=locals().get("usage"),
-            response_json_schema=response_json_schema,
-        )
+        failure_exc = exc
+        failure_usage = locals().get("usage")
+        failure_output = locals().get("generated_text")
+        if preflight_backup is None and active_attempt.backup_of_attempt_id is None:
+            retry_result = _retry_generated_note_after_invalid_json(
+                db, document=document, config=config, adapter_kind=adapter_kind,
+                base_url=base_url, provider_config=dict(document.llm_provider_config_json or {}),
+                credential=runtime_credential, request_body=llm_request_payload,
+                primary_attempt=active_attempt, primary_error=exc, primary_usage=failure_usage,
+            )
+            if retry_result is not None:
+                if retry_result.terminal:
+                    return _current_terminal_generation(db, document_id=document.id)
+                active_attempt_id = retry_result.attempt_id
+                if retry_result.error is None:
+                    generated_text = retry_result.text or ""
+                    usage = retry_result.usage or {}
+                    failure_exc = None
+                else:
+                    failure_exc = retry_result.error
+                    failure_usage = retry_result.usage
+                    failure_output = retry_result.text
+        backup_result = None
+        if failure_exc is not None:
+            provider_failure = tag_provider_failure(failure_exc) if is_normalized_provider_failure(failure_exc) else failure_exc
+            backup_result = _try_backup_generated_document(
+                db, document=document, primary_config=config, primary_request=llm_request_payload,
+                primary_attempt_id=active_attempt_id, primary_exc=provider_failure,
+                primary_usage=failure_usage,
+                response_json_schema=response_json_schema,
+            )
         if backup_result is not None:
             generated_text, usage, config, request_body, active_attempt_id = backup_result
             adapter_kind = LlmAdapterKind(document.llm_adapter_kind)
             base_url = document.llm_base_url or config.base_url
-        else:
+        elif failure_exc is not None:
             current = db.get(GeneratedDocument, document.id)
             if current is not None and current.status in {GeneratedDocumentStatus.failed, GeneratedDocumentStatus.ready}:
                 return current
             return _fail_generated_document_after_submit(
-                db, document=document, config=config, exc=exc, include_provider_http_status=True,
+                db, document=document, config=config, exc=failure_exc, include_provider_http_status=True,
                 submitted_attempt_id=active_attempt_id,
-                usage=locals().get("usage"), output_redacted=locals().get("generated_text"),
+                usage=failure_usage, output_redacted=failure_output,
             )
     except Exception:
         return _fail_generated_document_after_submit(

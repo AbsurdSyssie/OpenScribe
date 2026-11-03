@@ -697,6 +697,17 @@ Reconciled on 19 October 2026 against `97da191926db1da74fdf741e01f4f8490d60f6c8`
 - Not fixed now: repairing this unrelated harness is outside the live startup change.
 - Follow-up: update the source replacement to match the current imports, then rerun `tests/test_vad_inactivity_js.py` and confirm its behavioral assertions execute.
 
+### GENERATION-FAILED-EVENT-MISSING-KNOWN-USAGE — 2026-10-29
+
+- Current status: Open; read-only token-accounting review.
+- Discovery commit: `4c3f8e659635a5340d989f1fafe7daa35dea328b`.
+- Location: `app/services/templates.py::_fail_generated_document_after_submit`.
+- Exact sequence: `_settle_main_generation_terminal(..., usage=usage, ...)` followed by `_record_generation_usage_event(..., event="llm_generation_failed", ...)` without token arguments.
+- Observed problem: when a submitted generation returned usage but later failed validation or processing, quota settlement receives that usage, while the generic failed usage event omits prompt, completion, and total counts. `_record_generation_usage_event` persists only supplied token arguments; it does not recover them from the document or attempt.
+- Likely impact: event-based Usage reporting can undercount known provider usage compared with quota attempt accounting.
+- Not fixed now: this was identified during read-only accounting review; no behavior changes were in scope.
+- Follow-up: add a synthetic regression covering a returned provider usage followed by output-validation failure, and assert the failed event matches the settled attempt metadata.
+
 ### WORKING-NOTE-LOST-SAVE-ACKNOWLEDGMENT — 2026-10-29
 
 - Current status: Resolved for revision-aware Working note clients on 3 November 2026. No particular production incident has been attributed to this gap.

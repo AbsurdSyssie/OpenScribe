@@ -203,7 +203,7 @@ Google SDK identity is configured through standard Google variables rather than 
 
 ## Dependency installation
 
-`requirements.txt` pins the runtime `python-multipart`, `idna`, Authlib, Celery, Kombu, and Redis versions and installs the pinned `en_core_web_sm` 3.8.0 wheel directly. Keep Celery, Kombu, and Redis pins compatible: the Redis transport checks the installed redis-py version at startup. Authlib handles OAuth/OIDC protocol and JOSE validation; do not replace it with custom token parsing. Do not run a separate `spacy download` command after installing requirements. The Docker smoke workflow runs `pip-audit` against `requirements.txt`.
+`requirements.txt` pins the runtime `python-multipart`, `idna`, Authlib, Celery, Kombu, and Redis versions and installs the pinned `en_core_web_sm` 3.8.0 wheel directly. Celery 5.6.3, Kombu 5.7.0, and redis-py 6.4.0 are pinned as a compatible Redis transport stack; keep these pins together and run the focused Redis transport integration check when changing them. Authlib handles OAuth/OIDC protocol and JOSE validation; do not replace it with custom token parsing. Do not run a separate `spacy download` command after installing requirements. The Docker smoke workflow runs `pip-audit` against `requirements.txt`.
 
 ## Persistent Docker runtime
 

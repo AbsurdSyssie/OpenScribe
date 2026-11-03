@@ -50,6 +50,17 @@ def test_runtime_requirements_pin_multipart_idna_and_spacy_model() -> None:
     assert "en_core_web_sm-3.8.0-py3-none-any.whl" in runtime
 
 
+def test_runtime_requirements_pin_compatible_celery_redis_stack() -> None:
+    runtime = Path("requirements.txt").read_text()
+
+    for pin in (
+        "celery[redis]==5.6.3",
+        "kombu[redis]==5.7.0",
+        "redis==6.4.0",
+    ):
+        assert pin in runtime
+
+
 def test_runtime_uvicorn_caps_websocket_message_size_and_queue() -> None:
     entrypoint = Path("docker/entrypoint.sh").read_text()
 
@@ -184,6 +195,118 @@ def test_celery_redis_transport_accepts_installed_redis_py() -> None:
 
     # Exercise Kombu's real compatibility guard without opening a Redis connection.
     assert Channel._get_client(object.__new__(Channel)) is redis.Redis
+
+
+def test_celery_redis_transport_publish_consume_result_and_reconnect(tmp_path) -> None:
+    import shutil
+    import socket
+    import subprocess
+    import time
+
+    import redis
+    from celery import Celery
+    from celery.backends.redis import RedisBackend
+
+    redis_server = shutil.which("redis-server")
+    if redis_server is None:
+        pytest.skip("redis-server is required for the isolated transport integration check")
+
+    # Bind an available loopback port, then give it to this disposable Redis process.
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    process = subprocess.Popen(
+        [
+            redis_server,
+            "--bind", "127.0.0.1",
+            "--port", str(port),
+            "--save", "",
+            "--appendonly", "no",
+            "--dir", str(tmp_path),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    broker_url = f"redis://127.0.0.1:{port}/0"
+    backend_url = f"redis://127.0.0.1:{port}/1"
+    app = None
+    client = None
+    backend = None
+    fresh_backend = None
+
+    try:
+        app = Celery("transport_compatibility_probe", broker=broker_url, backend=backend_url)
+        backend = app.backend
+        client = redis.Redis.from_url(broker_url)
+        queue_name = "openscribe-transport-compatibility-probe"
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                client.ping()
+                break
+            except redis.ConnectionError:
+                if process.poll() is not None or time.monotonic() >= deadline:
+                    raise AssertionError("isolated redis-server did not become ready")
+                time.sleep(0.05)
+
+        assert process.poll() is None, "isolated redis-server exited before transport checks"
+        server_info = client.info("server")
+        assert server_info.get("process_id") == process.pid, (
+            "the temporary Redis port is serving a process other than the owned child"
+        )
+
+        payload = {"task_id": "synthetic-transport-check", "attempt": 1}
+        with app.connection_for_write() as connection:
+            with connection.SimpleQueue(
+                queue_name,
+                queue_opts={"durable": False, "auto_delete": True},
+            ) as simple_queue:
+                simple_queue.put(payload, serializer="json")
+                message = simple_queue.get(block=True, timeout=5)
+                assert message.payload == payload
+                message.ack()
+
+        # Force the result backend to drop its live sockets, then read through a
+        # fresh connection to prove the stored result survives a reconnect.
+        backend.store_result(payload["task_id"], {"accepted": True}, "SUCCESS")
+        backend.client.connection_pool.disconnect()
+        # A new backend instance has an empty metadata cache, so this result is
+        # read from Redis over a fresh connection rather than served from memory.
+        fresh_backend = RedisBackend(app=app, url=backend_url)
+        result = fresh_backend.get_task_meta(payload["task_id"])
+        assert result["status"] == "SUCCESS"
+        assert result["result"] == {"accepted": True}
+
+        # A new broker connection should also be able to publish and consume.
+        second_payload = {"task_id": payload["task_id"], "attempt": 2}
+        with app.connection_for_write() as connection:
+            with connection.SimpleQueue(
+                queue_name,
+                queue_opts={"durable": False, "auto_delete": True},
+            ) as simple_queue:
+                simple_queue.put(second_payload, serializer="json")
+                message = simple_queue.get(block=True, timeout=5)
+                assert message.payload == second_payload
+                message.ack()
+    finally:
+        try:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        finally:
+            try:
+                if client is not None:
+                    client.close()
+            finally:
+                try:
+                    if fresh_backend is not None:
+                        fresh_backend.client.connection_pool.disconnect()
+                finally:
+                    if backend is not None:
+                        backend.client.connection_pool.disconnect()
 
 
 @pytest.mark.parametrize("exiting_child", ["web", "control", "generation", "ingestion", "beat"])

@@ -57,6 +57,12 @@ Do not add tests that call public provider endpoints or the public internet duri
 
 ## Focused commands
 
+When `redis-server` is installed, the Celery/Kombu Redis transport check starts an isolated local Redis process on a temporary port and verifies queue publish/consume, result-backend persistence, and reconnection. It uses synthetic task metadata and does not use the shared application Redis database. Pytest skips this integration check when `redis-server` is unavailable; the compatibility-guard check still runs:
+
+```bash
+pytest -q tests/test_docker_runtime.py -k 'celery_redis_transport'
+```
+
 Authentication, cookies, CSRF, and headers:
 
 ```bash

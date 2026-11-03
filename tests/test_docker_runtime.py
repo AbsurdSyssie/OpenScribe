@@ -178,6 +178,14 @@ def test_celery_prefetch_keeps_one_task_per_slot() -> None:
     assert celery_app.conf.worker_prefetch_multiplier == 1
 
 
+def test_celery_redis_transport_accepts_installed_redis_py() -> None:
+    import redis
+    from kombu.transport.redis import Channel
+
+    # Exercise Kombu's real compatibility guard without opening a Redis connection.
+    assert Channel._get_client(object.__new__(Channel)) is redis.Redis
+
+
 @pytest.mark.parametrize("exiting_child", ["web", "control", "generation", "ingestion", "beat"])
 def test_container_supervises_all_isolated_workers(tmp_path, exiting_child) -> None:
     import os

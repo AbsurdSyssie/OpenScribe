@@ -54,6 +54,16 @@ Reusable/configuration domains include:
 
 Configuration visibility/management never grants owner-content access. Reusable assets must not contain patient/transcript data.
 
+LLM model policy is stored per team/provider root in
+`team_llm_provider_model_policies`, keyed by `llm_config_id`. The persisted
+enabled IDs and writing default are independent of `team_llm_selections`, which
+stores only the team's active writing-provider pointer (legacy model fields are
+kept as a compatibility projection). Empty enabled lists mean no model. New
+accepted work evaluates the current allowance; already accepted work retains
+its encrypted provider/model snapshots. Checker snapshots use the owning user's
+encryption boundary, with a config ID FK as safe lifecycle metadata; terminal
+snapshot pairs are cleared before provider deletion.
+
 The earlier proposed `template_watchers`, `quick_action_watchers`, generic `providers`, `team_provider_credentials`, and generic `team_provider_policies` are not the current schema contract.
 
 ## Sensitivity classes
@@ -237,7 +247,7 @@ Queued work snapshots execution metadata so later config/policy edits do not mut
 
 ### Quotas/attempts
 
-User base limits plus grants/reservations/attempts provide authoritative token/audio accounting. `NULL` base means unlimited; `0` means no base allowance; positive grants can enable a zero-base window. Calendar windows and activation/reset semantics are enforced by current services.
+User base limits plus grants/reservations/attempts provide authoritative token/audio accounting. `NULL` base means unlimited; `0` means no base allowance; positive grants can enable a zero-base window. Calendar windows and activation/reset semantics are enforced by current services. Explicit LLM timeouts and submitted LLM attempts still unresolved at their durable deadline settle with zero units under the `timeout_waived` basis; these attempts contribute no quota or reported token/cost usage, though failure and transport metadata remain for operations. Other unknown submitted failures remain conservative, successful primary/backup/checker attempts settle independently, and STT accounting is unchanged. Historical attempts are retro-waived only where a final timeout transport event or canonical timeout marker proves the outcome; unproven unknowns retain their original settlement.
 
 ### Durable task dispatch
 
@@ -245,7 +255,7 @@ Business row + deterministic task-dispatch outbox creation is transactional. Imm
 
 ### Usage
 
-Usage events/jobs/generated-document metadata provide aggregate reporting without storing content. Reporting telemetry is distinct from quota authority/reset windows.
+Usage events/jobs/generated-document metadata provide aggregate reporting without storing content. Reporting telemetry is distinct from quota authority/reset windows. LLM timeout events remain visible as failures and transport-health observations but carry no reportable token or estimated-cost values. Historical timeout usage is removed only when an event itself has definitive timeout evidence; source-level timeout state alone does not establish which primary, backup, or checker event timed out.
 
 ### Security audit
 

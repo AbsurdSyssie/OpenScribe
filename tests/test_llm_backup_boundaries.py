@@ -13,6 +13,7 @@ from app.models import (
     TemplateScope, Transcript, TranscriptIngestionMode, TranscriptStatus, utcnow,
 )
 from app.services import templates
+from app.services.llm_checker_selection import read_hallucination_check_selection
 from app.services.llm_backup_policy import tag_provider_failure
 from app.services.templates import (
     generated_document_text, process_generated_document,
@@ -68,15 +69,26 @@ def _attempts(db, document_id):
     )))
 
 
+def test_new_generation_freezes_explicit_unconfigured_checker_choice(db_session, backup_job):
+    document = backup_job.document
+
+    frozen = read_hallucination_check_selection(db_session, source=document)
+
+    assert frozen is not None
+    assert frozen.status == "not_configured"
+    assert document.hallucination_check_selection_snapshot_encrypted
+    assert document.hallucination_check_selection_config_id is None
+
+
 @pytest.mark.parametrize("primary_result", ["success", "hard-quota", "unknown-quota"])
-def test_primary_success_and_provider_quota_never_dispatch_backup(
+def test_primary_success_skips_backup_but_provider_quota_dispatches_it(
     db_session, backup_job, monkeypatch, primary_result,
 ):
     calls = []
 
     def invoke(**kwargs):
         calls.append(kwargs["config"].id)
-        if primary_result != "success":
+        if primary_result != "success" and kwargs["config"].id == backup_job.primary.id:
             details = {"provider_http_status": 429}
             if primary_result == "hard-quota":
                 details.update(provider_error_code="quota_exceeded",
@@ -87,12 +99,14 @@ def test_primary_success_and_provider_quota_never_dispatch_backup(
     monkeypatch.setattr(templates, "_invoke_frozen_llm", invoke)
     result = process_generated_document(db_session, document_id=backup_job.document.id)
 
-    assert calls == [backup_job.primary.id]
-    assert result.status is (GeneratedDocumentStatus.ready if primary_result == "success" else GeneratedDocumentStatus.failed)
+    assert calls == ([backup_job.primary.id] if primary_result == "success" else [backup_job.primary.id, backup_job.backup.id])
+    assert result.status is GeneratedDocumentStatus.ready
     attempts = _attempts(db_session, result.id)
-    assert len(attempts) == 1
+    assert len(attempts) == (1 if primary_result == "success" else 2)
     assert attempts[0].status is AttemptStatus.settled
     assert attempts[0].backup_of_attempt_id is None
+    if primary_result != "success":
+        assert attempts[1].backup_of_attempt_id == attempts[0].id
 
 
 @pytest.mark.parametrize("backup_valid", [True, False])
@@ -107,30 +121,35 @@ def test_invalid_outputs_account_each_response_and_never_replay_delivery(
         requests.append(kwargs["request_body"]["messages"])
         if len(calls) == 1:
             return "not-json", _usage(5)
-        return (VALID_NOTE if backup_valid else "also-not-json"), _usage(12)
+        if len(calls) == 2:
+            return "also-not-json", _usage(7)
+        return (VALID_NOTE if backup_valid else "still-not-json"), _usage(12)
 
     monkeypatch.setattr(templates, "_invoke_frozen_llm", invoke)
     result = process_generated_document(db_session, document_id=backup_job.document.id)
 
-    assert calls == [backup_job.primary.id, backup_job.backup.id]
-    assert requests[0] == requests[1]
+    assert calls == [backup_job.primary.id, backup_job.primary.id, backup_job.backup.id]
+    assert requests[0] == requests[1] == requests[2]
     assert result.status is (GeneratedDocumentStatus.ready if backup_valid else GeneratedDocumentStatus.failed)
     attempts = _attempts(db_session, result.id)
-    assert len(attempts) == 2
-    primary = next(item for item in attempts if item.backup_of_attempt_id is None)
+    assert len(attempts) == 3
+    primary = next(item for item in attempts if item.backup_of_attempt_id is None and item.attempt_number == 1)
+    retry = next(item for item in attempts if item.backup_of_attempt_id is None and item.attempt_number == 2)
     child = next(item for item in attempts if item.backup_of_attempt_id is not None)
-    assert child.backup_of_attempt_id == primary.id
-    assert primary.status is child.status is AttemptStatus.settled
+    assert child.backup_of_attempt_id == retry.id
+    assert primary.status is retry.status is child.status is AttemptStatus.settled
     assert primary.outcome is AttemptOutcome.failed
+    assert retry.outcome is AttemptOutcome.failed
     assert primary.settled_units == 5
+    assert retry.settled_units == 7
     assert child.settled_units == 12
     assert primary.settlement_basis is child.settlement_basis is ProviderSettlementBasis.reported
     assert child.outcome is (AttemptOutcome.succeeded if backup_valid else AttemptOutcome.failed)
 
     repeated = process_generated_document(db_session, document_id=result.id)
     assert repeated.status is result.status
-    assert calls == [backup_job.primary.id, backup_job.backup.id]
-    assert len(_attempts(db_session, result.id)) == 2
+    assert calls == [backup_job.primary.id, backup_job.primary.id, backup_job.backup.id]
+    assert len(_attempts(db_session, result.id)) == 3
 
 
 def test_backup_quota_exhaustion_keeps_unknown_primary_accounted_without_second_dispatch(
@@ -188,7 +207,7 @@ def test_timeout_past_primary_deadline_can_dispatch_one_backup_on_live_root(
     child = next(item for item in attempts if item.backup_of_attempt_id is not None)
     assert primary.status is child.status is AttemptStatus.settled
     assert primary.outcome is AttemptOutcome.unknown
-    assert primary.settled_units == primary.reserved_units
+    assert primary.settled_units == 0
     assert child.authorized_at > primary.deadline_at
     assert child.outcome is AttemptOutcome.succeeded
 

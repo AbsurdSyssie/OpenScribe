@@ -54,6 +54,31 @@ The system-administrator wizard can:
 6. select/confirm a model and finalize the config;
 7. run saved-provider reinspection or a bundled-audio diagnostic later.
 
+Ready configs also offer **Edit settings** with **Connection** and **Models**
+tabs. Name and availability changes use the scoped details route without
+inspecting the provider or changing its credential. A connection change uses
+the existing revision flow and saves directly when the saved model remains in
+the inspected catalog; if inspection omits it, choose a replacement or
+explicitly choose Provider default before saving. Models sets the model and
+language separately for consultation transcription and post-consultation
+dictation. Refreshing models is an explicit action. Connection has one password
+API-key field; a saved key is indicated without being returned to the browser,
+and a pasted key replaces it on Save. **Test connection** checks a fresh draft
+without promoting it. Save reuses an unchanged tested draft; without a prior
+test, Save checks the connection and can complete the revision automatically.
+A changed endpoint or key durably discards the old draft before Save.
+Only one pending revision may exist for a saved provider. A concurrent attempt
+returns a safe `409 conflict`; when the pending draft still exists, the response
+includes its ID so the admin can resume or discard it. If it has already been
+removed, reload the provider and retry. OpenScribe does not discard drafts
+automatically. Custom
+REST/OpenAPI uses no authentication when no key is configured. Removing an
+existing bearer key requires the explicit **Remove
+saved key** action; a blank field cannot silently remove it. If inspection
+falls back to built-in models or cannot verify the credential, Test reports an
+inconclusive result with bounded guidance; the existing manual-model save path
+remains available.
+
 ## Provider presets and adapters
 
 The UI exposes provider-oriented presets while runtime stores an explicit adapter contract.

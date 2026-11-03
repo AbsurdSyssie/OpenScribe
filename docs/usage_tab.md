@@ -14,9 +14,11 @@ Usage has a dedicated system-administrator route in the `/admin` shell:
 - selected-team Quotas view: `/admin/usage?team_id=<team_uuid>&view=quotas`;
 - per-user aggregate rows appear only inside a validated selected-team scope.
 
-The sidebar Usage destination opens this standalone surface without the
-selected-team workspace header or its primary tabs. Use the top team picker to
-change scope; its Usage links preserve the current view and reporting range
+The sidebar Usage destination opens this standalone surface. It uses the same
+summary bar as Members, with Usage, Team usage, User usage or Quotas as the
+area title. With a selected team, supporting text identifies the team; its
+Team, Users and Quotas tabs switch the reporting view. Use the top team picker
+to change scope; its Usage links preserve the current view and reporting range
 while clearing member and editor context. **All teams**
 returns to the global Team view. With a team selected, **Team** shows charts and
 operational reports, **Users** shows that team's aggregate user table, and
@@ -28,6 +30,44 @@ its navigation links retain the last report range. The Users view remains
 constrained to users belonging to the validated team. With no team selected,
 Usage stays in the global Team view;
 Users and Quotas are not available globally and no per-user rows are rendered.
+
+For a selected team, Quotas begins with that team's finite daily/monthly token
+and transcription-audio defaults for newly created members, followed by a
+searchable table of eligible members. Search filters the table by member name
+or email and is retained while opening or collapsing a member's usage or quota
+editor. Each row offers a fixed-width **Usage** toggle, which expands
+daily/monthly LLM and STT usage, reset dates, allowances, remaining capacity
+and lifetime accounted usage below that member. The label stays **Usage**;
+its chevron and accessible name indicate whether the member's details are open.
+**Edit quotas** opens a focused limits modal. The
+expanded usage view links to the existing member detail page for allowance,
+reset and history actions. The modal returns to the member table after a save;
+validation errors keep it open with the entered values. Older direct member
+detail URLs continue to show the full member overview and its legacy editor.
+Changing a team default affects new members
+only; it does not alter existing members' limits. The team retention control
+is in the sidebar's Security & Data area.
+
+Member limits use a compact period, amount and unit row with an adjacent
+**Unlimited** checkbox. Checking it disables the amount while preserving its
+draft value; clearing it restores that value. Team defaults and temporary
+allowance amounts remain finite-only.
+
+The member list has a Daily/Monthly period selector (Monthly by default) shared
+by its LLM token and STT audio columns. Each column shows settled usage against
+the effective limit, including active allowances. The percentage and progress
+bar show committed usage: settled units plus accepted work still in progress;
+pending units are also identified separately. Unlimited and disabled windows
+are labelled without a percentage. Over-limit committed usage is shown in full
+while the progress bar caps at 100%. All windows use the current UTC calendar
+period and established reset/activation rules.
+
+With JavaScript enabled, Daily/Monthly and usage expansion update in place
+without reloading the page or replacing the team-default form. Collapse is
+local; expansion requests only the selected member's authorized usage row.
+Search, focus and scroll position are preserved. Failed requests retain the
+current view and offer retry guidance. Existing GET navigation remains the
+fallback when JavaScript is unavailable.
 
 The view defaults to `team`. An unknown view also resolves to Team. Invalid or
 unknown team identifiers resolve to the global Team view; requesting Users or
@@ -73,10 +113,15 @@ reset boundaries, grants, limit changes, or month rollovers. A row contributes
 when settlement is committed. Repeated settlement of the same attempt does
 not add a second row to the total.
 
-For tokens, settlement uses the provider-reported total when available. If
-usage is unknown, it accounts the attempt's full reservation, which is a
-conservative estimate based on the input allowance and output cap and may not
-match tokens actually billed. For submitted audio-file and chunk attempts,
+For tokens, settlement uses the provider-reported total when available. An
+explicit LLM timeout or expiry of a submitted LLM attempt's durable deadline
+settles that attempt at zero token units. Its failure remains visible in
+operational telemetry, while its reported token and estimated-cost values do
+not contribute to Usage totals. If usage is unknown for another submitted LLM
+failure, the attempt's full reservation is counted as a conservative estimate
+based on the input allowance and output cap and may not match tokens actually
+billed. Successful primary, backup, and checker attempts each contribute their
+own reported usage. For submitted audio-file and chunk attempts,
 settlement uses the measured submitted audio duration rounded up to whole
 seconds, including when the provider attempt fails after dispatch. Live-stream
 audio uses authorized PCM samples divided by 16,000 and rounded up to whole
@@ -84,17 +129,17 @@ seconds; if the final stream usage is uncertain, it uses the full reserved
 audio units instead.
 
 Only settled attempts contribute. Reserved work that has not been submitted is
-excluded and is cancelled when its reservation expires. Submitted work remains
-unresolved until it settles or its deadline passes; after the deadline,
-reconciliation settles it conservatively using the full token reservation,
-the measured audio duration, or the full live-stream reservation as applicable.
-Therefore a submitted attempt can be included after reconciliation even when
-the operation did not complete successfully. A failed attempt after
-submission still contributes according to its settlement. Missing credentials
-or other preparation failures before provider dispatch do not add usage;
-pre-dispatch reservations are cancelled. Provider fallback or retry work can
-create another attempt and add its own settled units. This describes distinct
-provider attempts, not individual network retry counts.
+excluded and is cancelled when its reservation expires. Submitted LLM work
+still unresolved at its durable deadline settles at zero; submitted STT work
+keeps its existing conservative/measured settlement. A submitted LLM attempt
+that fails with unknown usage before its deadline remains conservatively
+charged, including when deletion interrupts it before that deadline. A timeout
+does not count toward daily, monthly, lifetime, or reported token usage, even
+when provider-reported token metadata is retained on the attempt for diagnosis.
+Missing credentials or other preparation failures before provider dispatch do
+not add usage; pre-dispatch reservations are cancelled. Provider fallback or
+retry work can create another attempt and add its own settled units. This
+describes distinct provider attempts, not individual network retry counts.
 
 The displayed audio hours are the total settled audio seconds divided by 3,600
 and shown to two decimal places alongside the exact duration. Small totals can

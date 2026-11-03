@@ -44,7 +44,10 @@ from app.services.consultation_splits import (
     read_split_execution_json,
     _validate_split_execution_for_reuse,
 )
-from app.services.llm import resolve_user_llm
+from app.services.llm_generation_provider import (
+    require_frozen_backup_matches,
+    resolve_new_writing_provider,
+)
 from app.services.llm_adapters.runtime import build_provider_snapshot
 from app.services.llm_adapters.types import LlmProviderSnapshot
 from app.services.llm_backup import freeze_backup_selection
@@ -330,10 +333,12 @@ def _queue_or_reuse_prepared_split_analysis(
             return _retry_failed_prepared_split_analysis(db, actor, analysis=cached)
         return _PreparedSplitAnalysisQueueDecision(_reuse_result(db, actor=actor, analysis=cached))
 
-    _selection, config, resolved_model, _preference = resolve_user_llm(db, actor)
-    if not isinstance(resolved_model, str) or not resolved_model.strip():
-        raise AppError(422, "consultation_split_llm_model_unavailable", "No LLM model is available for consultation splitting")
-    resolved_model = resolved_model.strip()
+    writing_provider = resolve_new_writing_provider(
+        db, actor,
+        unavailable_code="consultation_split_llm_model_unavailable",
+        unavailable_message="No LLM model is available for consultation splitting",
+    )
+    config, resolved_model = writing_provider.config, writing_provider.model_name
     provider_snapshot = build_provider_snapshot(config=config, model=resolved_model).to_dict()
     request = prepare_split_analysis_request(
         owner_user_id=actor.id,
@@ -359,6 +364,10 @@ def _queue_or_reuse_prepared_split_analysis(
             freeze_backup_selection(
                 db, source=analysis, owner_user_id=actor.id, team_id=state.team_id,
             )
+            if writing_provider.uses_backup:
+                require_frozen_backup_matches(
+                    db, source=analysis, config_id=config.id, model_name=resolved_model,
+                )
             execution, _attempt, dispatch = queue_split_execution(
                 db,
                 actor,

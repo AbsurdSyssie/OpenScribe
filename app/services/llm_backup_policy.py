@@ -19,7 +19,10 @@ PROVIDER_FAILURE = "provider_failure"
 OUTPUT_VALIDATION_FAILURE = "output_validation_failure"
 TEMPORARY_CAPACITY_EXHAUSTED = "temporary_capacity_exhausted"
 PROVIDER_QUOTA_BLOCKED = "provider_quota_blocked"
-_ELIGIBLE_CLASSES = frozenset({PROVIDER_FAILURE, OUTPUT_VALIDATION_FAILURE, TEMPORARY_CAPACITY_EXHAUSTED})
+_ELIGIBLE_CLASSES = frozenset({
+    PROVIDER_FAILURE, OUTPUT_VALIDATION_FAILURE, TEMPORARY_CAPACITY_EXHAUSTED,
+    PROVIDER_QUOTA_BLOCKED,
+})
 _PROVIDER_FAILURE_CODES = frozenset({
     "llm_invalid_credential", "llm_provider_timeout", "llm_provider_unreachable",
     "llm_provider_rate_limited", "llm_generation_failed", "llm_generation_truncated",
@@ -72,7 +75,11 @@ def can_failover(error: AppError) -> bool:
     }:
         return False
     if (error.details or {}).get("provider_http_status") == 429:
-        return failure_class == TEMPORARY_CAPACITY_EXHAUSTED and error.code in _PROVIDER_FAILURE_CODES
+        # This is a provider-side rejection. Local application quota errors
+        # never carry provider_http_status and remain excluded above.
+        return failure_class in {
+            PROVIDER_FAILURE, TEMPORARY_CAPACITY_EXHAUSTED, PROVIDER_QUOTA_BLOCKED,
+        } and error.code in _PROVIDER_FAILURE_CODES
     if failure_class == OUTPUT_VALIDATION_FAILURE:
         return error.code in _OUTPUT_VALIDATION_CODES
     if failure_class == PROVIDER_FAILURE:

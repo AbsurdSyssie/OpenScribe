@@ -56,6 +56,12 @@ def _source(source: object) -> tuple[str, UUID, UUID, UUID]:
     return source.__tablename__, source.id, source.owner_user_id, source.team_id
 
 
+def _backup_model_allowed(db: Session, *, config: TeamLlmConfig, model_name: str) -> bool:
+    """Validate new backup freezes against the saved provider allowance."""
+    from app.services.llm_model_policy import model_allowed_for_provider
+    return model_allowed_for_provider(db, config=config, model_name=model_name)
+
+
 def freeze_backup_selection(
     db: Session, *, source: object, owner_user_id: UUID, team_id: UUID,
 ) -> None:
@@ -77,7 +83,7 @@ def freeze_backup_selection(
         .execution_options(populate_existing=True).with_for_update())
     if (config is None or config.team_id != team_id or config.revision_of_config_id is not None
         or not config.is_active or config.setup_status != LlmConfigSetupStatus.ready
-        or not choice.model_name or choice.model_name not in (config.available_models_json or [])):
+        or not choice.model_name or not _backup_model_allowed(db, config=config, model_name=choice.model_name)):
         return
     snapshot = build_provider_snapshot(config=config, model=choice.model_name).to_dict()
     source.backup_provider_snapshot_encrypted = encrypt_json_for_existing_owner(

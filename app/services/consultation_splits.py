@@ -482,6 +482,8 @@ def create_split_batch(
         field="provider_snapshot_encrypted", record_id=batch.id, plaintext=_require_json(provider_snapshot, field="provider snapshot")) or ""
     batch.note_options_snapshot_encrypted = encrypt_json_for_owner(db, owner_user_id=batch.owner_user_id, table=_TABLE_BATCH,
         field="note_options_snapshot_encrypted", record_id=batch.id, plaintext=_require_json(note_options_snapshot, field="note options snapshot")) or ""
+    from app.services.llm_checker_selection import freeze_hallucination_check_selection
+    freeze_hallucination_check_selection(db, source=batch, owner_user_id=batch.owner_user_id)
     db.add(batch)
     db.flush()
     return batch

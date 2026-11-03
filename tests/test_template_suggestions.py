@@ -7,7 +7,8 @@ from sqlalchemy import select
 
 from app.errors import AppError
 from app.models import (
-    AttemptStatus, LlmAdapterKind, ProviderAttempt, TaskDispatchOutbox, TemplateSuggestionJob,
+    AttemptOutcome, AttemptStatus, LlmAdapterKind, ProviderAttempt, ProviderSettlementBasis,
+    TaskDispatchOutbox, TemplateSuggestionJob,
     TemplateSuggestionStatus, Transcript, TranscriptIngestionMode, TranscriptStatus, UserAppPreference,
     transcript_expiry, utcnow,
 )
@@ -77,7 +78,7 @@ def _templates(make_template, user, count=2):
 def test_below_threshold_does_not_claim_or_resolve_provider(db_session, make_user, monkeypatch):
     user = _enabled_user(make_user, email="suggest-short@example.com")
     transcript = _transcript(db_session, user, "x" * 1199)
-    monkeypatch.setattr("app.services.template_suggestions.resolve_user_llm", lambda *_: pytest.fail("provider resolved"))
+    monkeypatch.setattr("app.services.template_suggestions.resolve_new_writing_provider", lambda *_: pytest.fail("provider resolved"))
 
     assert queue_template_suggestion(db_session, user, transcript_id=transcript.id) is None
     assert db_session.scalar(select(TemplateSuggestionJob)) is None
@@ -94,7 +95,7 @@ def test_disabled_template_suggestions_do_not_create_job_attempt_or_outbox(
     transcript = _transcript(db_session, user, "x" * 1300)
     _templates(make_template, user)
     make_user_app_preference(user=user, preferences_json={"template_suggestions_enabled": False})
-    monkeypatch.setattr("app.services.template_suggestions.resolve_user_llm", lambda *_: pytest.fail("provider resolved"))
+    monkeypatch.setattr("app.services.template_suggestions.resolve_new_writing_provider", lambda *_: pytest.fail("provider resolved"))
 
     login = client.post("/api/v1/auth/login", json={"email": user.email, "password": "password-1"})
     assert login.status_code == 200
@@ -171,8 +172,10 @@ def test_template_suggestion_reserves_actual_adapter_output_cap(
         model_name="gemini-2.5-flash" if adapter_kind is LlmAdapterKind.gemini_enterprise else "gpt-4o-mini",
     )
     monkeypatch.setattr(
-        "app.services.template_suggestions.resolve_user_llm",
-        lambda *_args, **_kwargs: (None, config, config.model_name, None),
+        "app.services.template_suggestions.resolve_new_writing_provider",
+        lambda *_args, **_kwargs: type("WritingProviderStub", (), {
+            "config": config, "model_name": config.model_name, "uses_backup": False,
+        })(),
     )
     monkeypatch.setattr("app.services.template_suggestions.try_publish_task_dispatch_safely", lambda *_: None)
 
@@ -234,7 +237,7 @@ def test_too_few_candidates_is_durable_completed_null_without_dispatch(
     user = _enabled_user(make_user, email="suggest-one@example.com")
     transcript = _transcript(db_session, user, "x" * 1200)
     make_template(owner=user, actor=user, name="Only template")
-    monkeypatch.setattr("app.services.template_suggestions.resolve_user_llm", lambda *_: pytest.fail("provider resolved"))
+    monkeypatch.setattr("app.services.template_suggestions.resolve_new_writing_provider", lambda *_: pytest.fail("provider resolved"))
 
     job = queue_template_suggestion(db_session, user, transcript_id=transcript.id)
     assert job.status is TemplateSuggestionStatus.completed
@@ -562,6 +565,31 @@ def test_provider_failure_is_generic_and_suppressed(
     assert failed.status is TemplateSuggestionStatus.failed
     assert failed.error_code == "template_suggestion_failed"
     assert "sensitive" not in failed.error_code
+
+
+def test_provider_timeout_waives_suggestion_tokens(db_session, make_user, make_template,
+        make_llm_config, make_llm_selection, monkeypatch):
+    user = _configured_user(make_user, make_llm_config, make_llm_selection)
+    transcript = _transcript(db_session, user, "x" * 1300)
+    _templates(make_template, user)
+    monkeypatch.setattr("app.services.template_suggestions.try_publish_task_dispatch_safely", lambda *_: None)
+    job = queue_template_suggestion(db_session, user, transcript_id=transcript.id)
+    monkeypatch.setattr("app.services.template_suggestions.redact_transient_text", lambda *_args, **_kwargs: {"redacted_text": "safe", "phi_index": []})
+    monkeypatch.setattr("app.services.template_suggestions._apply_manual_pii_redaction", lambda *_args, **_kwargs: ("safe", "", []))
+    monkeypatch.setattr("app.services.template_suggestions._resolve_generation_credential", lambda *_: "token")
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", lambda **_: (_ for _ in ()).throw(
+        AppError(504, "llm_provider_timeout", "Synthetic timeout body")
+    ))
+
+    failed = process_template_suggestion(db_session, job_id=job.id)
+    attempt = db_session.scalar(select(ProviderAttempt).where(
+        ProviderAttempt.correlation_id == job.id,
+    ))
+    assert failed.status is TemplateSuggestionStatus.failed
+    assert attempt is not None
+    assert (attempt.outcome, attempt.settlement_basis, attempt.settled_units, attempt.error_code) == (
+        AttemptOutcome.unknown, ProviderSettlementBasis.timeout_waived, 0, "llm_provider_timeout",
+    )
 
 
 def test_suggestion_lifecycle_logs_transitions_without_content(

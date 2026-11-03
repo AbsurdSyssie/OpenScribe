@@ -15,6 +15,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
+from app.services.quotas import provider_attempt_timeout_waiver_applies
 
 from app.models import (
     AttemptOutcome,
@@ -22,6 +23,9 @@ from app.models import (
     AttemptStatus,
     GeneratedDocument,
     GeneratedDocumentStatus,
+    ProviderFeatureType,
+    ProviderUsageEvent,
+    ProviderUsageEventType,
     ConsultationSplitAnalysis,
     ConsultationSplitAnalysisStatus,
     ConsultationSplitBatch,
@@ -61,6 +65,7 @@ TASK_DISPATCH_FAILED = "task_dispatch_failed"
 class AttemptTerminalization:
     cancelled: int = 0
     settled_unknown: int = 0
+    settled_reported: int = 0
 
 
 def _utc(now: datetime | None) -> datetime:
@@ -70,8 +75,108 @@ def _utc(now: datetime | None) -> datetime:
     return now.astimezone(UTC)
 
 
-def _terminalize_locked_attempts(attempts: list[ProviderAttempt], now: datetime) -> AttemptTerminalization:
-    cancelled = settled_unknown = 0
+def _validated_main_checkpoint(
+    db: Session, attempt: ProviderAttempt, now: datetime,
+) -> tuple[bool, int | None, int | None, int | None]:
+    """Return owner-safe metadata for a live validated draft tied to this exact attempt."""
+    if (
+        attempt.resource is not QuotaResource.tokens
+        or attempt.attempt_kind is not AttemptKind.llm_generation
+        or attempt.generated_document_id is None
+        or attempt.owner_user_id is None
+        or attempt.transcript_id is None
+    ):
+        return False, None, None, None
+    document = db.get(GeneratedDocument, attempt.generated_document_id)
+    if (
+        document is None
+        or document.status not in {GeneratedDocumentStatus.processing, GeneratedDocumentStatus.ready}
+        or document.validated_draft_at is None
+        or document.document_mode is not TemplateMode.structured
+        or not document.original_output_text_encrypted
+        or not document.edited_output_text_encrypted
+        or not document.sections
+        or not all(section.original_text_encrypted and section.edited_text_encrypted for section in document.sections)
+        or document.owner_user_id != attempt.owner_user_id
+        or document.transcript_id != attempt.transcript_id
+    ):
+        return False, None, None, None
+    root = db.get(Transcript, attempt.transcript_id)
+    if root is None or root.owner_user_id != attempt.owner_user_id or root.retention_expires_at <= now:
+        return False, None, None, None
+
+    primary_id = attempt.backup_of_attempt_id or attempt.id
+    primary = db.get(ProviderAttempt, primary_id)
+    if (
+        primary is None
+        or primary.attempt_kind is not AttemptKind.llm_generation
+        or primary.generated_document_id != document.id
+        or primary.correlation_id != document.id
+    ):
+        return False, None, None, None
+    latest_primary = db.scalar(
+        select(ProviderAttempt).where(
+            ProviderAttempt.correlation_id == document.id,
+            ProviderAttempt.attempt_kind == AttemptKind.llm_generation,
+            ProviderAttempt.backup_of_attempt_id.is_(None),
+        ).order_by(ProviderAttempt.attempt_number.desc()).limit(1)
+    )
+    if latest_primary is None or latest_primary.id != primary.id:
+        return False, None, None, None
+    backup = db.scalar(select(ProviderAttempt).where(ProviderAttempt.backup_of_attempt_id == primary.id))
+    effective = backup or primary
+    if (
+        attempt.id != effective.id
+        or effective.provider_model is None
+        or effective.provider_adapter is None
+        or document.model_used != effective.provider_model
+        or document.llm_adapter_kind != effective.provider_adapter
+    ):
+        return False, None, None, None
+    return True, document.input_token_count, document.output_token_count, document.total_token_count
+
+
+def _record_checkpoint_completion_event(
+    db: Session, attempt: ProviderAttempt, now: datetime,
+) -> None:
+    document = db.get(GeneratedDocument, attempt.generated_document_id)
+    if document is None:
+        return
+    existing = db.scalar(
+        select(ProviderUsageEvent.id).where(
+            ProviderUsageEvent.generated_document_id == document.id,
+            ProviderUsageEvent.feature_type == ProviderFeatureType.llm_generation,
+            ProviderUsageEvent.event_type == ProviderUsageEventType.completed,
+            ProviderUsageEvent.status == GeneratedDocumentStatus.ready.value,
+        ).limit(1)
+    )
+    if existing is not None:
+        return
+    db.add(ProviderUsageEvent(
+        team_id=attempt.team_id,
+        owner_user_id=attempt.owner_user_id,
+        generated_document_id=document.id,
+        transcript_id=document.transcript_id,
+        llm_config_id=(document.backup_llm_config_id if attempt.backup_of_attempt_id is not None else document.llm_config_id),
+        feature_type=ProviderFeatureType.llm_generation,
+        event_type=ProviderUsageEventType.completed,
+        provider_adapter=attempt.provider_adapter,
+        model_name=attempt.provider_model,
+        status=GeneratedDocumentStatus.ready.value,
+        prompt_tokens=document.input_token_count,
+        completion_tokens=document.output_token_count,
+        total_tokens=document.total_token_count,
+        estimated_cost_usd=document.estimated_cost_usd,
+        duration_ms=document.duration_ms,
+        provider_duration_ms=document.provider_duration_ms,
+        created_at=now,
+    ))
+
+
+def _terminalize_locked_attempts(
+    db: Session, attempts: list[ProviderAttempt], now: datetime,
+) -> AttemptTerminalization:
+    cancelled = settled_unknown = settled_reported = 0
     for attempt in attempts:
         if attempt.status is AttemptStatus.reserved:
             attempt.status = AttemptStatus.cancelled
@@ -79,23 +184,52 @@ def _terminalize_locked_attempts(attempts: list[ProviderAttempt], now: datetime)
             attempt.cancelled_at = now
             cancelled += 1
         elif attempt.status is AttemptStatus.submitted:
+            checkpointed, input_tokens, output_tokens, total_tokens = _validated_main_checkpoint(db, attempt, now)
+            timeout_waived = (
+                attempt.resource is QuotaResource.tokens
+                and not checkpointed
+                and provider_attempt_timeout_waiver_applies(attempt, now=now)
+            )
             attempt.status = AttemptStatus.settled
-            attempt.outcome = AttemptOutcome.unknown
             attempt.settled_at = now
             if attempt.resource is QuotaResource.tokens:
-                attempt.settlement_basis = ProviderSettlementBasis.conservative_unknown
-                attempt.settled_units = attempt.reserved_units
+                if checkpointed and total_tokens is not None:
+                    attempt.outcome = AttemptOutcome.succeeded
+                    attempt.settlement_basis = ProviderSettlementBasis.reported
+                    attempt.settled_units = total_tokens
+                    attempt.reported_input_tokens = input_tokens
+                    attempt.reported_output_tokens = output_tokens
+                    attempt.reported_total_tokens = total_tokens
+                    _record_checkpoint_completion_event(db, attempt, now)
+                    settled_reported += 1
+                elif timeout_waived:
+                    attempt.outcome = AttemptOutcome.unknown
+                    attempt.settlement_basis = ProviderSettlementBasis.timeout_waived
+                    attempt.settled_units = 0
+                    if attempt.error_code is None:
+                        attempt.error_code = "llm_provider_timeout"
+                    settled_unknown += 1
+                else:
+                    attempt.outcome = AttemptOutcome.unknown
+                    attempt.settlement_basis = ProviderSettlementBasis.conservative_unknown
+                    attempt.settled_units = attempt.reserved_units
+                    if checkpointed:
+                        _record_checkpoint_completion_event(db, attempt, now)
+                    settled_unknown += 1
             elif attempt.attempt_kind is AttemptKind.stt_deepgram_live_stream:
+                attempt.outcome = AttemptOutcome.unknown
                 attempt.settlement_basis = ProviderSettlementBasis.stream_authorized
                 attempt.settled_units = attempt.reserved_units
+                settled_unknown += 1
             else:
                 # Schema/reservation validation requires this server measurement.
                 if attempt.measured_audio_seconds is None:
                     raise RuntimeError("submitted audio attempt is missing measured_audio_seconds")
+                attempt.outcome = AttemptOutcome.unknown
                 attempt.settlement_basis = ProviderSettlementBasis.measured
                 attempt.settled_units = ceil(Decimal(str(attempt.measured_audio_seconds)))
-            settled_unknown += 1
-    return AttemptTerminalization(cancelled, settled_unknown)
+                settled_unknown += 1
+    return AttemptTerminalization(cancelled, settled_unknown, settled_reported)
 
 
 def _lock_attempts(db: Session, where) -> list[ProviderAttempt]:
@@ -119,7 +253,7 @@ def terminalize_attempts_for_transcripts(
     if owner_ids:
         db.scalars(select(User).where(User.id.in_(owner_ids)).order_by(User.id).with_for_update()).all()
     db.scalars(select(Transcript).where(Transcript.id.in_(ids)).order_by(Transcript.id).with_for_update()).all()
-    result = _terminalize_locked_attempts(_lock_attempts(db, ProviderAttempt.transcript_id.in_(ids)), now)
+    result = _terminalize_locked_attempts(db, _lock_attempts(db, ProviderAttempt.transcript_id.in_(ids)), now)
     db.flush()
     return result
 
@@ -128,7 +262,7 @@ def terminalize_attempts_for_owner(db: Session, owner_user_id: UUID, now: dateti
     """Terminalize active owner attempts before owner FK is nulled. No commit."""
     now = _utc(now)
     db.scalar(select(User).where(User.id == owner_user_id).with_for_update())
-    result = _terminalize_locked_attempts(_lock_attempts(db, ProviderAttempt.owner_user_id == owner_user_id), now)
+    result = _terminalize_locked_attempts(db, _lock_attempts(db, ProviderAttempt.owner_user_id == owner_user_id), now)
     db.flush()
     return result
 
@@ -145,6 +279,7 @@ def terminalize_attempts_for_generated_document(
     db.scalar(select(Transcript).where(Transcript.id == identity.transcript_id).with_for_update())
     db.scalar(select(GeneratedDocument).where(GeneratedDocument.id == document_id).with_for_update())
     result = _terminalize_locked_attempts(
+        db,
         _lock_attempts(db, ProviderAttempt.generated_document_id == document_id), now
     )
     db.flush()
@@ -490,12 +625,12 @@ def process_quota_lifecycle(db: Session, batch_size: int = 100, now: datetime | 
         ).order_by(ProviderAttempt.reservation_valid_until, ProviderAttempt.deadline_at, ProviderAttempt.id)
         .limit(batch_size).with_for_update(skip_locked=True)
     ).all()
-    terminal = _terminalize_locked_attempts(expired, now)
+    terminal = _terminalize_locked_attempts(db, expired, now)
     # Source reconciliation may lock an execution with populate_existing=True.
     # Persist the terminal attempt state first so that refresh cannot restore a
     # reservation (or submitted attempt) and discard this transaction's update.
     db.flush()
-    changed = terminal.cancelled + terminal.settled_unknown + _reconcile_sources(db, expired, now)
+    changed = terminal.cancelled + terminal.settled_unknown + terminal.settled_reported + _reconcile_sources(db, expired, now)
     remaining = batch_size - len(expired)
     if remaining:
         failed_documents = db.scalars(
@@ -598,7 +733,7 @@ def process_quota_lifecycle(db: Session, batch_size: int = 100, now: datetime | 
                     db.scalar(select(Transcript).where(Transcript.id == source.transcript_id).with_for_update())
                     source = db.scalar(select(GeneratedDocument).where(GeneratedDocument.id == source.id).with_for_update())
                     attempts = _lock_attempts(db, (ProviderAttempt.generated_document_id == source.id) & (ProviderAttempt.status == AttemptStatus.reserved))
-                    changed += _terminalize_locked_attempts(attempts, now).cancelled
+                    changed += _terminalize_locked_attempts(db, attempts, now).cancelled
                     changed += _fail_document(db, source.id, TASK_DISPATCH_FAILED, now)
             elif dispatch.source_kind is TaskDispatchSourceKind.transcript_ingestion_job:
                 source = db.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.id == dispatch.source_id))
@@ -607,7 +742,7 @@ def process_quota_lifecycle(db: Session, batch_size: int = 100, now: datetime | 
                     db.scalar(select(Transcript).where(Transcript.id == source.transcript_id).with_for_update())
                     source = db.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.id == source.id).with_for_update())
                     attempts = _lock_attempts(db, (ProviderAttempt.transcript_ingestion_job_id == source.id) & (ProviderAttempt.status == AttemptStatus.reserved))
-                    changed += _terminalize_locked_attempts(attempts, now).cancelled
+                    changed += _terminalize_locked_attempts(db, attempts, now).cancelled
                     changed += _fail_ingestion_job(db, source.id, TASK_DISPATCH_FAILED, now)
             elif dispatch.source_kind is TaskDispatchSourceKind.consultation_split_execution:
                 source = db.scalar(
@@ -629,7 +764,7 @@ def process_quota_lifecycle(db: Session, batch_size: int = 100, now: datetime | 
                             (ProviderAttempt.consultation_split_execution_id == source.id)
                             & (ProviderAttempt.status == AttemptStatus.reserved),
                         )
-                        changed += _terminalize_locked_attempts(attempts, now).cancelled
+                        changed += _terminalize_locked_attempts(db, attempts, now).cancelled
                         # Verification fail-open reacquires this attempt with
                         # populate_existing=True. Persist cancellation first so
                         # that refresh cannot restore the reserved database

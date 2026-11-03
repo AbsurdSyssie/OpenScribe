@@ -173,6 +173,13 @@ def _submitted_draft(db, make_user, make_generated_document):
     document.document_mode = TemplateMode.structured
     document.status = GeneratedDocumentStatus.processing
     document.validated_draft_at = now
+    document.model_used = "synthetic-model"
+    document.llm_adapter_kind = "openai_chat"
+    document.input_token_count = 11
+    document.output_token_count = 4
+    document.total_token_count = 15
+    document.original_output_text_encrypted = "synthetic ciphertext"
+    document.edited_output_text_encrypted = "synthetic ciphertext"
     db.add(GeneratedDocumentSection(generated_document_id=document.id, section_key="summary",
         section_label="Summary", section_order=0, original_text_encrypted="synthetic ciphertext",
         edited_text_encrypted="synthetic ciphertext", is_edited=False))
@@ -180,7 +187,8 @@ def _submitted_draft(db, make_user, make_generated_document):
         resource=QuotaResource.tokens, attempt_kind=AttemptKind.llm_generation,
         correlation_id=document.id, attempt_number=1, reserved_units=3,
         authorized_at=now, reservation_valid_until=now + timedelta(minutes=5),
-        transcript_id=root.id, generated_document_id=document.id)
+        transcript_id=root.id, generated_document_id=document.id,
+        provider_model="synthetic-model", provider_adapter="openai_chat")
     mark_provider_attempt_submitted(db, attempt_id=attempt.id, now=now, deadline_at=now + timedelta(seconds=150))
     db.commit()
     return root, document, attempt, now
@@ -189,7 +197,8 @@ def _submitted_draft(db, make_user, make_generated_document):
 @pytest.mark.parametrize("root_expired", [False, True])
 def test_expiry_promotes_only_validated_live_checkpoint(db_session, make_user, make_generated_document, root_expired):
     from datetime import timedelta
-    from app.models import AttemptOutcome, GeneratedDocumentStatus, HallucinationCheckStatus
+    from sqlalchemy import func, select
+    from app.models import AttemptOutcome, GeneratedDocumentStatus, HallucinationCheckStatus, ProviderSettlementBasis, ProviderUsageEvent, ProviderUsageEventType
     from app.services.quota_lifecycle import process_quota_lifecycle
     from app.services.templates import _lock_live_generation_result
     root, document, attempt, now = _submitted_draft(db_session, make_user, make_generated_document)
@@ -199,11 +208,58 @@ def test_expiry_promotes_only_validated_live_checkpoint(db_session, make_user, m
     db_session.commit()
     assert process_quota_lifecycle(db_session, now=now) >= 2
     assert document.status is (GeneratedDocumentStatus.failed if root_expired else GeneratedDocumentStatus.ready)
-    assert attempt.outcome is AttemptOutcome.unknown and attempt.settled_units == 3
+    if root_expired:
+        assert (attempt.outcome, attempt.settlement_basis, attempt.settled_units) == (
+            AttemptOutcome.unknown, ProviderSettlementBasis.timeout_waived, 0,
+        )
+    else:
+        assert (attempt.outcome, attempt.settlement_basis, attempt.settled_units) == (
+            AttemptOutcome.succeeded, ProviderSettlementBasis.reported, 15,
+        )
+        assert (attempt.reported_input_tokens, attempt.reported_output_tokens, attempt.reported_total_tokens) == (11, 4, 15)
+        assert db_session.scalar(select(func.count(ProviderUsageEvent.id)).where(
+            ProviderUsageEvent.generated_document_id == document.id,
+            ProviderUsageEvent.event_type == ProviderUsageEventType.completed,
+        )) == 1
     if not root_expired:
         assert document.hallucination_check_status is HallucinationCheckStatus.not_applicable
     assert not _lock_live_generation_result(db_session, document=document)
     assert process_quota_lifecycle(db_session, now=now) == 0
+
+
+def test_quota_lifecycle_rejects_checkpoint_from_superseded_generation_attempt(
+    db_session, make_user, make_generated_document,
+):
+    from datetime import timedelta
+    from app.models import AttemptKind, AttemptOutcome, QuotaResource
+    from app.services.quota_lifecycle import _validated_main_checkpoint
+    from app.services.quotas import (
+        mark_provider_attempt_submitted, reserve_provider_attempt, settle_provider_attempt_tokens,
+    )
+
+    root, document, primary, now = _submitted_draft(db_session, make_user, make_generated_document)
+    settle_provider_attempt_tokens(
+        db_session, attempt_id=primary.id, reported_total_tokens=3,
+        reported_input_tokens=2, reported_output_tokens=1, outcome=AttemptOutcome.failed,
+    )
+    retry = reserve_provider_attempt(
+        db_session, team_id=document.team_id, owner_user_id=document.owner_user_id,
+        resource=QuotaResource.tokens, attempt_kind=AttemptKind.llm_generation,
+        correlation_id=document.id, attempt_number=2, reserved_units=3,
+        authorized_at=now + timedelta(seconds=1),
+        reservation_valid_until=now + timedelta(minutes=5),
+        transcript_id=root.id, generated_document_id=document.id,
+        provider_model="synthetic-model", provider_adapter="openai_chat",
+    )
+    mark_provider_attempt_submitted(
+        db_session, attempt_id=retry.id, now=now + timedelta(seconds=1),
+        deadline_at=now + timedelta(seconds=151),
+    )
+    db_session.commit()
+
+    valid, *_ = _validated_main_checkpoint(db_session, primary, now + timedelta(seconds=2))
+
+    assert valid is False
 
 
 def test_transport_timeout_persists_after_expiry_and_stops_next_call(db_session, make_user, make_generated_document):
@@ -220,6 +276,51 @@ def test_transport_timeout_persists_after_expiry_and_stops_next_call(db_session,
     db_session.refresh(attempt)
     assert attempt.transport_events_json == [event]
     assert observer.is_active() is False
+
+
+def test_checkpoint_completion_event_is_not_suppressed_by_checker_event(db_session, make_user, make_generated_document):
+    from datetime import timedelta
+    from sqlalchemy import func, select
+    from app.models import (
+        AttemptOutcome, GeneratedDocumentStatus, ProviderFeatureType, ProviderSettlementBasis,
+        ProviderUsageEvent, ProviderUsageEventType,
+    )
+    from app.services.quota_lifecycle import process_quota_lifecycle
+
+    root, document, attempt, now = _submitted_draft(db_session, make_user, make_generated_document)
+    db_session.add(ProviderUsageEvent(
+        team_id=document.team_id,
+        owner_user_id=document.owner_user_id,
+        generated_document_id=document.id,
+        transcript_id=document.transcript_id,
+        feature_type=ProviderFeatureType.llm_generation,
+        event_type=ProviderUsageEventType.completed,
+        status="hallucination_check:checked_unchanged",
+        prompt_tokens=2,
+        completion_tokens=3,
+        total_tokens=5,
+        created_at=now,
+    ))
+    attempt.deadline_at = now - timedelta(seconds=1)
+    db_session.commit()
+
+    assert process_quota_lifecycle(db_session, now=now) >= 2
+    assert (attempt.outcome, attempt.settlement_basis, attempt.settled_units) == (
+        AttemptOutcome.succeeded, ProviderSettlementBasis.reported, 15,
+    )
+    events = db_session.scalars(select(ProviderUsageEvent).where(
+        ProviderUsageEvent.generated_document_id == document.id,
+        ProviderUsageEvent.event_type == ProviderUsageEventType.completed,
+    ).order_by(ProviderUsageEvent.created_at, ProviderUsageEvent.id)).all()
+    assert {(event.status, event.total_tokens) for event in events} == {
+        ("hallucination_check:checked_unchanged", 5),
+        (GeneratedDocumentStatus.ready.value, 15),
+    }
+    assert process_quota_lifecycle(db_session, now=now) == 0
+    assert db_session.scalar(select(func.count(ProviderUsageEvent.id)).where(
+        ProviderUsageEvent.generated_document_id == document.id,
+        ProviderUsageEvent.event_type == ProviderUsageEventType.completed,
+    )) == 2
 
 
 @pytest.mark.parametrize("status", ["not_applicable", "skipped_not_configured"])
@@ -287,9 +388,9 @@ def test_checker_lifecycle_expiry_wins_over_late_response_and_duplicate_delivery
     db_session, make_user, make_generated_document, make_llm_config, monkeypatch,
 ):
     from datetime import datetime, timedelta, timezone
-    from sqlalchemy import select
+    from sqlalchemy import func, select
     from app.models import (Team, TeamHallucinationCheckSelection, ProviderAttempt, AttemptKind,
-        AttemptOutcome, GeneratedDocumentStatus, HallucinationCheckStatus)
+        AttemptOutcome, GeneratedDocumentStatus, HallucinationCheckStatus, ProviderUsageEvent, ProviderUsageEventType)
     from app.services import templates
     from app.services.quota_lifecycle import process_quota_lifecycle
     root, document, main, now = _submitted_draft(db_session, make_user, make_generated_document)
@@ -306,7 +407,14 @@ def test_checker_lifecycle_expiry_wins_over_late_response_and_duplicate_delivery
         current = datetime.now(timezone.utc)
         checker.deadline_at = current - timedelta(seconds=1)
         db_session.commit()
-        assert process_quota_lifecycle(db_session, now=current) == 2
+        assert process_quota_lifecycle(db_session, batch_size=1, now=current) >= 1
+        db_session.refresh(document)
+        assert document.status is GeneratedDocumentStatus.ready
+        main.deadline_at = current - timedelta(seconds=1)
+        db_session.commit()
+        assert process_quota_lifecycle(db_session, batch_size=1, now=current + timedelta(seconds=1)) >= 1
+        db_session.refresh(main)
+        assert main.settlement_basis.value == "reported" and main.settled_units == 15
         return '{"status":"unchanged","edits":[]}', {"total_tokens": 5}
     monkeypatch.setattr(templates, "_invoke_frozen_llm", late_checker)
     monkeypatch.setenv("HALLUCINATION_CHECK_DEBUG_UI", "0")
@@ -321,6 +429,11 @@ def test_checker_lifecycle_expiry_wins_over_late_response_and_duplicate_delivery
         ProviderAttempt.generated_document_id == document.id,
         ProviderAttempt.attempt_kind == AttemptKind.llm_hallucination_check))
     assert checker.outcome is AttemptOutcome.unknown
+    assert checker.settlement_basis.value == "timeout_waived" and checker.settled_units == 0
+    assert db_session.scalar(select(func.count(ProviderUsageEvent.id)).where(
+        ProviderUsageEvent.generated_document_id == document.id,
+        ProviderUsageEvent.event_type == ProviderUsageEventType.completed,
+    )) == 1
     assert result[2] is HallucinationCheckStatus.failed_provider
     assert templates.process_generated_document(db_session, document_id=document.id).status is GeneratedDocumentStatus.ready
     assert calls == [True]

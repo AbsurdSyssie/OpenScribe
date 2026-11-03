@@ -829,8 +829,6 @@ def home_template_editor_page(
 def home_set_llm_selection(
     request: Request,
     llm_config_id: str = Form(...),
-    allowed_model_names: list[str] = Form(default=[]),
-    provider_model: str = Form(""),
     return_view: str = Form(""),
     return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
@@ -845,8 +843,6 @@ def home_set_llm_selection(
             context.user,
             LlmSelectionUpsert(
                 llm_config_id=UUID(llm_config_id),
-                allowed_models_json=allowed_model_names,
-                model_name_override=provider_model or None,
             ),
         )
     except (ValueError, AppError) as exc:

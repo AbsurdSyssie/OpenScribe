@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.errors import AppError
 from app.models import (
-    AttemptKind, AttemptOutcome, AttemptStatus, LlmAuthMode, ProviderAttempt, TeamLlmBackupSelection,
+    AttemptKind, AttemptOutcome, AttemptStatus, LlmAuthMode, ProviderAttempt, ProviderSettlementBasis, TeamLlmBackupSelection,
     TemplateScope, TemplateSuggestionStatus, Transcript, TranscriptIngestionMode,
     TranscriptStatus, UserAppPreference, transcript_expiry, utcnow,
 )
@@ -197,7 +197,7 @@ def test_suggestion_preclaim_fallback_cancels_primary_without_charging_it(
     assert len(calls) == (1 if credential_failure in {"llm_invalid_credential", "missing-reference"} else 0)
 
 
-@pytest.mark.parametrize("failure_mode", ["invalid-primary", "invalid-backup", "hard-quota", "unknown-quota", "backup-quota"])
+@pytest.mark.parametrize("failure_mode", ["invalid-primary", "invalid-backup", "hard-quota", "unknown-quota", "backup-quota", "timeout-backup"])
 def test_suggestion_output_and_quota_boundaries(
     db_session, backup_suggestion_job, monkeypatch, failure_mode,
 ):
@@ -210,16 +210,20 @@ def test_suggestion_output_and_quota_boundaries(
         calls.append(kwargs["config"].id)
         requests.append(kwargs["request_body"]["messages"])
         if len(calls) == 1:
-            if failure_mode in {"hard-quota", "unknown-quota"}:
-                details = {"provider_http_status": 429}
-                if failure_mode == "hard-quota":
-                    details["backup_failure_class"] = "provider_quota_blocked"
-                raise AppError(429, "llm_provider_rate_limited", "Synthetic provider quota", details)
+            if failure_mode == "timeout-backup":
+                raise tag_provider_failure(AppError(502, "llm_provider_unreachable", "Synthetic provider failure"))
+                if failure_mode in {"hard-quota", "unknown-quota"}:
+                    details = {"provider_http_status": 429}
+                    if failure_mode == "hard-quota":
+                        details["backup_failure_class"] = "provider_quota_blocked"
+                    raise tag_provider_failure(AppError(429, "llm_provider_rate_limited", "Synthetic provider quota", details))
             if failure_mode == "backup-quota":
                 state.owner.daily_token_limit = state.owner.monthly_token_limit = 1
                 db_session.flush()
                 raise tag_provider_failure(AppError(502, "llm_provider_unreachable", "Synthetic provider failure"))
             return "invalid-json", usage
+        if failure_mode == "timeout-backup":
+            raise AppError(504, "llm_provider_timeout", "Synthetic backup timeout")
         return ("invalid-backup-json" if failure_mode == "invalid-backup" else state.response), usage
 
     monkeypatch.setattr(template_suggestions, "_invoke_frozen_llm", invoke)
@@ -228,12 +232,19 @@ def test_suggestion_output_and_quota_boundaries(
 
     assert state.redactions == [True]
     assert primary.status is AttemptStatus.settled
-    if failure_mode in {"hard-quota", "unknown-quota", "backup-quota"}:
+    if failure_mode in {"backup-quota", "timeout-backup"}:
         assert result.status is TemplateSuggestionStatus.failed
-        assert calls == [state.primary.id]
-        assert child is None
-        assert primary.outcome is AttemptOutcome.unknown
-        assert primary.settled_units == primary.reserved_units
+        if failure_mode == "timeout-backup":
+            assert calls == [state.primary.id, state.backup.id]
+            assert child is not None
+            assert (child.outcome, child.settlement_basis, child.settled_units, child.error_code) == (
+                AttemptOutcome.unknown, ProviderSettlementBasis.timeout_waived, 0, "llm_provider_timeout",
+            )
+        else:
+            assert calls == [state.primary.id]
+            assert child is None
+            assert primary.outcome is AttemptOutcome.unknown
+            assert primary.settled_units == primary.reserved_units
         if failure_mode == "backup-quota":
             assert result.error_code == "quota_exceeded"
     else:

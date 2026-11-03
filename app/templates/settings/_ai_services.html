@@ -91,22 +91,12 @@
           <label>Provider
             <select name="llm_config_id" data-llm-config-select required>
               {% for config in selectable_llm_configs %}
-              <option value="{{ config.id }}" data-default-model="{{ config.model_name or '' }}" {% if llm_selection and llm_selection.llm_config_id == config.id %}selected{% endif %}>{{ config.label }}</option>
+              <option value="{{ config.id }}" {% if llm_selection and llm_selection.llm_config_id == config.id %}selected{% endif %}>{{ config.label }}</option>
               {% endfor %}
             </select>
           </label>
-          {% for config in selectable_llm_configs %}
-          <fieldset data-llm-model-group="{{ config.id }}" {% if not llm_selection or llm_selection.llm_config_id != config.id %}hidden{% endif %}>
-            <legend>Allowed models</legend>
-            {% for model in config.available_models_json %}
-            {% set is_allowed = (llm_selection and llm_selection.llm_config_id == config.id and model in llm_selection.allowed_models_json) or ((not llm_selection or llm_selection.llm_config_id != config.id) and True) %}
-            {% set is_default = (llm_selection and llm_selection.llm_config_id == config.id and (llm_selection.model_name_override or llm_selection.config.model_name) == model) or ((not llm_selection or llm_selection.llm_config_id != config.id) and config.model_name == model) %}
-            <label><input type="checkbox" name="allowed_model_names" value="{{ model }}" {% if is_allowed %}checked{% endif %}>{{ model }}</label>
-            <label><input type="radio" name="provider_model" value="{{ model }}" {% if is_default %}checked{% endif %}>Team default</label>
-            {% endfor %}
-          </fieldset>
-          {% endfor %}
-          <button class="btn-primary-sm" type="submit">Save</button>
+          <p class="field-help">Writing uses the provider’s saved default. System administrators manage enabled models in Provider settings.</p>
+          <button class="btn-primary-sm" type="submit">Save writing provider</button>
         </form>
         {% else %}
         <p class="settings-empty">No writing assistants available.</p>

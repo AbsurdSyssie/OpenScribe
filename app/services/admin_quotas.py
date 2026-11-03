@@ -86,6 +86,14 @@ class AdminUserQuotaDetail:
 
 
 @dataclass(frozen=True, slots=True)
+class AdminTeamQuotaUsage:
+    """Current selected-period quota windows for one eligible team member."""
+
+    tokens: QuotaWindow
+    audio: QuotaWindow
+
+
+@dataclass(frozen=True, slots=True)
 class UserQuotaMutationResult:
     user_id: UUID
     operation_id: UUID
@@ -260,6 +268,47 @@ def get_admin_user_quota_detail(
         lifetime_token_units=int(lifetime_totals.get(QuotaResource.tokens, 0)),
         lifetime_audio_seconds=int(lifetime_totals.get(QuotaResource.audio_seconds, 0)),
     )
+
+
+def get_admin_team_quota_usage(
+    db: Session,
+    *,
+    actor: User,
+    team_id: UUID,
+    member_ids: list[UUID],
+    period: QuotaPeriod,
+    now: datetime | None = None,
+) -> dict[UUID, AdminTeamQuotaUsage]:
+    """Load current quota windows for eligible members in one authorized team.
+
+    This read-only summary intentionally omits history, grants, and lifetime
+    totals. It reuses the enforcement window calculation for the selected
+    period so resets, activations, allowances, and pending work stay aligned.
+    """
+    _require_actor(actor)
+    if not member_ids:
+        return {}
+    current = _now(now)
+    targets = db.scalars(
+        select(User).where(
+            User.id.in_(set(member_ids)),
+            User.team_id == team_id,
+            User.team_role.is_not(None),
+            User.is_system_admin.is_(False),
+            User.id != actor.id,
+        )
+    ).all()
+    summaries: dict[UUID, AdminTeamQuotaUsage] = {}
+    for target in targets:
+        summaries[target.id] = AdminTeamQuotaUsage(
+            tokens=calculate_quota_window(
+                db, user=target, resource=QuotaResource.tokens, period=period, now=current
+            ),
+            audio=calculate_quota_window(
+                db, user=target, resource=QuotaResource.audio_seconds, period=period, now=current
+            ),
+        )
+    return summaries
 
 
 def update_user_base_quotas_batch(

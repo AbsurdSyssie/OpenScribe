@@ -56,7 +56,7 @@
             <div>
               <div class="stat-card__label">Writing assistant</div>
               <div class="stat-card__value">
-                {% if llm_selection %}{{ llm_selection.config.label }}{% if resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name %} · {{ resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name }}{% endif %}{% else %}Not configured{% endif %}
+                {% if llm_selection %}{{ llm_selection.config.label }}{% if resolved_user_llm_model or (llm_selection.config.model_policy and llm_selection.config.model_policy.default_model_name) %} · {{ resolved_user_llm_model or llm_selection.config.model_policy.default_model_name }}{% endif %}{% else %}Not configured{% endif %}
               </div>
             </div>
           </article>
@@ -113,7 +113,7 @@
         <div>
           <div class="stat-card__label">Writing assistant</div>
           <div class="stat-card__value">
-            {% if llm_selection %}{{ llm_selection.config.label }}{% if resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name %} · {{ resolved_user_llm_model or llm_selection.model_name_override or llm_selection.config.model_name }}{% endif %}{% else %}Not configured{% endif %}
+            {% if llm_selection %}{{ llm_selection.config.label }}{% if resolved_user_llm_model or (llm_selection.config.model_policy and llm_selection.config.model_policy.default_model_name) %} · {{ resolved_user_llm_model or llm_selection.config.model_policy.default_model_name }}{% endif %}{% else %}Not configured{% endif %}
           </div>
         </div>
       </article>
@@ -190,17 +190,17 @@
 <input type="hidden" name="return_tab" value="overview">
 <label class="preference-model-field">
 <span class="preference-field-label">Model</span>
-{% set allowed_llm_models = llm_selection.allowed_models_json or llm_selection.config.available_models_json or [] %}
+{% set allowed_llm_models = (llm_selection.config.model_policy.enabled_models_json|select("in", llm_selection.config.available_models_json or [])|list) if llm_selection.config.model_policy else [] %}
 {% if allowed_llm_models|length > 1 %}
 <select name="preferred_model_name">
-<option value="">Use team default ({{ llm_selection.model_name_override or llm_selection.config.model_name or "none" }})</option>
+<option value="">Use team default ({{ llm_selection.config.model_policy.default_model_name if llm_selection.config.model_policy and llm_selection.config.model_policy.default_model_name else "none" }})</option>
 {% for model in allowed_llm_models %}
 <option value="{{ model }}" {% if user_llm_preference and user_llm_preference.preferred_model_name == model %}selected{% endif %}>{{ model }}</option>
 {% endfor %}
 </select>
 {% else %}
 <select disabled>
-<option>{{ allowed_llm_models[0] if allowed_llm_models else (llm_selection.model_name_override or llm_selection.config.model_name or "No model configured") }}</option>
+<option>{{ allowed_llm_models[0] if allowed_llm_models else (llm_selection.config.model_policy.default_model_name if llm_selection.config.model_policy and llm_selection.config.model_policy.default_model_name else "No models enabled") }}</option>
 </select>
 <input type="hidden" name="preferred_model_name" value="">
 {% endif %}
@@ -586,7 +586,7 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 <div class="service-row__status">
 {% if llm_selection %}
 <span class="status-dot status-dot--active"></span>
-<span class="service-row__detail">{{ llm_selection.config.label }}{% if llm_selection.model_name_override or llm_selection.config.model_name %} · {{ llm_selection.model_name_override or llm_selection.config.model_name }}{% endif %}</span>
+<span class="service-row__detail">{{ llm_selection.config.label }}{% if llm_selection.config.model_policy and llm_selection.config.model_policy.default_model_name %} · {{ llm_selection.config.model_policy.default_model_name }}{% endif %}</span>
 {% else %}
 <span class="status-dot status-dot--pending"></span>
 <span class="service-row__detail">Not configured</span>
@@ -614,34 +614,13 @@ Dictation: {% if stt_dictation_selection %}{{ stt_dictation_selection.config.lab
 <span class="form-label__text">Provider</span>
 <select name="llm_config_id" data-llm-config-select class="form-select" required>
 {% for config in selectable_llm_configs %}
-<option value="{{ config.id }}" data-models='{{ config.available_models_json | tojson | forceescape }}' data-default-model="{{ config.model_name or '' }}" {% if llm_selection and llm_selection.llm_config_id == config.id %}selected{% endif %}>{{ config.label }}</option>
+<option value="{{ config.id }}" {% if llm_selection and llm_selection.llm_config_id == config.id %}selected{% endif %}>{{ config.label }}</option>
 {% endfor %}
 </select>
 </label>
 </div>
-<div data-llm-model-groups>
-{% for config in selectable_llm_configs %}
-<fieldset class="form-fieldset" data-llm-model-group="{{ config.id }}" {% if not llm_selection or llm_selection.llm_config_id != config.id %}hidden{% endif %}>
-<legend>Allowed models</legend>
-<div class="form-checkbox-grid">
-{% for model in config.available_models_json %}
-{% set is_allowed = (llm_selection and llm_selection.llm_config_id == config.id and model in llm_selection.allowed_models_json) or ((not llm_selection or llm_selection.llm_config_id != config.id) and True) %}
-<label class="form-checkbox"><input type="checkbox" name="allowed_model_names" value="{{ model }}" {% if is_allowed %}checked{% endif %}><span>{{ model }}</span></label>
-{% endfor %}
-</div>
-<div class="form-row form-row--spaced-sm">
-<label class="form-label">
-<span class="form-label__text">Team default</span>
-{% for model in config.available_models_json %}
-{% set is_selected_default = (llm_selection and llm_selection.llm_config_id == config.id and (llm_selection.model_name_override or llm_selection.config.model_name) == model) or ((not llm_selection or llm_selection.llm_config_id != config.id) and (config.model_name == model)) %}
-<label class="form-radio"><input type="radio" name="provider_model" value="{{ model }}" {% if is_selected_default %}checked{% endif %}><span>{{ model }}</span></label>
-{% endfor %}
-</label>
-</div>
-</fieldset>
-{% endfor %}
-</div>
-<button type="submit" class="btn-primary-sm">Save</button>
+<p class="field-help">Writing uses the provider’s saved default. System administrators manage enabled models in Provider settings.</p>
+<button type="submit" class="btn-primary-sm">Save writing provider</button>
 </form>
 {% else %}
 <p class="form-empty">No writing assistants available. Ask a system admin to add one.</p>

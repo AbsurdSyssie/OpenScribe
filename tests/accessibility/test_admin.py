@@ -612,8 +612,9 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
     assert response is not None and response.status == 200
     assert page.get_by_role("heading", name="Usage", exact=True).is_visible()
     assert page.locator("nav[aria-label='Team usage views']").count() == 0
-    assert page.locator("[data-team-navigation], .team-summary").count() == 0
-    assert page.locator("nav[aria-label='Team settings']").count() == 0
+    assert page.locator("[data-team-navigation]").count() == 0
+    assert page.locator(".team-summary").count() == 1
+    assert page.get_by_role("heading", name="Usage", exact=True).is_visible()
     assert page.locator("nav.tabs").count() == 0
     assert page.get_by_text(admin["member_email"], exact=True).count() == 0
     assert page.get_by_text(other_member.email, exact=True).count() == 0
@@ -702,7 +703,10 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
     response = page.goto(team_path, wait_until="domcontentloaded")
     assert response is not None and response.status == 200
     assert page.locator("[aria-label='Usage workspace']").count() == 1
-    assert page.locator("[data-team-navigation], .team-summary, nav[aria-label='Team settings'], nav.tabs").count() == 0
+    assert page.locator(".team-summary").count() == 1
+    assert page.locator("#team-title").inner_text() == admin["team_name"]
+    assert page.locator("[data-team-navigation]").count() == 0
+    assert page.locator("nav[aria-label='Team usage views'].tabs").count() == 1
     team_summary = page.get_by_role("region", name="Usage summary table")
     team_table = team_summary.get_by_role("table")
     assert team_table.get_by_role("columnheader").all_inner_texts() == [
@@ -934,7 +938,10 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
     assert response is not None and response.status == 200
     assert page.locator("[data-panel='quotas']").is_visible()
     assert page.locator("[aria-label='Usage workspace']").count() == 1
-    assert page.locator("[data-team-navigation], .team-summary, nav[aria-label='Team settings'], nav.tabs").count() == 0
+    assert page.locator("[data-team-navigation]").count() == 0
+    assert page.locator(".team-summary").count() == 1
+    assert page.get_by_role("heading", name="Quotas", exact=True).is_visible()
+    assert page.get_by_role("navigation", name="Team usage views").locator(".tab").count() == 3
     assert page.locator(".usage-chart, .usage-user-table").count() == 0
     assert page.get_by_role("heading", name=admin["member_email"]).is_visible()
     assert page.locator(".usage-intro select[name='team_id']").count() == 0
@@ -1046,202 +1053,171 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
 
 
 def test_team_navigation_disclosures_retain_routes_and_keyboard_state(
-    audit_report, audit_browser, synthetic_admin_context, axe_source
+    audit_report, audit_browser, synthetic_admin_context, axe_source, make_team
 ):
     page, blocked = audit_browser
     admin = synthetic_admin_context
+    other_team = make_team(name="Provider Navigation Switch Target")
     _open_admin(page, audit_report, admin)
+    usage_response = page.goto("/admin/usage?view=team", wait_until="domcontentloaded")
+    assert usage_response is not None and usage_response.status == 200
+    with page.expect_navigation(wait_until="domcontentloaded"):
+        page.locator("#admin-providers-nav-link").click()
+    assert page.url.endswith("/admin?tab=providers")
+    assert page.get_by_role("heading", name="Providers").is_visible()
     path = f"/admin?team_id={admin['team_id']}&team_tab=overview"
     response = page.goto(path, wait_until="domcontentloaded")
     assert response is not None and response.status == 200
     nav = page.get_by_role("navigation", name="Team settings")
     mobile_tabs = page.locator('nav[aria-label="Team settings"]')
-    direct_tabs = {"overview", "members"}
+    direct_tabs = {"overview"}
     for tab in direct_tabs:
         link = nav.locator(f'a[data-tab="{tab}"]')
         assert link.count() == 1
         assert link.get_attribute("href") == f"/admin?team_id={admin['team_id']}&team_tab={tab}"
     assert nav.locator('a[data-tab="overview"]').get_attribute("aria-current") == "page"
+    assert nav.locator('a[data-tab="quotas"], a[data-tab="usage"]').count() == 0
 
-    provider_group, settings_group = nav.locator("details[data-team-tab-disclosure]").all()
-    assert provider_group.locator("summary").inner_text().startswith("Providers")
+    settings_group = nav.locator("details[data-team-tab-disclosure]").first
     assert settings_group.locator("summary").inner_text().startswith("Settings")
-    expected_groups = {
-        "provider-policy": provider_group,
-        "stt": provider_group,
-        "llm": provider_group,
-        "deidentification": provider_group,
-        "defaults": settings_group,
-        "security": settings_group,
-        "danger": settings_group,
-    }
-    for tab, group in expected_groups.items():
-        link = group.locator(f'a[data-tab="{tab}"]')
+    for tab in ("defaults", "security", "danger"):
+        link = settings_group.locator(f'a[data-tab="{tab}"]')
         assert link.count() == 1
         assert link.get_attribute("href") == f"/admin?team_id={admin['team_id']}&team_tab={tab}"
+    providers_link = page.locator("#admin-providers-nav-link")
+    assert providers_link.count() == 1
+    assert providers_link.get_attribute("href") == f"/admin?tab=providers&team_id={admin['team_id']}"
 
     defaults = page.goto(
         f"/admin?team_id={admin['team_id']}&team_tab=defaults", wait_until="domcontentloaded"
     )
     assert defaults is not None and defaults.status == 200
     nav = page.get_by_role("navigation", name="Team settings")
-    settings_group = nav.locator("details[data-team-tab-disclosure]").nth(1)
+    settings_group = nav.locator("details[data-team-tab-disclosure]").first
     current = settings_group.locator('a[data-tab="defaults"]')
     assert current.get_attribute("aria-current") == "page"
     assert "Defaults" in settings_group.locator("summary").inner_text()
 
-    # Escape dismisses an expanded navigation group and returns focus to the
-    # native summary; clicking elsewhere dismisses without stealing focus.
-    provider_group = nav.locator("details[data-team-tab-disclosure]").first
-    provider_summary = provider_group.locator("summary")
-    if not provider_group.get_attribute("open"):
-        provider_summary.click()
-    assert provider_group.get_attribute("open") is not None
+    # Escape dismisses the Settings group and restores focus to its summary.
+    settings_summary = settings_group.locator("summary")
+    if not settings_group.get_attribute("open"):
+        settings_summary.click()
+    assert settings_group.get_attribute("open") is not None
     page.keyboard.press("Escape")
-    page.wait_for_function("el => !el.open && document.activeElement === el.querySelector('summary')", arg=provider_group.element_handle())
-    assert provider_group.get_attribute("open") is None
-    assert provider_summary.evaluate("el => document.activeElement === el")
+    page.wait_for_function("el => !el.open && document.activeElement === el.querySelector('summary')", arg=settings_group.element_handle())
+    assert settings_summary.evaluate("el => document.activeElement === el")
 
-    provider_summary.click()
-    assert provider_group.get_attribute("open") is not None
-    target = page.get_by_role("button", name="Team actions")
-    target.click()
-    assert provider_group.get_attribute("open") is None
-    assert target.evaluate("el => document.activeElement === el")
+    provider_response = page.goto(
+        f"/admin?team_id={admin['team_id']}&team_tab=stt", wait_until="domcontentloaded"
+    )
+    assert provider_response is not None and provider_response.status == 200
+    provider_nav = page.get_by_role("navigation", name="Provider settings")
+    assert provider_nav.locator('a[data-tab="stt"]').get_attribute("aria-current") == "page"
+    assert provider_nav.locator("a").count() == 4
+    assert page.locator("#admin-providers-nav-link").get_attribute("aria-current") == "page"
+    assert page.locator("[data-team-navigation]").count() == 0
+    assert page.locator("#team-title").inner_text() == admin["team_name"]
+    assert page.locator(".team-summary").count() == 1
+    assert page.locator(".tab-disclosure").count() == 0
+    edit_button = page.locator("[data-edit-stt-provider]").first
+    assert edit_button.count() == 1
+    edit_button.click()
+    details_modal = page.locator("#provider-details-modal")
+    assert details_modal.is_visible()
+    assert details_modal.get_by_role("dialog").is_visible()
+    assert not blocked, f"Unexpected real provider requests in synthetic navigation flow: {blocked}"
+    page.keyboard.press("Escape")
+    assert not details_modal.is_visible()
 
     result = _scan_admin(page, audit_report, "team_nav_disclosures", axe_source, blocked)
     assert not result.get("violations"), f"axe violations for team navigation: {result.get('violations')}"
 
-    # At mobile widths the same eleven destinations sit inside one native
-    # disclosure. Verify both the collapsed state and the complete route set,
-    # including nested Providers/Settings links.
-    page.set_viewport_size({"width": 390, "height": 844})
-    destinations = (
-        ("overview", "Overview", None),
-        ("members", "Members", None),
-        ("provider-policy", "Provider policy", "Providers"),
-        ("stt", "STT", "Providers"),
-        ("llm", "LLM", "Providers"),
-        ("deidentification", "De-identification", "Providers"),
-        ("defaults", "Defaults", "Settings"),
-        ("security", "Security", "Settings"),
-        ("danger", "Danger zone", "Settings"),
-    )
-    mobile_menu = page.locator("[data-team-navigation]")
-    mobile_summary = mobile_menu.locator("summary.team-mobile-navigation-summary")
-    assert mobile_menu.count() == 1
-    assert mobile_summary.is_visible()
-    assert "Team navigation" in mobile_summary.inner_text()
-    assert "Team navigation Defaults" in mobile_summary.aria_snapshot()
-    assert not mobile_menu.evaluate("el => el.open")
-    assert not nav.is_visible(), "Team destinations should stay collapsed until requested"
-    # The server-rendered native disclosure starts open so all links remain
-    # available before the responsive script runs or when JavaScript is absent.
-    markup_response = page.request.get(
-        f"/admin?team_id={admin['team_id']}&team_tab=defaults"
-    )
-    assert markup_response.status == 200
-    markup = markup_response.text()
-    assert '<details class="team-mobile-navigation" data-team-navigation open>' in markup
-    for tab, _label, _parent_group in destinations:
-        assert f'team_tab={tab}"' in markup
-
-    mobile_summary.focus()
-    page.keyboard.press("Enter")
-    page.wait_for_function("el => el.open", arg=mobile_menu.element_handle())
-    assert nav.is_visible()
-    result = _scan_admin(page, audit_report, "team_mobile_navigation_open", axe_source, blocked)
-    assert not result.get("violations"), f"axe violations for mobile team navigation: {result.get('violations')}"
+    # Provider destinations have their own visible navigation, including on
+    # mobile. They do not require opening the Team navigation menu.
     screenshot_dir = os.environ.get("OPENSCRIBE_ACCESSIBILITY_SCREENSHOT_DIR")
     if screenshot_dir:
+        page.set_viewport_size({"width": 1440, "height": 900})
         page.screenshot(
-            path=str(Path(screenshot_dir) / "team-navigation-mobile-open-390.png"),
+            path=str(Path(screenshot_dir) / "provider-navigation-desktop-1440.png"),
             full_page=False,
             animations="disabled",
         )
-    page.keyboard.press("Escape")
-    page.wait_for_function(
-        "el => !el.open && document.activeElement === el.querySelector('summary')",
-        arg=mobile_menu.element_handle(),
-    )
-    assert not nav.is_visible()
-    assert mobile_summary.evaluate("el => document.activeElement === el")
+        page.goto(f"/admin?team_id={admin['team_id']}&team_tab=members", wait_until="domcontentloaded")
+        page.screenshot(path=str(Path(screenshot_dir) / "team-members-desktop-1440.png"), full_page=False, animations="disabled")
+        page.goto(f"/admin/usage?team_id={admin['team_id']}&view=team", wait_until="domcontentloaded")
+        page.screenshot(path=str(Path(screenshot_dir) / "team-usage-desktop-1440.png"), full_page=False, animations="disabled")
+        page.goto(f"/admin?team_id={admin['team_id']}&team_tab=stt", wait_until="domcontentloaded")
+    page.set_viewport_size({"width": 390, "height": 844})
+    provider_nav = page.get_by_role("navigation", name="Provider settings")
+    assert provider_nav.is_visible()
+    assert provider_nav.locator("a").count() == 4
+    for tab in ("provider-policy", "stt", "llm", "deidentification"):
+        link = provider_nav.locator(f'a[data-tab="{tab}"]')
+        assert link.is_visible()
+        assert link.get_attribute("href") == f"/admin?team_id={admin['team_id']}&team_tab={tab}"
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            link.click()
+        assert page.url.endswith(f"team_tab={tab}")
+        assert page.get_by_role("navigation", name="Provider settings").locator(
+            f'a[data-tab="{tab}"]'
+        ).get_attribute("aria-current") == "page"
+    page.goto(f"/admin?team_id={admin['team_id']}&team_tab=stt", wait_until="domcontentloaded")
+    page.locator("#admin-team-switcher summary").click()
+    with page.expect_navigation(wait_until="domcontentloaded"):
+        page.locator(f'[data-team-option][data-team-id="{other_team.id}"]').click()
+    assert f"team_id={other_team.id}" in page.url and "team_tab=stt" in page.url
+    assert page.get_by_role("navigation", name="Provider settings").locator(
+        'a[data-tab="stt"]'
+    ).get_attribute("aria-current") == "page"
+    page.locator("#admin-team-switcher summary").click()
+    with page.expect_navigation(wait_until="domcontentloaded"):
+        page.locator("[data-all-teams-option]").click()
+    assert page.url.endswith("/admin?tab=providers")
+    page.locator("#admin-team-switcher summary").click()
+    with page.expect_navigation(wait_until="domcontentloaded"):
+        page.locator(f'[data-team-option][data-team-id="{other_team.id}"]').click()
+    assert f"team_id={other_team.id}" in page.url and "tab=providers" in page.url
+    assert page.get_by_role("navigation", name="Provider settings").locator(
+        'a[data-tab="provider-policy"]'
+    ).get_attribute("aria-current") == "page"
+    page.goto(f"/admin?team_id={admin['team_id']}&team_tab=stt", wait_until="domcontentloaded")
+    page.set_viewport_size({"width": 390, "height": 844})
+    result = _scan_admin(page, audit_report, "provider_area_mobile", axe_source, blocked)
+    assert not result.get("violations"), f"axe violations for mobile provider navigation: {result.get('violations')}"
     if screenshot_dir:
         page.screenshot(
-            path=str(Path(screenshot_dir) / "team-navigation-mobile-closed-390.png"),
+            path=str(Path(screenshot_dir) / "provider-navigation-mobile-390.png"),
             full_page=False,
             animations="disabled",
         )
 
-    # Route through each visible destination, reopening its group after each
-    # server navigation. This proves menu links retain canonical URL values.
-    for tab, label, parent_group in destinations:
-        if not mobile_menu.evaluate("el => el.open"):
-            mobile_summary.click()
-        link = mobile_tabs.locator(f'a[data-tab="{tab}"]')
-        if parent_group:
-            group_index = 0 if parent_group == "Providers" else 1
-            group = mobile_tabs.locator("details[data-team-tab-disclosure]").nth(group_index)
-            if not group.evaluate("el => el.open"):
-                group.locator("summary").click()
-        assert link.is_visible(), f"{label} is not reachable inside the mobile menu"
-        assert link.get_attribute("href") == f"/admin?team_id={admin['team_id']}&team_tab={tab}"
-        link.click()
-        page.wait_for_url(f"**team_tab={tab}")
-        selected = mobile_tabs.locator(f'a[data-tab="{tab}"]')
-        assert selected.get_attribute("aria-current") == "page"
-        assert page.locator(".team-mobile-navigation-current").inner_text().strip() == label
-
-    # A nested group closes first on Escape, then its containing menu. An
-    # outside pointer dismisses the menu without moving focus from the target.
-    page.set_viewport_size({"width": 390, "height": 844})
-    if not mobile_menu.evaluate("el => el.open"):
-        mobile_summary.click()
-    settings_group = mobile_tabs.locator("details[data-team-tab-disclosure]").nth(1)
+    # Settings stays inside the mobile Team navigation disclosure and retains
+    # its Escape and outside-click behavior.
+    defaults = page.goto(
+        f"/admin?team_id={admin['team_id']}&team_tab=defaults", wait_until="domcontentloaded"
+    )
+    assert defaults is not None and defaults.status == 200
+    nav = page.get_by_role("navigation", name="Team settings")
+    mobile_menu = page.locator("[data-team-navigation]")
+    mobile_summary = mobile_menu.locator("summary.team-mobile-navigation-summary")
+    assert mobile_summary.is_visible()
+    assert not mobile_menu.evaluate("el => el.open")
+    settings_group = nav.locator("details[data-team-tab-disclosure]").first
+    mobile_summary.click()
     settings_group.locator("summary").click()
     assert settings_group.evaluate("el => el.open")
     page.keyboard.press("Escape")
     page.wait_for_function("el => !el.open", arg=settings_group.element_handle())
-    assert mobile_menu.evaluate("el => el.open"), "Escape should close the innermost group first"
+    assert mobile_menu.evaluate("el => el.open")
     page.keyboard.press("Escape")
     page.wait_for_function(
         "el => !el.open && document.activeElement === el.querySelector('summary')",
         arg=mobile_menu.element_handle(),
     )
-    target = page.get_by_role("button", name="Team actions")
-    mobile_summary.click()
-    target.click()
-    assert not mobile_menu.evaluate("el => el.open")
-    assert target.evaluate("el => document.activeElement === el")
 
-    # Crossing the breakpoint while focus is inside an open nested group must
-    # close hidden content and place focus on the now-visible outer summary.
-    mobile_summary.click()
-    settings_group.locator("summary").click()
-    settings_group.locator("summary").focus()
-    page.set_viewport_size({"width": 1440, "height": 900})
-    page.set_viewport_size({"width": 768, "height": 900})
-    page.wait_for_function(
-        "details => !details.open && !details.querySelector('details[data-team-tab-disclosure]').open",
-        arg=mobile_menu.element_handle(),
-    )
-    assert mobile_summary.evaluate("el => document.activeElement === el")
+    result = _scan_admin(page, audit_report, "team_nav_disclosures", axe_source, blocked)
+    assert not result.get("violations"), f"axe violations for team navigation: {result.get('violations')}"
 
-    # Resizing must not strand the menu open or hide desktop links; returning
-    # to mobile restores the intentional collapsed disclosure state.
-    page.set_viewport_size({"width": 1440, "height": 900})
-    page.wait_for_function(
-        "window.matchMedia('(min-width: 821px)').matches && document.querySelector('[data-team-navigation]').open"
-    )
-    assert nav.is_visible()
-    assert not mobile_summary.is_visible()
-    page.set_viewport_size({"width": 768, "height": 900})
-    page.wait_for_function(
-        "!window.matchMedia('(min-width: 821px)').matches && !document.querySelector('[data-team-navigation]').open"
-    )
-    assert mobile_summary.is_visible()
-    assert not mobile_menu.evaluate("el => el.open")
-    assert not nav.is_visible()
 
 
 def test_admin_refinement_responsive_screenshots_and_no_page_overflow(

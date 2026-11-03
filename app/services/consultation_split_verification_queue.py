@@ -12,7 +12,7 @@ from app.models import (ConsultationSplitBatch, ConsultationSplitBatchStatus, Co
     ConsultationSplitExecution, ConsultationSplitExecutionKind,
     ConsultationSplitTopicDisposition, ConsultationSplitTopicOutcome,
     ConsultationSplitTopicOutcomeStatus, ConsultationSplitVerificationStatus,
-    User, utcnow)
+    LlmAdapterKind, LlmConfigSetupStatus, User, utcnow)
 from app.services.consultation_split_verification import (
     prepare_split_verification_request,
     split_verification_request_reservation_units,
@@ -20,6 +20,7 @@ from app.services.consultation_split_verification import (
 from app.services.consultation_splits import (queue_split_execution,
     read_split_batch_json, read_split_topic_outcome_output)
 from app.services.llm import active_team_hallucination_check_selection
+from app.services.llm_checker_selection import FrozenCheckerSelection, read_hallucination_check_selection
 from app.services.llm_adapters.runtime import build_provider_snapshot, generation_request_snapshot
 from app.errors import AppError
 
@@ -51,8 +52,23 @@ def queue_split_verification_or_mark_unchecked(db: Session, *, batch: Consultati
     if active_recovery is not None:
         return QueuedSplitVerification(None, None, False)
     owner = db.scalar(select(User).where(User.id == batch.owner_user_id).with_for_update())
-    selection = active_team_hallucination_check_selection(db, team_id=batch.team_id)
-    if selection is None or selection.config is None:
+    selection = read_hallucination_check_selection(db, source=batch)
+    if selection is None:
+        # Legacy pending batches retain their prior live-selection behavior;
+        # core blocks policy/selection mutations until these batches drain.
+        legacy = active_team_hallucination_check_selection(db, team_id=batch.team_id)
+        if legacy is None or legacy.config is None:
+            selection = FrozenCheckerSelection("not_configured")
+        else:
+            model = (legacy.model_name_override or legacy.config.model_name or "").strip()
+            selection = (
+                FrozenCheckerSelection(
+                    "configured", legacy.config, model,
+                    build_provider_snapshot(config=legacy.config, model=model).to_dict(),
+                )
+                if model else FrozenCheckerSelection("invalid")
+            )
+    if selection.status == "not_configured":
         batch.verification_status = ConsultationSplitVerificationStatus.unchecked
         batch.verification_reason = "verification_not_selected"
         batch.verification_completed_at = utcnow()
@@ -77,12 +93,17 @@ def queue_split_verification_or_mark_unchecked(db: Session, *, batch: Consultati
             clinical_snapshot=read_split_batch_json(db, owner, batch=batch, field="clinical_snapshot_encrypted") or {},
             confirmed_plan=plan, survivor_outputs=survivors,
         )
-        model = (selection.model_name_override or selection.config.model_name or "").strip()
-        if not model:
-            raise ValueError("no model")
-        provider = build_provider_snapshot(config=selection.config, model=model)
+        config = selection.config
+        model = selection.model_name
+        provider = selection.provider_snapshot
+        if (
+            selection.status != "configured" or config is None or not model
+            or provider is None or not config.is_active
+            or config.setup_status != LlmConfigSetupStatus.ready
+        ):
+            raise ValueError("checker not eligible")
         messages = prepared.request_body["messages"]
-        request = generation_request_snapshot(adapter_kind=selection.config.adapter_kind, model=model,
+        request = generation_request_snapshot(adapter_kind=LlmAdapterKind(provider["adapter_kind"]), model=model,
             user_id=owner.id, system_message=messages[0]["content"], user_message=messages[1]["content"],
             output_token_cap=prepared.output_token_cap, response_json_schema=prepared.response_json_schema)
         reservation_units = split_verification_request_reservation_units(
@@ -103,7 +124,7 @@ def queue_split_verification_or_mark_unchecked(db: Session, *, batch: Consultati
             kind=ConsultationSplitExecutionKind.verification, batch=batch,
             reserved_units=reservation_units,
             reservation_valid_until=utcnow() + timedelta(seconds=SPLIT_VERIFICATION_RESERVATION_SECONDS),
-            llm_config_id=selection.config.id, provider_snapshot=provider.to_dict(), request_payload=request,
+            llm_config_id=config.id, provider_snapshot=provider, request_payload=request,
             expected_model=model)
     except AppError as exc:
         # The checker is optional. Its independent reservation must not unwind

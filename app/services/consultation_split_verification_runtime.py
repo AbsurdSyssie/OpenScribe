@@ -35,7 +35,8 @@ from app.services.llm_backup_policy import can_failover, prepare_backup_request,
 from app.services.quotas import estimate_token_reservation
 from app.services.llm_backup import effective_provider_attempt
 from app.services.quotas import (cancel_provider_attempt, mark_provider_attempt_submitted,
-    settle_provider_attempt_tokens, settle_provider_attempt_unknown_tokens)
+    settle_provider_attempt_tokens, settle_provider_attempt_unknown_tokens,
+    settle_provider_attempt_timeout_waived)
 from app.services.transcripts import transcript_is_expired
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.task_outbox import cancel_pending_task_dispatch
@@ -193,11 +194,12 @@ def _try_pre_submit_backup_verification(db: Session, *, work, primary_request: d
     try:
         with provider_attempt_execution(db, attempt_id=child.id, maximum_seconds=30):
             text, usage = llm_runtime.invoke_llm(snapshot=backup, credential=credential, request_body=request)
-    except AppError:
+    except AppError as exc:
         current = _lock(db, execution_id)
         if current and current[4].id == child.id:
             _finish(db, current, reason="verification_provider_failed", verified=False,
-                submitted=True, expected_attempt_id=child.id)
+                submitted=True, expected_attempt_id=child.id,
+                timeout_waived=exc.code == "llm_provider_timeout")
         else:
             db.rollback()
         return True
@@ -223,7 +225,7 @@ def _try_pre_submit_backup_verification(db: Session, *, work, primary_request: d
 
 def _finish(db: Session, work, *, reason: str | None, verified: bool, corrected: dict | None = None,
             correction_count: int | None = None, submitted: bool = False, usage: dict | None = None,
-            expected_attempt_id: UUID | None = None) -> None:
+            expected_attempt_id: UUID | None = None, timeout_waived: bool = False) -> None:
     execution, batch, owner, transcript, attempt, dispatch, topics, outcomes = work
     now = utcnow()
     if expected_attempt_id is not None and (
@@ -236,7 +238,13 @@ def _finish(db: Session, work, *, reason: str | None, verified: bool, corrected:
         return
     if transcript_is_expired(transcript):
         if attempt.status is AttemptStatus.submitted:
-            settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id, now=now)
+            if timeout_waived:
+                settled = settle_provider_attempt_timeout_waived(db, attempt_id=attempt.id, now=now)
+                settled.error_code = "llm_provider_timeout"
+            else:
+                settle_provider_attempt_unknown_tokens(
+                    db, attempt_id=attempt.id, now=now, allow_timeout_waiver=False,
+                )
         elif attempt.status is AttemptStatus.reserved:
             cancel_provider_attempt(db, attempt_id=attempt.id, now=now)
             if dispatch.state is TaskDispatchState.pending:
@@ -261,7 +269,10 @@ def _finish(db: Session, work, *, reason: str | None, verified: bool, corrected:
             )
         except AppError:
             if submitted:
-                if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int):
+                if timeout_waived:
+                    settled = settle_provider_attempt_timeout_waived(db, attempt_id=attempt.id, now=now)
+                    settled.error_code = "llm_provider_timeout"
+                elif isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int):
                     settle_provider_attempt_tokens(db, attempt_id=attempt.id, reported_total_tokens=usage["total_tokens"],
                         reported_input_tokens=usage.get("input_tokens"), reported_output_tokens=usage.get("output_tokens"),
                         outcome=AttemptOutcome.failed)
@@ -274,12 +285,17 @@ def _finish(db: Session, work, *, reason: str | None, verified: bool, corrected:
             _finish_materialization_binding_invalid(db, work)
             return
     if submitted:
-        if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int):
+        if timeout_waived:
+            settled = settle_provider_attempt_timeout_waived(db, attempt_id=attempt.id, now=now)
+            settled.error_code = "llm_provider_timeout"
+        elif isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int):
             settle_provider_attempt_tokens(db, attempt_id=attempt.id, reported_total_tokens=usage["total_tokens"],
                 reported_input_tokens=usage.get("input_tokens"), reported_output_tokens=usage.get("output_tokens"),
                 outcome=AttemptOutcome.succeeded if verified else AttemptOutcome.failed)
         else:
-            settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id)
+            settle_provider_attempt_unknown_tokens(
+                db, attempt_id=attempt.id, allow_timeout_waiver=not verified,
+            )
     else:
         cancel_provider_attempt(db, attempt_id=attempt.id, now=now)
         if dispatch.state is TaskDispatchState.pending:
@@ -543,7 +559,9 @@ def _try_backup_verification(db: Session, *, execution_id: UUID, error: AppError
         return False
     raw_usage = usage if isinstance(usage, dict) else {}
     total = raw_usage.get("total_tokens")
-    if isinstance(total, int) and not isinstance(total, bool) and total >= 0:
+    if error.code == "llm_provider_timeout":
+        settle_provider_attempt_timeout_waived(db, attempt_id=primary.id)
+    elif isinstance(total, int) and not isinstance(total, bool) and total >= 0:
         settle_provider_attempt_tokens(db, attempt_id=primary.id, reported_total_tokens=total,
             reported_input_tokens=raw_usage.get("input_tokens"), reported_output_tokens=raw_usage.get("output_tokens"),
             outcome=AttemptOutcome.failed)
@@ -598,7 +616,8 @@ def _try_backup_verification(db: Session, *, execution_id: UUID, error: AppError
         work = _lock(db, execution_id)
         if work and work[4].id == child.id:
             _finish(db, work, reason="verification_provider_failed", verified=False,
-                submitted=True, expected_attempt_id=child.id)
+                submitted=True, expected_attempt_id=child.id,
+                timeout_waived=exc.code == "llm_provider_timeout")
         else:
             db.rollback()
         return True
@@ -718,7 +737,8 @@ def process_consultation_split_verification_execution(db: Session, *, execution_
         work = _lock(db, execution_id)
         if work and work[4].id == submitted_attempt_id:
             _finish(db, work, reason="verification_provider_failed", verified=False,
-                submitted=True, expected_attempt_id=submitted_attempt_id)
+                submitted=True, expected_attempt_id=submitted_attempt_id,
+                timeout_waived=tagged.code == "llm_provider_timeout")
         else:
             db.rollback()
         return

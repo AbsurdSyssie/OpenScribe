@@ -9,7 +9,11 @@ from sqlalchemy import select
 
 from app.models import (
     ConsultationSplitTopicDisposition,
+    AttemptOutcome,
     AttemptKind,
+    ProviderSettlementBasis,
+    ProviderUsageEvent,
+    ProviderUsageEventType,
     GeneratedDocument,
     GeneratedDocumentGeneratorType,
     GeneratedDocumentStatus,
@@ -56,7 +60,7 @@ def _frozen_template(template, version):
     }
 
 
-@pytest.mark.parametrize("primary_fails", [False, True])
+@pytest.mark.parametrize("primary_failure", [None, "unreachable", "timeout"])
 def test_split_note_regeneration_uses_confirmed_snapshot_and_creates_revision(
     db_session,
     monkeypatch,
@@ -65,7 +69,7 @@ def test_split_note_regeneration_uses_confirmed_snapshot_and_creates_revision(
     make_template,
     make_llm_config,
     make_llm_selection,
-    primary_fails,
+    primary_failure,
 ):
     team = make_team(name="Split regeneration clinic")
     admin = make_user(
@@ -277,7 +281,9 @@ def test_split_note_regeneration_uses_confirmed_snapshot_and_creates_revision(
     def fake_generate(**kwargs):
         provider_requests.append(kwargs["request_body"])
         provider_calls.append(kwargs["config"].id)
-        if kwargs["config"].id == config.id and primary_fails:
+        if kwargs["config"].id == config.id and primary_failure:
+            if primary_failure == "timeout":
+                raise tag_provider_failure(AppError(504, "llm_provider_timeout", "Synthetic primary timeout"))
             raise tag_provider_failure(AppError(502, "llm_provider_unreachable", "Synthetic primary outage"))
         return split_response, {"input_tokens": 8, "output_tokens": 4, "total_tokens": 12, "duration_ms": 3}
 
@@ -320,8 +326,8 @@ def test_split_note_regeneration_uses_confirmed_snapshot_and_creates_revision(
         f"model={processed.model_used!r}"
     )
     assert processed.title == PERSISTED_SPLIT_NOTE_TITLE
-    expected_config = backup_config if primary_fails else config
-    assert provider_calls == ([config.id, backup_config.id] if primary_fails else [config.id])
+    expected_config = backup_config if primary_failure else config
+    assert provider_calls == ([config.id, backup_config.id] if primary_failure else [config.id])
     assert processed.model_used == expected_config.model_name
     assert processed.llm_adapter_kind == expected_config.adapter_kind.value
     assert processed.llm_base_url == expected_config.base_url
@@ -330,12 +336,24 @@ def test_split_note_regeneration_uses_confirmed_snapshot_and_creates_revision(
         ProviderAttempt.generated_document_id == queued.id,
         ProviderAttempt.attempt_kind == AttemptKind.llm_generation,
     )))
-    assert len(attempts) == (2 if primary_fails else 1)
-    assert sum(item.backup_of_attempt_id is not None for item in attempts) == (1 if primary_fails else 0)
-    if primary_fails:
+    assert len(attempts) == (2 if primary_failure else 1)
+    assert sum(item.backup_of_attempt_id is not None for item in attempts) == (1 if primary_failure else 0)
+    if primary_failure:
+        primary_attempt = next(item for item in attempts if item.backup_of_attempt_id is None)
         backup_attempt = next(item for item in attempts if item.backup_of_attempt_id is not None)
         assert backup_attempt.status.value == "settled"
         assert backup_attempt.outcome.value == "succeeded"
+        if primary_failure == "timeout":
+            assert (primary_attempt.outcome, primary_attempt.settlement_basis, primary_attempt.settled_units) == (
+                AttemptOutcome.unknown, ProviderSettlementBasis.timeout_waived, 0,
+            )
+            failure_event = db_session.scalar(select(ProviderUsageEvent).where(
+                ProviderUsageEvent.generated_document_id == queued.id,
+                ProviderUsageEvent.event_type == ProviderUsageEventType.failed,
+            ))
+            assert failure_event is not None
+            assert (failure_event.prompt_tokens, failure_event.completion_tokens,
+                    failure_event.total_tokens, failure_event.estimated_cost_usd) == (None, None, None, None)
     assert decrypt_text_for_owner(
         db_session,
         owner_user_id=owner.id,

@@ -24,8 +24,8 @@ from app.services.consultation_split_locks import lock_consultation_split_source
 from app.services.consultation_splits import (
     queue_split_execution, read_split_batch_json, read_split_execution_json, read_split_topic_outcome_output,
 )
-from app.services.llm import resolve_user_llm
 from app.services.llm_adapters.runtime import build_provider_snapshot
+from app.services.llm_generation_provider import resolve_frozen_split_retry_provider
 from app.services.consultation_split_gates import batch_split_enabled, consultation_splitting_available
 from app.services.preferences import consultation_splitting_enabled
 from app.services.task_outbox import try_publish_task_dispatch_safely
@@ -144,10 +144,9 @@ def _queue_recovery(
         if outcome.status is ConsultationSplitTopicOutcomeStatus.validated:
             siblings[topic.topic_uuid] = read_split_topic_outcome_output(db, actor, outcome=outcome)
     if automatic_from_execution is None:
-        _selection, config, model, _preference = resolve_user_llm(db, actor)
-        if not isinstance(model, str) or not model.strip():
-            raise AppError(422, "consultation_split_llm_model_unavailable", "No LLM model is available for consultation splitting")
-        snapshot = build_provider_snapshot(config=config, model=model.strip()).to_dict()
+        writing_provider = resolve_frozen_split_retry_provider(db, actor, batch=batch)
+        config, model = writing_provider.config, writing_provider.model_name
+        snapshot = build_provider_snapshot(config=config, model=model).to_dict()
     else:
         config = db.get(TeamLlmConfig, initial.llm_config_id) if initial.llm_config_id else None
         if config is None or config.team_id != actor.team_id:

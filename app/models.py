@@ -426,6 +426,7 @@ class ProviderSettlementBasis(str, enum.Enum):
     reported = "reported"
     measured = "measured"
     conservative_unknown = "conservative_unknown"
+    timeout_waived = "timeout_waived"
     stream_authorized = "stream_authorized"
     stream_measured = "stream_measured"
 
@@ -1184,11 +1185,42 @@ class TeamLlmConfig(Base):
     created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
     updated_by: Mapped[User] = relationship(foreign_keys=[updated_by_user_id])
     selections: Mapped[list["TeamLlmSelection"]] = relationship(back_populates="config")
+    model_policy: Mapped["TeamLlmProviderModelPolicy | None"] = relationship(
+        back_populates="config", uselist=False, cascade="all, delete-orphan"
+    )
     backup_selections: Mapped[list["TeamLlmBackupSelection"]] = relationship(back_populates="config")
     hallucination_check_selections: Mapped[list["TeamHallucinationCheckSelection"]] = relationship(back_populates="config")
     consultation_split_executions: Mapped[list["ConsultationSplitExecution"]] = relationship(
         back_populates="llm_config", foreign_keys="ConsultationSplitExecution.llm_config_id"
     )
+
+
+class TeamLlmProviderModelPolicy(Base):
+    """Team-wide model allowance and writing default for one provider root."""
+    __tablename__ = "team_llm_provider_model_policies"
+    __table_args__ = (
+        UniqueConstraint("team_id", "llm_config_id", name="uq_team_llm_provider_model_policies_team_config"),
+        CheckConstraint(
+            "default_model_name IS NULL OR length(btrim(default_model_name)) > 0",
+            name="ck_team_llm_provider_model_policies_default_nonempty",
+        ),
+    )
+
+    llm_config_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("team_llm_configs.id", ondelete="CASCADE"), primary_key=True
+    )
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    enabled_models_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    default_model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    updated_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    config: Mapped[TeamLlmConfig] = relationship(back_populates="model_policy")
+    team: Mapped[Team] = relationship()
+    updated_by: Mapped[User] = relationship(foreign_keys=[updated_by_user_id])
 
 
 class TeamLlmSelection(Base):
@@ -2448,11 +2480,16 @@ class ConsultationSplitBatch(Base):
         CheckConstraint("error_code IS NULL OR char_length(error_code) <= 128", name="ck_consultation_split_batches_error_code_length"),
         Index("ix_consultation_split_batches_transcript_status", "transcript_id", "status"),
         Index("ix_consultation_split_batches_retention", "retention_expires_at"),
+        Index("ix_split_batches_checker_selection_config", "hallucination_check_selection_config_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     backup_llm_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("team_llm_configs.id", ondelete="SET NULL"), nullable=True)
     backup_provider_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hallucination_check_selection_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hallucination_check_selection_config_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("team_llm_configs.id", ondelete="RESTRICT"), nullable=True
+    )
 
     intent_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
@@ -2721,6 +2758,7 @@ class GeneratedDocument(Base):
             "regeneration_revision_no",
             name="uq_generated_documents_regeneration_lineage_revision",
         ),
+        Index("ix_generated_documents_checker_selection_config", "hallucination_check_selection_config_id"),
         CheckConstraint(
             "(consultation_split_batch_topic_id IS NULL) = (consultation_split_topic_uuid IS NULL)",
             name="ck_generated_documents_consultation_split_membership",
@@ -2749,6 +2787,10 @@ class GeneratedDocument(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     backup_llm_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("team_llm_configs.id", ondelete="SET NULL"), nullable=True)
     backup_provider_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hallucination_check_selection_snapshot_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hallucination_check_selection_config_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("team_llm_configs.id", ondelete="RESTRICT"), nullable=True
+    )
 
     owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
@@ -3058,6 +3100,10 @@ class ProviderAttempt(Base):
             "(settlement_basis = 'measured' AND resource = 'audio_seconds' AND measured_audio_seconds > 0) OR "
             "(settlement_basis = 'conservative_unknown' AND resource = 'tokens' AND reported_total_tokens IS NULL "
             "AND settled_units = reserved_units AND outcome = 'unknown') OR "
+            "(settlement_basis = 'timeout_waived' AND resource = 'tokens' AND attempt_kind IN "
+            "('llm_generation', 'llm_hallucination_check', 'llm_template_suggestion', "
+            "'consultation_split_analysis', 'consultation_split_generation', 'consultation_split_verification') "
+            "AND settled_units = 0 AND outcome = 'unknown') OR "
             "(settlement_basis = 'stream_authorized' AND resource = 'audio_seconds' "
             "AND attempt_kind = 'stt_deepgram_live_stream' AND measured_audio_seconds IS NULL "
             "AND settled_units = reserved_units AND outcome = 'unknown') OR "

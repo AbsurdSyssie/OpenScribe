@@ -128,7 +128,7 @@ def test_generation_uses_one_frozen_backup_and_accounts_for_winning_provider(
     assert process_generated_document(db_session, document_id=document.id).status is result.status
     assert len(calls) == first_call_count
 
-    if failure_mode in {"hard_quota", "backup_quota", "backup_invalid", "backup_preflight_context_failure"}:
+    if failure_mode in {"backup_quota", "backup_invalid", "backup_preflight_context_failure"}:
         assert result.status is GeneratedDocumentStatus.failed
         assert len(calls) == (2 if failure_mode == "backup_invalid" else 0 if failure_mode == "backup_preflight_context_failure" else 1)
         if failure_mode not in {"backup_preflight_context_failure", "backup_invalid"}:
@@ -156,14 +156,14 @@ def test_generation_uses_one_frozen_backup_and_accounts_for_winning_provider(
         ProviderAttempt.generated_document_id == document.id,
         ProviderAttempt.attempt_kind == AttemptKind.llm_generation,
     ).order_by(ProviderAttempt.backup_of_attempt_id.nullsfirst())))
-    assert len(attempts) == (2 if failure_mode in {"provider_error", "invalid_output", "backup_invalid", "expired_timeout"} else 1)
+    assert len(attempts) == (2 if failure_mode in {"provider_error", "invalid_output", "backup_invalid", "expired_timeout", "hard_quota"} else 1)
     primary_attempt = next(item for item in attempts if item.backup_of_attempt_id is None)
     if failure_mode == "backup_preflight_context_failure":
         assert primary_attempt.status is AttemptStatus.cancelled
         assert not any(item.backup_of_attempt_id is not None for item in attempts)
         return
     assert primary_attempt.status is AttemptStatus.settled
-    if failure_mode in {"provider_error", "invalid_output", "backup_invalid", "expired_timeout"}:
+    if failure_mode in {"provider_error", "invalid_output", "backup_invalid", "expired_timeout", "hard_quota"}:
         backup_attempt = next(item for item in attempts if item.backup_of_attempt_id is not None)
         assert backup_attempt.status is AttemptStatus.settled
         assert backup_attempt.backup_of_attempt_id == primary_attempt.id
@@ -174,7 +174,7 @@ def test_generation_uses_one_frozen_backup_and_accounts_for_winning_provider(
     events = list(db_session.scalars(select(ProviderUsageEvent).where(
         ProviderUsageEvent.generated_document_id == document.id,
     )))
-    if failure_mode in {"provider_error", "invalid_output", "backup_invalid", "expired_timeout"}:
+    if failure_mode in {"provider_error", "invalid_output", "backup_invalid", "expired_timeout", "hard_quota"}:
         assert any(item.event_type.value == "failed" and item.llm_config_id == primary.id for item in events)
         if failure_mode == "backup_invalid":
             assert any(item.event_type.value == "failed" and item.llm_config_id == backup.id for item in events)
@@ -182,7 +182,7 @@ def test_generation_uses_one_frozen_backup_and_accounts_for_winning_provider(
             assert any(item.event_type.value == "completed" and item.llm_config_id == backup.id for item in events)
 
 
-@pytest.mark.parametrize("failure_mode", ["invalid_output", "invalid_credential", "invalid_backup"])
+@pytest.mark.parametrize("failure_mode", ["invalid_output", "invalid_credential", "invalid_backup", "invalid_checker"])
 def test_structured_checker_uses_only_one_frozen_backup(
     db_session, make_team, make_user, make_llm_config, make_llm_selection,
     make_template, monkeypatch, failure_mode,
@@ -190,7 +190,10 @@ def test_structured_checker_uses_only_one_frozen_backup(
     team = make_team(name=f"Checker backup {uuid4()}")
     admin = make_user(email=f"checker-admin-{uuid4()}@example.com", password="password-1", is_system_admin=True)
     owner = make_user(email=f"checker-owner-{uuid4()}@example.com", password="password-2", team=team, team_role=TeamRole.user)
-    primary = make_llm_config(team=team, actor=admin, has_secret=False, available_models_json=["primary-model"])
+    primary = make_llm_config(
+        team=team, actor=admin, has_secret=False, model_name="primary-model",
+        available_models_json=["primary-model"],
+    )
     make_llm_selection(config=primary, actor=admin, model_name_override="primary-model")
     checker = make_llm_config(team=team, actor=admin, label="Checker", has_secret=False, available_models_json=["checker-model"])
     backup = make_llm_config(team=team, actor=admin, label="Backup", has_secret=False, model_name="backup-model", available_models_json=["backup-model"])
@@ -201,6 +204,9 @@ def test_structured_checker_uses_only_one_frozen_backup(
             selected_by_user_id=admin.id,
         ),
     ])
+    if failure_mode == "invalid_checker":
+        checker.model_policy.enabled_models_json = []
+        checker.model_policy.default_model_name = None
     transcript = Transcript(
         owner_user_id=owner.id, team_id=team.id, title="Synthetic visit",
         ingestion_mode=TranscriptIngestionMode.whole_file, status=TranscriptStatus.ready,
@@ -220,6 +226,17 @@ def test_structured_checker_uses_only_one_frozen_backup(
     document = queue_document_generation_from_template(
         db_session, owner, transcript_id=transcript.id, template_id=template.id,
     )
+    # Simulate a post-acceptance admin edit without invoking the mutation
+    # guard: execution must consume the checker model already frozen on this
+    # document, even when the live role and allowance now disagree.
+    checker_selection = db_session.scalar(select(TeamHallucinationCheckSelection).where(
+        TeamHallucinationCheckSelection.team_id == team.id,
+    ))
+    checker_selection.llm_config_id = backup.id
+    checker_selection.model_name_override = "backup-model"
+    checker.model_policy.enabled_models_json = []
+    checker.model_policy.default_model_name = None
+    db_session.commit()
     calls = []
     checker_invalid = '{"status":"unchanged","status":"corrected","edits":[]}'
     corrected = '{"status":"corrected","edits":[{"section_key":"problem","original":"Supported original note.","replacement":"Supported corrected note."}]}'
@@ -246,7 +263,15 @@ def test_structured_checker_uses_only_one_frozen_backup(
     monkeypatch.setattr(templates, "_invoke_frozen_llm", invoke)
     monkeypatch.setattr(templates, "_resolve_generation_credential", credential)
     result = process_generated_document(db_session, document_id=document.id)
-    assert result.status is GeneratedDocumentStatus.ready
+    assert result.status is GeneratedDocumentStatus.ready, result.error_code
+    if failure_mode == "invalid_checker":
+        assert result.hallucination_check_status.value == "skipped_config_invalid"
+        assert calls == [(primary.id, "primary-model")]
+        assert not db_session.scalars(select(ProviderAttempt).where(
+            ProviderAttempt.generated_document_id == document.id,
+            ProviderAttempt.attempt_kind == AttemptKind.llm_hallucination_check,
+        )).all()
+        return
     checker_attempts = list(db_session.scalars(select(ProviderAttempt).where(
         ProviderAttempt.generated_document_id == document.id,
         ProviderAttempt.attempt_kind == AttemptKind.llm_hallucination_check,

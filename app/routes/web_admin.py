@@ -8,13 +8,13 @@ from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import Depends, Form, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from .. import main as main_module
 from ..db import get_db
-from ..errors import AppError
+from ..errors import AppError, error_response
 from ..llm_provider_defaults import DEFAULT_BEDROCK_CHAT_REGION, bedrock_region_from_base_url
 from ..main import (
     BrowserCsrf,
@@ -201,16 +201,47 @@ def _quota_panel_target(db: Session, user_id: UUID) -> User | None:
     return target
 
 
-def _quota_panel_url(target: User, notice: str | None = None) -> str:
+def _request_accepts_json(request: Request) -> bool:
+    return any(
+        media_range.split(";", 1)[0].strip().lower() == "application/json"
+        for media_range in request.headers.get("accept", "").split(",")
+    )
+
+
+def _provider_details_json_error(exc: AppError) -> JSONResponse:
+    allowed_detail_keys = {"field", "resource", "config_id"}
+    details = {
+        key: value
+        for key, value in (exc.details or {}).items()
+        if key in allowed_detail_keys and isinstance(value, (str, int, float, bool))
+    }
+    return error_response(exc.status_code, exc.code, exc.message, details or None)
+
+
+def _quota_panel_list_url(target: User, quota_period: str | None = None, usage_range: str | None = None, search: str | None = None) -> str:
+    params = {"team_id": str(target.team_id), "view": "quotas"}
+    if quota_period in {QuotaPeriod.daily.value, QuotaPeriod.monthly.value}:
+        params["quota_period"] = quota_period
+    if usage_range in {"30d", "90d", "1y", "all"}:
+        params["range"] = usage_range
+    if search:
+        params["quota_search"] = search[:120]
+    params["quota_notice"] = "limits_updated"
+    return f"/admin/usage?{urlencode(params)}#quota-members-heading"
+
+
+def _quota_panel_url(target: User, notice: str | None = None, quota_period: str | None = None) -> str:
     params = {"team_id": str(target.team_id), "view": "quotas", "member_id": str(target.id)}
     if notice:
         params["quota_notice"] = notice
+    if quota_period in {QuotaPeriod.daily.value, QuotaPeriod.monthly.value}:
+        params["quota_period"] = quota_period
     return f"/admin/usage?{urlencode(params)}"
 
 
 def _quota_error_page(
     request: Request, db: Session, actor: User, user_id: UUID, exc: AppError,
-    values: dict[str, object], *, open_form: str, grant_id: UUID | None = None,
+    values: dict[str, object], *, open_form: str, grant_id: UUID | None = None, table_flow: bool = False,
 ):
     target = _quota_panel_target(db, user_id)
     if target is None:
@@ -221,7 +252,7 @@ def _quota_error_page(
         message_kind="error", status_code=exc.status_code, active_admin_tab="home", admin_page_route="/admin/usage",
         admin_return_view="standalone_usage", standalone_usage=True, usage_page_view="quotas",
         quota_open_form=open_form, quota_grant_id=str(grant_id) if grant_id else None,
-        quota_edit_mode=open_form == "limits",
+        quota_edit_mode=open_form == "limits", quota_table_flow=table_flow, quota_search=request.query_params.get("quota_search"),
     )
 
 
@@ -257,6 +288,10 @@ def admin_usage_page(
     monitor_since: str | None = None,
     member_id: str | None = None,
     quota_edit: str | None = None,
+    quota_expand: str | None = None,
+    quota_flow: str | None = None,
+    quota_search: str | None = None,
+    quota_fragment: str | None = None,
     quota_notice: str | None = None,
     create_team: str | None = None,
     db: Session = Depends(get_db),
@@ -281,6 +316,24 @@ def admin_usage_page(
         view = "team"
         member_id = None
         quota_edit = None
+    if quota_fragment is not None:
+        if quota_fragment not in {"usage", "editor"} or view != "quotas" or not team_id or not member_id:
+            return HTMLResponse("Not found", status_code=status.HTTP_404_NOT_FOUND)
+        if quota_fragment == "editor" and (quota_edit != "limits" or quota_flow != "table"):
+            return HTMLResponse("Not found", status_code=status.HTTP_404_NOT_FOUND)
+        try:
+            fragment_team_id = UUID(team_id)
+            fragment_member_id = UUID(member_id)
+        except ValueError:
+            return HTMLResponse("Not found", status_code=status.HTTP_404_NOT_FOUND)
+        fragment_member = db.get(User, fragment_member_id)
+        if (
+            fragment_member is None
+            or fragment_member.team_id != fragment_team_id
+            or fragment_member.is_system_admin
+            or fragment_member.team_role is None
+        ):
+            return HTMLResponse("Not found", status_code=status.HTTP_404_NOT_FOUND)
     safe_notice = quota_notice if quota_notice in {"limits_updated", "grant_created", "usage_reset", "grant_revoked"} else None
     if view == "quotas":
         return render_admin(
@@ -288,6 +341,15 @@ def admin_usage_page(
             active_admin_tab="home", workspace_team_tab="quotas", standalone_usage=True,
             usage_page_view="quotas", admin_page_route="/admin/usage", admin_return_view="standalone_usage",
             selected_quota_member_id=member_id, quota_edit_mode=bool(member_id and quota_edit == "limits"),
+            quota_expanded_usage=bool(member_id and quota_expand == "usage"),
+            quota_table_flow=bool(member_id and quota_flow == "table" and quota_edit == "limits"),
+            quota_search=quota_search,
+            quota_fragment=quota_fragment,
+            template_name=(
+                "_admin_quota_usage_fragment.html" if quota_fragment == "usage"
+                else "admin_quota_limits_modal.html" if quota_fragment == "editor"
+                else None
+            ),
             quota_selection_error=("Choose an eligible member from this team." if request.query_params.get("member_id") and not member_id else None),
             admin_create_team_open=create_team == "1",
             message={
@@ -351,6 +413,20 @@ def admin_page(
         team_tab = None
         member_id = None
         quota_edit = None
+    if team_id and team_tab == "defaults":
+        # Defaults now live in Usage → Quotas; keep old bookmarks useful.
+        params = {"team_id": team_id, "view": "quotas"}
+        if member_id:
+            params["member_id"] = member_id
+        if request.query_params.get("range") in {"30d", "90d", "1y", "all"}:
+            params["range"] = request.query_params["range"]
+        return RedirectResponse(f"/admin/usage?{urlencode(params)}", status_code=status.HTTP_303_SEE_OTHER)
+    if team_id and team_tab in {"security", "danger"}:
+        # The former Security and Danger zone pages are one Security & data area.
+        return RedirectResponse(
+            f"/admin?{urlencode({'team_id': team_id, 'team_tab': 'security-data'})}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     # Preserve old Manage quotas links by mapping their selected member into
     # the dedicated team Quotas tab.
     if team_id and team_tab == "members" and member_id:
@@ -358,7 +434,7 @@ def admin_page(
             f"/admin?{urlencode({'team_id': team_id, 'team_tab': 'quotas', 'member_id': member_id})}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
-    team_tabs = {"overview", "members", "quotas", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"}
+    team_tabs = {"overview", "members", "quotas", "provider-policy", "stt", "llm", "deidentification", "security-data"}
     if team_tab in team_tabs:
         resolved_team_tab = team_tab
     elif team_id and tab == "providers":
@@ -422,6 +498,9 @@ def admin_page(
             params["team_id"] = team_id
         if team_id and member_id:
             params["member_id"] = member_id
+        quota_period = request.query_params.get("quota_period")
+        if team_id and quota_period in {QuotaPeriod.daily.value, QuotaPeriod.monthly.value}:
+            params["quota_period"] = quota_period
         if team_id and quota_edit == "limits":
             params["quota_edit"] = "limits"
         if team_id and safe_notice:
@@ -431,7 +510,7 @@ def admin_page(
             params["range"] = allowed_range
         return RedirectResponse(f"/admin/usage?{urlencode(params)}", status_code=status.HTTP_303_SEE_OTHER)
     if tab in {"home", "directory"} or (
-        tab in {"defaults", "providers"} and not team_id
+        tab == "defaults" and not team_id
     ) or (
         not team_id and (tab is None or tab not in functional_tabs)
     ):
@@ -1016,7 +1095,7 @@ def admin_update_user_quota_limits(
     daily_token_unlimited: str | None = Form(None), monthly_token_unlimited: str | None = Form(None),
     daily_audio_unlimited: str | None = Form(None), monthly_audio_unlimited: str | None = Form(None),
     reason_code: str = Form(""), reason: str = Form(""), operation_id: str = Form(""),
-    csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db),
+    quota_flow: str = Form(""), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db),
 ):
     context, response = _page_context_or_redirect(request, db, require_full=True)
     if response is not None:
@@ -1030,6 +1109,7 @@ def admin_update_user_quota_limits(
         "daily_audio_unlimited": bool(daily_audio_unlimited), "monthly_audio_unlimited": bool(monthly_audio_unlimited),
         "reason_code": reason_code, "reason": reason,
     }
+    table_flow = quota_flow == "table"
     try:
         result = update_user_base_quotas_batch(
             db, actor=context.user, user_id=user_id,
@@ -1041,9 +1121,11 @@ def admin_update_user_quota_limits(
         )
     except (ValueError, AppError) as exc:
         error = exc if isinstance(exc, AppError) else AppError(422, "quota_limit_invalid", "Quota limits are invalid")
-        return _quota_error_page(request, db, context.user, user_id, error, values, open_form="limits")
+        return _quota_error_page(request, db, context.user, user_id, error, values, open_form="limits", table_flow=table_flow)
     target = _quota_panel_target(db, result.user_id)
-    return RedirectResponse(_quota_panel_url(target, "limits_updated"), status_code=status.HTTP_303_SEE_OTHER)
+    if table_flow:
+        return RedirectResponse(_quota_panel_list_url(target, request.query_params.get("quota_period"), request.query_params.get("range"), request.query_params.get("quota_search")), status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(_quota_panel_url(target, "limits_updated", request.query_params.get("quota_period")), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/admin/users/{user_id}/quota-grants", response_class=HTMLResponse)
@@ -1071,7 +1153,7 @@ def admin_grant_user_quota(
         error = exc if isinstance(exc, AppError) else AppError(422, "quota_grant_invalid", "Quota grant is invalid")
         return _quota_error_page(request, db, context.user, user_id, error, values, open_form="grant")
     target = _quota_panel_target(db, result.user_id)
-    return RedirectResponse(_quota_panel_url(target, "grant_created"), status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(_quota_panel_url(target, "grant_created", request.query_params.get("quota_period")), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/admin/users/{user_id}/quota-resets", response_class=HTMLResponse)
@@ -1096,7 +1178,7 @@ def admin_reset_user_quota(
         error = exc if isinstance(exc, AppError) else AppError(422, "quota_windows_invalid", "Choose one or more quota windows")
         return _quota_error_page(request, db, context.user, user_id, error, values, open_form="reset")
     target = _quota_panel_target(db, result.user_id)
-    return RedirectResponse(_quota_panel_url(target, "usage_reset"), status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(_quota_panel_url(target, "usage_reset", request.query_params.get("quota_period")), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/admin/users/{user_id}/quota-grants/{grant_id}/revoke", response_class=HTMLResponse)
@@ -1115,7 +1197,7 @@ def admin_revoke_user_quota_grant(
         error = exc if isinstance(exc, AppError) else AppError(422, "quota_grant_invalid", "Quota grant revocation is invalid")
         return _quota_error_page(request, db, context.user, user_id, error, values, open_form="revoke", grant_id=grant_id)
     target = _quota_panel_target(db, result.user_id)
-    return RedirectResponse(_quota_panel_url(target, "grant_revoked"), status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(_quota_panel_url(target, "grant_revoked", request.query_params.get("quota_period")), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.get("/admin-restyled", response_class=HTMLResponse)
@@ -1244,7 +1326,7 @@ def admin_delete_team(
     request: Request,
     team_id: UUID,
     return_view: str = Form(""),
-    return_tab: str = Form("directory"),
+    return_tab: str = Form("security-data"),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -1265,11 +1347,12 @@ def admin_delete_team(
             message_kind="error",
             status_code=exc.status_code,
             active_admin_tab=return_tab or "directory",
+            workspace_team_tab="security-data",
             admin_page_route=_admin_page_route_from_return_view(return_view),
             admin_return_view=_admin_return_view_value(return_view),
         )
     return RedirectResponse(
-        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "directory"),
+        url=_admin_redirect_url(return_view=return_view, return_tab="home"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -1280,7 +1363,7 @@ def admin_update_team_retention(
     team_id: UUID,
     default_retention_days: int = Form(...),
     return_view: str = Form("workspace"),
-    return_tab: str = Form("defaults"),
+    return_tab: str = Form("security-data"),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -1301,6 +1384,7 @@ def admin_update_team_retention(
             message_kind="error",
             status_code=exc.status_code,
             active_admin_tab=return_tab,
+            workspace_team_tab="security-data",
             admin_page_route=_admin_page_route_from_return_view(return_view),
             admin_return_view=_admin_return_view_value(return_view),
         )
@@ -1319,7 +1403,7 @@ def admin_update_team_quota_defaults(
     default_daily_audio_hours: str = Form(...),
     default_monthly_audio_hours: str = Form(...),
     return_view: str = Form("workspace"),
-    return_tab: str = Form("defaults"),
+    return_tab: str = Form("quotas"),
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
@@ -1347,10 +1431,12 @@ def admin_update_team_quota_defaults(
             message=exc.message,
             message_kind="error",
             status_code=exc.status_code,
-            active_admin_tab="home",
-            workspace_team_tab=return_tab,
-            admin_page_route=_admin_page_route_from_return_view(return_view),
-            admin_return_view=_admin_return_view_value(return_view),
+            active_admin_tab="usage",
+            workspace_team_tab="quotas",
+            standalone_usage=True,
+            usage_page_view="quotas",
+            admin_page_route="/admin/usage",
+            admin_return_view="standalone_usage",
         )
     return RedirectResponse(
         url=_admin_redirect_url(return_view=return_view, return_tab=return_tab, team_id=str(team_id)),
@@ -2142,12 +2228,18 @@ def admin_update_stt_config_details(request: Request, config_id: UUID, team_id: 
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
     try:
-        update_stt_config_details_service(db, context.user, config_id=config_id, team_id=UUID(team_id), label=label, is_active=is_active == "true")
+        config = update_stt_config_details_service(db, context.user, config_id=config_id, team_id=UUID(team_id), label=label, is_active=is_active == "true")
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid STT details request"
         code = exc.status_code if isinstance(exc, AppError) else 400
-        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=code, active_admin_tab="home", workspace_team_tab=return_tab, admin_page_route="/admin", admin_return_view="workspace")
-    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab, team_id=team_id), status_code=status.HTTP_303_SEE_OTHER)
+        if _request_accepts_json(request):
+            if isinstance(exc, AppError):
+                return _provider_details_json_error(exc)
+            return error_response(code, "business_rule_violation", detail)
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=code, active_admin_tab="home", active_provider_tab="stt", workspace_team_tab="stt", admin_page_route="/admin", admin_return_view="workspace", provider_details_edit={"kind": "stt", "config_id": str(config_id), "label": label, "is_active": is_active == "true", "error": detail})
+    if _request_accepts_json(request):
+        return JSONResponse({"config": {"id": str(config.id), "label": config.label, "is_active": config.is_active}})
+    return RedirectResponse(url=f"{_admin_redirect_url(return_view=return_view, return_tab=return_tab, team_id=team_id)}&provider_notice=stt_details_saved", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/admin/stt-configs/{config_id}/draft-cancel", response_class=HTMLResponse)
@@ -2549,12 +2641,18 @@ def admin_update_llm_config_details(request: Request, config_id: UUID, team_id: 
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
     try:
-        update_llm_config_details_service(db, context.user, config_id=config_id, team_id=UUID(team_id), label=label, is_active=is_active == "true")
+        config = update_llm_config_details_service(db, context.user, config_id=config_id, team_id=UUID(team_id), label=label, is_active=is_active == "true")
     except (ValueError, AppError) as exc:
         detail = exc.message if isinstance(exc, AppError) else "Invalid LLM details request"
         code = exc.status_code if isinstance(exc, AppError) else 400
-        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=code, active_admin_tab="home", workspace_team_tab=return_tab, admin_page_route="/admin", admin_return_view="workspace")
-    return RedirectResponse(url=_admin_redirect_url(return_view=return_view, return_tab=return_tab, team_id=team_id), status_code=status.HTTP_303_SEE_OTHER)
+        if _request_accepts_json(request):
+            if isinstance(exc, AppError):
+                return _provider_details_json_error(exc)
+            return error_response(code, "business_rule_violation", detail)
+        return render_admin(request, db, current_user=context.user, selected_team_id=team_id, message=detail, message_kind="error", status_code=code, active_admin_tab="home", active_provider_tab="llm", workspace_team_tab="llm", admin_page_route="/admin", admin_return_view="workspace", provider_details_edit={"kind": "llm", "config_id": str(config_id), "label": label, "is_active": is_active == "true", "error": detail})
+    if _request_accepts_json(request):
+        return JSONResponse({"config": {"id": str(config.id), "label": config.label, "is_active": config.is_active}})
+    return RedirectResponse(url=f"{_admin_redirect_url(return_view=return_view, return_tab=return_tab, team_id=team_id)}&provider_notice=llm_details_saved", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/admin/llm-configs/{config_id}/draft-cancel", response_class=HTMLResponse)
@@ -2727,8 +2825,6 @@ def admin_set_llm_selection(
     request: Request,
     team_id: str = Form(...),
     llm_config_id: str = Form(...),
-    allowed_model_names: list[str] = Form(default=[]),
-    provider_model: str = Form(""),
     return_view: str = Form(""),
     return_tab: str = Form(""),
     csrf_protected: BrowserCsrf = None,
@@ -2746,8 +2842,6 @@ def admin_set_llm_selection(
             LlmSelectionUpsert(
                 team_id=UUID(team_id),
                 llm_config_id=UUID(llm_config_id),
-                allowed_models_json=allowed_model_names,
-                model_name_override=provider_model or None,
             ),
         )
     except (ValueError, AppError) as exc:

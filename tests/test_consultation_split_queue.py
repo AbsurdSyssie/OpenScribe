@@ -60,7 +60,7 @@ def test_queue_gate_short_circuits_before_source_or_provider_work(db_session, ma
         lambda *_args, **_kwargs: pytest.fail("source preparation ran"),
     )
     monkeypatch.setattr(
-        "app.services.consultation_split_queue.resolve_user_llm",
+        "app.services.consultation_split_queue.resolve_new_writing_provider",
         lambda *_args, **_kwargs: pytest.fail("provider selection ran"),
     )
 

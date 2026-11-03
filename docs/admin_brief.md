@@ -63,7 +63,7 @@ Important rules:
 
 ### Team provider policy
 
-Within a selected team, admins can manage active selections/defaults for supported purposes. Consultation and post-consultation dictation STT can differ. LLM policy controls provider, allowed models, and default model. De-identification and clinical NLP remain separate selections.
+Within a selected team, admins configure each LLM provider's overall enabled-model allowance and writing default in **Providers → LLM → Models**. The Provider policy table separately assigns the team's writing provider and pins backup/checker models. Team leaders can switch only their own team's writing-provider pointer; they cannot change the overall allowance or provider default. Consultation and post-consultation dictation STT can differ. De-identification and clinical NLP remain separate selections.
 
 Queued work retains its snapshotted execution metadata; later policy edits do not silently retarget an existing job.
 
@@ -84,12 +84,15 @@ Audit surfaces expose bounded action/outcome/actor/target/team/route/IP/user-age
 
 The Admin landing destination is All teams Usage (`/admin/usage?view=team&range=30d`). The compact Team picker opens a selected team workspace or starts team creation in a dialog. Global administration remains a separate group for Account requests, System admins, Global defaults, De-identification providers, Audit, and Legal content. Global pages remain unscoped; the picker displays the remembered team name and the Usage link restores that team's last section without filtering global data.
 
-Selected-team primary tabs are Overview, Members and Quotas; Usage opens its
-dedicated standalone route with local Team/Users/Quotas destinations. Provider
-policy, STT, LLM and De-identification are grouped under Providers; Defaults,
-Security and Danger zone are grouped under Settings. The active nested page
-keeps its existing `team_tab` URL value and is marked as current. Overview
-summarizes the retention default and links to its editor in Defaults.
+The Team settings sidebar group contains Usage, Providers and, when a team is
+selected, Members and Team workspace. These links share the same spacing as
+Global administration. Members keeps its `/admin?team_id=…&team_tab=members`
+route and remains selected when switching teams. Overview and Quotas remain
+team workspace tabs; Usage opens its dedicated route with Team, Users and
+Quotas destinations. Provider policy, STT, LLM and De-identification are
+grouped under Providers; Defaults, Security and Danger zone are grouped under
+Settings. Overview summarizes the retention default and links to its editor in
+Defaults.
 
 Team and tab are validated URL state. A per-tab session-storage hint remembers only the validated team ID, allowlisted section/Usage view, and Usage range; it does not store form drafts, member IDs, or secrets. URLs, browser history, refresh, and explicit All teams navigation remain authoritative. Unsaved form edits prompt before navigation. The account disclosure retains POST logout, and explicit All teams selection and logout clear the admin navigation hint.
 

@@ -1,6 +1,8 @@
 import pytest
 
 from app.errors import AppError
+from app.services import llm, stt
+from app.services.provider_errors import safe_provider_error_diagnostic
 from app.services.provider_inspection import dereference_openapi_document, display_default_from_schema_property, extract_json_path
 
 
@@ -38,6 +40,60 @@ def test_extract_json_path_fails_without_payload_leak():
 
     assert exc_info.value.code == "provider_response_invalid"
     assert "do-not-leak" not in str(exc_info.value.details)
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "expected"),
+    [
+        (503, "provider_server_error", "Provider returned HTTP 503 Service Unavailable (provider_server_error: the provider reported a server error)."),
+        (403, "permission_denied", "Provider returned HTTP 403 Forbidden (permission_denied: the provider denied access)."),
+        (None, "connection_error", "No upstream HTTP response was received; OpenScribe could not establish a provider connection (connection_error)."),
+        (None, "invalid_json", "The provider returned invalid JSON (invalid_json)."),
+    ],
+)
+def test_provider_diagnostic_formats_only_controlled_status_and_reason(status, code, expected):
+    assert safe_provider_error_diagnostic(status_code=status, provider_error_code=code) == expected
+
+
+def test_provider_diagnostic_ignores_unrecognized_codes_and_non_http_statuses():
+    assert safe_provider_error_diagnostic(status_code="503", provider_error_code="private=sentinel") is None
+    assert safe_provider_error_diagnostic(status_code=200, provider_error_code="private=sentinel") is None
+
+
+def test_provider_inspection_diagnostic_ignores_provider_messages_and_unknown_codes():
+    failure = AppError(
+        502,
+        "llm_inspection_failed",
+        "private-message-with-synthetic-key",
+        {
+            "provider_status": 503,
+            "provider_error_code": "private=provider-code",
+            "provider_message": "private-response-with-synthetic-key",
+        },
+    )
+
+    for diagnostic in (llm._provider_discovery_note(failure), stt._provider_inspection_diagnostic(failure)):
+        assert diagnostic is not None
+        assert "HTTP 503 Service Unavailable" in diagnostic
+        assert "provider_server_error" in diagnostic
+        assert "synthetic-key" not in diagnostic
+        assert "private-response" not in diagnostic
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_reason"),
+    [
+        ("invalid_json", "provider returned invalid JSON"),
+        ("invalid_response", "provider returned an unreadable response"),
+        ("response_too_large", "provider response exceeded the allowed size"),
+        ("unsupported_content_encoding", "provider used an unsupported response encoding"),
+    ],
+)
+def test_llm_wrapper_preserves_only_known_internal_diagnostic_codes(code, expected_reason):
+    details = llm._provider_diagnostic_details({"provider_error_code": code})
+
+    assert details == {"provider_error_code": code}
+    assert expected_reason in safe_provider_error_diagnostic(provider_error_code=details["provider_error_code"])
 
 
 def test_display_default_from_schema_property_priority():

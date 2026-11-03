@@ -598,6 +598,7 @@ def test_quota_editors_warn_when_assigned_gemini_cap_meets_or_exceeds_finite_lim
 
     unsafe_model = "model <script>alert(1)</script>"
     config.available_models_json = [model, unsafe_model]
+    config.model_policy.enabled_models_json = [model, unsafe_model]
     selection.allowed_models_json = [model, unsafe_model]
     db_session.commit()
     escaped_models = client.get(_quota_panel_url(team, member) + "&quota_edit=limits")
@@ -1968,10 +1969,11 @@ def test_settings_leader_llm_policy_preserves_active_selection(client, make_team
     page = client.get("/workspace/team/ai-services")
 
     assert page.status_code == 200
-    assert f'value="{active_config.id}" data-default-model="model-a" selected' in page.text
-    assert 'name="allowed_model_names" value="model-b" checked' in page.text
-    assert 'name="provider_model" value="model-b" checked' in page.text
-    assert 'name="allowed_model_names" value="model-a" checked' not in page.text
+    assert re.search(rf'<option value="{active_config.id}"[^>]*selected', page.text)
+    assert "Writing uses the provider’s saved default." in page.text
+    assert "System administrators manage enabled models in Provider settings." in page.text
+    assert 'name="allowed_model_names"' not in page.text
+    assert 'name="provider_model"' not in page.text
 
 
 def test_leader_home_separates_ai_services_from_team_member_admin(client, make_team, make_user, make_stt_config, make_llm_config):
@@ -2020,8 +2022,6 @@ def test_leader_home_ai_service_errors_keep_inline_editor_open(client, make_team
         "/home/llm-selection",
         data={
             "llm_config_id": "not-a-uuid",
-            "allowed_model_names": "gpt-4o-mini",
-            "provider_model": "gpt-4o-mini",
             "return_tab": "ai-services",
         },
     )
@@ -2739,8 +2739,6 @@ def test_leader_home_can_choose_active_llm_selection_from_provisioned_providers(
         "/home/llm-selection",
         data={
             "llm_config_id": str(config.id),
-            "allowed_model_names": ["gpt-4o-mini", "gpt-4.1-mini"],
-            "provider_model": "gpt-4.1-mini",
         },
         follow_redirects=False,
     )
@@ -2749,8 +2747,8 @@ def test_leader_home_can_choose_active_llm_selection_from_provisioned_providers(
     selection = db_session.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == team.id))
     assert selection is not None
     assert selection.llm_config_id == config.id
-    assert selection.allowed_models_json == ["gpt-4o-mini", "gpt-4.1-mini"]
-    assert selection.model_name_override == "gpt-4.1-mini"
+    assert selection.allowed_models_json == list(config.model_policy.enabled_models_json)
+    assert selection.model_name_override == config.model_policy.default_model_name
 
 
 def test_user_home_can_save_llm_preference(client, db_session, make_team, make_user, make_llm_config, make_llm_selection):
@@ -3769,7 +3767,7 @@ def test_admin_workspace_provider_policy_wires_existing_selection_routes(client,
     client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
 
     stt_response = client.post("/admin/stt-selection", data={"team_id": str(team.id), "stt_config_id": str(stt.id), "purpose": "conversation", "provider_model": "whisper-fast", "language": "en-GB", "return_view": "workspace", "return_tab": "provider-policy"}, follow_redirects=False)
-    llm_response = client.post("/admin/llm-selection", data={"team_id": str(team.id), "llm_config_id": str(llm.id), "allowed_model_names": ["model-default", "model-review"], "provider_model": "model-review", "return_view": "workspace", "return_tab": "provider-policy"}, follow_redirects=False)
+    llm_response = client.post("/admin/llm-selection", data={"team_id": str(team.id), "llm_config_id": str(llm.id), "return_view": "workspace", "return_tab": "provider-policy"}, follow_redirects=False)
     assert stt_response.status_code == 303
     assert llm_response.status_code == 303
 
@@ -3783,7 +3781,13 @@ def test_admin_workspace_provider_policy_wires_existing_selection_routes(client,
     assert 'action="/admin/hallucination-check-selection"' in page.text
     assert 'action="/admin/deidentification-selection"' in page.text
     assert 'name="return_tab"' in page.text and 'value="provider-policy"' in page.text
-    assert page.text.count('data-policy-row=') == 7
+    policy_rows = set(re.findall(r'data-policy-row="([^"]+)"', page.text))
+    rendered_policy_rows = {row for row in policy_rows if not row.startswith("${")}
+    assert rendered_policy_rows == {
+        "conversation", "post_consultation_dictation", "writing-assistant",
+        "writing-assistant-backup", "hallucination-checker", "clinical-nlp",
+        "deidentification",
+    }
     assert 'data-policy-row="writing-assistant-backup"' in page.text
     assert 'class="policy-table table-scroll-region" data-provider-policy-table' in page.text
     assert 'role="region" aria-label="Team provider policy table"' in page.text
@@ -3884,8 +3888,8 @@ def test_admin_usage_standalone_route_scope_auth_and_legacy_redirects(
     assert 'class="usage-page usage-page--global"' in global_page.text
     assert 'data-panel="quotas"' not in global_page.text
     assert 'class="usage-user-table"' not in global_page.text
-    assert 'class="team-summary"' not in global_page.text
-    assert 'aria-label="Team settings"' not in global_page.text
+    assert 'class="team-summary team-summary--area"' in global_page.text
+    assert 'class="tabs" aria-label="Team settings"' not in global_page.text
     assert "Total tokens" in global_page.text and "Audio hours" in global_page.text
     assert "Generations" in global_page.text
     assert re.search(r'<details class="tab-disclosure usage-range-disclosure"', global_page.text)
@@ -3907,7 +3911,7 @@ def test_admin_usage_standalone_route_scope_auth_and_legacy_redirects(
     assert "Last 90 days" in team_page.text
     assert 'href="/admin/usage?view=team&amp;team_id=' + str(team.id) + '&amp;range=90d"' in team_page.text
     assert not re.search(r'<button[^>]*>\s*Apply\s*</button>', team_page.text)
-    assert 'aria-label="Team settings"' not in team_page.text
+    assert 'class="tabs" aria-label="Team settings"' not in team_page.text
     assert 'role="region" aria-label="Usage summary table" tabindex="0"' in team_page.text
     assert f"Usage summary for {team.name} · Last 90 days" in team_page.text
     assert f"/admin/usage?team_id={other_team.id}&amp;view=team&amp;range=90d" in team_page.text
@@ -4039,8 +4043,16 @@ def test_admin_workspace_pending_provider_drafts_offer_finalize_and_cancel(clien
     assert "Finish Pending STT" in stt_page.text
     assert f'/admin/stt-configs/{stt.id}/finalize' in stt_page.text
     assert f'action="/admin/stt-configs/{stt.id}/draft-cancel"' in stt_page.text
+    assert f'id="stt-actions-{stt.id}"' in stt_page.text
+    assert f'action="/admin/stt-configs/{stt.id}/test"' in stt_page.text
+    assert f'aria-label="More actions for Pending STT"' in stt_page.text
+    assert 'data-edit-stt-provider data-config-id="' not in stt_page.text
     assert f'action="/admin/llm-configs/{llm.id}/finalize"' in llm_page.text
     assert f'action="/admin/llm-configs/{llm.id}/draft-cancel"' in llm_page.text
+    assert f'id="llm-actions-{llm.id}"' in llm_page.text
+    assert f'action="/admin/llm-configs/{llm.id}/inspect"' in llm_page.text
+    assert f'aria-label="More actions for Pending LLM"' in llm_page.text
+    assert 'data-edit-llm-provider data-config-id="' not in llm_page.text
 
 
 def test_admin_workspace_provider_redesign_has_explicit_safe_actions(client, db_session, make_team, make_user, make_stt_config, make_llm_config):
@@ -4053,10 +4065,15 @@ def test_admin_workspace_provider_redesign_has_explicit_safe_actions(client, db_
 
     stt_page = client.get(f"/admin?team_id={team.id}&team_tab=stt")
     llm_page = client.get(f"/admin?team_id={team.id}&team_tab=llm")
-    assert "Edit details" not in stt_page.text + llm_page.text
-    assert "Change connection" not in stt_page.text + llm_page.text
-    assert 'data-edit-stt-provider' in stt_page.text and '>Edit</button>' in stt_page.text
-    assert 'data-edit-llm-provider' in llm_page.text and '>Edit</button>' in llm_page.text
+    assert 'data-edit-stt-provider' in stt_page.text and 'aria-label="Edit Original STT"' in stt_page.text
+    assert 'data-edit-llm-provider' in llm_page.text and 'aria-label="Edit Original LLM"' in llm_page.text
+    assert 'id="provider-details-modal"' in stt_page.text + llm_page.text
+    assert 'id="provider-details-tab-models"' in stt_page.text + llm_page.text
+    assert 'id="provider-details-tab-connection"' in stt_page.text + llm_page.text
+    assert 'id="provider-details-save-models"' in stt_page.text + llm_page.text
+    assert 'test.id = "provider-details-test-connection"' in stt_page.text + llm_page.text
+    assert 'name="label" type="text" required maxlength="255"' in stt_page.text + llm_page.text
+    assert 'name="is_active" value="true"' in stt_page.text + llm_page.text
     assert 'name="revision_of_config_id"' in stt_page.text and f'data-config-id="{stt.id}"' in stt_page.text
     assert 'name="revision_of_config_id"' in llm_page.text and f'data-config-id="{llm.id}"' in llm_page.text
     assert 'addSttProviderButton?.addEventListener("click", () => openSttWizard());' in stt_page.text
@@ -4067,18 +4084,25 @@ def test_admin_workspace_provider_redesign_has_explicit_safe_actions(client, db_
     assert 'document.getElementById("llm-base-url-field").hidden = false;' not in llm_page.text
     assert ".wizard .field[hidden]" in llm_page.text
     assert ".llm-model-option[hidden]" in llm_page.text
-    assert "90px 100px minmax(260px, auto)" in llm_page.text
-    assert ".llm-provider-row .quick-actions" in llm_page.text
+    assert "minmax(180px, 1fr) 96px" in llm_page.text
+    assert ".provider-llm-status { display: grid; justify-items: start; min-width: 0; gap: 2px; }" in llm_page.text
+    assert ".provider-row-actions" in llm_page.text
     assert "minmax(130px, 0.7fr)" in stt_page.text
-    assert ".stt-provider-row .quick-actions" in stt_page.text
+    assert ".provider-row-actions" in stt_page.text
     assert 'form.reset();' in stt_page.text and 'form.reset();' in llm_page.text
-    assert "Leave blank to keep saved credential" in stt_page.text and "Leave blank to keep saved credential" in llm_page.text
+    assert "Leave blank to reuse the saved credential for this same provider, or enter a replacement. The credential is never displayed." in stt_page.text
+    assert "Optional saved tokens must be entered again in this flow" in llm_page.text
     assert f'data-provider-label="{stt.label}"' in stt_page.text
     assert f'data-base-url="{stt.base_url}"' in stt_page.text
     assert f'data-provider-label="{llm.label}"' in llm_page.text
     assert f'data-base-url="{llm.base_url}"' in llm_page.text
     assert stt_ref not in stt_page.text and llm_ref not in llm_page.text
     markup = stt_page.text + llm_page.text
+    assert '"provider-details-token"' in markup
+    assert 'type="password"' in markup
+    assert "Key saved — paste to replace" in markup
+    assert "dataset.providerRemoveSavedKey" in markup
+    assert 'name="provider-details-auth-choice"' not in markup
     assert "providerDefaults" not in markup
     assert "llmData" not in markup
     assert "Discovered model 1" not in markup
@@ -4087,6 +4111,8 @@ def test_admin_workspace_provider_redesign_has_explicit_safe_actions(client, db_
     assert 'apiJson("/api/v1/llm-configs/drafts"' in llm_page.text
     assert 'revision_of_config_id: value("revision_of_config_id") || null' in markup
     assert 'bearer_token: value("bearer_token") || null' in markup
+    assert 'name="stt_optional_auth"' not in stt_page.text
+    assert "Leave blank if this endpoint does not use a bearer token." in stt_page.text
     assert 'if (llmProvider === "Gemini Enterprise")' in llm_page.text
     assert 'google_auth_method: value("google_auth_method") || null' in llm_page.text
     assert "body: JSON.stringify(payload)" in llm_page.text
@@ -4098,7 +4124,7 @@ def test_admin_workspace_provider_redesign_has_explicit_safe_actions(client, db_
     assert 'name="model_name"' in markup
     assert 'name="language"' in stt_page.text
 
-    assert '/details"' not in stt_page.text + llm_page.text
+    assert "providerDetailsForm.action = `/admin/${providerDetailsKind}-configs/${encodeURIComponent(button.dataset.configId)}/details`" in markup
 
 
 def test_admin_provider_wizards_render_safe_contextual_errors(client, make_team, make_user):
@@ -4117,12 +4143,12 @@ def test_admin_provider_wizards_render_safe_contextual_errors(client, make_team,
     assert 'field.classList.add("wizard-field-error")' in markup
     assert 'field.removeAttribute("aria-invalid")' in markup
     assert 'typeof safeError.details?.field === "string"' in markup
-    assert 'new Set(["label", "base_url", "openapi_path", "bedrock_region", "bearer_token", "model_name", "language", "provider_preset"])' in markup
+    assert 'new Set(["label", "base_url", "openapi_path", "bedrock_region", "bearer_token", "model_name", "language", "provider_preset", "google_project_id", "google_location", "google_auth_method", "capacity_mode", "google_service_account_json"])' in markup
     assert 'if (typeof sourceDetails?.field === "string") details = { field: sourceDetails.field };' in markup
     assert "error.status = response.status" in markup
     assert "error.code = code" in markup
-    assert 'wizardError("llm-wizard-error", error);' in markup
-    assert 'wizardError("stt-wizard-error", error);' in markup
+    assert 'wizardError("llm-wizard-error", error, { focus: false, action: "inspection" })' in markup
+    assert 'wizardError("stt-wizard-error", error, { focus: false, action: "inspection" })' in markup
     assert "JSON.stringify(sourceDetails)" not in markup
     assert "element.textContent = error" not in markup
     assert "Check the API key and confirm this account has access to the provider." in markup
@@ -4161,17 +4187,58 @@ def test_admin_provider_setup_requires_selected_team_and_redirects_legacy_scope(
     )
     selected_team_page = client.get(f"/admin?tab=providers&team_id={team.id}")
 
-    assert page.status_code == 303
-    assert page.headers["location"] == "/admin/usage?view=team&range=30d"
-    assert invalid_team_page.status_code == 303
-    assert invalid_team_page.headers["location"] == "/admin/usage?view=team&range=30d"
-    assert "Configure STT, LLM, and de-identification." not in page.text
+    assert page.status_code == 200
+    assert 'href="/admin?tab=providers" aria-current="page"' in page.text
+    assert "Choose a team to manage its provider policy" in page.text
+    assert invalid_team_page.status_code == 200
+    assert "Choose a team to manage its provider policy" in invalid_team_page.text
     assert selected_team_page.status_code == 200
     assert 'data-panel="provider-policy"' in selected_team_page.text
-    assert re.search(r'class="tab active"[^>]*data-tab="provider-policy"', selected_team_page.text, re.S)
+    assert re.search(r'class="tab active"[^>]*data-tab="provider-policy"[^>]*aria-current="page"', selected_team_page.text, re.S)
+    assert 'id="admin-providers-nav-link"' in selected_team_page.text
+    assert 'id="team-title"' in selected_team_page.text
+    assert 'aria-label="Provider settings"' in selected_team_page.text
+    assert 'class="tab-disclosure" data-team-tab-disclosure' not in selected_team_page.text
 
 
-def test_admin_llm_selection_uses_visible_model_tiles_and_default_dropdown(client, db_session, make_team, make_user, make_llm_config):
+def test_admin_provider_area_tabs_and_sidebar_keep_selected_team_and_tab(client, make_team, make_user):
+    team = make_team(name="Provider Navigation Clinic")
+    admin = make_user(email="provider-navigation@example.com", password="password-1", is_system_admin=True)
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+
+    for key in ("provider-policy", "stt", "llm", "deidentification"):
+        page = client.get(f"/admin?team_id={team.id}&team_tab={key}")
+        assert page.status_code == 200
+        assert f"href=\"/admin?tab=providers&amp;team_id={team.id}&amp;team_tab={key}\"" in page.text
+        assert re.search(rf'class="tab active"[^>]*data-tab="{key}"[^>]*aria-current="page"', page.text, re.S)
+        assert f"href=\"/admin?team_id={team.id}&amp;team_tab=overview\"" in page.text
+    saved_llm_page = client.get(f"/admin?team_id={team.id}&team_tab=llm&provider_notice=llm_saved")
+    assert 'id="provider-save-notice"' in saved_llm_page.text
+    assert "Connection saved. Choose the models your team can use." in saved_llm_page.text
+
+
+def test_admin_members_sidebar_link_keeps_team_scope_and_matches_team_navigation_spacing(
+    client, make_team, make_user
+):
+    team = make_team(name="Members Sidebar Clinic")
+    other_team = make_team(name="Other Members Sidebar Clinic")
+    admin = make_user(email="members-sidebar@example.com", password="password-1", is_system_admin=True)
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+
+    page = client.get(f"/admin?team_id={team.id}&team_tab=members")
+
+    assert page.status_code == 200
+    assert f'href="/admin?team_id={team.id}&amp;team_tab=members" aria-current="page"' in page.text
+    assert 'id="admin-members-nav-link"' in page.text
+    team_settings_nav = re.search(r'<nav class="nav-group" aria-label="Team settings">.*?</nav>', page.text, re.S)
+    assert team_settings_nav is not None
+    assert 'class="nav-link active" id="admin-members-nav-link"' in team_settings_nav.group(0)
+    assert f'href="/admin?team_id={team.id}&amp;team_tab=overview"' in team_settings_nav.group(0)
+    assert 'data-tab="members"' not in page.text
+    assert f'href="/admin?team_id={other_team.id}&amp;team_tab=members"' in page.text
+
+
+def test_admin_llm_selection_changes_only_provider_pointer(client, db_session, make_team, make_user, make_llm_config):
     team = make_team(name="Clinic Admin LLM Tiles")
     admin = make_user(email="admin-llm-tiles@example.com", password="password-1", is_system_admin=True)
     config = make_llm_config(
@@ -4188,14 +4255,17 @@ def test_admin_llm_selection_uses_visible_model_tiles_and_default_dropdown(clien
     assert page.status_code == 200
     assert 'action="/admin/llm-configs/drafts"' in page.text
     assert "Clinic LLM" in page.text
+    assert 'name="allowed_model_names"' not in page.text
+    writing_form = re.search(r'<form method="post" action="/admin/llm-selection">.*?</form>', page.text, re.S)
+    assert writing_form is not None and 'name="provider_model"' not in writing_form.group(0)
+    enabled_before = list(config.model_policy.enabled_models_json)
+    default_before = config.model_policy.default_model_name
 
     save = client.post(
         "/admin/llm-selection",
         data={
             "team_id": str(team.id),
             "llm_config_id": str(config.id),
-            "allowed_model_names": ["gpt-4.1-mini", "gpt-4.1"],
-            "provider_model": "gpt-4.1",
         },
         follow_redirects=False,
     )
@@ -4203,8 +4273,8 @@ def test_admin_llm_selection_uses_visible_model_tiles_and_default_dropdown(clien
     assert save.status_code == 303
     selection = db_session.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == team.id))
     assert selection is not None
-    assert selection.allowed_models_json == ["gpt-4.1-mini", "gpt-4.1"]
-    assert selection.model_name_override == "gpt-4.1"
+    assert list(config.model_policy.enabled_models_json) == enabled_before
+    assert config.model_policy.default_model_name == default_before
 
 
 def test_admin_pages_can_configure_hallucination_checker(client, db_session, make_team, make_user, make_llm_config):
@@ -4255,7 +4325,7 @@ def test_transcribe_documents_show_hallucination_check_panel():
 
     assert "Hallucination check" in documents_js
     assert "Debug payload not available" not in documents_js
-    assert "documents.js?v=20261014-generation-status" in app_js
+    assert "documents.js?v=20261029-preserved-note-version" in app_js
 
 
 def test_admin_llm_draft_flow_hides_key_after_saved_and_shows_pending_state(
@@ -4828,7 +4898,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' not in page.text
     assert 'aria-label="Workspace navigation"' in page.text
     assert "My Library" in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20261028-split-template-refresh"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20261029-working-note-revision"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -5689,7 +5759,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20261028-split-template-refresh" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261029-working-note-revision" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -7210,12 +7280,12 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "structuredEditor.syncTemplateModeBadge?.();" in app_js
     assert "const canContinue = await handleOutputTemplateChange?.();" in actions_js
     assert "dom.generateOutputTemplateSelect.addEventListener('change', async () => {\n      structuredEditor.syncStructuredTemplateUi();" not in actions_js
-    assert "const currentNoteUpdatedAt = () => latestGeneratedOutput?.dataset?.latestGeneratedUpdatedAt || '';" in app_js
-    assert "import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';" in app_js
+    assert "if (latestGeneratedOutput?.dataset?.latestGeneratedId !== targetId) return null;" in app_js
+    assert "import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20261029-empty-note-version';" in app_js
     assert "let dirtyNoteExpectedUpdatedAt = null;" in app_js
     assert "dirtyNoteExpectedUpdatedAt = captureNoteDirtyBaseline({" in app_js
     assert "const clearNoteDirtyBaseline = () => {" in app_js
-    assert "const noteSaveExpectedUpdatedAtForTarget = (targetId) => noteBaselineForSave({" in app_js
+    assert "const noteSaveExpectedUpdatedAtForTarget = (targetId) => {" in app_js
     assert "noteBaselineForSave({" in app_js
     assert "const expectedUpdatedAt = noteSaveExpectedUpdatedAtForTarget(targetId);" in app_js
     assert "const expectedUpdatedAt = noteSaveExpectedUpdatedAtForTarget(generatedDocumentId);" in app_js
@@ -7391,10 +7461,10 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const ensureFreeformHasEditableRow = () => {" in structured_js
     assert "onNoteEditorChanged?.();" in structured_js
     assert "const hasNoteInputContent = () => {" in structured_js
-    assert "const renderSelectedNote = ({ forcePreserveEditor = false } = {}) => {" in documents_js
+    assert "const renderSelectedNote = ({ forcePreserveEditor = false, forceRenderEditor = false } = {}) => {" in documents_js
     assert "latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || \"\";" in documents_js
     assert "const preserveCurrentEditorRender = Boolean(" in documents_js
-    assert "forcePreserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId, selectedNote)" in documents_js
+    assert "forcePreserveEditor || (!forceRenderEditor && shouldPreserveNoteEditorRender?.(selectedEditorId, selectedNote))" in documents_js
     assert "if (!preserveCurrentEditorRender) {" in documents_js
     assert "wrapper.className = 'followup-output-card-v2 followup-llm-request-card-v2';" in documents_js
     assert "wrapper.dataset.generatedDocumentId = document.id || '';" in documents_js
@@ -7497,7 +7567,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20261028-split-template-refresh" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261029-working-note-revision" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():
@@ -9718,7 +9788,9 @@ def test_active_admin_templates_sync_optional_provider_credential_actions():
 
     assert 'name="preserved_bearer_token"' not in admin_html
     assert 'bearer_token: value("bearer_token") || null' in admin_html
-    assert "vault_secret_ref" not in admin_html
+    assert 'name="stt_optional_auth"' not in admin_html
+    assert "data-vault-secret-ref" not in admin_html
+    assert "secret:openscribe/" not in admin_html
 
 
 

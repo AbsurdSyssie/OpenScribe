@@ -23,7 +23,7 @@ from app.services.llm_backup_policy import (
         (AppError(502, "llm_generation_failed", "safe", {"provider_http_status": 503, "backup_failure_class": "provider_failure"}), True),
         (AppError(504, "llm_provider_timeout", "safe", {"provider_error_code": "timeout", "backup_failure_class": "provider_failure"}), True),
         (AppError(429, "llm_provider_rate_limited", "safe", {"provider_http_status": 429, "backup_failure_class": "temporary_capacity_exhausted"}), True),
-        (AppError(429, "llm_provider_rate_limited", "safe", {"provider_http_status": 429, "backup_failure_class": "provider_quota_blocked"}), False),
+        (AppError(429, "llm_provider_rate_limited", "safe", {"provider_http_status": 429, "backup_failure_class": "provider_quota_blocked"}), True),
         (AppError(429, "llm_provider_rate_limited", "safe", {"provider_http_status": 429}), False),
         (AppError(429, "quota_exceeded", "safe", {"backup_failure_class": "provider_failure"}), False),
         (AppError(429, "quota_disabled", "safe", {"backup_failure_class": "provider_failure"}), False),
@@ -47,7 +47,7 @@ def test_provider_failure_tagging_retains_only_safe_category_after_transport_ret
 
     hard_quota = AppError(429, "llm_provider_rate_limited", "safe", {"provider_http_status": 429})
     tag_provider_failure(hard_quota)
-    assert not can_failover(hard_quota)
+    assert can_failover(hard_quota)
 
     output = tag_output_validation_failure(AppError(502, "llm_generation_invalid_json", "safe"))
     assert can_failover(output)

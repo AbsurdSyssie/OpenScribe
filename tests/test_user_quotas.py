@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.errors import AppError
 from app.models import (
-    AttemptKind, AttemptOutcome, AttemptStatus, ProviderAttempt, QuotaPeriod,
+    AttemptKind, AttemptOutcome, AttemptStatus, ProviderAttempt, ProviderSettlementBasis, QuotaPeriod,
     QuotaResource, TeamRole, Transcript, TranscriptIngestionJob, TranscriptIngestionJobKind,
     TranscriptIngestionMode, TranscriptStatus, TranscriptVersion, UserQuotaPolicyEvent,
     UserQuotaPolicyEventType, UserQuotaReasonCode,
@@ -18,6 +18,7 @@ from app.services.quotas import (
     cancel_provider_attempt, increase_provider_attempt_reservation, mark_provider_attempt_submitted,
     reconcile_provider_attempts, reserve_provider_attempt,
     settle_provider_attempt_audio, settle_provider_attempt_tokens, settle_provider_attempt_unknown_tokens,
+    settle_provider_attempt_timeout_waived,
 )
 from app.services.admin_quotas import (
     MAX_DAILY_TOKENS, get_admin_user_quota_detail, grant_user_quota_batch,
@@ -283,6 +284,98 @@ def test_reservation_transitions_and_settlement_forms(db_session, make_user):
     mark_provider_attempt_submitted(db_session, attempt_id=unknown.id, deadline_at=NOW + timedelta(minutes=2), now=NOW)
     assert settle_provider_attempt_unknown_tokens(db_session, attempt_id=unknown.id, now=NOW).settled_units == 21
     db_session.commit()
+
+
+def test_llm_timeout_waiver_is_idempotent_and_successful_backup_still_counts(
+    db_session, make_user,
+):
+    owner = make_user()
+    primary = _reserve(db_session, owner, units=20)
+    mark_provider_attempt_submitted(
+        db_session, attempt_id=primary.id, deadline_at=NOW + timedelta(minutes=2), now=NOW,
+    )
+    primary.reported_input_tokens = 10
+    primary.reported_output_tokens = 3
+    primary.reported_total_tokens = 13
+    primary.transport_events_json = [{
+        "occurred_at": NOW.isoformat(), "request_ordinal": 1, "duration_ms": 90_000,
+        "code": "timeout", "http_status": None, "retry_wait_ms": 0,
+    }]
+    waived = settle_provider_attempt_unknown_tokens(db_session, attempt_id=primary.id, now=NOW)
+    assert (waived.settlement_basis, waived.settled_units, waived.reported_total_tokens) == (
+        ProviderSettlementBasis.timeout_waived, 0, 13,
+    )
+    assert settle_provider_attempt_unknown_tokens(
+        db_session, attempt_id=primary.id, now=NOW + timedelta(days=1),
+    ).settled_units == 0
+    assert settle_provider_attempt_timeout_waived(
+        db_session, attempt_id=primary.id, now=NOW + timedelta(days=2),
+    ).settled_units == 0
+
+    daily = calculate_quota_window(
+        db_session, user=owner, resource=QuotaResource.tokens, period=QuotaPeriod.daily, now=NOW,
+    )
+    monthly = calculate_quota_window(
+        db_session, user=owner, resource=QuotaResource.tokens, period=QuotaPeriod.monthly, now=NOW,
+    )
+    actor = _quota_admin(make_user)
+    detail = get_admin_user_quota_detail(db_session, actor=actor, user_id=owner.id, now=NOW)
+    assert (daily.consumed, monthly.consumed, detail.lifetime_token_units) == (0, 0, 0)
+
+    backup = reserve_provider_attempt(
+        db_session, team_id=owner.team_id, owner_user_id=owner.id,
+        resource=QuotaResource.tokens, attempt_kind=AttemptKind.llm_generation,
+        correlation_id=primary.id, attempt_number=1, backup_of_attempt_id=primary.id,
+        reserved_units=20, authorized_at=NOW, reservation_valid_until=NOW + timedelta(minutes=5),
+    )
+    mark_provider_attempt_submitted(
+        db_session, attempt_id=backup.id, deadline_at=NOW + timedelta(minutes=2), now=NOW,
+    )
+    settle_provider_attempt_tokens(db_session, attempt_id=backup.id, reported_total_tokens=9, now=NOW)
+    daily_after = calculate_quota_window(
+        db_session, user=owner, resource=QuotaResource.tokens, period=QuotaPeriod.daily, now=NOW,
+    )
+    monthly_after = calculate_quota_window(
+        db_session, user=owner, resource=QuotaResource.tokens, period=QuotaPeriod.monthly, now=NOW,
+    )
+    detail_after = get_admin_user_quota_detail(db_session, actor=actor, user_id=owner.id, now=NOW)
+    assert (daily_after.consumed, monthly_after.consumed, detail_after.lifetime_token_units) == (9, 9, 9)
+
+
+def test_only_final_llm_timeout_event_triggers_timeout_waiver(db_session, make_user):
+    owner = make_user()
+    attempt = _reserve(db_session, owner, units=21)
+    mark_provider_attempt_submitted(
+        db_session, attempt_id=attempt.id, deadline_at=NOW + timedelta(minutes=2), now=NOW,
+    )
+    attempt.transport_events_json = [
+        {"occurred_at": NOW.isoformat(), "request_ordinal": 1, "duration_ms": 1000,
+         "code": "timeout", "http_status": None, "retry_wait_ms": 0},
+        {"occurred_at": NOW.isoformat(), "request_ordinal": 2, "duration_ms": 1000,
+         "code": "success", "http_status": None, "retry_wait_ms": 0},
+    ]
+    settled = settle_provider_attempt_unknown_tokens(db_session, attempt_id=attempt.id, now=NOW)
+    assert (settled.settlement_basis, settled.settled_units) == (
+        ProviderSettlementBasis.conservative_unknown, 21,
+    )
+
+
+def test_known_success_with_timeout_metadata_can_keep_conservative_unknown(db_session, make_user):
+    owner = make_user()
+    attempt = _reserve(db_session, owner, units=21)
+    mark_provider_attempt_submitted(
+        db_session, attempt_id=attempt.id, deadline_at=NOW + timedelta(minutes=2), now=NOW,
+    )
+    attempt.transport_events_json = [{
+        "occurred_at": NOW.isoformat(), "request_ordinal": 1, "duration_ms": 1000,
+        "code": "timeout", "http_status": None, "retry_wait_ms": 0,
+    }]
+    settled = settle_provider_attempt_unknown_tokens(
+        db_session, attempt_id=attempt.id, now=NOW, allow_timeout_waiver=False,
+    )
+    assert (settled.settlement_basis, settled.settled_units) == (
+        ProviderSettlementBasis.conservative_unknown, 21,
+    )
 
 
 def test_invalid_transitions_and_ownerless_provider_test(db_session, make_team, make_user):

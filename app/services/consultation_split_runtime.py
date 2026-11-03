@@ -80,6 +80,7 @@ from app.services.quotas import (
     mark_provider_attempt_submitted,
     settle_provider_attempt_tokens,
     settle_provider_attempt_unknown_tokens,
+    settle_provider_attempt_timeout_waived,
     estimate_token_reservation,
 )
 from app.services.task_outbox import cancel_pending_task_dispatch
@@ -439,6 +440,7 @@ def _usage_event(
     error_code: str | None = None,
     provider_error_code: str | None = None,
     provider_http_status: int | None = None,
+    timeout_waived: bool = False,
 ) -> ProviderUsageEvent:
     is_backup = work.attempt.backup_of_attempt_id is not None
     return ProviderUsageEvent(
@@ -452,9 +454,9 @@ def _usage_event(
         provider_adapter=work.attempt.provider_adapter,
         model_name=work.attempt.provider_model,
         status=status,
-        prompt_tokens=usage["input_tokens"] if usage is not None else None,
-        completion_tokens=usage["output_tokens"] if usage is not None else None,
-        total_tokens=usage["total_tokens"] if usage is not None else None,
+        prompt_tokens=usage["input_tokens"] if usage is not None and not timeout_waived else None,
+        completion_tokens=usage["output_tokens"] if usage is not None and not timeout_waived else None,
+        total_tokens=usage["total_tokens"] if usage is not None and not timeout_waived else None,
         duration_ms=usage["duration_ms"] if usage is not None else None,
         provider_duration_ms=usage["provider_duration_ms"] if usage is not None else None,
         error_code=error_code,
@@ -472,9 +474,12 @@ def _settle_processing_attempt(
     error_code: str | None = None,
     provider_error_code: str | None = None,
     provider_http_status: int | None = None,
+    timeout_waived: bool = False,
 ) -> ProviderAttempt:
     total = usage["total_tokens"] if usage is not None else None
-    if total is not None:
+    if timeout_waived:
+        settled = settle_provider_attempt_timeout_waived(db, attempt_id=work.attempt.id)
+    elif total is not None:
         settled = settle_provider_attempt_tokens(
             db,
             attempt_id=work.attempt.id,
@@ -486,7 +491,9 @@ def _settle_processing_attempt(
         if settled.settled_units > settled.reserved_units:
             error_code = "quota_estimate_underflow"
     else:
-        settled = settle_provider_attempt_unknown_tokens(db, attempt_id=work.attempt.id)
+        settled = settle_provider_attempt_unknown_tokens(
+            db, attempt_id=work.attempt.id, allow_timeout_waiver=outcome is not AttemptOutcome.succeeded,
+        )
     settled.error_code = error_code
     settled.provider_error_code = provider_error_code
     settled.provider_http_status = provider_http_status
@@ -504,6 +511,7 @@ def _terminalize_submitted_failure(
     stale: bool = False,
     suppress_proposal: bool = False,
     expected_attempt_id: UUID | None = None,
+    timeout_waived: bool = False,
 ) -> SplitAnalysisRuntimeResult:
     work = _lock_processing_work(
         db,
@@ -542,9 +550,10 @@ def _terminalize_submitted_failure(
         work=work,
         usage=usage,
         outcome=AttemptOutcome.failed,
-        error_code=code,
+        error_code="llm_provider_timeout" if timeout_waived else code,
         provider_error_code=provider_error_code,
         provider_http_status=provider_http_status,
+        timeout_waived=timeout_waived,
     )
     now = utcnow()
     work.execution.status = ConsultationSplitExecutionStatus.failed
@@ -552,9 +561,9 @@ def _terminalize_submitted_failure(
     work.execution.provider_error_code = provider_error_code
     work.execution.provider_http_status = provider_http_status
     if usage is not None:
-        work.execution.input_token_count = usage["input_tokens"]
-        work.execution.output_token_count = usage["output_tokens"]
-        work.execution.total_token_count = usage["total_tokens"]
+        work.execution.input_token_count = None if timeout_waived else usage["input_tokens"]
+        work.execution.output_token_count = None if timeout_waived else usage["output_tokens"]
+        work.execution.total_token_count = None if timeout_waived else usage["total_tokens"]
     work.execution.completed_at = now
     work.analysis.status = ConsultationSplitAnalysisStatus.stale if stale else ConsultationSplitAnalysisStatus.failed
     work.analysis.error_code = code
@@ -573,6 +582,7 @@ def _terminalize_submitted_failure(
             error_code=code,
             provider_error_code=provider_error_code,
             provider_http_status=provider_http_status,
+            timeout_waived=timeout_waived,
         )
     )
     db.commit()
@@ -993,10 +1003,12 @@ def _try_backup_analysis(db: Session, *, execution_id: UUID, primary_error: AppE
         status_code=(primary_error.details or {}).get("provider_http_status"))
     http_status = (primary_error.details or {}).get("provider_http_status")
     _settle_processing_attempt(db, work=work, usage=usage, outcome=AttemptOutcome.failed,
-                               error_code=primary_error.code, provider_error_code=provider_error_code)
+                               error_code=primary_error.code, provider_error_code=provider_error_code,
+                               timeout_waived=primary_error.code == "llm_provider_timeout")
     db.add(_usage_event(work=work, event_type=ProviderUsageEventType.failed, status="failed", usage=usage,
                         error_code=primary_error.code, provider_error_code=provider_error_code,
-                        provider_http_status=http_status))
+                        provider_http_status=http_status,
+                        timeout_waived=primary_error.code == "llm_provider_timeout"))
     cap = request_output_token_cap(backup_request)
     if not isinstance(cap, int) or cap <= 0:
         db.rollback()
@@ -1032,7 +1044,8 @@ def _try_backup_analysis(db: Session, *, execution_id: UUID, primary_error: AppE
             code="consultation_split_provider_failed",
             provider_error_code=safe_provider_error_code((tagged.details or {}).get("provider_error_code"),
                 status_code=(tagged.details or {}).get("provider_http_status")),
-            provider_http_status=(tagged.details or {}).get("provider_http_status"))
+            provider_http_status=(tagged.details or {}).get("provider_http_status"),
+            timeout_waived=tagged.code == "llm_provider_timeout")
         return failed
     if not isinstance(response_text, str) or not response_text or len(response_text) > RECOVERABLE_RESPONSE_MAX_CHARS:
         invalid = tag_output_validation_failure(AppError(502, "consultation_split_analysis_invalid",
@@ -1154,7 +1167,8 @@ def _try_pre_submit_backup_analysis(
             code="consultation_split_provider_failed",
             provider_error_code=safe_provider_error_code((tagged.details or {}).get("provider_error_code"),
                 status_code=(tagged.details or {}).get("provider_http_status")),
-            provider_http_status=(tagged.details or {}).get("provider_http_status"))
+            provider_http_status=(tagged.details or {}).get("provider_http_status"),
+            timeout_waived=tagged.code == "llm_provider_timeout")
     if not isinstance(response_text, str) or not response_text or len(response_text) > RECOVERABLE_RESPONSE_MAX_CHARS:
         return _terminalize_submitted_failure(db, execution_id=execution_id,
             expected_attempt_id=child.id,
@@ -1196,6 +1210,7 @@ def _run_prepared_provider_call(db: Session, *, prepared: PreparedSplitAnalysisS
             code="consultation_split_provider_failed",
             provider_error_code=provider_error_code,
             provider_http_status=provider_http_status,
+            timeout_waived=tagged.code == "llm_provider_timeout",
         )
     except Exception:
         return _terminalize_submitted_failure(

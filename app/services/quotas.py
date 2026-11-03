@@ -38,6 +38,14 @@ from app.models import (
 
 # Counts framing/messages not represented in supplied outbound strings.
 DEFAULT_TOKEN_MESSAGE_OVERHEAD = 16
+LLM_TOKEN_ATTEMPT_KINDS = frozenset({
+    AttemptKind.llm_generation,
+    AttemptKind.llm_hallucination_check,
+    AttemptKind.llm_template_suggestion,
+    AttemptKind.consultation_split_analysis,
+    AttemptKind.consultation_split_generation,
+    AttemptKind.consultation_split_verification,
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -719,12 +727,71 @@ def settle_provider_attempt_stream_unknown(
     )
 
 
-def settle_provider_attempt_unknown_tokens(db: Session, *, attempt_id: UUID, now: datetime | None = None) -> ProviderAttempt:
+def settle_provider_attempt_unknown_tokens(
+    db: Session, *, attempt_id: UUID, now: datetime | None = None,
+    allow_timeout_waiver: bool = True,
+) -> ProviderAttempt:
     attempt = _locked_attempt(db, attempt_id)
     if attempt.resource is not QuotaResource.tokens:
         raise _transition_error()
+    moment = _utc(now)
+    if (
+        attempt.status is AttemptStatus.settled
+        and attempt.settlement_basis is ProviderSettlementBasis.timeout_waived
+    ):
+        return settle_provider_attempt_timeout_waived(db, attempt_id=attempt.id, now=moment)
+    if allow_timeout_waiver and provider_attempt_timeout_waiver_applies(attempt, now=moment):
+        return settle_provider_attempt_timeout_waived(db, attempt_id=attempt.id, now=moment)
     return _settle(db, attempt_id=attempt_id, outcome=AttemptOutcome.unknown,
-                   basis=ProviderSettlementBasis.conservative_unknown, settled_units=attempt.reserved_units, now=now)
+                   basis=ProviderSettlementBasis.conservative_unknown, settled_units=attempt.reserved_units, now=moment)
+
+
+def settle_provider_attempt_timeout_waived(
+    db: Session, *, attempt_id: UUID, now: datetime | None = None,
+    reported_total_tokens: int | None = None,
+    reported_input_tokens: int | None = None,
+    reported_output_tokens: int | None = None,
+) -> ProviderAttempt:
+    attempt = _locked_attempt(db, attempt_id)
+    if attempt.resource is not QuotaResource.tokens or attempt.attempt_kind not in LLM_TOKEN_ATTEMPT_KINDS:
+        raise _transition_error()
+    settled = _settle(
+        db,
+        attempt_id=attempt.id,
+        outcome=AttemptOutcome.unknown,
+        basis=ProviderSettlementBasis.timeout_waived,
+        settled_units=0,
+        reported_total_tokens=(attempt.reported_total_tokens if reported_total_tokens is None else reported_total_tokens),
+        reported_input_tokens=(attempt.reported_input_tokens if reported_input_tokens is None else reported_input_tokens),
+        reported_output_tokens=(attempt.reported_output_tokens if reported_output_tokens is None else reported_output_tokens),
+        now=now,
+    )
+    if settled.error_code is None:
+        settled.error_code = "llm_provider_timeout"
+        db.add(settled)
+    return settled
+
+
+def provider_attempt_timeout_waiver_applies(
+    attempt: ProviderAttempt, *, now: datetime | None = None,
+) -> bool:
+    """Return whether a submitted LLM attempt has durable or elapsed-timeout evidence."""
+    if (
+        attempt.status is not AttemptStatus.submitted
+        or attempt.resource is not QuotaResource.tokens
+        or attempt.attempt_kind not in LLM_TOKEN_ATTEMPT_KINDS
+    ):
+        return False
+    events = attempt.transport_events_json if isinstance(attempt.transport_events_json, list) else []
+    last_event = events[-1] if events and isinstance(events[-1], dict) else None
+    if attempt.error_code == "llm_provider_timeout" or (last_event is not None and last_event.get("code") == "timeout"):
+        return True
+    moment = _utc(now)
+    return (
+        attempt.status is AttemptStatus.submitted
+        and attempt.deadline_at is not None
+        and _utc(attempt.deadline_at) <= moment
+    )
 
 
 # Explicit aliases keep call sites readable at dispatch/response boundaries.
@@ -755,10 +822,17 @@ def reconcile_provider_attempts(db: Session, *, now: datetime | None = None, lim
     settled = 0
     for attempt in submissions:
         if attempt.resource is QuotaResource.tokens:
+            timeout_waived = provider_attempt_timeout_waiver_applies(attempt, now=now)
             attempt.status = AttemptStatus.settled
             attempt.outcome = AttemptOutcome.unknown
-            attempt.settlement_basis = ProviderSettlementBasis.conservative_unknown
-            attempt.settled_units = attempt.reserved_units
+            if timeout_waived:
+                attempt.settlement_basis = ProviderSettlementBasis.timeout_waived
+                attempt.settled_units = 0
+                if attempt.error_code is None:
+                    attempt.error_code = "llm_provider_timeout"
+            else:
+                attempt.settlement_basis = ProviderSettlementBasis.conservative_unknown
+                attempt.settled_units = attempt.reserved_units
             attempt.settled_at = now
             settled += 1
         elif attempt.attempt_kind is AttemptKind.stt_deepgram_live_stream:

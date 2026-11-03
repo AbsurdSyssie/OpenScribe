@@ -142,7 +142,41 @@ pytest -q tests/test_api.py tests/test_transcript_streaming.py tests/test_retent
 Provider configuration:
 
 ```bash
-pytest -q tests/test_stt_config.py tests/test_llm_config.py tests/test_deidentification.py
+APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_provider_inspection.py tests/test_provider_response_bounds.py tests/test_llm_model_discovery.py
+```
+
+The admin provider UI assertions that cover setup, safe errors, existing presets,
+and the saved-settings flow are:
+
+```bash
+APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_admin_ui.py -k 'provider_wizards_render_safe_contextual_errors or provider_redesign_has_explicit_safe_actions or pending_provider_drafts or active_admin_gemini_wizard'
+```
+
+The server-rendered provider settings route and duplicate-label recovery are
+covered separately from inspection, which uses the real provider services only
+with synthetic fixtures:
+
+```bash
+APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_admin_provider_details.py
+```
+
+The admin provider feedback regression opens the rendered STT and LLM dialogs
+in Playwright and uses synthetic provider responses. It checks visible errors,
+upstream status/code guidance, safe handling of a malicious provider-message
+sentinel, busy-state controls, duplicate-request guards, and retry with entered
+settings preserved; it makes no provider connection. The companion edit-flow
+regression checks saved-provider settings, metadata-only saves, LLM team model
+policy, STT per-purpose selections, and narrow-screen access. It also verifies
+that Test connection submits a pasted key only in its request body, does not
+finalize the live configuration, and leaves the tested draft for Save to reuse.
+Editing connection inputs sends no request; the next explicit test discards the
+old draft and retests the updated endpoint/key. Optional saved bearer keys stay
+hidden, require a replacement or explicit removal, and cannot silently become
+no-auth requests. Cancel cleanup, retry after errors, and stale-refresh recovery
+use synthetic fixtures and never contact a provider:
+
+```bash
+APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q --accessibility-audit tests/accessibility/test_admin_provider_feedback.py tests/accessibility/test_admin_provider_edit.py
 ```
 
 Deepgram live-stream browser protocol (synthetic PCM, no database or provider connection):
@@ -460,6 +494,8 @@ Use `down --volumes` only for a deliberately disposable instance.
 ### Provider behavior
 
 For team LLM failover, run the `tests/test_llm_backup*.py` checks and the affected generation, suggestion and consultation-split suites. They cover admin selection, immutable encrypted snapshots, per-attempt quota settlement, source-specific failover and migration guards. Keep these commands sequential with other database-backed tests and the API audit.
+
+For LLM timeout accounting, run `tests/test_user_quotas.py`, `tests/test_quota_lifecycle.py`, `tests/test_llm_execution.py`, and `tests/test_llm_timeout_migration.py`, followed by the affected workflow tests. Cover zero daily/monthly/lifetime token charges, retained failure telemetry, independent successful backup usage, validated draft preservation, late-response and duplicate-delivery guards, unchanged audio settlement, and historical backfill limited to definitive timeout evidence. Successful responses without usage and other unknown failures retain conservative accounting.
 
 - unsupported worker contexts fail before the provider-attempt submitted transition, and reserved quota is cancelled without provider dispatch;
 - native worker-thread, greenlet/eventlet/gevent, and occupied timer contexts fail closed with content-free diagnostics;

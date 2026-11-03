@@ -1,9 +1,10 @@
 import json
 import os
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from uuid import UUID, uuid4
 
+from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -21,6 +22,7 @@ from ..models import (
     LlmProviderPreset,
     PromptTemplate,
     ProviderAttempt,
+    QuotaPeriod,
     QuickAction,
     SmartPhrase,
     SecurityAuditHoldReason,
@@ -93,6 +95,8 @@ from ..services.llm import (
     list_llm_configs as list_llm_configs_service,
     resolve_user_llm as resolve_user_llm_service,
 )
+from ..services.llm_model_policy import provider_model_policy_state
+from ..services.provider_errors import safe_provider_error_code
 from ..services.preferences import (
     consultation_splitting_feature_enabled,
     get_user_app_preferences as get_user_app_preferences_service,
@@ -136,7 +140,7 @@ from ..services.default_assets import (
     list_default_quick_actions as list_default_quick_actions_service,
     list_default_templates as list_default_templates_service,
 )
-from ..services.admin_quotas import get_admin_user_quota_detail
+from ..services.admin_quotas import get_admin_team_quota_usage, get_admin_user_quota_detail
 from ..services.legal_content import operator_legal_setup_warnings
 from ..services.audit_retention import active_security_audit_holds
 from .templates import templates
@@ -155,6 +159,11 @@ def _quota_provider_output_caps(*, primary, backup, checker) -> list[dict[str, o
             or not model
         ):
             return
+        policy = getattr(config, "model_policy", None)
+        enabled = list(policy.enabled_models_json or []) if policy is not None else []
+        catalog = list(config.available_models_json or [])
+        if model not in enabled or model not in catalog:
+            return
         cap = provider_output_token_cap(
             adapter_kind=config.adapter_kind,
             model=model,
@@ -165,8 +174,11 @@ def _quota_provider_output_caps(*, primary, backup, checker) -> list[dict[str, o
     if primary is not None:
         config = primary.config
         if config is not None:
-            models = list(primary.allowed_models_json or config.available_models_json or [])
-            selected = primary.model_name_override or config.model_name
+            policy = getattr(config, "model_policy", None)
+            enabled = list(policy.enabled_models_json or []) if policy is not None else []
+            catalog = list(config.available_models_json or [])
+            models = [model for model in enabled if model in catalog]
+            selected = policy.default_model_name if policy is not None else None
             if selected:
                 models.append(selected)
             for model in dict.fromkeys(models):
@@ -196,6 +208,7 @@ def stt_config_response(config) -> SttConfigDetail:
     return SttConfigDetail(
         id=config.id,
         team_id=config.team_id,
+        revision_of_config_id=config.revision_of_config_id,
         label=config.label,
         provider_preset=provider_preset,
         provider_display_name=provider_display_name,
@@ -267,9 +280,26 @@ def llm_config_response(config) -> LlmConfigDetail:
     setup_status = config.setup_status or LlmConfigSetupStatus.ready
     setup_status_label = "Setup incomplete" if setup_status == LlmConfigSetupStatus.pending_model_selection else None
     provider_config = dict(config.provider_config_json or {})
+    check = (config.inspection_metadata_json or {}).get("connection_check")
+    check = check if isinstance(check, dict) else {}
+    check_status = check.get("status") if check.get("status") in {"passed", "failed"} else None
+    check_at = check.get("checked_at")
+    if isinstance(check_at, str):
+        try:
+            check_at = datetime.fromisoformat(check_at)
+        except ValueError:
+            check_at = None
+    if not isinstance(check_at, datetime):
+        check_at = None
+    check_http = check.get("http_status")
+    if type(check_http) is not int or not 400 <= check_http <= 599:
+        check_http = None
+    raw_check_code = check.get("error_code")
+    check_code = safe_provider_error_code(raw_check_code, status_code=check_http) if check_status == "failed" else None
     return LlmConfigDetail(
         id=config.id,
         team_id=config.team_id,
+        revision_of_config_id=config.revision_of_config_id,
         label=config.label,
         provider_preset=provider_preset,
         adapter_kind=config.adapter_kind,
@@ -282,6 +312,10 @@ def llm_config_response(config) -> LlmConfigDetail:
         provider_display_name=provider_display_name,
         setup_status_label=setup_status_label,
         is_active=config.is_active,
+        last_connection_check_status=check_status,
+        last_connection_check_at=check_at,
+        last_connection_check_error_code=check_code,
+        last_connection_check_http_status=check_http,
         has_secret=bool(config.vault_secret_ref),
         google_project_id=provider_config.get("project_id") if config.adapter_kind is LlmAdapterKind.gemini_enterprise else None,
         google_location=provider_config.get("location") if config.adapter_kind is LlmAdapterKind.gemini_enterprise else None,
@@ -300,10 +334,14 @@ def llm_config_response(config) -> LlmConfigDetail:
 
 def llm_selection_response(selection) -> LlmSelectionDetail:
     config = selection.config
-    resolved_model_name = selection.model_name_override or config.model_name
-    allowed_models_json = list(selection.allowed_models_json or config.available_models_json or [])
-    if resolved_model_name and allowed_models_json and resolved_model_name not in allowed_models_json:
-        resolved_model_name = allowed_models_json[0]
+    policy = getattr(config, "model_policy", None)
+    catalog = list(config.available_models_json or [])
+    allowed_models_json = [
+        model for model in (policy.enabled_models_json or [])
+        if model in catalog
+    ] if policy is not None else []
+    candidate_default = policy.default_model_name if policy is not None else None
+    resolved_model_name = candidate_default if candidate_default in allowed_models_json else None
     provider_preset = config.provider_preset or infer_llm_provider_preset(config.adapter_kind, config.base_url)
     provider_display_name = get_llm_provider_preset(provider_preset, allow_disabled_provider=True).display_name
     return LlmSelectionDetail(
@@ -318,7 +356,7 @@ def llm_selection_response(selection) -> LlmSelectionDetail:
         selected_config_base_url=config.base_url,
         provider_available_models_json=list(config.available_models_json or []),
         allowed_models_json=allowed_models_json,
-        model_name_override=selection.model_name_override,
+        model_name_override=resolved_model_name,
         resolved_model_name=resolved_model_name,
         created_at=selection.created_at,
         updated_at=selection.updated_at,
@@ -979,13 +1017,18 @@ def render_admin(
     quota_open_form: str | None = None,
     quota_grant_id: str | None = None,
     quota_edit_mode: bool = False,
+    quota_expanded_usage: bool = False,
+    quota_table_flow: bool = False,
+    quota_search: str | None = None,
+    quota_fragment: str | None = None,
+    provider_details_edit: dict[str, object] | None = None,
     standalone_usage: bool = False,
     usage_page_view: str = "team",
     admin_create_team_open: bool = False,
     admin_create_team_values: dict[str, object] | None = None,
     legal_context: dict[str, object] | None = None,
 ):
-    workspace_team_tabs = {"overview", "members", "quotas", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"}
+    workspace_team_tabs = {"overview", "members", "quotas", "provider-policy", "stt", "llm", "deidentification", "security-data"}
     if admin_return_view == "workspace" and workspace_team_tab is None and active_admin_tab in workspace_team_tabs:
         workspace_team_tab = active_admin_tab
     # The retired team directory and Admin home no longer have dedicated
@@ -1041,6 +1084,42 @@ def render_admin(
         else None
     )
     llm_configs = list_llm_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else []
+    llm_model_policy_by_config_id = {
+        str(config.id): provider_model_policy_state(db, config=config)
+        for config in llm_configs
+        if config.revision_of_config_id is None
+    }
+    llm_role_selectable_configs = []
+    for config in llm_configs:
+        state = llm_model_policy_by_config_id.get(str(config.id), {})
+        catalog = set(state.get("provider_available_models_json", []))
+        effective_enabled = [model for model in state.get("enabled_models_json", []) if model in catalog]
+        if (
+            config.revision_of_config_id is None
+            and config.is_active
+            and config.setup_status == LlmConfigSetupStatus.ready
+            and effective_enabled
+        ):
+            llm_role_selectable_configs.append(config)
+    for config in llm_configs:
+        check = (config.inspection_metadata_json or {}).get("connection_check")
+        check = check if isinstance(check, dict) else {}
+        config.last_connection_check_status = check.get("status") if check.get("status") in {"passed", "failed"} else None
+        checked_at = check.get("checked_at")
+        if isinstance(checked_at, str):
+            try:
+                checked_at = datetime.fromisoformat(checked_at)
+            except ValueError:
+                checked_at = None
+        config.last_connection_check_at = checked_at if isinstance(checked_at, datetime) else None
+        http_status = check.get("http_status")
+        config.last_connection_check_http_status = http_status if type(http_status) is int and 400 <= http_status <= 599 else None
+        raw_error_code = check.get("error_code")
+        config.last_connection_check_error_code = (
+            safe_provider_error_code(raw_error_code, status_code=config.last_connection_check_http_status)
+            if config.last_connection_check_status == "failed"
+            else None
+        )
     edit_llm_config = next((config for config in llm_configs if str(config.id) == selected_llm_config_id), None)
     if edit_llm_config is None and selected_uuid and selected_llm_config_id and selected_llm_config_id != "new":
         try:
@@ -1235,23 +1314,46 @@ def render_admin(
     selected_quota_member = None
     quota_detail = None
     eligible_quota_users = [user for user in selected_team_users if user.team_role is not None]
+    requested_quota_period = request.query_params.get("quota_period", QuotaPeriod.monthly.value)
+    quota_period = (
+        QuotaPeriod.daily
+        if requested_quota_period == QuotaPeriod.daily.value
+        else QuotaPeriod.monthly
+    )
+    quota_member_usage = {}
+    quota_search_value = (quota_search or "")[:120]
     # Quota accounting is queried only for the explicit selected-team Quotas
-    # panel, and only after resolving the member inside that team's eligible set.
-    if current_user.is_system_admin and workspace_team_tab == "quotas" and selected_team is not None and selected_quota_member_id:
-        try:
-            quota_member_id = UUID(selected_quota_member_id)
-        except ValueError:
-            quota_member_id = None
-        selected_quota_member = next((user for user in eligible_quota_users if user.id == quota_member_id), None)
-        if selected_quota_member is not None:
+    # panel, after resolving the member inside that team's eligible set.
+    if current_user.is_system_admin and workspace_team_tab == "quotas" and selected_team is not None:
+        if selected_quota_member_id:
             try:
-                quota_detail = get_admin_user_quota_detail(
-                    db, actor=current_user, user_id=selected_quota_member.id
-                )
-            except AppError:
-                selected_quota_member = None
-        if selected_quota_member is None and quota_selection_error is None:
-            quota_selection_error = "That member is not available in this team. Choose an eligible member."
+                quota_member_id = UUID(selected_quota_member_id)
+            except ValueError:
+                quota_member_id = None
+            selected_quota_member = next((user for user in eligible_quota_users if user.id == quota_member_id), None)
+            if selected_quota_member is not None:
+                try:
+                    quota_detail = get_admin_user_quota_detail(
+                        db, actor=current_user, user_id=selected_quota_member.id
+                    )
+                except AppError:
+                    selected_quota_member = None
+            if selected_quota_member is None and quota_selection_error is None:
+                quota_selection_error = "That member is not available in this team. Choose an eligible member."
+        if quota_fragment in {"usage", "editor"} and (selected_quota_member is None or quota_detail is None):
+            return HTMLResponse("Not found", status_code=404)
+        if quota_fragment not in {"usage", "editor"} and (
+            selected_quota_member is None
+            or (quota_table_flow and selected_quota_member is not None)
+            or (quota_expanded_usage and selected_quota_member is not None)
+        ):
+            quota_member_usage = get_admin_team_quota_usage(
+                db,
+                actor=current_user,
+                team_id=selected_team.id,
+                member_ids=[user.id for user in eligible_quota_users],
+                period=quota_period,
+            )
     context = {
         "request": request,
         "current_user": current_user,
@@ -1265,7 +1367,14 @@ def render_admin(
         "quota_open_form": quota_open_form,
         "quota_grant_id": quota_grant_id,
         "quota_edit_mode": quota_edit_mode,
+        "quota_expanded_usage": quota_expanded_usage and selected_quota_member is not None,
+        "quota_table_flow": quota_table_flow and selected_quota_member is not None,
+        "quota_search": quota_search_value,
+        "quota_fragment": quota_fragment,
+        "quota_search_encoded": quote(quota_search_value, safe=""),
         "quota_detail": quota_detail,
+        "quota_period": quota_period.value,
+        "quota_member_usage": quota_member_usage,
         "quota_form_values": quota_form_values or {},
         "quota_operation_ids": {
             "limits": str(uuid4()),
@@ -1281,6 +1390,7 @@ def render_admin(
         "selected_deidentification_provider_id": selected_deidentification_provider_id,
         "selected_default_template_id": selected_default_template_id,
         "selected_default_quick_action_id": selected_default_quick_action_id,
+        "provider_details_edit": provider_details_edit or {},
         "stt_configs": stt_configs,
         "stt_config": edit_stt_config,
         "stt_selection": stt_selection,
@@ -1290,6 +1400,8 @@ def render_admin(
         "stt_test_result": stt_test_result,
         "selectable_stt_configs": list_selectable_stt_configs_service(db, current_user, team_id=selected_uuid) if selected_uuid else [],
         "llm_configs": llm_configs,
+        "llm_model_policy_by_config_id": llm_model_policy_by_config_id,
+        "llm_role_selectable_configs": llm_role_selectable_configs,
         "llm_config": edit_llm_config,
         "llm_selection": llm_selection,
         "llm_backup_selection": llm_backup_selection,
@@ -1389,7 +1501,7 @@ def admin_redirect_url(
     if deidentification_provider_id:
         params["deidentification_provider_id"] = deidentification_provider_id
     if return_tab:
-        if resolved_return_view == "workspace" and return_tab in {"overview", "members", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"}:
+        if resolved_return_view == "workspace" and return_tab in {"overview", "members", "quotas", "provider-policy", "stt", "llm", "deidentification", "security-data"}:
             params["team_tab"] = return_tab
         else:
             params["tab"] = return_tab

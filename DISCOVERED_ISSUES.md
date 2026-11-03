@@ -1,5 +1,25 @@
 # Discovered issues
 
+### ADMIN-QUOTA-TEAM-SUMMARY-QUERY-SCALING — 2026-11-02
+
+- Status: Follow-up after administrator UI review.
+- Locations: `app/services/admin_quotas.py::get_admin_team_quota_usage` and `app/services/quotas.py::calculate_quota_window`.
+- Observation: the Quotas member list reuses the authoritative read-only window calculation for both token and audio resources. The current calculation performs one policy-event query and two attempt aggregates per window, so the selected period costs about six SQL statements per eligible member plus one scoped member lookup.
+- Impact: loading the list may become slow for teams with many eligible members.
+- Not fixed here: replacing the window calculation with bulk aggregation risks drifting from reset, activation, grant, and pending-reservation rules. The current implementation preserves those rules and limits the extra work to the system-admin Quotas member-list view.
+- Follow-up: after UI review, measure list load cost for realistic team sizes and introduce a batched read model that preserves the existing quota-window contract.
+
+### PROVIDER-REINSPECTION-IN-FLIGHT-GUARD — 2026-10-28
+
+- Status: Open; follow-up review required.
+- Discovery baseline: `4c3f8e659635a5340d989f1fafe7daa35dea328b` plus the current working tree.
+- Locations: `app/services/llm.py::inspect_saved_llm_config`, `app/services/llm.py::_reconcile_llm_config_model_selections`, and `app/services/stt.py::reinspect_stt_config`.
+- Exact examples: LLM reinspection calls `_reconcile_llm_config_model_selections(db, config=config)` before commit; STT credential rejection calls `_clear_stt_selections_for_config(db, config_id=config.id)`.
+- Observation: saved-provider reinspection does not call the in-flight guards used by normal edits (`_llm_config_has_in_flight_jobs` / `_stt_config_has_in_flight_jobs`). LLM reinspection can replace the live catalog/default and reconcile primary, backup, and checker selections. STT reinspection can replace the live request contract, model/catalog/language and, after credential rejection, invalidate and clear all team selections.
+- Impact: an administrator can trigger inspection while provider-dependent work is queued or processing, changing live configuration or dependent policy while work relies on provider state. Whether frozen execution snapshots make each mutation safe needs focused verification.
+- Not fixed here: provider-details JSON negotiation is limited to the existing metadata-only services; adding inspection guards changes inspection semantics and needs a separate provider/runtime review.
+- Follow-up: define the in-flight behavior for each reinspection outcome, then add synthetic regressions covering queued/processing LLM and STT work, catalog/default changes, and credential rejection without exposing secrets or content.
+
 ### ADMIN-WCAG22AA-REVIEW — 2026-10-24
 
 - Status: Remediation implemented 2026-10-25; focused verification and remaining human assessment are recorded in [the follow-up](docs/accessibility/admin-verification-2026-10-25.md).
@@ -10,6 +30,16 @@
 - Original disposition: the 24 October request was for review only; remediation was subsequently authorized and implemented separately, preserving authorization, provider and quota contracts.
 - Resolution: restored responsive navigation, strengthened contrast/focus, corrected dialog focus/labels and disclosure states, provided complete usage tables and keyboard chart controls, made reporting-range changes explicit, and contained wide data grids.
 - Follow-up: complete the human checks listed in the dated verification. The original assessment is preserved as pre-remediation evidence; this entry does not establish full conformance.
+
+### HOME-MUTED-TEXT-CONTRAST — 2026-11-01
+
+- Status: Open; pre-existing design-token issue found while updating provider controls.
+- Discovery commit: `4c3f8e659635a5340d989f1fafe7daa35dea328b` (baseline; observed with working-tree changes).
+- Location: `app/static/css/tokens.css`, `:root --muted: #718096`, inherited by the light `/home` surface.
+- Evidence: Impeccable's contrast scan reported muted text at 3.6–3.8:1 against the light parchment backgrounds, below 4.5:1 for normal text.
+- Impact: secondary labels and help text on the home page may be difficult to read for people with low vision.
+- Not fixed here: the provider-control change did not introduce this shared token, and changing its value would affect unrelated surfaces. The earlier [admin WCAG review](#admin-wcag22aa-review--2026-10-24) reports a broader palette remediation but does not resolve this home-surface finding.
+- Follow-up: review inherited muted-text usage across light surfaces, choose a shared token that meets contrast requirements, and re-run focused visual/accessibility checks.
 
 ### TEAM-QUOTA-DEFAULTS-WRONG-TAB — 2026-10-23
 
@@ -666,3 +696,15 @@ Reconciled on 19 October 2026 against `97da191926db1da74fdf741e01f4f8490d60f6c8`
 - Likely impact: this test cannot currently validate inactivity prompt dismissal or reset behavior; the failure does not establish a runtime defect.
 - Not fixed now: repairing this unrelated harness is outside the live startup change.
 - Follow-up: update the source replacement to match the current imports, then rerun `tests/test_vad_inactivity_js.py` and confirm its behavioral assertions execute.
+
+### ADMIN-STT-ADAPTER-LABEL-OVERFLOW — 2026-10-29
+
+- Current status: Open; visual readability issue.
+- Discovery commit: `4c3f8e659635a5340d989f1fafe7daa35dea328b` (baseline; observed with working-tree changes).
+- Location: `app/templates/admin_mockup.html`, STT `.stt-provider-row` provider column.
+- Exact template excerpt: `<span>{{ config.adapter_kind.value }}</span>`.
+- Evidence: `/tmp/openscribe-provider-nav/provider-navigation-desktop-1440.png` shows the `openai_compatible_rest` adapter label running into the adjacent Status badge/column.
+- Observed problem: a long raw adapter identifier does not wrap or use a shorter display label in the STT provider row.
+- Likely impact: reduced readability of the provider and status columns at desktop widths; no behavior or authorization impact observed.
+- Not fixed now: provider-row presentation is outside the Providers navigation change.
+- Follow-up: wrap the provider label or present a friendly bounded label, then add a focused UI check for long adapter names at desktop and narrow widths.

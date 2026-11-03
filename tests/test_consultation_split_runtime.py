@@ -9,13 +9,16 @@ from sqlalchemy import select
 
 from app.errors import AppError
 from app.models import (
+    AttemptOutcome,
     AttemptStatus,
     ConsultationSplitAnalysis,
     ConsultationSplitAnalysisStatus,
     ConsultationSplitExecution,
     ConsultationSplitExecutionStatus,
     ProviderAttempt,
+    ProviderSettlementBasis,
     ProviderUsageEvent,
+    ProviderUsageEventType,
     TaskDispatchOutbox,
     TaskDispatchState,
     Transcript,
@@ -220,7 +223,11 @@ def test_runtime_rejects_invalid_or_unavailable_provider_output_once(
     assert len(db_session.scalars(select(ProviderUsageEvent).where(ProviderUsageEvent.consultation_split_execution_id == execution_id)).all()) == 1
 
 
-@pytest.mark.parametrize("failure", [AppError(502, "provider_failed", "unsafe provider body", {"provider_error_code": "bad request", "provider_http_status": 400}), RuntimeError("unsafe provider body")])
+@pytest.mark.parametrize("failure", [
+    AppError(502, "provider_failed", "unsafe provider body", {"provider_error_code": "bad request", "provider_http_status": 400}),
+    AppError(504, "llm_provider_timeout", "synthetic timeout body"),
+    RuntimeError("unsafe provider body"),
+])
 def test_runtime_terminalizes_provider_errors_without_exception_text(
     db_session, make_user, make_llm_config, make_llm_selection, make_user_app_preference, monkeypatch, caplog, failure,
 ):
@@ -237,6 +244,16 @@ def test_runtime_terminalizes_provider_errors_without_exception_text(
     assert "unsafe provider body" not in caplog.text
     _analysis, _execution, attempt, _dispatch = _rows(db_session, execution_id)
     assert attempt.status is AttemptStatus.settled
+    if isinstance(failure, AppError) and failure.code == "llm_provider_timeout":
+        assert (attempt.outcome, attempt.settlement_basis, attempt.settled_units, attempt.error_code) == (
+            AttemptOutcome.unknown, ProviderSettlementBasis.timeout_waived, 0, "llm_provider_timeout",
+        )
+        event = db_session.scalar(select(ProviderUsageEvent).where(
+            ProviderUsageEvent.consultation_split_execution_id == execution_id,
+            ProviderUsageEvent.event_type == ProviderUsageEventType.failed,
+        ))
+        assert event is not None
+        assert (event.prompt_tokens, event.completion_tokens, event.total_tokens) == (None, None, None)
 
 
 def test_runtime_accepts_a_fast_delivery_while_outbox_is_still_pending(

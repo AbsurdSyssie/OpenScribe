@@ -262,6 +262,10 @@ class LlmConfigDetail(BaseModel):
     setup_status_label: str | None = None
     is_active: bool
     has_secret: bool
+    last_connection_check_status: Literal["passed", "failed"] | None = None
+    last_connection_check_at: datetime | None = None
+    last_connection_check_error_code: str | None = None
+    last_connection_check_http_status: int | None = None
     google_project_id: str | None = None
     google_location: str | None = None
     google_auth_method: str | None = None
@@ -392,8 +396,63 @@ class LlmSelectionUpsert(BaseModel):
 
     team_id: UUID | None = None
     llm_config_id: UUID
-    allowed_models_json: list[str] = Field(default_factory=list)
+    # Deprecated compatibility inputs. Selection is now a provider pointer;
+    # callers may repeat the saved policy, but cannot mutate it here.
+    allowed_models_json: list[str] | None = None
     model_name_override: str | None = Field(default=None, max_length=255)
+
+
+class LlmProviderModelRoleWarning(BaseModel):
+    role: Literal["writing", "backup", "checker"]
+    reason: Literal[
+        "provider_unavailable", "no_enabled_models", "default_unavailable",
+        "model_disabled", "model_unavailable",
+    ]
+    model_name: str | None = None
+
+
+class LlmProviderModelPolicyUpsert(BaseModel):
+    model_config = {"protected_namespaces": (), "extra": "forbid"}
+
+    team_id: UUID
+    enabled_models_json: list[str] = Field(default_factory=list)
+    default_model_name: str | None = Field(default=None, max_length=255)
+
+    @field_validator("enabled_models_json")
+    @classmethod
+    def normalize_enabled_models(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+        return list(dict.fromkeys(normalized))
+
+    @field_validator("default_model_name")
+    @classmethod
+    def normalize_default_model(cls, value: str | None) -> str | None:
+        normalized = value.strip() if value else None
+        return normalized or None
+
+    @model_validator(mode="after")
+    def validate_default_shape(self) -> "LlmProviderModelPolicyUpsert":
+        if self.enabled_models_json and not self.default_model_name:
+            raise ValueError("Choose a default model when models are enabled")
+        if not self.enabled_models_json and self.default_model_name:
+            raise ValueError("A provider with no enabled models cannot have a default")
+        if self.default_model_name and self.default_model_name not in self.enabled_models_json:
+            raise ValueError("The default model must be enabled")
+        return self
+
+
+class LlmProviderModelPolicyDetail(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    team_id: UUID
+    llm_config_id: UUID
+    provider_available_models_json: list[str]
+    enabled_models_json: list[str]
+    default_model_name: str | None
+    policy_valid: bool
+    invalid_enabled_models_json: list[str]
+    default_model_valid: bool
+    role_warnings: list[LlmProviderModelRoleWarning]
 
 
 class LlmSelectionDetail(BaseModel):
@@ -577,6 +636,10 @@ class LlmConfigInspectResult(BaseModel):
     available_models: list[str] = Field(default_factory=list)
     available_model_options: list[LlmModelOption] = Field(default_factory=list)
     discovery_status: Literal["fetched", "manual_required", "failed"]
+    model_catalog_checked: bool = False
+    model_catalog_check_status: Literal["checked", "failed", "not_attempted"] = "not_attempted"
+    model_catalog_check_error_code: str | None = None
+    model_catalog_check_http_status: int | None = None
     default_model_source: Literal["provider", "manual", "none"]
     requires_bearer_token: bool
     supports_model_discovery: bool

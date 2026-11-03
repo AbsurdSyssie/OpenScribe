@@ -45,7 +45,7 @@ from app.services.vault import delete_team_stt_bearer_token, read_team_stt_beare
 from app.services.provider_credential_persistence import provider_credential_write_transaction
 from app.services.provider_secret_cleanup import queue_orphan_provider_secret_after_rollback, queue_provider_secret_cleanup
 from app.services.quotas import mark_provider_attempt_submitted, reserve_provider_attempt, settle_provider_attempt_audio
-from app.services.provider_errors import safe_provider_error_code
+from app.services.provider_errors import safe_provider_error_code, safe_provider_error_diagnostic
 from app.provider_url_security import require_safe_provider_url
 from app.services.audio import normalized_wav_duration_seconds
 from app.services.provider_inspection import (
@@ -267,6 +267,15 @@ def _is_credential_rejection(exc: AppError) -> bool:
     return exc.status_code in {401, 403} or status_code in {401, 403} or exc.code in {"unauthorized", "provider_credential_invalid", "stt_credential_invalid"}
 
 
+def _provider_inspection_diagnostic(exc: AppError) -> str | None:
+    details = exc.details or {}
+    status = details.get("provider_status") or details.get("provider_status_code") or details.get("provider_http_status")
+    code = details.get("provider_error_code")
+    if type(status) is int and 400 <= status <= 599:
+        code = safe_provider_error_code(code, status_code=status)
+    return safe_provider_error_diagnostic(status_code=status, provider_error_code=code)
+
+
 def _duplicate_stt_config(
     db: Session,
     *,
@@ -306,6 +315,27 @@ def _ensure_unique_stt_config_label(db: Session, *, team_id: UUID, label: str, c
 def _raise_stt_label_conflict_if_needed(exc: IntegrityError) -> None:
     if "uq_team_stt_configs_team_label_lower" in str(exc.orig):
         raise AppError(409, "conflict", "An STT provider with this name already exists for this team.", {"field": "label"}) from exc
+
+
+def _pending_stt_revision(db: Session, *, team_id: UUID, target_id: UUID) -> TeamSttConfig | None:
+    return db.scalar(select(TeamSttConfig).where(
+        TeamSttConfig.team_id == team_id,
+        TeamSttConfig.revision_of_config_id == target_id,
+    ).limit(1))
+
+
+def _raise_stt_pending_revision_conflict(target_id: UUID, revision: TeamSttConfig | None) -> None:
+    details: dict[str, str] = {
+        "resource": "stt_config_revision",
+        "revision_of_config_id": str(target_id),
+    }
+    message = "Another STT connection edit changed while this request was being saved. Reload the provider and retry."
+    if revision is not None:
+        details["pending_revision_id"] = str(revision.id)
+        message = "An unfinished STT connection edit already exists. Resume or discard it before starting another edit."
+    raise AppError(409, "conflict", message, {
+        **details,
+    })
 
 
 def _normalize_deepgram_extra_query_params(
@@ -845,11 +875,19 @@ def _list_openai_transcription_models(*, api_key: str, base_url: str) -> list[st
         client = OpenAI(api_key=api_key, base_url=base_url)
         models_page = client.models.list()
     except (AuthenticationError, PermissionDeniedError) as exc:  # pragma: no cover
-        raise AppError(401, "stt_credential_invalid", "The API key was rejected by the provider.", {"provider_status": getattr(exc, "status_code", None)}) from exc
+        provider_status = getattr(exc, "status_code", None)
+        details = {"provider_status": provider_status}
+        if type(provider_status) is int:
+            details["provider_error_code"] = safe_provider_error_code(None, status_code=provider_status)
+        raise AppError(401, "stt_credential_invalid", "The API key was rejected by the provider.", details) from exc
     except APIStatusError as exc:  # pragma: no cover
         if exc.status_code in {401, 403}:
-            raise AppError(401, "stt_credential_invalid", "The API key was rejected by the provider.", {"provider_status": exc.status_code}) from exc
-        raise AppError(502, "stt_inspection_failed", "Could not load available OpenAI transcription models", {"provider_status": exc.status_code}) from exc
+            raise AppError(401, "stt_credential_invalid", "The API key was rejected by the provider.", {"provider_status": exc.status_code, "provider_error_code": safe_provider_error_code(None, status_code=exc.status_code)}) from exc
+        raise AppError(502, "stt_inspection_failed", "Could not load available OpenAI transcription models", {"provider_status": exc.status_code, "provider_error_code": safe_provider_error_code(None, status_code=exc.status_code)}) from exc
+    except APITimeoutError as exc:  # pragma: no cover
+        raise AppError(502, "stt_inspection_failed", "Could not load available OpenAI transcription models", {"provider_error_code": "timeout"}) from exc
+    except APIConnectionError as exc:  # pragma: no cover
+        raise AppError(502, "stt_inspection_failed", "Could not load available OpenAI transcription models", {"provider_error_code": "connection_error"}) from exc
     except Exception as exc:  # pragma: no cover
         raise AppError(502, "stt_inspection_failed", "Could not load available OpenAI transcription models") from exc
 
@@ -888,6 +926,8 @@ def _list_deepgram_stt_models(*, api_key: str, base_url: str) -> list[str]:
             "Could not load available Deepgram STT models",
             {"provider_status": status_code},
         ) from exc
+    except httpx.DecodingError as exc:
+        raise AppError(502, "stt_inspection_failed", "Deepgram model discovery returned an unreadable response", {"provider_error_code": "invalid_response"}) from exc
     except httpx.HTTPError as exc:
         raise AppError(
             502,
@@ -903,7 +943,7 @@ def _list_deepgram_stt_models(*, api_key: str, base_url: str) -> list[str]:
             {"provider_error_code": "response_too_large"},
         ) from exc
     except ValueError as exc:
-        raise AppError(502, "stt_inspection_failed", "Deepgram model discovery returned invalid JSON") from exc
+        raise AppError(502, "stt_inspection_failed", "Deepgram model discovery returned invalid JSON", {"provider_error_code": "invalid_json"}) from exc
 
     stt_models = payload.get("stt")
     if not isinstance(stt_models, list):
@@ -942,6 +982,8 @@ def _list_elevenlabs_stt_models(*, api_key: str, base_url: str) -> list[str]:
                 {"provider_status": status_code},
             ) from exc
         raise AppError(502, "stt_inspection_failed", "Could not load available ElevenLabs STT models", {"provider_status": status_code}) from exc
+    except httpx.DecodingError as exc:
+        raise AppError(502, "stt_inspection_failed", "ElevenLabs model discovery returned an unreadable response", {"provider_error_code": "invalid_response"}) from exc
     except httpx.HTTPError as exc:
         raise AppError(
             502,
@@ -957,7 +999,7 @@ def _list_elevenlabs_stt_models(*, api_key: str, base_url: str) -> list[str]:
             {"provider_error_code": "response_too_large"},
         ) from exc
     except ValueError as exc:
-        raise AppError(502, "stt_inspection_failed", "ElevenLabs model discovery returned invalid JSON") from exc
+        raise AppError(502, "stt_inspection_failed", "ElevenLabs model discovery returned invalid JSON", {"provider_error_code": "invalid_json"}) from exc
 
     raw_models = payload.get("models") if isinstance(payload, dict) else payload
     if not isinstance(raw_models, list):
@@ -2389,11 +2431,17 @@ def _verify_generic_stt_config_with_sample(
 
 def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCreate) -> tuple[TeamSttConfig, SttInspectResult]:
     team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
+    team_id = team.id
     target = None
+    target_id = None
     if payload.revision_of_config_id is not None:
         target = db.scalar(select(TeamSttConfig).where(TeamSttConfig.id == payload.revision_of_config_id, TeamSttConfig.team_id == team.id, TeamSttConfig.revision_of_config_id.is_(None), TeamSttConfig.setup_status == SttConfigSetupStatus.ready))
         if target is None:
             raise AppError(404, "not_found", "Ready STT config not found", {"resource": "stt_config", "config_id": str(payload.revision_of_config_id)})
+        target_id = target.id
+        pending_revision = _pending_stt_revision(db, team_id=team_id, target_id=target_id)
+        if pending_revision is not None:
+            _raise_stt_pending_revision_conflict(target.id, pending_revision)
     provider_preset, adapter_kind, base_url, preset = apply_stt_provider_defaults(
         provider_preset=payload.provider_preset,
         base_url=payload.base_url,
@@ -2495,6 +2543,10 @@ def create_stt_config_draft(db: Session, actor: User, payload: SttConfigDraftCre
                 register_written_secret(written_secret_ref)
                 config.vault_secret_ref = written_secret_ref
     except IntegrityError as exc:
+        constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+        if constraint_name == "uq_team_stt_configs_pending_revision" and target_id is not None:
+            pending_revision = _pending_stt_revision(db, team_id=team_id, target_id=target_id)
+            _raise_stt_pending_revision_conflict(target_id, pending_revision)
         _raise_stt_label_conflict_if_needed(exc)
         raise
     db.refresh(config)
@@ -3163,7 +3215,8 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
             if _is_credential_rejection(exc):
                 raise
             models = []
-            notes = [f"Deepgram model discovery failed: {exc.message}. Enter a model manually if needed."]
+            diagnostic = _provider_inspection_diagnostic(exc)
+            notes = ["Deepgram model discovery failed. Enter a model manually if needed." + (f" {diagnostic}" if diagnostic else "")]
         default_model = _preferred_deepgram_model(models)
         return SttInspectResult(
             base_url=payload.base_url,
@@ -3202,7 +3255,8 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
             if _is_credential_rejection(exc):
                 raise
             catalog_models = []
-            notes = [f"ElevenLabs credential probe degraded: {exc.message}. Using built-in synchronous STT model list."]
+            diagnostic = _provider_inspection_diagnostic(exc)
+            notes = ["ElevenLabs credential probe degraded. Using the built-in synchronous STT model list." + (f" {diagnostic}" if diagnostic else "")]
         models = list(ELEVENLABS_PREFERRED_STT_MODELS)
         if catalog_models:
             notes.append("ElevenLabs catalog probe succeeded; selectable STT models remain the built-in synchronous list.")
@@ -3248,7 +3302,8 @@ def inspect_stt_contract(db: Session, actor: User, payload: SttInspectRequest) -
                         raise
                     available_models = _fallback_openai_transcription_models()
                     available_model_options = _openai_model_options(available_models, source="default")
-                    notes.append("OpenAI model discovery failed, so OpenScribe fell back to the built-in supported transcription model list.")
+                    diagnostic = _provider_inspection_diagnostic(exc)
+                    notes.append("OpenAI model discovery failed, so OpenScribe fell back to the built-in supported transcription model list." + (f" {diagnostic}" if diagnostic else ""))
                 except Exception:
                     available_models = _fallback_openai_transcription_models()
                     available_model_options = _openai_model_options(available_models, source="default")

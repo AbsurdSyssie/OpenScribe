@@ -1,0 +1,16 @@
+{% set usage_navigation_range = request.query_params.get('range', '30d') %}
+{% if usage_navigation_range not in ['30d', '90d', '1y', 'all'] %}{% set usage_navigation_range = usage_range_key|default('30d') %}{% endif %}
+<div class="modal-backdrop quota-limits-backdrop" id="quota-limits-modal" data-quota-team-id="{{ selected_team.id }}" data-quota-member-id="{{ selected_quota_member.id }}" role="presentation">
+  <section class="modal quota-limits-modal" role="dialog" aria-modal="true" aria-labelledby="quota-edit-title" tabindex="-1">
+    <header class="quota-limits-modal-header">
+      <div>
+        <h2 id="quota-edit-title">Edit quotas · {{ selected_quota_member.full_name or selected_quota_member.email }}</h2>
+        <p>{{ selected_quota_member.email }} · {{ selected_quota_member.team_role.value|title }}</p>
+        <span class="quota-unsaved-badge" data-quota-dirty-badge {% if quota_open_form != 'limits' %}hidden{% endif %}>Unsaved changes</span>
+      </div>
+      <a class="quota-limits-close" data-quota-modal-close href="/admin/usage?team_id={{ selected_team.id }}&amp;view=quotas&amp;quota_period={{ quota_period }}&amp;range={{ usage_navigation_range }}{% if quota_search %}&amp;quota_search={{ quota_search_encoded }}{% endif %}#quota-members-heading" aria-label="Close quota editor">×</a>
+    </header>
+    {% if message and message_kind == 'error' %}<p class="flash error quota-modal-error" role="alert">{{ message }}</p>{% endif %}
+    {% include "admin_quota_limits_editor.html" %}
+  </section>
+</div>

@@ -203,6 +203,14 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
     AuditCase("POST", "/api/v1/stt-selection", AccessTier.manager, json_body=_json(stt_config_id=PLACEHOLDER_UUID)),
     AuditCase("DELETE", "/api/v1/stt-selection", AccessTier.manager),
     AuditCase("GET", "/api/v1/llm-configs", AccessTier.system_admin),
+    AuditCase("GET", f"/api/v1/llm-configs/{PLACEHOLDER_UUID}", AccessTier.system_admin),
+    AuditCase("GET", f"/api/v1/llm-configs/{PLACEHOLDER_UUID}/model-policy", AccessTier.system_admin, query_params=_json(team_id=PLACEHOLDER_UUID)),
+    AuditCase(
+        "PUT",
+        f"/api/v1/llm-configs/{PLACEHOLDER_UUID}/model-policy",
+        AccessTier.system_admin,
+        json_body=_json(team_id=PLACEHOLDER_UUID, enabled_models_json=[], default_model_name=None),
+    ),
     AuditCase(
         "POST",
         "/api/v1/llm-configs/inspect",

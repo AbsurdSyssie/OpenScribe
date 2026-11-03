@@ -187,7 +187,7 @@ Abandoned drafts expire after 12 calendar months. Superseded published versions 
 
 Authentication and account-security endpoints use fixed SlowAPI limits. Upload and LLM generation routes use configurable burst/daily limits and owner/session/IP-aware keys. Redis is the limiter store; `RATE_LIMIT_KEY_PREFIX` can isolate deployments sharing Redis.
 
-System-admin quotas and provider attempts are abuse/usage controls, not authorization grants. Quota rows contain accounting metadata and must not contain prompt or transcript text.
+System-admin quotas and provider attempts are abuse/usage controls, not authorization grants. Quota rows contain accounting metadata and must not contain prompt or transcript text. Explicit LLM timeouts and expired submitted LLM deadlines settle at zero token units and do not contribute token or estimated-cost values to usage reports; safe failure and transport metadata remain available for operations. Other unknown submitted outcomes remain conservative, and STT accounting is unchanged.
 
 IP-keyed rate limits use the socket peer by default. `RATE_LIMIT_TRUST_CLOUDFLARE=true` uses a valid `CF-Connecting-IP`; if it is not enabled, `RATE_LIMIT_TRUST_X_FORWARDED_FOR=true` uses the first valid `X-Forwarded-For` address. Invalid trusted-header values fall back to the socket peer. Enable either setting only after the proxy/CDN is the sole origin path and overwrites that header. Header trust without those two conditions lets direct callers select another client's rate-limit key.
 

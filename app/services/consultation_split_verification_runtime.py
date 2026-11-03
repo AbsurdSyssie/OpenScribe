@@ -481,6 +481,7 @@ def _prepare(db: Session, execution_id: UUID):
 def _try_backup_verification(db: Session, *, execution_id: UUID, error: AppError,
                             usage: object | None = None) -> bool:
     """Run the one backup checker from the persisted redacted request."""
+    tag_provider_failure(error)
     if not can_failover(error):
         return False
     if db.in_transaction():

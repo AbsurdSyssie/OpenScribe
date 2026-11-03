@@ -7,6 +7,7 @@ import json
 import re
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from uuid import UUID, uuid4
 
 import pytest
@@ -1012,7 +1013,7 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
             )
     page.locator('input[name="daily_token_unlimited"][value="true"]').check()
     assert not daily_warning.is_visible()
-    page.locator('input[name="daily_token_unlimited"][value=""]').check()
+    page.locator('input[name="daily_token_unlimited"][value="true"]').uncheck()
     assert daily_warning.is_visible()
     daily_limit.fill("30001")
     assert not daily_warning.is_visible()
@@ -1052,60 +1053,72 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
         )
 
 
-def test_team_navigation_disclosures_retain_routes_and_keyboard_state(
+def test_admin_sidebar_areas_retain_team_scope_and_provider_tabs(
     audit_report, audit_browser, synthetic_admin_context, axe_source, make_team
 ):
     page, blocked = audit_browser
     admin = synthetic_admin_context
     other_team = make_team(name="Provider Navigation Switch Target")
     _open_admin(page, audit_report, admin)
-    usage_response = page.goto("/admin/usage?view=team", wait_until="domcontentloaded")
-    assert usage_response is not None and usage_response.status == 200
-    with page.expect_navigation(wait_until="domcontentloaded"):
-        page.locator("#admin-providers-nav-link").click()
-    assert page.url.endswith("/admin?tab=providers")
-    assert page.get_by_role("heading", name="Providers").is_visible()
-    path = f"/admin?team_id={admin['team_id']}&team_tab=overview"
-    response = page.goto(path, wait_until="domcontentloaded")
+    response = page.goto(
+        f"/admin?team_id={admin['team_id']}&team_tab=overview", wait_until="domcontentloaded"
+    )
     assert response is not None and response.status == 200
     nav = page.get_by_role("navigation", name="Team settings")
-    mobile_tabs = page.locator('nav[aria-label="Team settings"]')
-    direct_tabs = {"overview"}
-    for tab in direct_tabs:
-        link = nav.locator(f'a[data-tab="{tab}"]')
-        assert link.count() == 1
-        assert link.get_attribute("href") == f"/admin?team_id={admin['team_id']}&team_tab={tab}"
-    assert nav.locator('a[data-tab="overview"]').get_attribute("aria-current") == "page"
-    assert nav.locator('a[data-tab="quotas"], a[data-tab="usage"]').count() == 0
-
-    settings_group = nav.locator("details[data-team-tab-disclosure]").first
-    assert settings_group.locator("summary").inner_text().startswith("Settings")
-    for tab in ("defaults", "security", "danger"):
-        link = settings_group.locator(f'a[data-tab="{tab}"]')
-        assert link.count() == 1
-        assert link.get_attribute("href") == f"/admin?team_id={admin['team_id']}&team_tab={tab}"
-    providers_link = page.locator("#admin-providers-nav-link")
-    assert providers_link.count() == 1
-    assert providers_link.get_attribute("href") == f"/admin?tab=providers&team_id={admin['team_id']}"
-
-    defaults = page.goto(
-        f"/admin?team_id={admin['team_id']}&team_tab=defaults", wait_until="domcontentloaded"
+    expected_links = {
+        "#admin-providers-nav-link": f"/admin?tab=providers&team_id={admin['team_id']}",
+        "#admin-members-nav-link": f"/admin?team_id={admin['team_id']}&team_tab=members",
+    }
+    for selector, href in expected_links.items():
+        link = page.locator(selector)
+        assert link.is_visible()
+        assert link.get_attribute("href") == href
+    usage_link = page.locator("#admin-usage-nav-link")
+    usage_href = urlparse(usage_link.get_attribute("href"))
+    usage_query = parse_qs(usage_href.query)
+    assert usage_href.path == "/admin/usage"
+    assert usage_query["team_id"] == [admin["team_id"]]
+    assert usage_query["view"] == ["team"]
+    assert usage_query["range"] == ["30d"]
+    security_link = nav.locator('[data-team-scoped-link="security-data"]')
+    assert security_link.is_visible()
+    assert security_link.get_attribute("href") == (
+        f"/admin?team_id={admin['team_id']}&team_tab=security-data"
     )
-    assert defaults is not None and defaults.status == 200
-    nav = page.get_by_role("navigation", name="Team settings")
-    settings_group = nav.locator("details[data-team-tab-disclosure]").first
-    current = settings_group.locator('a[data-tab="defaults"]')
-    assert current.get_attribute("aria-current") == "page"
-    assert "Defaults" in settings_group.locator("summary").inner_text()
+    workspace_link = page.locator("#admin-team-workspace-link")
+    assert workspace_link.is_visible()
+    assert workspace_link.get_attribute("href") == (
+        f"/admin?team_id={admin['team_id']}&team_tab=overview"
+    )
 
-    # Escape dismisses the Settings group and restores focus to its summary.
-    settings_summary = settings_group.locator("summary")
-    if not settings_group.get_attribute("open"):
-        settings_summary.click()
-    assert settings_group.get_attribute("open") is not None
-    page.keyboard.press("Escape")
-    page.wait_for_function("el => !el.open && document.activeElement === el.querySelector('summary')", arg=settings_group.element_handle())
-    assert settings_summary.evaluate("el => document.activeElement === el")
+    # Security & Data owns retention; the retired Defaults URL redirects to
+    # Usage & Quotas, where finite team defaults are managed.
+    security_response = page.goto(
+        f"/admin?team_id={admin['team_id']}&team_tab=security-data",
+        wait_until="domcontentloaded",
+    )
+    assert security_response is not None and security_response.status == 200
+    assert page.locator('[data-panel="security-data"]').is_visible()
+    assert page.get_by_role("heading", name="Security", exact=True).is_visible()
+    legacy_defaults_response = page.request.get(
+        f"{page.url.split('/admin', 1)[0]}/admin?team_id={admin['team_id']}&team_tab=defaults",
+        max_redirects=0,
+    )
+    assert legacy_defaults_response.status == 303
+    redirect_location = legacy_defaults_response.headers["location"]
+    assert redirect_location.startswith("/admin/usage?")
+    redirect_query = parse_qs(urlparse(redirect_location).query)
+    assert redirect_query["view"] == ["quotas"]
+    assert redirect_query["team_id"] == [admin["team_id"]]
+    legacy_defaults_destination = page.goto(
+        f"{page.url.split('/admin', 1)[0]}{redirect_location}",
+        wait_until="domcontentloaded",
+    )
+    assert legacy_defaults_destination is not None and legacy_defaults_destination.status == 200
+    assert page.locator(".defaults-quota-resource-grid").is_visible()
+    assert page.get_by_role("navigation", name="Team settings").locator(
+        "#admin-usage-nav-link"
+    ).get_attribute("aria-current") == "page"
 
     provider_response = page.goto(
         f"/admin?team_id={admin['team_id']}&team_tab=stt", wait_until="domcontentloaded"
@@ -1115,7 +1128,6 @@ def test_team_navigation_disclosures_retain_routes_and_keyboard_state(
     assert provider_nav.locator('a[data-tab="stt"]').get_attribute("aria-current") == "page"
     assert provider_nav.locator("a").count() == 4
     assert page.locator("#admin-providers-nav-link").get_attribute("aria-current") == "page"
-    assert page.locator("[data-team-navigation]").count() == 0
     assert page.locator("#team-title").inner_text() == admin["team_name"]
     assert page.locator(".team-summary").count() == 1
     assert page.locator(".tab-disclosure").count() == 0
@@ -1132,8 +1144,8 @@ def test_team_navigation_disclosures_retain_routes_and_keyboard_state(
     result = _scan_admin(page, audit_report, "team_nav_disclosures", axe_source, blocked)
     assert not result.get("violations"), f"axe violations for team navigation: {result.get('violations')}"
 
-    # Provider destinations have their own visible navigation, including on
-    # mobile. They do not require opening the Team navigation menu.
+    # Provider destinations retain their local tabs, while the shared sidebar
+    # keeps its team links available through the compact mobile menu.
     screenshot_dir = os.environ.get("OPENSCRIBE_ACCESSIBILITY_SCREENSHOT_DIR")
     if screenshot_dir:
         page.set_viewport_size({"width": 1440, "height": 900})
@@ -1162,6 +1174,13 @@ def test_team_navigation_disclosures_retain_routes_and_keyboard_state(
             f'a[data-tab="{tab}"]'
         ).get_attribute("aria-current") == "page"
     page.goto(f"/admin?team_id={admin['team_id']}&team_tab=stt", wait_until="domcontentloaded")
+    mobile_toggle = page.locator("#admin-mobile-nav-toggle")
+    assert mobile_toggle.is_visible()
+    if page.locator("#admin-primary-nav").is_hidden():
+        mobile_toggle.click()
+    assert page.locator("#admin-primary-nav").is_visible()
+    assert page.locator("#admin-members-nav-link").is_visible()
+    assert page.locator('[data-team-scoped-link="security-data"]').is_visible()
     page.locator("#admin-team-switcher summary").click()
     with page.expect_navigation(wait_until="domcontentloaded"):
         page.locator(f'[data-team-option][data-team-id="{other_team.id}"]').click()
@@ -1191,32 +1210,8 @@ def test_team_navigation_disclosures_retain_routes_and_keyboard_state(
             animations="disabled",
         )
 
-    # Settings stays inside the mobile Team navigation disclosure and retains
-    # its Escape and outside-click behavior.
-    defaults = page.goto(
-        f"/admin?team_id={admin['team_id']}&team_tab=defaults", wait_until="domcontentloaded"
-    )
-    assert defaults is not None and defaults.status == 200
-    nav = page.get_by_role("navigation", name="Team settings")
-    mobile_menu = page.locator("[data-team-navigation]")
-    mobile_summary = mobile_menu.locator("summary.team-mobile-navigation-summary")
-    assert mobile_summary.is_visible()
-    assert not mobile_menu.evaluate("el => el.open")
-    settings_group = nav.locator("details[data-team-tab-disclosure]").first
-    mobile_summary.click()
-    settings_group.locator("summary").click()
-    assert settings_group.evaluate("el => el.open")
-    page.keyboard.press("Escape")
-    page.wait_for_function("el => !el.open", arg=settings_group.element_handle())
-    assert mobile_menu.evaluate("el => el.open")
-    page.keyboard.press("Escape")
-    page.wait_for_function(
-        "el => !el.open && document.activeElement === el.querySelector('summary')",
-        arg=mobile_menu.element_handle(),
-    )
-
-    result = _scan_admin(page, audit_report, "team_nav_disclosures", axe_source, blocked)
-    assert not result.get("violations"), f"axe violations for team navigation: {result.get('violations')}"
+    result = _scan_admin(page, audit_report, "admin_sidebar_mobile", axe_source, blocked)
+    assert not result.get("violations"), f"axe violations for admin sidebar: {result.get('violations')}"
 
 
 
@@ -1228,7 +1223,7 @@ def test_admin_refinement_responsive_screenshots_and_no_page_overflow(
     _open_admin(page, audit_report, admin)
     states = (
         ("overview", "overview"),
-        ("defaults", "defaults"),
+        ("security-data", "security-data"),
         ("members", "members"),
         ("provider-policy", "provider-policy"),
     )
@@ -1246,27 +1241,29 @@ def test_admin_refinement_responsive_screenshots_and_no_page_overflow(
                 _assert_no_horizontal_overflow(page, width)
             if tab == "members" and width <= 390:
                 assert page.locator(".member-cell[data-label]").count() >= 4
-                section_heading = page.locator('[data-panel="members"] .section-intro h2')
-                intro_paragraph = page.locator('[data-panel="members"] .section-intro p')
-                assert section_heading.is_visible() and intro_paragraph.is_visible()
-                team_menu = page.locator("[data-team-navigation]")
-                page.wait_for_function("el => !el.open", arg=team_menu.element_handle())
+                section_heading = page.locator("#workspace-title")
+                intro_summary = page.locator(".team-summary--area .meta")
+                assert section_heading.inner_text() == "Members"
+                assert intro_summary.is_visible()
+                mobile_toggle = page.locator("#admin-mobile-nav-toggle")
+                assert mobile_toggle.is_visible()
+                assert page.locator("#admin-primary-nav").is_hidden()
                 assert not page.locator('nav[aria-label="Team settings"]').is_visible(), (
-                    "Team links should be hidden while the mobile disclosure is collapsed"
+                    "Team links should be hidden while the mobile sidebar is collapsed"
                 )
                 heading_layout = page.evaluate("""() => {
-                  const summary = document.querySelector('[data-team-navigation] > summary').getBoundingClientRect();
-                  const heading = document.querySelector('[data-panel="members"] .section-intro h2').getBoundingClientRect();
-                  const paragraph = document.querySelector('[data-panel="members"] .section-intro p').getBoundingClientRect();
-                  return {scrollY: window.scrollY, summaryBottom: summary.bottom, headingTop: heading.top,
-                    headingBottom: heading.bottom, paragraphTop: paragraph.top, paragraphBottom: paragraph.bottom};
+                  const toggle = document.querySelector('#admin-mobile-nav-toggle').getBoundingClientRect();
+                  const heading = document.querySelector('#workspace-title').getBoundingClientRect();
+                  const summary = document.querySelector('.team-summary--area .meta').getBoundingClientRect();
+                  return {scrollY: window.scrollY, toggleBottom: toggle.bottom, headingTop: heading.top,
+                    headingBottom: heading.bottom, summaryTop: summary.top, summaryBottom: summary.bottom};
                 }""")
                 assert heading_layout["scrollY"] == 0
-                assert heading_layout["headingTop"] >= heading_layout["summaryBottom"] - 1, (
-                    f"Members intro is obscured by Team navigation: {heading_layout}"
+                assert heading_layout["headingTop"] >= heading_layout["toggleBottom"] - 1, (
+                    f"Members intro is obscured by the mobile navigation control: {heading_layout}"
                 )
-                assert heading_layout["paragraphTop"] >= heading_layout["headingBottom"] - 1, (
-                    f"Members intro text overlaps its heading: {heading_layout}"
+                assert heading_layout["summaryTop"] >= heading_layout["headingBottom"] - 1, (
+                    f"Members summary overlaps its heading: {heading_layout}"
                 )
                 row = page.locator(".member-row[data-member-name]").first
                 assert page.locator(".member-table").evaluate("el => el.scrollWidth <= el.clientWidth + 1"), (
@@ -1308,10 +1305,11 @@ def test_admin_refinement_responsive_screenshots_and_no_page_overflow(
                 llm_row = page.locator('[data-policy-row="writing-assistant"]')
                 assert admin["llm_label"] in llm_row.inner_text()
                 provider_select = llm_row.locator('[data-policy-provider-select]')
-                model_select = llm_row.locator('[data-policy-model-select]')
-                assert provider_select.input_value()
-                assert model_select.input_value() == "synthetic-model-alt"
-                assert llm_row.get_by_role("button", name="Save").is_visible()
+                writing_default = llm_row.locator(".policy-writing-default")
+                assert provider_select.count() == 0
+                assert llm_row.locator('select[name="llm_config_id"]').input_value()
+                assert writing_default.inner_text() == "synthetic-model-alt"
+                assert llm_row.get_by_role("button", name="Save provider").is_visible()
                 assert page.locator("[data-provider-policy-table]").evaluate("el => el.scrollWidth <= el.clientWidth + 1"), (
                     "Provider policy table still needs horizontal scrolling at a mobile width"
                 )
@@ -1319,19 +1317,7 @@ def test_admin_refinement_responsive_screenshots_and_no_page_overflow(
                   const label = getComputedStyle(cell, '::before').content.replaceAll('"', '');
                   return label === cell.dataset.label && cell.scrollWidth <= cell.clientWidth + 1;
                 })"""), "Provider policy fields lack visible labels or clipped their values"
-            if tab == "defaults":
-                for field in page.locator(".defaults-quota-resource-grid input[type=number]").all():
-                    measurement = field.evaluate("""input => {
-                      const style = getComputedStyle(input);
-                      const canvas = document.createElement('canvas');
-                      const context = canvas.getContext('2d');
-                      context.font = style.font;
-                      const textWidth = context.measureText(input.value).width;
-                      const available = input.getBoundingClientRect().width
-                        - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 2;
-                      return {fits: textWidth <= available + 1, textWidth, available, width: input.getBoundingClientRect().width, value: input.value, font: style.font};
-                    }""")
-                    assert measurement["fits"], f"Quota default value is clipped at {width}px: {field.get_attribute('name')} {measurement}"
+            if tab == "security-data":
                 retention_form = page.locator("#retention-default form.defaults-retention-form")
                 copy = retention_form.locator(".retention-setting-copy")
                 control = retention_form.locator(".retention-setting-control")
@@ -1368,28 +1354,16 @@ def test_admin_refinement_responsive_screenshots_and_no_page_overflow(
                                 animations="disabled",
                             )
                 if width <= 820:
-                    team_menu = page.locator("[data-team-navigation]")
-                    team_summary = team_menu.locator("summary.team-mobile-navigation-summary")
-                    assert team_summary.is_visible() and not team_menu.evaluate("el => el.open")
-                    screenshot_dir = os.environ.get("OPENSCRIBE_ACCESSIBILITY_SCREENSHOT_DIR")
-                    if screenshot_dir:
-                        page.screenshot(
-                            path=str(Path(screenshot_dir) / f"team-navigation-closed-{width}.png"),
-                            full_page=False,
-                            animations="disabled",
-                        )
-                    team_summary.click()
-                    assert team_menu.evaluate("el => el.open")
-                    if screenshot_dir:
-                        page.screenshot(
-                            path=str(Path(screenshot_dir) / f"team-navigation-open-{width}.png"),
-                            full_page=False,
-                            animations="disabled",
-                        )
-                    page.keyboard.press("Escape")
-                    assert not team_menu.evaluate("el => el.open")
+                    mobile_toggle = page.locator("#admin-mobile-nav-toggle")
+                    assert mobile_toggle.is_visible()
+                    if page.locator("#admin-primary-nav").is_hidden():
+                        mobile_toggle.click()
+                    assert page.locator("#admin-primary-nav").is_visible()
+                    assert page.locator("#admin-members-nav-link").is_visible()
+                    mobile_toggle.click()
+                    assert page.locator("#admin-primary-nav").is_hidden()
             _capture_admin_evidence(page, f"refinement-{tab}-{width}.png")
-            if (tab, width) in {("defaults", 768), ("members", 390), ("members", 320)}:
+            if (tab, width) in {("security-data", 768), ("members", 390), ("members", 320)}:
                 screenshot_dir = os.environ.get("OPENSCRIBE_ACCESSIBILITY_SCREENSHOT_DIR")
                 if screenshot_dir:
                     page.screenshot(
@@ -1398,25 +1372,42 @@ def test_admin_refinement_responsive_screenshots_and_no_page_overflow(
                         animations="disabled",
                     )
 
-    # A nested selected page exposes its parent group state in the nav.
+    # Security & Data stays selected in the shared sidebar at desktop and
+    # mobile widths.
     response = page.goto(
-        f"/admin?team_id={admin['team_id']}&team_tab=defaults", wait_until="domcontentloaded"
+        f"/admin?team_id={admin['team_id']}&team_tab=security-data", wait_until="domcontentloaded"
     )
     assert response is not None and response.status == 200
-    settings = page.locator('nav[aria-label="Team settings"] details[data-team-tab-disclosure]').nth(1)
     for width in viewports:
         page.set_viewport_size({"width": width, "height": 1000})
         if width <= 820:
-            team_menu = page.locator("[data-team-navigation]")
-            page.wait_for_function("el => !el.open", arg=team_menu.element_handle())
-            assert team_menu.locator("summary.team-mobile-navigation-summary").inner_text().endswith("Defaults")
-            assert not page.locator('nav[aria-label="Team settings"]').is_visible()
-        else:
-            team_menu = page.locator("[data-team-navigation]")
-            page.wait_for_function("el => el.open", arg=team_menu.element_handle())
-            assert "Defaults" in settings.locator("summary").inner_text()
-            assert settings.locator('a[aria-current="page"]').text_content().strip() == "Defaults"
-        _capture_admin_evidence(page, f"refinement-settings-defaults-{width}.png")
+            toggle = page.locator("#admin-mobile-nav-toggle")
+            if page.locator("#admin-primary-nav").is_hidden():
+                toggle.click()
+        assert page.locator('[data-team-scoped-link="security-data"]').get_attribute("aria-current") == "page"
+        assert page.locator("#admin-members-nav-link").is_visible()
+        _capture_admin_evidence(page, f"refinement-security-data-{width}.png")
+
+    # Team quota defaults now live in Usage & Quotas.
+    quota_defaults = page.goto(
+        f"/admin/usage?team_id={admin['team_id']}&view=quotas", wait_until="domcontentloaded"
+    )
+    assert quota_defaults is not None and quota_defaults.status == 200
+    assert page.locator(".defaults-quota-resource-grid").is_visible()
+    for width in viewports:
+        page.set_viewport_size({"width": width, "height": 1000})
+        for field in page.locator(".defaults-quota-resource-grid input[type=number]").all():
+            measurement = field.evaluate("""input => {
+              const style = getComputedStyle(input);
+              const canvas = document.createElement('canvas');
+              const context = canvas.getContext('2d');
+              context.font = style.font;
+              const textWidth = context.measureText(input.value).width;
+              const available = input.getBoundingClientRect().width
+                - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 2;
+              return {fits: textWidth <= available + 1, textWidth, available, width: input.getBoundingClientRect().width, value: input.value, font: style.font};
+            }""")
+            assert measurement["fits"], f"Quota default value is clipped at {width}px: {field.get_attribute('name')} {measurement}"
 
     # A short mobile viewport forces a member menu to choose the available
     # direction and remain operable even when the last row sits near an edge.
@@ -1467,8 +1458,8 @@ def test_admin_refinement_responsive_screenshots_and_no_page_overflow(
     assert warning.get_attribute("open") is not None
     assert warning.locator("li").count() > 0
 
-    result = _scan_admin(page, audit_report, "team_refinement_defaults", axe_source, blocked)
-    assert not result.get("violations"), f"axe violations for refined Defaults: {result.get('violations')}"
+    result = _scan_admin(page, audit_report, "team_refinement_security_data", axe_source, blocked)
+    assert not result.get("violations"), f"axe violations for refined Security & Data: {result.get('violations')}"
 
     team_routes = (
         ("overview", "Overview", "team_overview"),
@@ -1477,9 +1468,7 @@ def test_admin_refinement_responsive_screenshots_and_no_page_overflow(
         ("stt", "Speech-to-text providers", "team_stt"),
         ("llm", "Large-language-model providers", "team_llm"),
         ("deidentification", "De-identification providers", "team_deidentification"),
-        ("defaults", "Defaults", "team_defaults"),
-        ("security", "Security", "team_security"),
-        ("danger", "Danger zone", "team_danger"),
+        ("security-data", "Security", "team_security_data"),
     )
     for tab, heading, state in team_routes:
         path = f"/admin?team_id={admin['team_id']}&team_tab={tab}"
@@ -1488,7 +1477,13 @@ def test_admin_refinement_responsive_screenshots_and_no_page_overflow(
         assert page.locator("#team-title").inner_text() == admin["team_name"], path
         panel = page.locator(f'[data-panel="{tab}"]')
         assert panel.is_visible(), f"Requested panel not active: {tab}"
-        assert panel.get_by_role("heading", name=heading, exact=False).first.is_visible(), path
+        if tab == "members":
+            page_heading = page.locator("#workspace-title")
+            assert page_heading.is_visible() and page_heading.inner_text() == "Members", path
+            supporting_copy = page.locator(".team-summary--area .meta")
+            assert supporting_copy.is_visible() and admin["team_name"] in supporting_copy.inner_text(), path
+        else:
+            assert panel.get_by_role("heading", name=heading, exact=False).first.is_visible(), path
         result = _scan_admin(page, audit_report, state, axe_source, blocked)
         assert not result.get("violations"), f"axe violations for {state}: {result.get('violations')}"
 
@@ -1546,7 +1541,7 @@ def test_quota_editor_invalid_draft_mobile_reflow_and_member_disclosure(
     # CSRF fields; server validation must return the draft without saving it.
     page.goto(path, wait_until="domcontentloaded")
     editor = page.locator("[data-quota-limits-editor]")
-    page.locator('[name="daily_token_unlimited"][value=""]').check()
+    page.locator('[name="daily_token_unlimited"][value="true"]').uncheck()
     page.locator('[name="daily_token_limit"]').fill("-1")
     page.locator('[name="reason_code"]').select_option("policy_change")
     page.locator('[name="reason"]').fill("Synthetic invalid draft")
@@ -1560,7 +1555,6 @@ def test_quota_editor_invalid_draft_mobile_reflow_and_member_disclosure(
     assert page.locator("[data-quota-dirty-badge]").is_visible()
     result = _scan_admin(page, audit_report, "quota_invalid_draft", axe_source, blocked)
     assert not result.get("violations"), f"axe violations in invalid quota draft: {result.get('violations')}"
-
     # Text-spacing overrides model WCAG 1.4.12 without changing the page's
     # account or quota data. They must not create two-dimensional scrolling.
     page.set_viewport_size({"width": 320, "height": 900})
@@ -1590,6 +1584,47 @@ def test_quota_editor_invalid_draft_mobile_reflow_and_member_disclosure(
     assert bounds and bounds["width"] >= 24 and bounds["height"] >= 24
     _assert_keyboard_focus_indicator(action)
     _assert_no_horizontal_overflow(page, 320)
+
+
+def test_in_place_quota_editor_only_prompts_after_a_policy_change(
+    audit_report, audit_browser, synthetic_admin_context
+):
+    page, blocked = audit_browser
+    admin = synthetic_admin_context
+    _open_admin(page, audit_report, admin)
+    response = page.goto(
+        f"/admin/usage?team_id={admin['team_id']}&view=quotas",
+        wait_until="domcontentloaded",
+    )
+    assert response is not None and response.status == 200
+    member_row = page.locator(f"#quota-member-{admin['member_id']}")
+    assert member_row.is_visible()
+
+    member_row.locator('a[href*="quota_edit=limits"]').click()
+    modal = page.locator("#quota-limits-modal")
+    modal.wait_for(state="visible")
+    save = modal.get_by_role("button", name="Save quota limits")
+    assert save.is_disabled()
+    modal.get_by_role("link", name="Close quota editor").click()
+    assert page.locator("#quota-limits-modal").count() == 0
+    assert page.locator("#admin-unsaved-modal").is_hidden()
+    assert member_row.is_visible(), "Closing an unchanged editor should leave the member row in place"
+
+    member_row.locator('a[href*="quota_edit=limits"]').click()
+    modal = page.locator("#quota-limits-modal")
+    modal.wait_for(state="visible")
+    daily_tokens = modal.locator('[name="daily_token_limit"]')
+    baseline = daily_tokens.input_value()
+    daily_tokens.fill(str(int(baseline) + 1))
+    assert modal.get_by_role("button", name="Save quota limits").is_enabled()
+    modal.get_by_role("link", name="Close quota editor").click()
+    unsaved = page.locator("#admin-unsaved-modal")
+    assert unsaved.is_visible(), "A changed quota policy should prompt before closing"
+    unsaved.get_by_role("button", name="Stay", exact=True).click()
+    assert modal.is_visible()
+    assert daily_tokens.input_value() == str(int(baseline) + 1)
+    assert member_row.is_visible()
+    assert not blocked
 
 
 def test_admin_wide_grids_reflow_at_320_and_survive_text_spacing(
@@ -2351,7 +2386,7 @@ def test_admin_sidebar_unsaved_guard_and_team_creation_validation_preserve_draft
     admin = synthetic_admin_context
     other = make_team(name="Second Draft Guard Team")
     _open_admin(page, audit_report, admin)
-    page.goto(f"/admin?team_id={admin['team_id']}&team_tab=defaults", wait_until="domcontentloaded")
+    page.goto(f"/admin?team_id={admin['team_id']}&team_tab=security-data", wait_until="domcontentloaded")
 
     retention = page.locator("#team-retention-days")
     retention.fill("47")
@@ -2378,14 +2413,14 @@ def test_admin_sidebar_unsaved_guard_and_team_creation_validation_preserve_draft
         )
         page.set_viewport_size({"width": 1440, "height": 900})
     page.get_by_role("button", name="Stay", exact=True).click()
-    assert page.url.endswith(f"team_id={admin['team_id']}&team_tab=defaults")
+    assert page.url.endswith(f"team_id={admin['team_id']}&team_tab=security-data")
     assert retention.input_value() == "47"
 
     if not picker.evaluate("el => el.open"):
         picker.locator("summary").click()
     page.locator(f"[data-team-option][data-team-id='{other.id}']").click()
     page.get_by_role("button", name="Discard changes", exact=True).click()
-    page.wait_for_url(re.compile(rf"/admin\?team_id={other.id}&team_tab=defaults"))
+    page.wait_for_url(re.compile(rf"/admin\?team_id={other.id}&team_tab=security-data"))
 
     page.goto(
         f"/admin/usage?view=team&range=30d&create_team=1&team_id={other.id}",

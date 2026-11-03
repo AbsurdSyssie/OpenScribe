@@ -938,6 +938,7 @@ def _backup_request_strings(request: dict[str, object]) -> tuple[str, ...]:
 def _try_backup_analysis(db: Session, *, execution_id: UUID, primary_error: AppError,
                          usage: dict[str, int | None] | None = None) -> SplitAnalysisRuntimeResult | None:
     """Run the one frozen backup from the same encrypted, redacted request."""
+    tag_provider_failure(primary_error)
     if not can_failover(primary_error):
         return None
     if db.in_transaction():

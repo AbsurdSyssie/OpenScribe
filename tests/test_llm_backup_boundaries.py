@@ -121,35 +121,30 @@ def test_invalid_outputs_account_each_response_and_never_replay_delivery(
         requests.append(kwargs["request_body"]["messages"])
         if len(calls) == 1:
             return "not-json", _usage(5)
-        if len(calls) == 2:
-            return "also-not-json", _usage(7)
-        return (VALID_NOTE if backup_valid else "still-not-json"), _usage(12)
+        return (VALID_NOTE if backup_valid else "also-not-json"), _usage(12)
 
     monkeypatch.setattr(templates, "_invoke_frozen_llm", invoke)
     result = process_generated_document(db_session, document_id=backup_job.document.id)
 
-    assert calls == [backup_job.primary.id, backup_job.primary.id, backup_job.backup.id]
-    assert requests[0] == requests[1] == requests[2]
+    assert calls == [backup_job.primary.id, backup_job.backup.id]
+    assert requests[0] == requests[1]
     assert result.status is (GeneratedDocumentStatus.ready if backup_valid else GeneratedDocumentStatus.failed)
     attempts = _attempts(db_session, result.id)
-    assert len(attempts) == 3
-    primary = next(item for item in attempts if item.backup_of_attempt_id is None and item.attempt_number == 1)
-    retry = next(item for item in attempts if item.backup_of_attempt_id is None and item.attempt_number == 2)
+    assert len(attempts) == 2
+    primary = next(item for item in attempts if item.backup_of_attempt_id is None)
     child = next(item for item in attempts if item.backup_of_attempt_id is not None)
-    assert child.backup_of_attempt_id == retry.id
-    assert primary.status is retry.status is child.status is AttemptStatus.settled
+    assert child.backup_of_attempt_id == primary.id
+    assert primary.status is child.status is AttemptStatus.settled
     assert primary.outcome is AttemptOutcome.failed
-    assert retry.outcome is AttemptOutcome.failed
     assert primary.settled_units == 5
-    assert retry.settled_units == 7
     assert child.settled_units == 12
     assert primary.settlement_basis is child.settlement_basis is ProviderSettlementBasis.reported
     assert child.outcome is (AttemptOutcome.succeeded if backup_valid else AttemptOutcome.failed)
 
     repeated = process_generated_document(db_session, document_id=result.id)
     assert repeated.status is result.status
-    assert calls == [backup_job.primary.id, backup_job.primary.id, backup_job.backup.id]
-    assert len(_attempts(db_session, result.id)) == 3
+    assert calls == [backup_job.primary.id, backup_job.backup.id]
+    assert len(_attempts(db_session, result.id)) == 2
 
 
 def test_backup_quota_exhaustion_keeps_unknown_primary_accounted_without_second_dispatch(

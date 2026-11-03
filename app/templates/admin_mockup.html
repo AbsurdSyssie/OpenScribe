@@ -3181,6 +3181,7 @@
         }
         .policy-table, .member-table { overflow: visible; }
         .policy-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; min-width: 0; padding: 0; align-items: stretch; }
+        .policy-table[data-provider-policy-table] .policy-row { grid-template-columns: minmax(0, 1fr); min-width: 0; }
         .policy-row.head, .member-row.head { display: none; }
         .policy-row > .purpose { padding: 12px; }
         .policy-row > form { display: grid; gap: 8px; min-width: 0; padding: 10px 12px 12px; border-top: 1px solid var(--border); }

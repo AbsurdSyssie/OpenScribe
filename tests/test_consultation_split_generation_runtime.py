@@ -31,6 +31,7 @@ from app.models import (
     LlmAuthMode,
     PromptTemplateVersion,
     ProviderAttempt,
+    ProviderSettlementBasis,
     ProviderUsageEvent,
     TaskDispatchOutbox,
     TaskDispatchSourceKind,
@@ -91,7 +92,7 @@ from app.services.transcripts import (
 from app.services.dictations import update_post_consultation_dictation
 
 
-def _queue(db, owner, make_llm_config, make_llm_selection, make_template, monkeypatch, *, mixed=True, included=False, structured_only=False, source_only=None, adapter_kind=LlmAdapterKind.openai_chat):
+def _queue(db, owner, make_llm_config, make_llm_selection, make_template, monkeypatch, *, mixed=True, included=False, structured_only=False, checker_selected=False, source_only=None, adapter_kind=LlmAdapterKind.openai_chat):
     """Build a real confirmed batch; only the provider boundary is faked."""
     monkeypatch.setenv("CONSULTATION_SPLITTING_ENABLED", "true")
     db.add(UserAppPreference(user_id=owner.id, preferences_json={"split_consultations_into_separate_notes": True}))
@@ -114,6 +115,10 @@ def _queue(db, owner, make_llm_config, make_llm_selection, make_template, monkey
         model = "gpt-4o-mini"
         config = make_llm_config(team=owner.team, actor=owner, available_models_json=[model])
     make_llm_selection(config=config, actor=owner, allowed_models_json=[model])
+    if checker_selected:
+        db.add(TeamHallucinationCheckSelection(
+            team_id=owner.team_id, llm_config_id=config.id, selected_by_user_id=owner.id,
+        ))
     transcript = Transcript(
         owner_user_id=owner.id, team_id=owner.team_id, title="Synthetic consultation",
         ingestion_mode=TranscriptIngestionMode.whole_file, status=TranscriptStatus.ready,
@@ -278,14 +283,17 @@ def _queue_selected_verification(
     """Build one queued verifier with validated originals and no documents yet."""
     transcript, generation_id = _queue(
         db, owner, make_llm_config, make_llm_selection, make_template,
-        monkeypatch, structured_only=True, source_only=source_only, adapter_kind=adapter_kind,
+        monkeypatch, structured_only=True, checker_selected=True,
+        source_only=source_only, adapter_kind=adapter_kind,
     )
     config = db.scalar(
         select(TeamLlmSelection).where(TeamLlmSelection.team_id == owner.team_id)
     ).config
-    db.add(TeamHallucinationCheckSelection(
-        team_id=owner.team_id, llm_config_id=config.id, selected_by_user_id=owner.id,
+    checker_selection = db.scalar(select(TeamHallucinationCheckSelection).where(
+        TeamHallucinationCheckSelection.team_id == owner.team_id,
     ))
+    accepted_checker_model = config.model_name
+    checker_selection.model_name_override = "later-admin-model"
     db.commit()
     _provider(monkeypatch, _response(db, generation_id), [])
     result = _run(db, generation_id)
@@ -402,13 +410,8 @@ def test_gemini_verifier_quota_rejection_remains_fail_open_below_actual_cap(
     owner = make_user(email=f"verification-gemini-quota-{uuid4()}@example.com")
     transcript, generation_id = _queue(
         db_session, owner, make_llm_config, make_llm_selection, make_template, monkeypatch,
-        structured_only=True, adapter_kind=LlmAdapterKind.gemini_enterprise,
+        structured_only=True, checker_selected=True, adapter_kind=LlmAdapterKind.gemini_enterprise,
     )
-    config = db_session.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == owner.team_id)).config
-    db_session.add(TeamHallucinationCheckSelection(
-        team_id=owner.team_id, llm_config_id=config.id, selected_by_user_id=owner.id,
-    ))
-    db_session.commit()
 
     from app.services import consultation_split_verification_queue as verification_queue
 
@@ -1249,8 +1252,13 @@ def test_generation_provider_failures_persist_controlled_diagnostics_without_con
     assert (
         attempt.error_code, attempt.provider_error_code, attempt.provider_http_status
     ) == (
-        "consultation_split_provider_failed", expected_provider_code, expected_http_status,
+        "llm_provider_timeout" if isinstance(failure, AppError) and failure.code == "llm_provider_timeout" else "consultation_split_provider_failed",
+        expected_provider_code, expected_http_status,
     )
+    if isinstance(failure, AppError) and failure.code == "llm_provider_timeout":
+        assert (attempt.outcome, attempt.settlement_basis, attempt.settled_units) == (
+            AttemptOutcome.unknown, ProviderSettlementBasis.timeout_waived, 0,
+        )
     assert (
         execution.provider_error_code, execution.provider_http_status
     ) == (expected_provider_code, expected_http_status)
@@ -1265,6 +1273,8 @@ def test_generation_provider_failures_persist_controlled_diagnostics_without_con
         "consultation_split_provider_failed", expected_provider_code,
         expected_http_status,
     )
+    if isinstance(failure, AppError) and failure.code == "llm_provider_timeout":
+        assert (events[0].prompt_tokens, events[0].completion_tokens, events[0].total_tokens) == (None, None, None)
     assert db_session.scalars(select(ConsultationSplitExecution).where(
         ConsultationSplitExecution.batch_id == batch.id
     )).all() == [execution]
@@ -1420,7 +1430,9 @@ def test_quota_lifecycle_terminalizes_every_pending_generation_topic_outcome_onc
     )
     assert (batch.status, batch.error_code) == (ConsultationSplitBatchStatus.failed, error_code)
     assert (attempt.status, attempt.outcome) == (attempt_status, attempt_outcome)
-    assert attempt.settled_units == (attempt.reserved_units if failure_mode == "submitted_timeout" else None)
+    assert attempt.settled_units == (0 if failure_mode == "submitted_timeout" else None)
+    if failure_mode == "submitted_timeout":
+        assert attempt.settlement_basis is ProviderSettlementBasis.timeout_waived
     assert len(db_session.scalars(
         select(ProviderAttempt).where(
             ProviderAttempt.consultation_split_execution_id == execution_id
@@ -1504,12 +1516,8 @@ def test_selected_checker_runs_once_before_structured_outputs_materialize(
 ):
     owner = make_user(email=f"generation-checked-{uuid4()}@example.com")
     transcript, generation_id = _queue(db_session, owner, make_llm_config, make_llm_selection, make_template,
-        monkeypatch, structured_only=True)
+        monkeypatch, structured_only=True, checker_selected=True)
     config = db_session.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == owner.team_id)).config
-    db_session.add(TeamHallucinationCheckSelection(
-        team_id=owner.team_id, llm_config_id=config.id, selected_by_user_id=owner.id,
-    ))
-    db_session.commit()
     _provider(monkeypatch, _response(db_session, generation_id), [])
     result = _run(db_session, generation_id)
     assert result.outcome == "ready", _rows(db_session, generation_id)[:3]
@@ -1522,14 +1530,20 @@ def test_selected_checker_runs_once_before_structured_outputs_materialize(
     calls = []
     monkeypatch.setattr("app.services.consultation_split_verification_runtime.resolve_generation_credential", lambda _config: "token")
     monkeypatch.setattr("app.services.consultation_split_verification_runtime.llm_runtime.invoke_llm",
-            lambda **_kwargs: (calls.append(1) or (json.dumps({str(topic.topic_uuid): {"status": "unchanged"}
+            lambda **_kwargs: (calls.append(_kwargs["request_body"]["model"]) or (json.dumps({str(topic.topic_uuid): {"status": "unchanged"}
                 for topic in db_session.scalars(select(ConsultationSplitBatchTopic).where(
                 ConsultationSplitBatchTopic.batch_id == verification_batch_id)).all()
                 if topic.disposition is ConsultationSplitTopicDisposition.separate_note}), {"total_tokens": 2})))
     verification_id = verification.id
+    checker_selection = db_session.scalar(select(TeamHallucinationCheckSelection).where(
+        TeamHallucinationCheckSelection.team_id == owner.team_id,
+    ))
+    accepted_checker_model = db_session.get(TeamLlmConfig, checker_selection.llm_config_id).model_name
+    checker_selection.model_name_override = "later-admin-model"
+    db_session.commit()
     db_session.rollback()
     process_consultation_split_verification_execution(db_session, execution_id=verification_id)
-    assert calls == [1]
+    assert calls == [accepted_checker_model]
     db_session.expire_all()
     batch = db_session.get(ConsultationSplitBatch, verification_batch_id)
     assert batch.verification_status.value == "verified"
@@ -1763,7 +1777,7 @@ def test_submitted_verifier_fail_open_materializes_originals_after_gate_flip(
         _disable_split_gate(db_session, owner, monkeypatch, gate)
         calls.append(1)
         if provider_result == "timeout":
-            raise AppError(504, "provider_timeout", "synthetic timeout")
+            raise AppError(504, "llm_provider_timeout", "synthetic timeout")
         return "not-json", {"total_tokens": 2}
 
     monkeypatch.setattr(
@@ -1779,6 +1793,10 @@ def test_submitted_verifier_fail_open_materializes_originals_after_gate_flip(
         db_session, owner, transcript, verification_id,
         expected_reason=expected_reason, expected_attempt_outcome=AttemptOutcome.unknown,
     )
+    if provider_result == "timeout":
+        assert (attempt.settlement_basis, attempt.settled_units, attempt.error_code) == (
+            ProviderSettlementBasis.timeout_waived, 0, "llm_provider_timeout",
+        )
     assert calls == [1]
     assert counts_before == (
         db_session.scalar(select(func.count()).select_from(ConsultationSplitExecution).where(
@@ -1807,13 +1825,8 @@ def test_partial_generation_recovers_before_selected_checker_snapshots_stable_su
     owner = make_user(email=f"generation-recovery-before-checker-{uuid4()}@example.com")
     transcript, initial_id = _queue(
         db_session, owner, make_llm_config, make_llm_selection, make_template,
-        monkeypatch, structured_only=True,
+        monkeypatch, structured_only=True, checker_selected=True,
     )
-    config = db_session.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == owner.team_id)).config
-    db_session.add(TeamHallucinationCheckSelection(
-        team_id=owner.team_id, llm_config_id=config.id, selected_by_user_id=owner.id,
-    ))
-    db_session.commit()
     partial = json.loads(_response(db_session, initial_id))
     partial["notes"][0]["content"] = "invalid structured output"
     generation_calls = []
@@ -1938,10 +1951,8 @@ def test_checker_config_rotation_between_credential_read_and_submit_fails_open_w
 ):
     owner = make_user(email=f"generation-checker-rotation-{uuid4()}@example.com")
     _transcript, generation_id = _queue(db_session, owner, make_llm_config, make_llm_selection, make_template,
-        monkeypatch, structured_only=True)
+        monkeypatch, structured_only=True, checker_selected=True)
     config = db_session.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == owner.team_id)).config
-    db_session.add(TeamHallucinationCheckSelection(team_id=owner.team_id, llm_config_id=config.id, selected_by_user_id=owner.id))
-    db_session.commit()
     _provider(monkeypatch, _response(db_session, generation_id), [])
     assert _run(db_session, generation_id).outcome == "ready"
     verification = db_session.scalar(select(ConsultationSplitExecution).where(
@@ -1974,9 +1985,7 @@ def test_checker_quota_rejection_does_not_unwind_complete_generation_materializa
 ):
     owner = make_user(email=f"generation-checker-quota-{uuid4()}@example.com")
     transcript, generation_id = _queue(db_session, owner, make_llm_config, make_llm_selection, make_template,
-        monkeypatch, structured_only=True)
-    config = db_session.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == owner.team_id)).config
-    db_session.add(TeamHallucinationCheckSelection(team_id=owner.team_id, llm_config_id=config.id, selected_by_user_id=owner.id))
+        monkeypatch, structured_only=True, checker_selected=True)
     owner.daily_token_limit = owner.monthly_token_limit = 0
     db_session.commit()
     provider_calls = []
@@ -2022,9 +2031,7 @@ def test_checker_quota_rejection_preserves_partial_survivors_for_keep(
 ):
     owner = make_user(email=f"generation-checker-quota-partial-{uuid4()}@example.com")
     transcript, generation_id = _queue(db_session, owner, make_llm_config, make_llm_selection, make_template,
-        monkeypatch, structured_only=True)
-    config = db_session.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == owner.team_id)).config
-    db_session.add(TeamHallucinationCheckSelection(team_id=owner.team_id, llm_config_id=config.id, selected_by_user_id=owner.id))
+        monkeypatch, structured_only=True, checker_selected=True)
     owner.daily_token_limit = owner.monthly_token_limit = 0
     db_session.commit()
     partial_response = json.loads(_response(db_session, generation_id))

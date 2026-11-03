@@ -25,7 +25,7 @@ Full login lands on `/workspace`. Legacy `/settings` links redirect to canonical
 
 Within their own team, leaders can:
 
-- view service-selection status and choose/clear eligible provisioned STT, LLM-related, de-identification, clinical NLP, and other supported team policy selections;
+- view service-selection status and choose/clear eligible provisioned STT, writing-provider, de-identification, clinical NLP, and other supported team selections;
 - review/approve/reject matching account requests;
 - create non-system-admin team users;
 - send setup, password-reset, or full account-recovery links where mail is configured;
@@ -79,8 +79,9 @@ Selections are policy references to system-admin-provisioned providers. Choosing
 
 ### Writing assistant
 
-- Confirm an approved team/default configuration exists.
-- Users may have authorized model/preferences within team policy.
+- Choose the team's configured writing provider. This changes only the writing-provider pointer; it does not change that provider's enabled-model allowance or writing default, and it does not change pinned backup/checker assignments.
+- Ask a system administrator to update the provider's enabled-model allowance or writing default in **Providers → LLM → Models** when needed.
+- Users may choose a personal model only from the active provider's enabled models.
 - Provider/model options should be tested with synthetic content before clinical rollout.
 
 ### De-identification and clinical NLP

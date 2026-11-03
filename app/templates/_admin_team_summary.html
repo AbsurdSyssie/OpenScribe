@@ -1,0 +1,23 @@
+{% set area_title = workspace_header_title|default(none) %}
+<div class="team-summary{% if area_title %} team-summary--area{% endif %}">
+  <div>
+    <div class="title-line">
+      {% if area_title %}
+      <h1 id="workspace-title" class="team-area-title">{{ area_title }}</h1>
+      {% if selected_team %}<span class="badge" id="team-status">{{ selected_team.status.value|title }}</span><span class="visually-hidden" id="team-title">{{ selected_team.name }}</span>{% endif %}
+      {% else %}
+      <h2 id="team-title">{{ selected_team.name }}</h2>
+      <span class="badge" id="team-status">{{ selected_team.status.value|title }}</span>
+      {% endif %}
+    </div>
+    <div class="meta">
+      {% if area_title and workspace_header_description %}
+      <span>{{ workspace_header_description }}</span>
+      {% elif selected_team %}
+      <span>Selected team scope</span><span>•</span>
+      <span id="team-members">{{ selected_team_users|length }} members</span><span>•</span>
+      <span>Provider configuration is isolated to this team</span>
+      {% endif %}
+    </div>
+  </div>
+</div>

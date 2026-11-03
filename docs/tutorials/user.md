@@ -259,7 +259,7 @@ Avoid rapid repeated requests because they can consume limits/quota. Report time
 
 ### Wrong provider/model shown
 
-Stop the clinical workflow and ask the team leader/system administrator to verify team policy.
+Stop the clinical workflow and ask the team leader to verify the active writing provider. Ask a system administrator to change the provider's enabled-model allowance or writing default if needed; your personal model choice can use only models enabled for the active provider.
 
 ## Ask for help when
 

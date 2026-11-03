@@ -299,7 +299,7 @@ def test_ollama_generation_rejects_oversized_streamed_fragment(monkeypatch):
         )
 
     assert exc_info.value.code == "llm_provider_bad_response"
-    assert exc_info.value.details == {"provider_error_code": "response_too_large"}
+    assert exc_info.value.details == {"provider_error_code": "response_too_large", "backup_failure_class": "provider_failure"}
 
 
 def test_ollama_generation_stops_endless_fragment_stream(monkeypatch):
@@ -314,7 +314,7 @@ def test_ollama_generation_stops_endless_fragment_stream(monkeypatch):
         )
 
     assert exc_info.value.code == "llm_provider_bad_response"
-    assert exc_info.value.details == {"provider_error_code": "response_too_large"}
+    assert exc_info.value.details == {"provider_error_code": "response_too_large", "backup_failure_class": "provider_failure"}
 
 
 def test_ollama_generation_rejects_oversized_unterminated_line(monkeypatch):
@@ -329,7 +329,7 @@ def test_ollama_generation_rejects_oversized_unterminated_line(monkeypatch):
         )
 
     assert exc_info.value.code == "llm_provider_bad_response"
-    assert exc_info.value.details == {"provider_error_code": "response_too_large"}
+    assert exc_info.value.details == {"provider_error_code": "response_too_large", "backup_failure_class": "provider_failure"}
 
 
 @pytest.mark.parametrize(

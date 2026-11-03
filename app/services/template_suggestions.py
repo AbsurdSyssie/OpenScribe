@@ -22,7 +22,10 @@ from app.models import (
     TemplateSuggestionStatus, Transcript, User, utcnow,
 )
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner
-from app.services.llm import resolve_user_llm
+from app.services.llm_generation_provider import (
+    require_frozen_backup_matches,
+    resolve_new_writing_provider,
+)
 from app.services.llm_backup import (
     effective_provider_attempt, freeze_backup_selection, provider_result_is_current, read_backup_provider,
     reserve_backup_attempt,
@@ -38,6 +41,7 @@ from app.services.preferences import template_suggestions_enabled
 from app.services.quotas import (
     cancel_provider_attempt, estimate_token_reservation, increase_provider_attempt_reservation, mark_provider_attempt_submitted,
     reserve_provider_attempt, settle_provider_attempt_tokens, settle_provider_attempt_unknown_tokens,
+    settle_provider_attempt_timeout_waived,
 )
 from app.services.redaction import redact_transient_text
 from app.services.task_outbox import add_pending_task_dispatch, try_publish_task_dispatch_safely
@@ -196,11 +200,15 @@ def queue_template_suggestion(
         if selected_template is not None else None
     )
     config, model_name = None, None
+    writing_uses_backup = False
     if len(candidates) >= 2:
         try:
-            _, config, model_name, _ = resolve_user_llm(db, actor)
-        except Exception:
-            pass
+            writing_provider = resolve_new_writing_provider(db, actor)
+            config, model_name = writing_provider.config, writing_provider.model_name
+            writing_uses_backup = writing_provider.uses_backup
+        except AppError as exc:
+            if exc.code != "business_rule_violation":
+                raise
     terminal_without_call = len(candidates) < 2 or config is None or not model_name
     job = TemplateSuggestionJob(
         id=uuid4(), transcript_id=transcript.id, owner_user_id=actor.id, team_id=transcript.team_id,
@@ -260,6 +268,10 @@ def queue_template_suggestion(
         db.add(job)
         db.flush()
         freeze_backup_selection(db, source=job, owner_user_id=job.owner_user_id, team_id=job.team_id)
+        if writing_uses_backup:
+            require_frozen_backup_matches(
+                db, source=job, config_id=config.id, model_name=model_name,
+            )
         reserve_provider_attempt(
             db, team_id=job.team_id, owner_user_id=job.owner_user_id, resource=QuotaResource.tokens,
             attempt_kind=AttemptKind.llm_template_suggestion, correlation_id=job.id, attempt_number=1,
@@ -354,16 +366,20 @@ def _attempt(db: Session, job_id: UUID, *, populate_existing: bool = False):
 
 def _settle_suggestion_attempt(
     db: Session, *, attempt, usage: dict[str, int | None] | None,
-    outcome: AttemptOutcome, error_code: str | None = None,
+    outcome: AttemptOutcome, error_code: str | None = None, timeout_waived: bool = False,
 ) -> None:
     total = usage.get("total_tokens") if usage else None
-    if isinstance(total, int):
+    if timeout_waived:
+        settled = settle_provider_attempt_timeout_waived(db, attempt_id=attempt.id)
+    elif isinstance(total, int):
         settled = settle_provider_attempt_tokens(
             db, attempt_id=attempt.id, reported_total_tokens=total, outcome=outcome,
             reported_input_tokens=usage.get("input_tokens"), reported_output_tokens=usage.get("output_tokens"),
         )
     else:
-        settled = settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id)
+        settled = settle_provider_attempt_unknown_tokens(
+            db, attempt_id=attempt.id, allow_timeout_waiver=outcome is not AttemptOutcome.succeeded,
+        )
     settled.error_code = error_code
     db.add(settled)
 
@@ -399,14 +415,16 @@ def _lock_suggestion_result(
 
 
 def _fail(db: Session, job: TemplateSuggestionJob, code: str, *,
-          submitted_attempt_id: UUID, usage: dict[str, int | None] | None = None) -> TemplateSuggestionJob | None:
+          submitted_attempt_id: UUID, usage: dict[str, int | None] | None = None,
+          timeout_waived: bool = False) -> TemplateSuggestionJob | None:
     if not _lock_suggestion_result(db, job=job, submitted_attempt_id=submitted_attempt_id):
         db.rollback()
         return db.get(TemplateSuggestionJob, job.id)
     previous_status = job.status.value
     attempt = db.get(ProviderAttempt, submitted_attempt_id)
     _settle_suggestion_attempt(db, attempt=attempt, usage=usage,
-        outcome=AttemptOutcome.failed, error_code=code)
+        outcome=AttemptOutcome.failed, error_code="llm_provider_timeout" if timeout_waived else code,
+        timeout_waived=timeout_waived)
     job.status = TemplateSuggestionStatus.failed
     job.error_code = code[:128]
     job.completed_at = utcnow()
@@ -505,6 +523,7 @@ def _try_backup_suggestion_impl(
     primary_usage: dict[str, int | None] | None = None,
     preclaim: bool = False,
 ) -> tuple[dict[str, object] | None, dict[str, int | None], TeamLlmConfig, object] | None:
+    tag_provider_failure(primary_exc)
     if not can_failover(primary_exc):
         return None
     try:
@@ -558,6 +577,7 @@ def _try_backup_suggestion_impl(
             db, attempt=current_primary, usage=primary_usage,
             outcome=AttemptOutcome.failed if primary_usage and isinstance(primary_usage.get("total_tokens"), int) else AttemptOutcome.unknown,
             error_code=primary_exc.code,
+            timeout_waived=primary_exc.code == "llm_provider_timeout",
         )
     cap = llm_runtime.request_output_token_cap(request)
     if not isinstance(cap, int) or cap <= 0:
@@ -601,6 +621,10 @@ def _try_backup_suggestion_impl(
                 provider_config=dict(backup.provider_config), credential=credential, request_body=request,
             )
         result = _parse_suggestion_result(output, locked)
+    except AppError as exc:
+        _fail(db, locked, "template_suggestion_failed", submitted_attempt_id=child.id,
+            usage=locals().get("usage"), timeout_waived=exc.code == "llm_provider_timeout")
+        return None
     except Exception:
         _fail(db, locked, "template_suggestion_failed", submitted_attempt_id=child.id,
             usage=locals().get("usage"))
@@ -884,7 +908,8 @@ def process_template_suggestion(db: Session, *, job_id: UUID) -> TemplateSuggest
         )
         if backup_result is None:
             _log("template_suggestion_provider_failed", job=locked, reason_code="provider_failed")
-            return _fail(db, locked, "template_suggestion_failed", submitted_attempt_id=active_attempt.id)
+            return _fail(db, locked, "template_suggestion_failed", submitted_attempt_id=active_attempt.id,
+                timeout_waived=exc.code == "llm_provider_timeout")
         result, usage, config, active_attempt = backup_result
     except Exception:
         _log("template_suggestion_provider_failed", job=locked, reason_code="provider_or_output_validation_failed")

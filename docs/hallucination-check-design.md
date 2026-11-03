@@ -88,6 +88,10 @@ System administrators can configure/clear a team hallucination-check selection u
 - The checker resolves the selected config's Vault/deployment identity through the ordinary LLM runtime.
 - Missing/invalid/unavailable checker configuration produces an unchecked note rather than silently falling back to a different provider.
 
+At generation acceptance, checker-capable structured Template work freezes one of three checker states on the owner-encrypted GeneratedDocument: not configured, configured with a non-secret provider/model snapshot, or configured but invalid under the saved model allowance. Non-checker work stores an explicit not-configured state without referencing a checker provider. The checker uses the accepted choice when generation reaches the checking stage. Later model-policy or checker-selection changes apply to new work; the checker does not follow a new provider default or recheck a frozen model against the current allowance. Current lifecycle, team/config identity, credential, quota, deadline, and transcript-retention checks still apply. A checker that is disabled or unavailable fails open and leaves a safe unchecked status.
+
+Consultation-split batches freeze the same state at acceptance. Optional split verification uses that batch snapshot when it queues its child execution, so later administrator changes cannot redirect an already accepted batch. Pre-upgrade pending work has no acceptance snapshot and retains its legacy live-selection behavior while the provider-policy and checker-selection services block mutations until those jobs and batches drain.
+
 ## Generated-document metadata
 
 Generated documents store bounded checker metadata such as:

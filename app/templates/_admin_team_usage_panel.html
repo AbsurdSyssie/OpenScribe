@@ -4,12 +4,7 @@
                 {% if not standalone_usage and workspace_team_tab != "usage" %}hidden{% endif %}
               >
                 {% set usage_view_users = usage_page_view == 'users' if standalone_usage else request.query_params.get('usage_view') == 'users' %}
-                <div class="section-intro usage-intro">
-                  <div class="usage-toolbar">
-                    <div><h{{ '1' if standalone_usage else '2' }}>{% if usage_view_users %}User usage{% else %}Team usage{% endif %}</h{{ '1' if standalone_usage else '2' }}><p>{% if usage_view_users %}Aggregate activity for users belonging to {{ selected_team.name }}. Metadata only.{% else %}Consumption and health for {{ selected_team.name }}. Metadata only.{% endif %}</p></div>
-                  </div>
-                </div>
-                {% include "_admin_usage_navigation.html" %}
+                {% if not standalone_usage %}{% include "_admin_usage_navigation.html" %}{% endif %}
 
                 <div class="usage-page usage-page--team{% if usage_view_users %} usage-page--users{% endif %}">
                   {% if usage_view_users %}

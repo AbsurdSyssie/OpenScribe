@@ -123,6 +123,95 @@ def test_alembic_upgrade_keeps_application_loggers_enabled():
 
 
 @pytest.mark.migration
+def test_llm_model_policy_migration_preserves_effective_choices_and_manual_roots():
+    reset_public_schema()
+    config = alembic_config()
+    command.upgrade(config, "h1i2j3k4l5m6")
+    team_id = "00000000-0000-0000-0000-000000000991"
+    nullable_checker_team_id = "00000000-0000-0000-0000-000000001001"
+    admin_id = "00000000-0000-0000-0000-000000000992"
+    manual_id = "00000000-0000-0000-0000-000000000993"
+    restricted_id = "00000000-0000-0000-0000-000000000994"
+    nullable_checker_config_id = "00000000-0000-0000-0000-000000001002"
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at) "
+            "VALUES (:id, 'Provider policy migration', 'provider policy migration', 'active', 30, NOW(), NOW())"
+        ), {"id": team_id})
+        connection.execute(text(
+            "INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at) "
+            "VALUES (:id, 'Nullable checker migration', 'nullable checker migration', 'active', 30, NOW(), NOW())"
+        ), {"id": nullable_checker_team_id})
+        connection.execute(text(
+            "INSERT INTO users (id, full_name, email, password_hash, team_id, team_role, is_system_admin, status, "
+            "must_change_password, onboarding_state, mfa_required, mfa_enabled, example_consultation_pending, created_at, updated_at) "
+            "VALUES (:id, 'Policy Admin', 'policy-migration@example.test', 'test-hash', NULL, NULL, true, 'active', "
+            "false, 'complete', true, true, false, NOW(), NOW())"
+        ), {"id": admin_id})
+        connection.execute(text("""
+            INSERT INTO team_llm_configs (
+                id, team_id, label, provider_preset, adapter_kind, base_url, auth_mode, model_name,
+                available_models_json, inspection_metadata_json, provider_config_json, setup_status, vault_secret_ref,
+                is_active, created_by_user_id, updated_by_user_id, created_at, updated_at
+            ) VALUES
+                (:manual, :team, 'Manual root', 'openai', 'openai_chat', 'https://provider.example/v1', 'bearer',
+                 'manual-v1', '[]'::json, '{}'::json, '{}'::json, 'ready', 'secret:manual', true, :admin, :admin, NOW(), NOW()),
+                (:restricted, :team, 'Restricted root', 'openai', 'openai_chat', 'https://provider.example/v1', 'bearer',
+                 'model-a', '["model-a", "model-b"]'::json, '{}'::json, '{}'::json, 'ready', 'secret:restricted', true, :admin, :admin, NOW(), NOW()),
+                (:nullable_checker, :nullable_checker_team, 'Nullable checker root', 'openai', 'openai_chat', 'https://provider.example/v1', 'bearer',
+                 'checker-config-model', '["checker-config-model"]'::json, '{}'::json, '{}'::json, 'ready', 'secret:nullable-checker', true, :admin, :admin, NOW(), NOW())
+        """), {"manual": manual_id, "restricted": restricted_id, "team": team_id, "nullable_checker": nullable_checker_config_id, "nullable_checker_team": nullable_checker_team_id, "admin": admin_id})
+        connection.execute(text("""
+            INSERT INTO team_llm_selections (id, team_id, llm_config_id, allowed_models_json, model_name_override, selected_by_user_id)
+            VALUES (:id, :team, :restricted, '["model-b"]'::json, 'model-a', :admin)
+        """), {"id": "00000000-0000-0000-0000-000000000996", "team": team_id, "restricted": restricted_id, "admin": admin_id})
+        connection.execute(text("""
+            INSERT INTO team_llm_backup_selections (team_id, llm_config_id, model_name, created_at, updated_at)
+            VALUES (:team, :restricted, 'backup-pinned', NOW(), NOW())
+        """), {"team": team_id, "restricted": restricted_id})
+        connection.execute(text("""
+            INSERT INTO team_hallucination_check_selections (
+                id, team_id, llm_config_id, model_name_override, selected_by_user_id, created_at, updated_at
+            ) VALUES (:id, :team, :restricted, 'checker-pinned', :admin, NOW(), NOW())
+        """), {"id": "00000000-0000-0000-0000-000000000995", "team": team_id, "restricted": restricted_id, "admin": admin_id})
+        connection.execute(text("""
+            INSERT INTO team_hallucination_check_selections (
+                id, team_id, llm_config_id, model_name_override, selected_by_user_id, created_at, updated_at
+            ) VALUES (:id, :team, :config, NULL, :admin, NOW(), NOW())
+        """), {"id": "00000000-0000-0000-0000-000000001003", "team": nullable_checker_team_id, "config": nullable_checker_config_id, "admin": admin_id})
+
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        manual_catalog, manual_models, manual_default = connection.execute(text("""
+            SELECT config.available_models_json, policy.enabled_models_json, policy.default_model_name
+            FROM team_llm_configs AS config
+            JOIN team_llm_provider_model_policies AS policy ON policy.llm_config_id = config.id
+            WHERE config.id = :id
+        """), {"id": manual_id}).one()
+        enabled, default, checker_default = connection.execute(text("""
+            SELECT policy.enabled_models_json, policy.default_model_name, checker.model_name_override
+            FROM team_llm_provider_model_policies AS policy
+            JOIN team_hallucination_check_selections AS checker ON checker.llm_config_id = policy.llm_config_id
+            WHERE policy.llm_config_id = :id
+        """), {"id": restricted_id}).one()
+        nullable_checker_default, nullable_checker_policy_enabled = connection.execute(text("""
+            SELECT checker.model_name_override, policy.enabled_models_json
+            FROM team_hallucination_check_selections AS checker
+            JOIN team_llm_provider_model_policies AS policy ON policy.llm_config_id = checker.llm_config_id
+            WHERE checker.llm_config_id = :id
+        """), {"id": nullable_checker_config_id}).one()
+
+    assert manual_catalog == ["manual-v1"]
+    assert manual_models == ["manual-v1"]
+    assert manual_default == "manual-v1"
+    assert enabled == ["model-b", "backup-pinned", "checker-pinned"]
+    assert default == "model-b"
+    assert checker_default == "checker-pinned"
+    assert nullable_checker_default == "checker-config-model"
+    assert nullable_checker_policy_enabled == ["checker-config-model"]
+
+
+@pytest.mark.migration
 def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisions():
     reset_public_schema()
 
@@ -177,6 +266,7 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "team_deidentification_selections",
         "team_clinical_nlp_selections",
         "team_llm_configs",
+        "team_llm_provider_model_policies",
         "team_hallucination_check_selections",
         "team_llm_selections",
         "team_llm_backup_selections",
@@ -231,7 +321,13 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
     assert provider_cleanup_fks == []
     assert any(item["name"] == "ix_provider_secret_cleanup_jobs_next_attempt_at" for item in provider_cleanup_indexes)
     team_llm_columns = {column["name"]: column for column in inspector.get_columns("team_llm_configs")}
+    policy_columns = {column["name"] for column in inspector.get_columns("team_llm_provider_model_policies")}
+    assert {"llm_config_id", "team_id", "enabled_models_json", "default_model_name", "updated_by_user_id"} <= policy_columns
     generated_document_columns = {column["name"]: column for column in inspector.get_columns("generated_documents")}
+    assert {"hallucination_check_selection_snapshot_encrypted", "hallucination_check_selection_config_id"} <= set(generated_document_columns)
+    split_checker_columns = {column["name"] for column in inspector.get_columns("consultation_split_batches")}
+    assert {"hallucination_check_selection_snapshot_encrypted", "hallucination_check_selection_config_id"} <= split_checker_columns
+    assert any(index["name"] == "ix_split_batches_checker_selection_config" for index in inspector.get_indexes("consultation_split_batches"))
     assert team_llm_columns["provider_config_json"]["nullable"] is False
     assert team_llm_columns["provider_config_json"]["default"] is None
     assert generated_document_columns["llm_provider_config_json"]["nullable"] is True
@@ -2991,7 +3087,7 @@ def test_quota_accounting_foundation_schema_has_metadata_only_constraints_and_fk
         "attemptkind": ["llm_generation", "llm_hallucination_check", "stt_conversation", "stt_post_consultation_dictation", "stt_prompt_context", "stt_provider_test", "llm_template_suggestion", "consultation_split_analysis", "consultation_split_generation", "consultation_split_verification", "stt_deepgram_live_stream"],
         "attemptstatus": ["reserved", "submitted", "settled", "cancelled"],
         "attemptoutcome": ["succeeded", "failed", "unknown", "cancelled"],
-        "providersettlementbasis": ["reported", "measured", "conservative_unknown", "stream_authorized", "stream_measured"],
+        "providersettlementbasis": ["reported", "measured", "conservative_unknown", "timeout_waived", "stream_authorized", "stream_measured"],
         "taskdispatchkind": ["generation", "ingestion", "template_suggestion", "consultation_split_analysis", "consultation_split_generation", "consultation_split_verification", "consultation_split_intent"],
         "taskdispatchstate": ["pending", "published", "cancelled", "failed"],
         "taskdispatchsourcekind": ["generated_document", "transcript_ingestion_job", "template_suggestion_job", "consultation_split_execution", "consultation_split_intent"],

@@ -7,7 +7,7 @@ from sqlalchemy.dialects import postgresql
 
 from app.celery_app import celery_app
 from app.models import (
-    AttemptKind, AttemptOutcome, AttemptStatus, ProviderAttempt, QuotaResource,
+    AttemptKind, AttemptOutcome, AttemptStatus, ProviderAttempt, ProviderSettlementBasis, QuotaResource,
     TaskDispatchKind, TaskDispatchOutbox, TaskDispatchState, Transcript,
     TranscriptIngestionJob, TranscriptIngestionJobKind, TranscriptIngestionJobStatus,
     TranscriptIngestionMode, TranscriptStatus, TranscriptVersion,
@@ -87,7 +87,10 @@ def test_deadline_unknown_settlement_and_direct_terminalizers(db_session, make_u
     db_session.commit()
 
     process_quota_lifecycle(db_session, now=NOW)
-    assert [(item.outcome, item.settled_units) for item in (token, audio)] == [(AttemptOutcome.unknown, 3), (AttemptOutcome.unknown, 3)]
+    assert [(item.outcome, item.settlement_basis, item.settled_units) for item in (token, audio)] == [
+        (AttemptOutcome.unknown, ProviderSettlementBasis.timeout_waived, 0),
+        (AttemptOutcome.unknown, ProviderSettlementBasis.measured, 3),
+    ]
     assert transcript.status is TranscriptStatus.failed
 
     live = _attempt(db_session, owner, transcript=transcript, expired=False)

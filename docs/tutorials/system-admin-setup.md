@@ -124,8 +124,8 @@ Open the selected team's LLM setup in `/admin`.
 - Choose the provider preset/adapter and team.
 - Supply the required credential or workload identity.
 - Inspect or enter a supported model.
-- Finalize/activate the configuration.
-- Configure the team default/allowed selection policy.
+- In **Providers → LLM → Models**, choose the models the team may use and set the writing default. The allowance applies across writing, backup, and hallucination checking; backup/checker assignments remain pinned in **Provider policy**.
+- Finalize/activate the configuration after saving its enabled models and writing default.
 - Test generation using synthetic transcript/working-note material.
 
 Gemini Enterprise uses Google workload identity/ADC rather than a stored bearer token. Its setup can be hidden/rejected for new configs with `ENABLE_GEMINI_ENTERPRISE_PROVIDER=false`; existing persisted configs remain usable by authorized runtime paths. See [../llm-providers.md](../llm-providers.md) and [../gemini-enterprise-setup.md](../gemini-enterprise-setup.md).

@@ -102,6 +102,7 @@ from app.models import (
     Team,
     TeamClinicalNlpSelection,
     TeamLlmConfig,
+    TeamLlmProviderModelPolicy,
     TeamHallucinationCheckSelection,
     TeamLlmSelection,
     TeamRole,
@@ -1801,12 +1802,26 @@ def test_stt_config_invalid_first_add_removes_db_row_before_vault_cleanup(client
     assert db_session.scalar(select(TeamSttConfig).where(TeamSttConfig.label == "Bad STT")) is None
 
 
-def test_stt_config_valid_secret_with_discovery_failure_saves_partial(client, db_session, make_team, make_user, monkeypatch):
+@pytest.mark.parametrize(
+    ("failure_details", "expected_diagnostic"),
+    [
+        ({"provider_status": 503}, "Provider returned HTTP 503 Service Unavailable"),
+        ({"provider_error_code": "invalid_json"}, "provider returned invalid JSON"),
+    ],
+)
+def test_stt_config_valid_secret_with_discovery_failure_saves_partial(
+    client, db_session, make_team, make_user, monkeypatch, failure_details, expected_diagnostic,
+):
     team = make_team(name="Clinic North")
     make_user(email="admin-partial-stt@example.com", password="password-1", is_system_admin=True)
 
     def fail_model_discovery(**kwargs):
-        raise AppError(502, "stt_inspection_failed", "Provider metadata discovery failed")
+        raise AppError(
+            502,
+            "stt_inspection_failed",
+            "private-provider-message-with-synthetic-key",
+            {**failure_details, "provider_message": "private-provider-body-with-synthetic-key"},
+        )
 
     monkeypatch.setattr("app.services.stt._list_openai_transcription_models", fail_model_discovery)
     login(client, email="admin-partial-stt@example.com", password="password-1")
@@ -1821,6 +1836,8 @@ def test_stt_config_valid_secret_with_discovery_failure_saves_partial(client, db
     assert persisted is not None
     assert persisted.vault_secret_ref.startswith("secret:openscribe/stt/team/")
     assert persisted.credential_status is ProviderCredentialStatus.partial
+    assert any(expected_diagnostic in note for note in persisted.inspection_metadata_json["notes"])
+    assert "synthetic-key" not in str(persisted.inspection_metadata_json)
 
 
 def test_stt_reinspect_uses_saved_vault_secret_and_invalid_clears_selection(client, db_session, make_team, make_user, make_stt_config, make_stt_selection, monkeypatch):
@@ -4033,7 +4050,8 @@ def test_system_admin_can_create_and_finalize_llm_draft_without_secret_reveal(
     assert final_body["is_active"] is True
 
     options = client.get(f"/api/v1/llm-selection/options?team_id={team.id}")
-    assert [item["id"] for item in options.json()] == [str(config_id)]
+    # Finalizing provider setup does not implicitly enable any team models.
+    assert options.json() == []
 
 
 def test_llm_draft_invalid_key_creates_no_config_or_vault_secret(client, db_session, make_team, make_user, monkeypatch):
@@ -4228,9 +4246,14 @@ def test_llm_revision_stays_pending_then_promotes_into_active_config(
     assert db_session.get(TeamLlmConfig, revision_id) is None
     persisted_selection = db_session.get(TeamLlmSelection, selection.id)
     assert persisted_selection.llm_config_id == active.id
-    assert persisted_selection.allowed_models_json == ["shared-model"]
+    # Refreshing a connection preserves the team's saved per-provider policy,
+    # even when one enabled ID is no longer in the refreshed catalog.
+    provider_policy = db_session.get(TeamLlmProviderModelPolicy, active.id)
+    assert provider_policy.enabled_models_json == ["old-model", "shared-model"]
+    assert provider_policy.default_model_name == "shared-model"
+    assert persisted_selection.allowed_models_json == ["old-model", "shared-model"]
     assert persisted_selection.model_name_override == "shared-model"
-    assert db_session.get(TeamHallucinationCheckSelection, checker_selection.id).model_name_override is None
+    assert db_session.get(TeamHallucinationCheckSelection, checker_selection.id).model_name_override == "old-model"
 
 
 def test_llm_revision_promotion_uses_narrow_default_when_model_catalog_is_disjoint(
@@ -4271,8 +4294,11 @@ def test_llm_revision_promotion_uses_narrow_default_when_model_catalog_is_disjoi
     assert finalized.status_code == 200
     persisted_selection = db_session.get(TeamLlmSelection, selection.id)
     assert persisted_selection.llm_config_id == active.id
-    assert persisted_selection.allowed_models_json == ["new-default"]
-    assert persisted_selection.model_name_override == "new-default"
+    provider_policy = db_session.get(TeamLlmProviderModelPolicy, active.id)
+    assert provider_policy.enabled_models_json == ["old-model"]
+    assert provider_policy.default_model_name == "old-model"
+    assert persisted_selection.allowed_models_json == ["old-model"]
+    assert persisted_selection.model_name_override == "old-model"
 
 
 def test_provider_revisions_copy_saved_credentials_before_retired_root_cleanup(
@@ -5377,6 +5403,38 @@ def test_llm_zero_model_discovery_requires_manual_model(client, db_session, make
     assert config.inspection_metadata_json["warnings"] == ["No compatible chat models were returned. Enter a model name manually."]
 
 
+def test_llm_manual_fallback_reports_safe_upstream_status(client, make_team, make_user, monkeypatch):
+    team = make_team(name="Clinic LLM Safe Discovery Error")
+    make_user(email="admin-llm-safe-discovery@example.com", password="password-1", is_system_admin=True)
+
+    def fail_discovery(**kwargs):
+        raise AppError(
+            502,
+            "llm_inspection_failed",
+            "private-provider-message-with-synthetic-key",
+            {
+                "provider_status": 503,
+                "provider_error_code": "provider_server_error",
+                "provider_message": "private-provider-body-with-synthetic-key",
+            },
+        )
+
+    monkeypatch.setattr("app.services.llm._list_openai_compatible_models", fail_discovery)
+    login(client, email="admin-llm-safe-discovery@example.com", password="password-1")
+    response = client.post(
+        "/api/v1/llm-configs/inspect",
+        json={"team_id": str(team.id), "provider_preset": "openrouter", "bearer_token": "synthetic-key"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["discovery_status"] == "manual_required"
+    assert body["warnings"] == ["Live model discovery failed. Verify the API key and endpoint, or enter a model name manually."]
+    assert any("Provider returned HTTP 503 Service Unavailable" in note for note in body["notes"])
+    assert "synthetic-key" not in response.text
+    assert "private-provider-body" not in response.text
+
+
 def test_system_admin_can_provision_local_ollama_without_secret(client, db_session, make_team, make_user, monkeypatch):
     team = make_team(name="Clinic North")
     make_user(email="admin@example.com", password="password-1", is_system_admin=True)
@@ -5968,15 +6026,21 @@ def test_llm_manual_model_after_failed_discovery_is_selectable_and_metadata_is_s
     assert body["inspection_metadata_json"]["inspected_at"]
     assert "forged" not in created.text
 
+    configured_policy = client.put(
+        f"/api/v1/llm-configs/{body['id']}/model-policy",
+        json={
+            "team_id": str(team.id),
+            "enabled_models_json": ["manual/router-model"],
+            "default_model_name": "manual/router-model",
+        },
+    )
+    assert configured_policy.status_code == 200
+
     client.post("/api/v1/auth/logout")
     login(client, email="leader-llm-manual@example.com", password="password-2")
     selected = client.post(
         "/api/v1/llm-selection",
-        json={
-            "llm_config_id": body["id"],
-            "allowed_models_json": ["manual/router-model"],
-            "model_name_override": "manual/router-model",
-        },
+        json={"llm_config_id": body["id"]},
     )
 
     assert selected.status_code == 200
@@ -6167,7 +6231,7 @@ def test_llm_config_validates_urls_and_enforces_admin_provisioning_plus_leader_t
 
     allowed_selection = client.post(
         "/api/v1/llm-selection",
-        json={"llm_config_id": str(north_config.id), "model_name_override": "gpt-4.1-mini"},
+        json={"llm_config_id": str(north_config.id)},
     )
     assert allowed_selection.status_code == 200
 
@@ -6191,24 +6255,127 @@ def test_leader_can_choose_and_clear_team_llm_selection(client, db_session, make
 
     selected = client.post(
         "/api/v1/llm-selection",
-        json={
-            "llm_config_id": str(config.id),
-            "allowed_models_json": ["gpt-4o-mini", "gpt-4.1-mini"],
-            "model_name_override": "gpt-4.1-mini",
-        },
+        json={"llm_config_id": str(config.id)},
     )
     assert selected.status_code == 200
     body = selected.json()
     assert body["llm_config_id"] == str(config.id)
     assert body["selected_config_provider_preset"] == "openai"
     assert body["selected_config_provider_display_name"] == "OpenAI"
-    assert body["resolved_model_name"] == "gpt-4.1-mini"
+    assert body["resolved_model_name"] == "gpt-4o-mini"
     assert body["allowed_models_json"] == ["gpt-4o-mini", "gpt-4.1-mini"]
 
     cleared = client.delete("/api/v1/llm-selection")
     assert cleared.status_code == 204
     assert client.get("/api/v1/llm-selection").json() is None
     assert db_session.get(TeamLlmConfig, config.id) is not None
+
+
+def test_llm_provider_model_policy_is_admin_only_and_separate_from_writing_pointer(
+    client, db_session, make_team, make_user, make_llm_config
+):
+    team = make_team(name="Provider policy team")
+    other_team = make_team(name="Other provider policy team")
+    admin = make_user(email="policy-admin@example.com", password="password-1", is_system_admin=True)
+    make_user(email="policy-leader@example.com", password="password-2", team=team, team_role=TeamRole.leader)
+    config = make_llm_config(
+        team=team,
+        actor=admin,
+        model_name="gpt-4o-mini",
+        available_models_json=["gpt-4o-mini", "gpt-4.1-mini"],
+    )
+    second_config = make_llm_config(
+        team=team,
+        actor=admin,
+        label="Second provider",
+        model_name="claude-3-7-sonnet",
+        available_models_json=["claude-3-7-sonnet", "claude-3-5-haiku"],
+    )
+
+    login(client, email="policy-admin@example.com", password="password-1")
+    active = client.post("/api/v1/llm-selection", json={"team_id": str(team.id), "llm_config_id": str(config.id)})
+    assert active.status_code == 200
+    empty = client.put(
+        f"/api/v1/llm-configs/{config.id}/model-policy",
+        json={"team_id": str(team.id), "enabled_models_json": [], "default_model_name": None},
+    )
+    assert empty.status_code == 200
+    assert empty.json()["enabled_models_json"] == []
+    assert empty.json()["default_model_name"] is None
+    assert empty.json()["policy_valid"] is True
+    cleared_policy = client.get(f"/api/v1/llm-selection?team_id={team.id}")
+    assert cleared_policy.status_code == 200
+    assert cleared_policy.json()["allowed_models_json"] == []
+    assert cleared_policy.json()["resolved_model_name"] is None
+
+    missing_default = client.put(
+        f"/api/v1/llm-configs/{config.id}/model-policy",
+        json={"team_id": str(team.id), "enabled_models_json": ["gpt-4.1-mini"], "default_model_name": None},
+    )
+    assert missing_default.status_code == 422
+
+    saved = client.put(
+        f"/api/v1/llm-configs/{config.id}/model-policy",
+        json={"team_id": str(team.id), "enabled_models_json": ["gpt-4.1-mini"], "default_model_name": "gpt-4.1-mini"},
+    )
+    assert saved.status_code == 200
+    assert saved.json()["enabled_models_json"] == ["gpt-4.1-mini"]
+    assert saved.json()["default_model_name"] == "gpt-4.1-mini"
+    assert db_session.query(TeamLlmSelection).filter_by(team_id=team.id).one().llm_config_id == config.id
+    assert client.get(f"/api/v1/llm-selection?team_id={team.id}").json()["resolved_model_name"] == "gpt-4.1-mini"
+    assert client.get(f"/api/v1/llm-configs/{config.id}/model-policy?team_id={team.id}").json() == saved.json()
+
+    saved_second = client.put(
+        f"/api/v1/llm-configs/{second_config.id}/model-policy",
+        json={
+            "team_id": str(team.id),
+            "enabled_models_json": ["claude-3-5-haiku"],
+            "default_model_name": "claude-3-5-haiku",
+        },
+    )
+    assert saved_second.status_code == 200
+    assert saved_second.json()["default_model_name"] == "claude-3-5-haiku"
+    # Saving a dormant provider policy must not move the active writing pointer.
+    assert db_session.query(TeamLlmSelection).filter_by(team_id=team.id).one().llm_config_id == config.id
+    assert client.get(f"/api/v1/llm-selection?team_id={team.id}").json()["resolved_model_name"] == "gpt-4.1-mini"
+
+    wrong_team_get = client.get(f"/api/v1/llm-configs/{config.id}/model-policy?team_id={other_team.id}")
+    assert wrong_team_get.status_code == 404
+    wrong_team_put = client.put(
+        f"/api/v1/llm-configs/{config.id}/model-policy",
+        json={"team_id": str(other_team.id), "enabled_models_json": [], "default_model_name": None},
+    )
+    assert wrong_team_put.status_code == 404
+
+    login(client, email="policy-leader@example.com", password="password-2")
+    switched = client.post(
+        "/api/v1/llm-selection",
+        json={"team_id": str(team.id), "llm_config_id": str(second_config.id)},
+    )
+    assert switched.status_code == 200
+    assert switched.json()["allowed_models_json"] == ["claude-3-5-haiku"]
+    assert switched.json()["resolved_model_name"] == "claude-3-5-haiku"
+    switched_back = client.post(
+        "/api/v1/llm-selection",
+        json={"team_id": str(team.id), "llm_config_id": str(config.id)},
+    )
+    assert switched_back.status_code == 200
+    assert switched_back.json()["allowed_models_json"] == ["gpt-4.1-mini"]
+    assert switched_back.json()["resolved_model_name"] == "gpt-4.1-mini"
+    legacy_mutation = client.post(
+        "/api/v1/llm-selection",
+        json={
+            "team_id": str(team.id),
+            "llm_config_id": str(config.id),
+            "allowed_models_json": ["gpt-4o-mini"],
+        },
+    )
+    assert legacy_mutation.status_code == 409
+    forbidden = client.put(
+        f"/api/v1/llm-configs/{config.id}/model-policy",
+        json={"team_id": str(team.id), "enabled_models_json": [], "default_model_name": None},
+    )
+    assert_error(forbidden, status_code=403, code="forbidden", message="System admin access required")
 
 
 def test_system_admin_can_provision_assign_and_leader_select_deidentification_provider(
@@ -8232,9 +8399,10 @@ def test_user_can_set_llm_preference_and_falls_back_to_team_default(client, db_s
     assert persisted is not None
     assert persisted.preferred_model_name == "gpt-4.1-mini"
 
-    selection.model_name_override = "gpt-4o-mini"
-    selection.allowed_models_json = ["gpt-4o-mini"]
-    db_session.add(selection)
+    policy = db_session.get(TeamLlmProviderModelPolicy, config.id)
+    policy.default_model_name = "gpt-4o-mini"
+    policy.enabled_models_json = ["gpt-4o-mini"]
+    db_session.add(policy)
     db_session.commit()
 
     fetched = client.get("/api/v1/llm-preference")
@@ -8248,7 +8416,7 @@ def test_user_can_set_llm_preference_and_falls_back_to_team_default(client, db_s
         rejected,
         status_code=422,
         code="business_rule_violation",
-        message="Preferred model is not available for the active team LLM provider",
+        message="The active team LLM provider does not currently expose selectable models",
     )
 
 
@@ -8538,9 +8706,9 @@ def test_leader_cannot_allow_non_provider_llm_models(client, make_team, make_use
     )
     assert_error(
         rejected,
-        status_code=422,
-        code="business_rule_violation",
-        message="Selected allowed models are not available for this LLM provider",
+        status_code=409,
+        code="conflict",
+        message="Model allowances are managed in provider settings",
     )
 
 
@@ -10573,10 +10741,9 @@ def test_structured_hallucination_check_provider_failure_records_safe_debug(
         if len(calls) == 1:
             return ('{"title":"Cough review","content":{"problem":"Cough improving."}}', {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30, "duration_ms": 25})
         raise AppError(
-            502,
-            "llm_generation_failed",
-            "Provider failure detail PATIENT_SENTINEL must not enter debug metadata",
-            {"provider_http_status": 400, "provider_error_code": "bad_request"},
+            504,
+            "llm_provider_timeout",
+            "Provider timeout detail PATIENT_SENTINEL must not enter debug metadata",
         )
 
     monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", fake_generate_openai)
@@ -10602,17 +10769,17 @@ def test_structured_hallucination_check_provider_failure_records_safe_debug(
     )
     assert checker_attempt is not None
     assert (checker_attempt.status, checker_attempt.outcome, checker_attempt.settlement_basis) == (
-        AttemptStatus.settled, AttemptOutcome.unknown, ProviderSettlementBasis.conservative_unknown,
+        AttemptStatus.settled, AttemptOutcome.unknown, ProviderSettlementBasis.timeout_waived,
     )
-    assert checker_attempt.settled_units == checker_attempt.reserved_units
+    assert checker_attempt.settled_units == 0
 
     detail = client.get(f"/api/v1/transcripts/{transcript_id}/generated-documents")
     debug = detail.json()[0]["hallucination_check_debug_json"]
     assert detail.json()[0]["hallucination_check_bucket"] == "unchecked"
     assert debug == {
-        "failure_code": "llm_generation_failed",
-        "provider_error_code": "bad_request",
-        "provider_http_status": 400,
+        "failure_code": "llm_provider_timeout",
+        "provider_error_code": None,
+        "provider_http_status": None,
         "retry_count": 0,
     }
     assert "PATIENT_SENTINEL" not in detail.text
@@ -22933,6 +23100,25 @@ def test_generation_invalid_json_and_provider_errors_settle_authoritative_attemp
     assert failed_attempt is not None and failed_attempt.outcome is AttemptOutcome.unknown
     assert failed_attempt.settlement_basis is ProviderSettlementBasis.conservative_unknown
     assert failed_attempt.settled_units == failed_attempt.reserved_units
+    timed_out = queue_document_generation_from_template_service(
+        db_session, owner, transcript_id=transcript.id, template_id=template.id,
+    )
+    monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", lambda **kwargs: (_ for _ in ()).throw(
+        AppError(504, "llm_provider_timeout", "Synthetic timeout body", {"provider_http_status": 504})
+    ))
+    assert process_generated_document(db_session, document_id=timed_out.id).status is GeneratedDocumentStatus.failed
+    timeout_attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == timed_out.id))
+    assert timeout_attempt is not None
+    assert (timeout_attempt.outcome, timeout_attempt.settlement_basis, timeout_attempt.settled_units, timeout_attempt.error_code) == (
+        AttemptOutcome.unknown, ProviderSettlementBasis.timeout_waived, 0, "llm_provider_timeout",
+    )
+    timeout_events = db_session.scalars(select(ProviderUsageEvent).where(
+        ProviderUsageEvent.generated_document_id == timed_out.id,
+        ProviderUsageEvent.event_type == ProviderUsageEventType.failed,
+    )).all()
+    assert timeout_events
+    assert all((event.prompt_tokens, event.completion_tokens, event.total_tokens, event.estimated_cost_usd) == (None, None, None, None)
+               for event in timeout_events)
     generic = queue_document_generation_from_template_service(db_session, owner, transcript_id=transcript.id, template_id=template.id)
     monkeypatch.setattr("app.services.templates._generate_freeform_output_openai", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("synthetic")))
     assert process_generated_document(db_session, document_id=generic.id).status is GeneratedDocumentStatus.failed

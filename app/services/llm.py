@@ -8,8 +8,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
-from app.models import ConsultationSplitAnalysis, ConsultationSplitAnalysisStatus, ConsultationSplitBatch, ConsultationSplitBatchStatus, ConsultationSplitExecution, ConsultationSplitExecutionStatus, GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, LlmConfigSetupStatus, LlmProviderPreset, ProviderSecretCleanupKind, Team, TeamHallucinationCheckSelection, TeamLlmBackupSelection, TeamLlmConfig, TeamLlmSelection, TeamRole, TemplateSuggestionJob, TemplateSuggestionStatus, User, UserLlmPreference, utcnow
-from app.schemas import HallucinationCheckSelectionUpsert, LlmBackupSelectionUpsert, LlmConfigDraftCreate, LlmConfigDraftReplaceCredential, LlmConfigFinalize, LlmConfigInspectResult, LlmConfigUpsert, LlmInspectRequest, LlmModelOption, LlmSelectionUpsert, UserLlmPreferenceUpsert
+from app.models import ConsultationSplitAnalysis, ConsultationSplitAnalysisStatus, ConsultationSplitBatch, ConsultationSplitBatchStatus, ConsultationSplitExecution, ConsultationSplitExecutionStatus, GeneratedDocument, GeneratedDocumentStatus, LlmAdapterKind, LlmAuthMode, LlmConfigSetupStatus, LlmProviderPreset, ProviderSecretCleanupKind, Team, TeamHallucinationCheckSelection, TeamLlmBackupSelection, TeamLlmConfig, TeamLlmProviderModelPolicy, TeamLlmSelection, TeamRole, TemplateSuggestionJob, TemplateSuggestionStatus, User, UserLlmPreference, utcnow
+from app.schemas import HallucinationCheckSelectionUpsert, LlmBackupSelectionUpsert, LlmConfigDraftCreate, LlmConfigDraftReplaceCredential, LlmConfigFinalize, LlmConfigInspectResult, LlmConfigUpsert, LlmInspectRequest, LlmModelOption, LlmProviderModelPolicyUpsert, LlmSelectionUpsert, UserLlmPreferenceUpsert
 from app.services.llm_presets import (
     apply_provider_defaults,
     default_llm_config_label,
@@ -35,14 +35,48 @@ from app.services.llm_credentials import google_service_account_secret, resolve_
 from app.services.llm_adapters.runtime import build_provider_snapshot, validate_provider_snapshot_shape
 from app.services.content_crypto import decrypt_json_for_owner, is_encrypted_envelope
 from app.services.llm_backup import retire_backup_snapshots_for_config
+from app.services.llm_checker_selection import retire_checker_snapshots_for_config
+from app.services.llm_model_policy import (
+    ensure_no_legacy_checker_work_for_policy_change,
+    get_provider_model_policy,
+    model_allowed_for_provider,
+    provider_model_policy_state,
+)
 from app.services.provider_credential_persistence import provider_credential_write_transaction
 from app.services.provider_secret_cleanup import queue_orphan_provider_secret_after_rollback, queue_provider_secret_cleanup
-from app.services.provider_inspection import read_limited_httpx_response
+from app.services.provider_inspection import ProviderResponseTooLargeError, read_limited_httpx_response
+from app.services.provider_errors import safe_provider_error_code, safe_provider_error_diagnostic
 from app.provider_url_security import require_safe_provider_url
 
 
 logger = logging.getLogger("openscribe.llm")
 MODEL_DISCOVERY_MAX_RESPONSE_BYTES = 1024 * 1024
+_INSPECTION_DIAGNOSTIC_CODES = frozenset({"invalid_json", "invalid_response", "response_too_large", "unsupported_content_encoding"})
+
+
+def _provider_diagnostic_details(details: dict[str, object] | None) -> dict[str, object]:
+    source = details or {}
+    status = source.get("provider_status") or source.get("provider_status_code") or source.get("provider_http_status")
+    result: dict[str, object] = {}
+    if type(status) is int and 400 <= status <= 599:
+        result["provider_status"] = status
+    raw_code = source.get("provider_error_code")
+    if isinstance(raw_code, str) and raw_code.strip().lower() in _INSPECTION_DIAGNOSTIC_CODES:
+        result["provider_error_code"] = raw_code.strip().lower()
+    elif isinstance(raw_code, str) or result.get("provider_status") is not None:
+        result["provider_error_code"] = safe_provider_error_code(
+            raw_code,
+            status_code=result.get("provider_status") if isinstance(result.get("provider_status"), int) else None,
+        )
+    return result
+
+
+def _provider_discovery_note(error: AppError) -> str | None:
+    details = _provider_diagnostic_details(error.details)
+    return safe_provider_error_diagnostic(
+        status_code=details.get("provider_status"),
+        provider_error_code=details.get("provider_error_code"),
+    )
 
 
 def _record_llm_audit(db: Session, *, action: str, actor: User, team_id: UUID, config_id: UUID | None = None, outcome: str = "success", **details) -> None:
@@ -101,21 +135,33 @@ def _fetch_bounded_model_discovery_json(
             response.raise_for_status()
             payload = json.loads(read_limited_httpx_response(response, max_bytes=MODEL_DISCOVERY_MAX_RESPONSE_BYTES))
     except httpx.HTTPStatusError as exc:  # pragma: no cover
+        provider_status = exc.response.status_code
+        provider_error_code = safe_provider_error_code(None, status_code=provider_status)
         if exc.response.status_code in {401, 403}:
             raise AppError(
                 401,
                 "llm_invalid_credential",
                 "The API key was rejected by the provider.",
-                {"provider_status": exc.response.status_code},
+                {"provider_status": provider_status, "provider_error_code": provider_error_code},
             ) from exc
         raise AppError(
             502,
             "llm_inspection_failed",
             failure_message,
-            {"provider_status": exc.response.status_code},
+            {"provider_status": provider_status, "provider_error_code": provider_error_code},
         ) from exc
-    except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover
-        raise AppError(502, "llm_inspection_failed", failure_message) from exc
+    except ProviderResponseTooLargeError as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", failure_message, {"provider_error_code": "response_too_large"}) from exc
+    except httpx.TimeoutException as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", failure_message, {"provider_error_code": "timeout"}) from exc
+    except httpx.ConnectError as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", failure_message, {"provider_error_code": "connection_error"}) from exc
+    except ValueError as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", failure_message, {"provider_error_code": "invalid_json"}) from exc
+    except httpx.DecodingError as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", failure_message, {"provider_error_code": "invalid_response"}) from exc
+    except httpx.HTTPError as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", failure_message, {"provider_error_code": "http_error"}) from exc
     return payload
 
 
@@ -181,7 +227,7 @@ def _list_openai_chat_models(*, api_key: str, base_url: str) -> list[str]:
     except AppError as exc:  # pragma: no cover
         if exc.code == "llm_invalid_credential":
             raise
-        raise AppError(502, "llm_inspection_failed", "Could not load available OpenAI chat models") from exc
+        raise AppError(502, "llm_inspection_failed", "Could not load available OpenAI chat models", _provider_diagnostic_details(exc.details)) from exc
 
     return filter_discovered_models(LlmProviderPreset.openai.value, models)
 
@@ -247,7 +293,7 @@ def _list_openai_compatible_chat_models(*, provider_preset: str, api_key: str, b
     except AppError as exc:  # pragma: no cover
         if exc.code == "llm_invalid_credential":
             raise
-        raise AppError(502, "llm_inspection_failed", "Could not load available OpenAI-compatible chat models") from exc
+        raise AppError(502, "llm_inspection_failed", "Could not load available OpenAI-compatible chat models", _provider_diagnostic_details(exc.details)) from exc
     return filter_discovered_models(provider_preset, models)
 
 
@@ -257,7 +303,7 @@ def _list_bedrock_chat_models(*, api_key: str, base_url: str) -> list[str]:
     except AppError as exc:  # pragma: no cover
         if exc.code == "llm_invalid_credential":
             raise
-        raise AppError(502, "llm_inspection_failed", "Could not load available Amazon Bedrock chat models") from exc
+        raise AppError(502, "llm_inspection_failed", "Could not load available Amazon Bedrock chat models", _provider_diagnostic_details(exc.details)) from exc
 
 
 def _ensure_unique_llm_config_label(db: Session, *, team_id: UUID, label: str, current_config_id: UUID | None = None) -> None:
@@ -278,12 +324,33 @@ def _raise_llm_label_conflict_if_needed(exc: IntegrityError) -> None:
         raise AppError(409, "conflict", "An LLM provider with this name already exists for this team.", {"field": "label"}) from exc
 
 
+def _pending_llm_revision(db: Session, *, team_id: UUID, target_id: UUID) -> TeamLlmConfig | None:
+    return db.scalar(select(TeamLlmConfig).where(
+        TeamLlmConfig.team_id == team_id,
+        TeamLlmConfig.revision_of_config_id == target_id,
+    ).limit(1))
+
+
+def _raise_llm_pending_revision_conflict(target_id: UUID, revision: TeamLlmConfig | None) -> None:
+    details: dict[str, str] = {
+        "resource": "llm_config_revision",
+        "revision_of_config_id": str(target_id),
+    }
+    message = "Another LLM connection edit changed while this request was being saved. Reload the provider and retry."
+    if revision is not None:
+        details["pending_revision_id"] = str(revision.id)
+        message = "An unfinished LLM connection edit already exists. Resume or discard it before starting another edit."
+    raise AppError(409, "conflict", message, {
+        **details,
+    })
+
+
 def _llm_model_options(models: list[str], *, source: str) -> list[LlmModelOption]:
     return [LlmModelOption(id=model, source=source, label=f"{model} ({source})") for model in models]
 
 
 def _inspection_metadata(inspection: LlmConfigInspectResult) -> dict[str, object]:
-    return {
+    metadata: dict[str, object] = {
         "provider_preset": inspection.provider_preset,
         "provider_display_name": inspection.provider_display_name,
         "discovery_status": inspection.discovery_status,
@@ -292,52 +359,43 @@ def _inspection_metadata(inspection: LlmConfigInspectResult) -> dict[str, object
         "notes": list(inspection.notes),
         "inspected_at": utcnow().isoformat(),
     }
+    if inspection.model_catalog_check_status == "checked":
+        metadata["connection_check"] = _connection_check_record(passed=True)
+    elif inspection.model_catalog_check_status == "failed":
+        metadata["connection_check"] = _connection_check_record(
+            passed=False,
+            error_code=inspection.model_catalog_check_error_code or "provider_error",
+            http_status=inspection.model_catalog_check_http_status,
+        )
+    return metadata
 
 
-def _reconcile_llm_config_model_selections(db: Session, *, config: TeamLlmConfig) -> None:
-    provider_models = list(
-        dict.fromkeys(model.strip() for model in (config.available_models_json or []) if model and model.strip())
-    )
-    default_model = config.model_name if config.model_name in provider_models else (provider_models[0] if provider_models else None)
-    selection = db.scalar(
-        select(TeamLlmSelection)
-        .where(TeamLlmSelection.llm_config_id == config.id)
-        .with_for_update()
-    )
-    if selection is not None:
-        allowed_models = [model for model in (selection.allowed_models_json or []) if model in provider_models]
-        if not allowed_models and default_model:
-            allowed_models = [default_model]
-        if selection.model_name_override not in allowed_models:
-            if default_model:
-                if default_model not in allowed_models:
-                    allowed_models = [default_model]
-                selection.model_name_override = default_model
-            else:
-                selection.model_name_override = allowed_models[0] if allowed_models else None
-        selection.allowed_models_json = allowed_models
-        db.add(selection)
+def _connection_check_record(*, passed: bool, error_code: str | None = None, http_status: int | None = None) -> dict[str, object]:
+    record: dict[str, object] = {
+        "status": "passed" if passed else "failed",
+        "checked_at": utcnow().isoformat(),
+    }
+    if not passed:
+        if error_code:
+            record["error_code"] = error_code
+        if type(http_status) is int and 400 <= http_status <= 599:
+            record["http_status"] = http_status
+    return record
 
-    backup_selection = db.scalar(
-        select(TeamLlmBackupSelection)
-        .where(TeamLlmBackupSelection.llm_config_id == config.id)
-        .with_for_update()
-    )
-    if backup_selection is not None and backup_selection.model_name not in provider_models:
-        if default_model is None:
-            db.delete(backup_selection)
-        else:
-            backup_selection.model_name = default_model
-            db.add(backup_selection)
 
-    checker_selection = db.scalar(
-        select(TeamHallucinationCheckSelection)
-        .where(TeamHallucinationCheckSelection.llm_config_id == config.id)
-        .with_for_update()
-    )
-    if checker_selection is not None and checker_selection.model_name_override and checker_selection.model_name_override not in provider_models:
-        checker_selection.model_name_override = None
-        db.add(checker_selection)
+def _ensure_empty_provider_model_policy(db: Session, *, config: TeamLlmConfig, actor_id: UUID) -> TeamLlmProviderModelPolicy:
+    policy = get_provider_model_policy(db, config=config)
+    if policy is None:
+        policy = TeamLlmProviderModelPolicy(
+            llm_config_id=config.id,
+            team_id=config.team_id,
+            enabled_models_json=[],
+            default_model_name=None,
+            updated_by_user_id=actor_id,
+        )
+        db.add(policy)
+        db.flush()
+    return policy
 
 
 def _discovery_metadata(
@@ -404,8 +462,21 @@ def _list_ollama_chat_models(*, base_url: str, bearer_token: str | None) -> list
         ) as response:
             response.raise_for_status()
             payload = json.loads(read_limited_httpx_response(response, max_bytes=MODEL_DISCOVERY_MAX_RESPONSE_BYTES))
-    except (httpx.HTTPError, ValueError) as exc:  # pragma: no cover
-        raise AppError(502, "llm_inspection_failed", "Could not load available Ollama chat models") from exc
+    except httpx.HTTPStatusError as exc:  # pragma: no cover
+        provider_status = exc.response.status_code
+        raise AppError(502, "llm_inspection_failed", "Could not load available Ollama chat models", {"provider_status": provider_status, "provider_error_code": safe_provider_error_code(None, status_code=provider_status)}) from exc
+    except ProviderResponseTooLargeError as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", "Could not load available Ollama chat models", {"provider_error_code": "response_too_large"}) from exc
+    except httpx.TimeoutException as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", "Could not load available Ollama chat models", {"provider_error_code": "timeout"}) from exc
+    except httpx.ConnectError as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", "Could not load available Ollama chat models", {"provider_error_code": "connection_error"}) from exc
+    except ValueError as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", "Could not load available Ollama chat models", {"provider_error_code": "invalid_json"}) from exc
+    except httpx.DecodingError as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", "Could not load available Ollama chat models", {"provider_error_code": "invalid_response"}) from exc
+    except httpx.HTTPError as exc:  # pragma: no cover
+        raise AppError(502, "llm_inspection_failed", "Could not load available Ollama chat models", {"provider_error_code": "http_error"}) from exc
 
     models: list[str] = []
     for item in payload.get("models", []):
@@ -438,10 +509,16 @@ def inspect_llm_contract(
     )
     preset = get_llm_provider_preset(preset_key, allow_disabled_provider=allow_disabled_provider)
     adapter_kind = preset.adapter_kind
+    model_catalog_checked = False
+    model_catalog_check_status = "not_attempted"
+    model_catalog_check_error_code = None
+    model_catalog_check_http_status = None
     if adapter_kind is LlmAdapterKind.openai_chat:
         if payload.bearer_token:
             try:
                 models = _list_openai_compatible_chat_models(provider_preset=preset_key, api_key=payload.bearer_token, base_url=base_url)
+                model_catalog_checked = True
+                model_catalog_check_status = "checked"
                 source = "fetched" if models else "manual"
                 metadata = _successful_discovery_metadata(
                     provider_preset=preset_key,
@@ -456,11 +533,16 @@ def inspect_llm_contract(
                 if exc.code == "llm_invalid_credential":
                     raise
                 models = []
+                model_catalog_check_status = "failed"
+                diagnostic_details = _provider_diagnostic_details(exc.details)
+                model_catalog_check_error_code = diagnostic_details.get("provider_error_code") or safe_provider_error_code(exc.code, status_code=exc.status_code)
+                model_catalog_check_http_status = diagnostic_details.get("provider_status") if isinstance(diagnostic_details.get("provider_status"), int) else None
                 source = "manual"
                 discovery_status = "manual_required"
                 default_model_source = "manual"
+                diagnostic = _provider_discovery_note(exc)
                 warnings = ["Live model discovery failed. Verify the API key and endpoint, or enter a model name manually."]
-                notes = []
+                notes = [diagnostic] if diagnostic else []
         else:
             models = []
             source = "manual"
@@ -473,6 +555,8 @@ def inspect_llm_contract(
         if payload.bearer_token:
             try:
                 models = _list_bedrock_chat_models(api_key=payload.bearer_token, base_url=base_url)
+                model_catalog_checked = True
+                model_catalog_check_status = "checked"
                 fetched_note = "OpenScribe loaded the Amazon Bedrock model list through the OpenAI-compatible Models API for the supplied Bedrock Mantle endpoint."
                 source = "fetched" if models else "manual"
                 metadata = _successful_discovery_metadata(
@@ -489,13 +573,17 @@ def inspect_llm_contract(
                 if exc.code == "llm_invalid_credential":
                     raise
                 models = []
+                model_catalog_check_status = "failed"
+                diagnostic_details = _provider_diagnostic_details(exc.details)
+                model_catalog_check_error_code = diagnostic_details.get("provider_error_code") or safe_provider_error_code(exc.code, status_code=exc.status_code)
+                model_catalog_check_http_status = diagnostic_details.get("provider_status") if isinstance(diagnostic_details.get("provider_status"), int) else None
                 source = "manual"
                 discovery_status = "manual_required"
                 default_model_source = "manual"
+                diagnostic = _provider_discovery_note(exc)
+                recovery = "Live Amazon Bedrock model discovery failed. Verify the Bedrock Mantle base URL, region, and API key, or enter a model name manually."
                 warnings = ["Could not load region-specific Bedrock models. Enter a model ID manually or inspect again with credentials."]
-                notes = [
-                    "Live Amazon Bedrock model discovery failed. Verify the Bedrock Mantle base URL, region, and API key, or enter a model name manually.",
-                ]
+                notes = [recovery, diagnostic] if diagnostic else [recovery]
         else:
             models = []
             source = "manual"
@@ -509,6 +597,8 @@ def inspect_llm_contract(
     elif adapter_kind is LlmAdapterKind.ollama_chat:
         try:
             models = _list_ollama_chat_models(base_url=base_url, bearer_token=payload.bearer_token)
+            model_catalog_checked = True
+            model_catalog_check_status = "checked"
             source = "fetched" if models else "manual"
             metadata = _successful_discovery_metadata(
                 provider_preset=preset_key,
@@ -519,13 +609,19 @@ def inspect_llm_contract(
             default_model_source = str(metadata["default_model_source"])
             warnings = list(metadata["warnings"])
             notes = list(metadata["notes"])
-        except AppError:
+        except AppError as exc:
+            model_catalog_check_status = "failed"
+            diagnostic_details = _provider_diagnostic_details(exc.details)
+            model_catalog_check_error_code = diagnostic_details.get("provider_error_code") or safe_provider_error_code(exc.code, status_code=exc.status_code)
+            model_catalog_check_http_status = diagnostic_details.get("provider_status") if isinstance(diagnostic_details.get("provider_status"), int) else None
             models = []
             source = "manual"
             discovery_status = "manual_required"
             default_model_source = "manual"
+            diagnostic = _provider_discovery_note(exc)
+            recovery = "Live Ollama model discovery failed. Verify the base URL and local Ollama host, or enter a model name manually."
             warnings = ["Could not reach Ollama /api/tags. Verify the base URL and network access."]
-            notes = ["Live Ollama model discovery failed. Verify the base URL and local Ollama host, or enter a model name manually."]
+            notes = [recovery, diagnostic] if diagnostic else [recovery]
         model_options = _llm_model_options(models, source=source)
     elif adapter_kind is LlmAdapterKind.gemini_enterprise:
         provider_config = _gemini_provider_config(payload)
@@ -537,6 +633,8 @@ def inspect_llm_contract(
                 credentials=credentials,
                 capacity_mode=str(provider_config["capacity_mode"]),
             )
+            model_catalog_checked = True
+            model_catalog_check_status = "checked"
             source = "fetched" if models else "manual"
             metadata = _successful_discovery_metadata(
                 provider_preset=preset_key,
@@ -556,15 +654,22 @@ def inspect_llm_contract(
                 "llm_location_unavailable",
             }:
                 raise
+            model_catalog_check_status = "failed"
+            diagnostic_details = _provider_diagnostic_details(exc.details)
+            model_catalog_check_error_code = diagnostic_details.get("provider_error_code") or safe_provider_error_code(exc.code, status_code=exc.status_code)
+            model_catalog_check_http_status = diagnostic_details.get("provider_status") if isinstance(diagnostic_details.get("provider_status"), int) else None
             models = []
             source = "manual"
             discovery_status = "manual_required"
             default_model_source = "manual"
-            warnings = ["Gemini model discovery is temporarily unavailable. Enter a model ID manually."]
-            notes = []
+            diagnostic = _provider_discovery_note(exc)
+            recovery = "Gemini model discovery is temporarily unavailable. Enter a model ID manually."
+            warnings = [recovery]
+            notes = [diagnostic] if diagnostic else []
         model_options = _llm_model_options(models, source=source)
     else:  # pragma: no cover
         models = []
+        model_catalog_checked = False
         source = "default"
         discovery_status = "failed"
         default_model_source = "none"
@@ -583,6 +688,10 @@ def inspect_llm_contract(
         available_models=models,
         available_model_options=model_options,
         discovery_status=discovery_status,
+        model_catalog_checked=model_catalog_checked,
+        model_catalog_check_status=model_catalog_check_status,
+        model_catalog_check_error_code=model_catalog_check_error_code,
+        model_catalog_check_http_status=model_catalog_check_http_status,
         default_model_source=default_model_source,
         requires_bearer_token=preset.requires_bearer_token,
         supports_model_discovery=preset.supports_model_discovery,
@@ -597,36 +706,72 @@ def inspect_llm_contract(
 
 def inspect_saved_llm_config(db: Session, actor: User, *, config_id: UUID, team_id: UUID | None = None) -> LlmConfigInspectResult:
     config = get_llm_config(db, actor, config_id=config_id, team_id=team_id)
-    bearer_token = (
-        read_team_llm_bearer_token(team_id=config.team_id, config_id=config.id, secret_ref=config.vault_secret_ref)
-        if config.auth_mode is LlmAuthMode.bearer and config.vault_secret_ref
-        else None
-    )
-    google_credential_json = None
-    if config.auth_mode is LlmAuthMode.google_service_account:
-        secret = read_team_llm_secret(team_id=config.team_id, config_id=config.id, secret_ref=config.vault_secret_ref)
-        candidate = secret.get("credential_json")
-        if not isinstance(candidate, dict):
-            raise AppError(502, "vault_read_failed", "Vault secret read failed")
-        google_credential_json = candidate
-    inspection = inspect_llm_contract(
-        db,
-        actor,
-        LlmInspectRequest.from_persisted_config(
-            config,
-            bearer_token=bearer_token,
-            google_service_account_json=google_credential_json,
-        ),
-        allow_disabled_provider=True,
-    )
-    config.inspection_metadata_json = _inspection_metadata(inspection)
-    if inspection.available_models:
-        config.available_models_json = list(inspection.available_models)
-        if config.model_name not in inspection.available_models:
-            config.model_name = inspection.model_name
+    config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == config.id).execution_options(populate_existing=True).with_for_update())
+    if config is None:
+        raise AppError(404, "not_found", "LLM config not found", {"resource": "llm_config", "config_id": str(config_id)})
+    try:
+        bearer_token = (
+            read_team_llm_bearer_token(team_id=config.team_id, config_id=config.id, secret_ref=config.vault_secret_ref)
+            if config.auth_mode is LlmAuthMode.bearer and config.vault_secret_ref
+            else None
+        )
+        google_credential_json = None
+        if config.auth_mode is LlmAuthMode.google_service_account:
+            secret = read_team_llm_secret(team_id=config.team_id, config_id=config.id, secret_ref=config.vault_secret_ref)
+            candidate = secret.get("credential_json")
+            if not isinstance(candidate, dict):
+                raise AppError(502, "vault_read_failed", "Vault secret read failed")
+            google_credential_json = candidate
+        inspection = inspect_llm_contract(
+            db,
+            actor,
+            LlmInspectRequest.from_persisted_config(
+                config,
+                bearer_token=bearer_token,
+                google_service_account_json=google_credential_json,
+            ),
+            allow_disabled_provider=True,
+        )
+    except AppError as exc:
+        details = _provider_diagnostic_details(exc.details)
+        db.rollback()
+        config = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == config_id).execution_options(populate_existing=True).with_for_update())
+        if config is None:
+            raise
+        metadata = dict(config.inspection_metadata_json or {})
+        metadata["connection_check"] = _connection_check_record(
+            passed=False,
+            error_code=str(details.get("provider_error_code") or safe_provider_error_code(exc.code, status_code=details.get("provider_status") or exc.status_code)),
+            http_status=details.get("provider_status") if isinstance(details.get("provider_status"), int) else None,
+        )
+        config.inspection_metadata_json = metadata
+        config.updated_by_user_id = actor.id
+        db.add(config)
+        db.commit()
+        raise
+    metadata = _inspection_metadata(inspection)
+    if inspection.model_catalog_check_status == "checked":
+        metadata["connection_check"] = _connection_check_record(passed=True)
+    elif inspection.model_catalog_check_status == "failed":
+        metadata["connection_check"] = _connection_check_record(
+            passed=False,
+            error_code=inspection.model_catalog_check_error_code or "provider_error",
+            http_status=inspection.model_catalog_check_http_status,
+        )
+    else:
+        old_check = (config.inspection_metadata_json or {}).get("connection_check")
+        if isinstance(old_check, dict):
+            metadata["connection_check"] = old_check
+    refreshed_catalog = list(inspection.available_models) if inspection.model_catalog_checked else None
+    if refreshed_catalog is not None and refreshed_catalog != list(config.available_models_json or []):
+        ensure_no_legacy_checker_work_for_policy_change(db, team_id=config.team_id, config_id=config.id)
+    config.inspection_metadata_json = metadata
+    if refreshed_catalog is not None:
+        config.available_models_json = refreshed_catalog
+        if config.model_name not in refreshed_catalog:
+            config.model_name = inspection.model_name if inspection.model_name in refreshed_catalog else None
     config.updated_by_user_id = actor.id
     db.add(config)
-    _reconcile_llm_config_model_selections(db, config=config)
     db.commit()
     db.refresh(config)
     return inspection
@@ -636,6 +781,71 @@ def list_llm_configs(db: Session, actor: User, *, team_id: UUID | None = None) -
     team = _resolve_admin_scoped_team(db, actor, team_id=team_id)
     stmt = select(TeamLlmConfig).where(TeamLlmConfig.team_id == team.id, TeamLlmConfig.revision_of_config_id.is_(None)).order_by(TeamLlmConfig.created_at.desc(), TeamLlmConfig.id.desc())
     return list(db.scalars(stmt))
+
+
+def get_llm_provider_model_policy(db: Session, actor: User, *, config_id: UUID, team_id: UUID | None = None) -> dict:
+    config = get_llm_config(db, actor, config_id=config_id, team_id=team_id)
+    if config.revision_of_config_id is not None:
+        raise AppError(422, "business_rule_violation", "Model policy belongs to the saved provider, not a connection draft")
+    return provider_model_policy_state(db, config=config)
+
+
+def set_llm_provider_model_policy(
+    db: Session,
+    actor: User,
+    *,
+    config_id: UUID,
+    payload: LlmProviderModelPolicyUpsert,
+) -> dict:
+    team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
+    # Preserve the selection/freeze lock order: provider config, checker
+    # assignment, then policy. It prevents accepted-work snapshots from
+    # crossing a policy update boundary.
+    config = db.scalar(select(TeamLlmConfig).where(
+        TeamLlmConfig.id == config_id,
+        TeamLlmConfig.team_id == team.id,
+        TeamLlmConfig.revision_of_config_id.is_(None),
+    ).execution_options(populate_existing=True).with_for_update())
+    if config is None:
+        raise AppError(404, "not_found", "LLM config not found", {"resource": "llm_config", "config_id": str(config_id)})
+    checker = db.scalar(select(TeamHallucinationCheckSelection).where(
+        TeamHallucinationCheckSelection.team_id == team.id,
+    ).execution_options(populate_existing=True).with_for_update())
+    ensure_no_legacy_checker_work_for_policy_change(db, team_id=team.id, config_id=config.id)
+    policy = get_provider_model_policy(db, config=config, lock=True)
+    if policy is None:
+        policy = TeamLlmProviderModelPolicy(
+            llm_config_id=config.id,
+            team_id=team.id,
+            enabled_models_json=[],
+            default_model_name=None,
+            updated_by_user_id=actor.id,
+        )
+    catalog = list(dict.fromkeys(
+        model.strip() for model in (config.available_models_json or [])
+        if isinstance(model, str) and model.strip()
+    ))
+    invalid = [model for model in payload.enabled_models_json if model not in catalog]
+    if invalid:
+        raise AppError(422, "business_rule_violation", "Selected models are not currently available for this provider", {"field": "enabled_models_json"})
+    policy.enabled_models_json = list(payload.enabled_models_json)
+    policy.default_model_name = payload.default_model_name
+    policy.updated_by_user_id = actor.id
+    policy.updated_at = utcnow()
+    db.add(policy)
+    # Keep legacy columns as a read-only compatibility projection for older
+    # consumers; they never define policy and leaders cannot mutate them.
+    selection = db.scalar(select(TeamLlmSelection).where(
+        TeamLlmSelection.team_id == team.id,
+    ).execution_options(populate_existing=True).with_for_update())
+    if selection is not None and selection.llm_config_id == config.id:
+        selection.allowed_models_json = list(payload.enabled_models_json)
+        selection.model_name_override = payload.default_model_name
+        db.add(selection)
+    db.commit()
+    db.refresh(config)
+    _record_llm_audit(db, action="llm_provider_model_policy_set", actor=actor, team_id=team.id, config_id=config.id, enabled_model_count=len(payload.enabled_models_json))
+    return provider_model_policy_state(db, config=config)
 
 
 def get_llm_config(db: Session, actor: User, *, config_id: UUID, team_id: UUID | None = None) -> TeamLlmConfig:
@@ -666,6 +876,12 @@ def update_llm_config_details(
     )
     if config is None:
         raise AppError(404, "not_found", "Ready LLM config not found", {"resource": "llm_config", "config_id": str(config_id)})
+    if config.is_active != is_active:
+        ensure_no_legacy_checker_work_for_policy_change(
+            db,
+            team_id=config.team_id,
+            config_id=config.id,
+        )
     normalized_label = label.strip()
     if not normalized_label:
         raise AppError(422, "business_rule_violation", "LLM provider name is required", {"field": "label"})
@@ -688,7 +904,7 @@ def update_llm_config_details(
 def _llm_config_has_in_flight_jobs(db: Session, *, config_id: UUID) -> bool:
     generated_document_id = db.scalar(
         select(GeneratedDocument.id).where(
-            or_(GeneratedDocument.llm_config_id == config_id, GeneratedDocument.backup_llm_config_id == config_id),
+            or_(GeneratedDocument.llm_config_id == config_id, GeneratedDocument.backup_llm_config_id == config_id, GeneratedDocument.hallucination_check_selection_config_id == config_id),
             GeneratedDocument.status.in_([GeneratedDocumentStatus.queued, GeneratedDocumentStatus.processing]),
         ).limit(1)
     )
@@ -722,11 +938,12 @@ def _llm_config_has_in_flight_jobs(db: Session, *, config_id: UUID) -> bool:
         return True
     return db.scalar(
         select(ConsultationSplitBatch.id).where(
-            ConsultationSplitBatch.backup_llm_config_id == config_id,
+            or_(ConsultationSplitBatch.backup_llm_config_id == config_id, ConsultationSplitBatch.hallucination_check_selection_config_id == config_id),
             ConsultationSplitBatch.status.in_([
                 ConsultationSplitBatchStatus.generation_queued,
                 ConsultationSplitBatchStatus.generating,
                 ConsultationSplitBatchStatus.verifying,
+                ConsultationSplitBatchStatus.partially_ready,
             ]),
         ).limit(1)
     ) is not None
@@ -770,11 +987,17 @@ def _validate_in_flight_backup_models(
 
 def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCreate) -> tuple[TeamLlmConfig, LlmConfigInspectResult]:
     team = _resolve_admin_scoped_team(db, actor, team_id=payload.team_id)
+    team_id = team.id
     target = None
+    target_id = None
     if payload.revision_of_config_id is not None:
         target = db.scalar(select(TeamLlmConfig).where(TeamLlmConfig.id == payload.revision_of_config_id, TeamLlmConfig.team_id == team.id, TeamLlmConfig.revision_of_config_id.is_(None), TeamLlmConfig.setup_status == LlmConfigSetupStatus.ready))
         if target is None:
             raise AppError(404, "not_found", "Ready LLM config not found", {"resource": "llm_config", "config_id": str(payload.revision_of_config_id)})
+        target_id = target.id
+        pending_revision = _pending_llm_revision(db, team_id=team_id, target_id=target_id)
+        if pending_revision is not None:
+            _raise_llm_pending_revision_conflict(target.id, pending_revision)
     provider_preset, adapter_kind, base_url, region = apply_provider_defaults(
         provider_preset=payload.provider_preset,
         base_url=payload.base_url,
@@ -887,6 +1110,10 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
                 register_written_secret(written_secret_ref)
                 config.vault_secret_ref = written_secret_ref
     except IntegrityError as exc:
+        constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+        if constraint_name == "uq_team_llm_configs_pending_revision" and target_id is not None:
+            pending_revision = _pending_llm_revision(db, team_id=team_id, target_id=target_id)
+            _raise_llm_pending_revision_conflict(target_id, pending_revision)
         _raise_llm_label_conflict_if_needed(exc)
         raise
     db.refresh(config)
@@ -910,6 +1137,8 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
     if config is None or (target is not None and config.revision_of_config_id != target.id):
         raise AppError(409, "conflict", "LLM revision is unavailable")
     has_in_flight_jobs = _llm_config_has_in_flight_jobs(db, config_id=target.id if target is not None else config.id)
+    if target is not None:
+        ensure_no_legacy_checker_work_for_policy_change(db, team_id=team.id, config_id=target.id)
     if has_in_flight_jobs:
         raise AppError(409, "conflict", "Cannot edit this LLM config while generated documents are queued or processing", {"config_id": str(config.id)})
     model_name = payload.model_name.strip()
@@ -971,7 +1200,8 @@ def finalize_llm_config_draft(db: Session, actor: User, payload: LlmConfigFinali
                 db.delete(config)
                 result = target
             db.add(result)
-            _reconcile_llm_config_model_selections(db, config=result)
+            if target is None:
+                _ensure_empty_provider_model_policy(db, config=result, actor_id=actor.id)
             if target is not None:
                 queue_provider_secret_cleanup(
                     db,
@@ -1071,7 +1301,6 @@ def replace_llm_config_draft_credential(db: Session, actor: User, payload: LlmCo
                 config.is_active = False
             config.updated_by_user_id = actor.id
             db.add(config)
-            _reconcile_llm_config_model_selections(db, config=config)
             if old_secret_ref and old_secret_ref != new_secret_ref:
                 queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[old_secret_ref])
             db.commit()
@@ -1135,6 +1364,11 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
             or dict(config.provider_config_json or {}) != (dict(payload.provider_config_json) if is_gemini else {})
         )
     )
+    if config is not None and (
+        provider_endpoint_changed or replacing_secret or removing_secret
+        or (payload.model_name or "").strip() != (config.model_name or "")
+    ):
+        ensure_no_legacy_checker_work_for_policy_change(db, team_id=team.id, config_id=config.id)
     has_in_flight_jobs = config is not None and _llm_config_has_in_flight_jobs(db, config_id=config.id)
     incoming_auth_mode = (
         _gemini_auth_mode(payload) if is_gemini
@@ -1321,7 +1555,27 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
             db.rollback()
             _raise_llm_label_conflict_if_needed(exc)
             raise
+        _ensure_empty_provider_model_policy(db, config=config, actor_id=actor.id)
     else:
+        provider_config = dict(payload.provider_config_json) if is_gemini else {}
+        checker_relevant_change = (
+            config.model_name != model_name
+            or list(config.available_models_json or []) != list(available_models_json)
+            or provider_endpoint_changed
+            or config.provider_preset != provider_preset
+            or config.adapter_kind != adapter_kind
+            or config.auth_mode != resolved_auth_mode
+            or dict(config.provider_config_json or {}) != provider_config
+            or config.is_active != payload.is_active
+            or replacing_secret
+            or removing_secret
+        )
+        if checker_relevant_change:
+            ensure_no_legacy_checker_work_for_policy_change(
+                db,
+                team_id=config.team_id,
+                config_id=config.id,
+            )
         config.label = label
         config.provider_preset = provider_preset
         config.adapter_kind = adapter_kind
@@ -1330,7 +1584,7 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
         config.model_name = model_name
         config.available_models_json = available_models_json
         config.inspection_metadata_json = discovery_metadata or dict(config.inspection_metadata_json or {})
-        config.provider_config_json = dict(payload.provider_config_json) if is_gemini else {}
+        config.provider_config_json = provider_config
         config.setup_status = LlmConfigSetupStatus.ready
         config.is_active = config.is_active if credential_correction_during_in_flight else payload.is_active
         config.updated_by_user_id = actor.id
@@ -1368,7 +1622,6 @@ def upsert_llm_config(db: Session, actor: User, payload: LlmConfigUpsert) -> Tea
             elif creating:
                 raise AppError(422, "business_rule_violation", "Bearer token is required when creating the LLM config", {"field": "bearer_token"})
 
-            _reconcile_llm_config_model_selections(db, config=config)
             if deleted_secret_ref:
                 queue_provider_secret_cleanup(db, kind=ProviderSecretCleanupKind.llm, secret_refs=[deleted_secret_ref])
             elif old_secret_ref and old_secret_ref != pending_secret_ref:
@@ -1406,11 +1659,13 @@ def delete_llm_config(db: Session, actor: User, *, config_id: UUID, team_id: UUI
             "Cannot delete this LLM config while dependent work is queued or processing",
             {"config_id": str(config.id)},
         )
+    ensure_no_legacy_checker_work_for_policy_change(db, team_id=config.team_id, config_id=config.id)
     # The FK uses ON DELETE SET NULL, but its encrypted snapshot is paired
     # metadata. Retire both on terminal sources so a later retry can proceed
     # with its frozen primary provider instead of treating the detached
     # snapshot as corruption.
     retire_backup_snapshots_for_config(db, config_id=config.id)
+    retire_checker_snapshots_for_config(db, config_id=config.id)
     selection = db.scalar(select(TeamLlmSelection).where(TeamLlmSelection.llm_config_id == config.id))
     if selection is not None:
         db.delete(selection)
@@ -1451,11 +1706,10 @@ def list_selectable_llm_configs(db: Session, actor: User, *, team_id: UUID | Non
             TeamLlmConfig.revision_of_config_id.is_(None),
             TeamLlmConfig.is_active.is_(True),
             TeamLlmConfig.setup_status == LlmConfigSetupStatus.ready,
-            TeamLlmConfig.model_name.is_not(None),
         )
         .order_by(TeamLlmConfig.created_at.desc(), TeamLlmConfig.id.desc())
     )
-    return list(db.scalars(stmt))
+    return [config for config in db.scalars(stmt) if provider_model_policy_state(db, config=config)["default_model_valid"]]
 
 
 def get_team_llm_selection(db: Session, actor: User, *, team_id: UUID | None = None) -> TeamLlmSelection | None:
@@ -1472,44 +1726,22 @@ def set_team_llm_selection(db: Session, actor: User, payload: LlmSelectionUpsert
             TeamLlmConfig.revision_of_config_id.is_(None),
             TeamLlmConfig.is_active.is_(True),
             TeamLlmConfig.setup_status == LlmConfigSetupStatus.ready,
-            TeamLlmConfig.model_name.is_not(None),
-        )
+        ).execution_options(populate_existing=True).with_for_update()
     )
     if config is None:
         raise AppError(404, "not_found", "Selectable LLM config not found", {"resource": "llm_config", "config_id": str(payload.llm_config_id)})
-    provider_models = list(config.available_models_json or [])
-    allowed_models = [model.strip() for model in payload.allowed_models_json if model and model.strip()]
-    if allowed_models:
-        if not provider_models:
-            raise AppError(
-                422,
-                "business_rule_violation",
-                "Selected LLM provider does not currently expose selectable models",
-                {"field": "allowed_models_json"},
-            )
-        invalid = [model for model in allowed_models if model not in provider_models]
-        if invalid:
-            raise AppError(422, "business_rule_violation", "Selected allowed models are not available for this LLM provider", {"field": "allowed_models_json"})
-    elif provider_models:
-        allowed_models = list(provider_models)
-    allowed_models = list(dict.fromkeys(allowed_models))
-    override = payload.model_name_override.strip() if payload.model_name_override else None
-    if override:
-        if not allowed_models:
-            raise AppError(
-                422,
-                "business_rule_violation",
-                "Selected LLM provider does not currently expose selectable models",
-                {"field": "model_name_override"},
-            )
-        if override not in allowed_models:
-            raise AppError(422, "business_rule_violation", "Selected model is not available for this LLM provider", {"field": "model_name_override"})
-    if not override and allowed_models:
-        if config.model_name and config.model_name in allowed_models:
-            override = config.model_name
-        else:
-            override = allowed_models[0]
-    selection = db.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == team.id))
+    policy = get_provider_model_policy(db, config=config)
+    if policy is None or not model_allowed_for_provider(db, config=config, model_name=policy.default_model_name):
+        raise AppError(422, "business_rule_violation", "This provider has no valid enabled default model", {"resource": "llm_provider_model_policy"})
+    allowed_models = list(policy.enabled_models_json or [])
+    override = policy.default_model_name
+    # Deprecated request fields may only echo the saved policy. They cannot
+    # change global provider allowances through the team-selection endpoint.
+    if payload.allowed_models_json is not None and list(dict.fromkeys(payload.allowed_models_json)) != allowed_models:
+        raise AppError(409, "conflict", "Model allowances are managed in provider settings", {"resource": "llm_provider_model_policy"})
+    if payload.model_name_override is not None and payload.model_name_override.strip() != override:
+        raise AppError(409, "conflict", "The writing default is managed in provider settings", {"resource": "llm_provider_model_policy"})
+    selection = db.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == team.id).execution_options(populate_existing=True).with_for_update())
     if selection is None:
         selection = TeamLlmSelection(
             id=uuid4(),
@@ -1534,7 +1766,7 @@ def set_team_llm_selection(db: Session, actor: User, payload: LlmSelectionUpsert
 
 def clear_team_llm_selection(db: Session, actor: User, *, team_id: UUID | None = None) -> None:
     team = _resolve_selection_scoped_team(db, actor, team_id=team_id)
-    selection = db.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == team.id))
+    selection = db.scalar(select(TeamLlmSelection).where(TeamLlmSelection.team_id == team.id).execution_options(populate_existing=True).with_for_update())
     if selection is None:
         raise AppError(404, "not_found", "LLM selection not found", {"resource": "llm_selection", "team_id": str(team.id)})
     db.delete(selection)
@@ -1574,7 +1806,6 @@ def set_team_llm_backup_selection(
             TeamLlmConfig.revision_of_config_id.is_(None),
             TeamLlmConfig.is_active.is_(True),
             TeamLlmConfig.setup_status == LlmConfigSetupStatus.ready,
-            TeamLlmConfig.model_name.is_not(None),
         ).execution_options(populate_existing=True).with_for_update()
     )
     if config is None:
@@ -1582,9 +1813,10 @@ def set_team_llm_backup_selection(
     current = db.scalar(select(TeamLlmBackupSelection).where(
         TeamLlmBackupSelection.team_id == team.id,
     ).execution_options(populate_existing=True).with_for_update())
+    get_provider_model_policy(db, config=config, lock=True)
     model_name = (payload.model_name or "").strip()
-    if model_name not in list(config.available_models_json or []):
-        raise AppError(422, "business_rule_violation", "Selected backup model is not available for this LLM provider", {"field": "model_name"})
+    if not model_allowed_for_provider(db, config=config, model_name=model_name):
+        raise AppError(422, "business_rule_violation", "Selected backup model is not enabled for this provider", {"field": "model_name"})
     if current is None:
         current = TeamLlmBackupSelection(
             team_id=team.id,
@@ -1617,14 +1849,12 @@ def snapshot_team_llm_backup(db: Session, *, team_id: UUID) -> dict[str, object]
     config = selection.config
     if config is None or selection.llm_config_id is None:
         return None
-    models = list(config.available_models_json or [])
     if (
         config.team_id != team_id
         or config.revision_of_config_id is not None
         or not config.is_active
         or config.setup_status != LlmConfigSetupStatus.ready
-        or not selection.model_name
-        or selection.model_name not in models
+        or not model_allowed_for_provider(db, config=config, model_name=selection.model_name)
     ):
         return None
     return build_provider_snapshot(config=config, model=selection.model_name).to_dict()
@@ -1656,16 +1886,21 @@ def set_team_hallucination_check_selection(db: Session, actor: User, payload: Ha
             TeamLlmConfig.revision_of_config_id.is_(None),
             TeamLlmConfig.is_active.is_(True),
             TeamLlmConfig.setup_status == LlmConfigSetupStatus.ready,
-            TeamLlmConfig.model_name.is_not(None),
-        )
+        ).execution_options(populate_existing=True).with_for_update()
     )
     if config is None:
         raise AppError(404, "not_found", "Selectable hallucination checker LLM config not found", {"resource": "llm_config", "config_id": str(payload.llm_config_id)})
+    selection = db.scalar(select(TeamHallucinationCheckSelection).where(
+        TeamHallucinationCheckSelection.team_id == team.id,
+    ).execution_options(populate_existing=True).with_for_update())
+    ensure_no_legacy_checker_work_for_policy_change(db, team_id=team.id)
+    get_provider_model_policy(db, config=config, lock=True)
     override = payload.model_name_override.strip() if payload.model_name_override else None
-    provider_models = list(config.available_models_json or [])
-    if override and provider_models and override not in provider_models:
-        raise AppError(422, "business_rule_violation", "Selected checker model is not available for this LLM provider", {"field": "model_name_override"})
-    selection = db.scalar(select(TeamHallucinationCheckSelection).where(TeamHallucinationCheckSelection.team_id == team.id))
+    if override is None:
+        policy = get_provider_model_policy(db, config=config)
+        override = policy.default_model_name if policy else None
+    if not model_allowed_for_provider(db, config=config, model_name=override):
+        raise AppError(422, "business_rule_violation", "Choose an enabled model for the hallucination checker", {"field": "model_name_override"})
     if selection is None:
         selection = TeamHallucinationCheckSelection(
             id=uuid4(),
@@ -1691,9 +1926,13 @@ def set_team_hallucination_check_selection(db: Session, actor: User, payload: Ha
 
 def clear_team_hallucination_check_selection(db: Session, actor: User, *, team_id: UUID | None = None) -> None:
     team = _resolve_checker_scoped_team(db, actor, team_id=team_id)
-    selection = db.scalar(select(TeamHallucinationCheckSelection).where(TeamHallucinationCheckSelection.team_id == team.id))
+    current_config_id = db.scalar(select(TeamHallucinationCheckSelection.llm_config_id).where(TeamHallucinationCheckSelection.team_id == team.id))
+    if current_config_id is not None:
+        db.scalar(select(TeamLlmConfig.id).where(TeamLlmConfig.id == current_config_id).execution_options(populate_existing=True).with_for_update())
+    selection = db.scalar(select(TeamHallucinationCheckSelection).where(TeamHallucinationCheckSelection.team_id == team.id).execution_options(populate_existing=True).with_for_update())
     if selection is None:
         raise AppError(404, "not_found", "Hallucination checker selection not found", {"resource": "hallucination_check_selection", "team_id": str(team.id)})
+    ensure_no_legacy_checker_work_for_policy_change(db, team_id=team.id)
     db.delete(selection)
     db.commit()
     _record_llm_audit(db, action="hallucination_check_selection_cleared", actor=actor, team_id=team.id)
@@ -1710,7 +1949,6 @@ def active_team_hallucination_check_selection(db: Session, *, team_id: UUID) -> 
         or selection.config is None
         or not selection.config.is_active
         or selection.config.setup_status != LlmConfigSetupStatus.ready
-        or not selection.config.model_name
     ):
         return None
     return selection
@@ -1723,7 +1961,6 @@ def active_team_llm_selection(db: Session, *, team_id: UUID) -> TeamLlmSelection
         or selection.config is None
         or not selection.config.is_active
         or selection.config.setup_status != LlmConfigSetupStatus.ready
-        or not selection.config.model_name
     ):
         raise AppError(422, "business_rule_violation", "No active LLM selection for team", {"team_id": str(team_id)})
     return selection
@@ -1732,10 +1969,59 @@ def active_team_llm_selection(db: Session, *, team_id: UUID) -> TeamLlmSelection
 def resolve_team_llm(db: Session, *, team_id: UUID) -> tuple[TeamLlmSelection, TeamLlmConfig, str | None]:
     selection = active_team_llm_selection(db, team_id=team_id)
     config = selection.config
-    resolved_model_name = selection.model_name_override or config.model_name
-    if resolved_model_name and selection.allowed_models_json and resolved_model_name not in selection.allowed_models_json:
-        resolved_model_name = selection.allowed_models_json[0] if selection.allowed_models_json else None
+    policy = get_provider_model_policy(db, config=config)
+    resolved_model_name = policy.default_model_name if policy and model_allowed_for_provider(db, config=config, model_name=policy.default_model_name) else None
     return selection, config, resolved_model_name
+
+
+def resolve_effective_user_llm_for_new_work(
+    db: Session, actor: User
+) -> tuple[TeamLlmSelection | None, TeamLlmConfig | None, str | None, UserLlmPreference | None, bool]:
+    """Resolve the accepted writing choice with personal preference and backup.
+
+    Personal preferences apply only to the active writing provider. An
+    unusable primary never carries that preference to the backup provider.
+    The boolean marks backup resolution; callers still freeze snapshots and
+    reserve quotas at their established work-acceptance boundary.
+    """
+    _resolve_user_preference_scope(actor)
+    if actor.team_id is None:
+        raise AppError(403, "forbidden", "Current user does not belong to a team")
+    selection = db.scalar(select(TeamLlmSelection).options(
+        joinedload(TeamLlmSelection.config),
+    ).where(TeamLlmSelection.team_id == actor.team_id))
+    preference = db.scalar(select(UserLlmPreference).where(UserLlmPreference.user_id == actor.id))
+    config = selection.config if selection is not None else None
+    if (
+        config is not None
+        and config.team_id == actor.team_id
+        and config.revision_of_config_id is None
+        and config.is_active
+        and config.setup_status == LlmConfigSetupStatus.ready
+    ):
+        preferred = preference.preferred_model_name if preference is not None else None
+        if preferred and model_allowed_for_provider(db, config=config, model_name=preferred):
+            return selection, config, preferred, preference, False
+        policy = get_provider_model_policy(db, config=config)
+        default = policy.default_model_name if policy is not None else None
+        if model_allowed_for_provider(db, config=config, model_name=default):
+            return selection, config, default, preference, False
+
+    backup = db.scalar(select(TeamLlmBackupSelection).options(
+        joinedload(TeamLlmBackupSelection.config),
+    ).where(TeamLlmBackupSelection.team_id == actor.team_id))
+    backup_config = backup.config if backup is not None else None
+    if (
+        backup is not None
+        and backup_config is not None
+        and backup_config.team_id == actor.team_id
+        and backup_config.revision_of_config_id is None
+        and backup_config.is_active
+        and backup_config.setup_status == LlmConfigSetupStatus.ready
+        and model_allowed_for_provider(db, config=backup_config, model_name=backup.model_name)
+    ):
+        return selection, backup_config, backup.model_name, preference, True
+    return selection, config, None, preference, False
 
 
 def get_user_llm_preference(db: Session, actor: User) -> UserLlmPreference | None:
@@ -1749,17 +2035,14 @@ def set_user_llm_preference(db: Session, actor: User, payload: UserLlmPreference
         raise AppError(403, "forbidden", "Current user does not belong to a team")
     selection = active_team_llm_selection(db, team_id=actor.team_id)
     preferred_model_name = payload.preferred_model_name.strip() if payload.preferred_model_name else None
-    allowed_models = list(selection.allowed_models_json or selection.config.available_models_json or [])
     if preferred_model_name:
-        if not allowed_models:
+        if not model_allowed_for_provider(db, config=selection.config, model_name=preferred_model_name):
             raise AppError(
                 422,
                 "business_rule_violation",
                 "The active team LLM provider does not currently expose selectable models",
                 {"field": "preferred_model_name"},
             )
-        if preferred_model_name not in allowed_models:
-            raise AppError(422, "business_rule_violation", "Preferred model is not available for the active team LLM provider", {"field": "preferred_model_name"})
     preference = db.scalar(select(UserLlmPreference).where(UserLlmPreference.user_id == actor.id))
     if preference is None:
         preference = UserLlmPreference(id=uuid4(), user_id=actor.id, preferred_model_name=preferred_model_name)
@@ -1790,8 +2073,7 @@ def resolve_user_llm(db: Session, actor: User) -> tuple[TeamLlmSelection, TeamLl
     selection, config, team_model = resolve_team_llm(db, team_id=actor.team_id)
     preference = db.scalar(select(UserLlmPreference).where(UserLlmPreference.user_id == actor.id))
     preferred_model = preference.preferred_model_name if preference and preference.preferred_model_name else None
-    allowed_models = list(selection.allowed_models_json or config.available_models_json or [])
-    if preferred_model and allowed_models and preferred_model not in allowed_models:
+    if preferred_model and not model_allowed_for_provider(db, config=config, model_name=preferred_model):
         preferred_model = None
     return selection, config, preferred_model or team_model, preference
 

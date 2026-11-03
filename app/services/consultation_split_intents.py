@@ -74,7 +74,10 @@ from app.services.templates import (
     set_generated_document_text,
 )
 from app.schemas.templates import StructuredTemplateConfig
-from app.services.llm import resolve_user_llm
+from app.services.llm_generation_provider import (
+    require_frozen_backup_matches,
+    resolve_new_writing_provider,
+)
 from app.services.transcripts import snapshot_current_transcript_version
 
 
@@ -836,9 +839,8 @@ def continue_consultation_split_intent_as_one_note(
 
         submitted = _submitted_generation_snapshot(db, intent=intent)
         _require_live_submitted_template(db, actor, submitted=submitted)
-        _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
-        if not resolved_model_name:
-            raise AppError(422, "business_rule_violation", "No active LLM model is configured for this user", {"field": "preferred_model_name"})
+        writing_provider = resolve_new_writing_provider(db, actor)
+        config, resolved_model_name = writing_provider.config, writing_provider.model_name
 
         working_mode, freeform_working_note, structured_working_note = _working_note_snapshot_for_transcript(
             db, transcript=scope.transcript
@@ -905,6 +907,10 @@ def continue_consultation_split_intent_as_one_note(
             transcript=scope.transcript,
             config=config,
         )
+        if writing_provider.uses_backup:
+            require_frozen_backup_matches(
+                db, source=document, config_id=config.id, model_name=resolved_model_name,
+            )
         intent.status = ConsultationSplitIntentStatus.bypassed
         intent.error_code = None
         intent.completed_at = utcnow()

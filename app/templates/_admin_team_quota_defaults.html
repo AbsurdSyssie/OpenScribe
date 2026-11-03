@@ -1,0 +1,48 @@
+                <section class="defaults-quota-section" aria-labelledby="defaults-quota-heading">
+                  <header>
+                    <h3 id="defaults-quota-heading">Quota defaults for new members</h3>
+                    <p>These limits are copied to new team members, including approved account requests. Existing members keep their current limits.</p>
+                  </header>
+                  <form method="post" action="/admin/teams/{{ selected_team.id }}/quota-defaults" class="defaults-quota-form">
+                    <input type="hidden" name="return_view" value="workspace" />
+                    <input type="hidden" name="return_tab" value="quotas" />
+                    <div class="quota-editor-resource-grid defaults-quota-resource-grid">
+                      <section class="quota-editor-resource" aria-labelledby="defaults-tokens-heading">
+                        <header class="quota-editor-resource-heading">
+                          <span class="quota-resource-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M5 4.75h14v14.5H5zM8 8h8M8 11.5h8M8 15h5" /></svg></span>
+                          <div><h3 id="defaults-tokens-heading">AI tokens</h3><p>Limits for AI model tokens.</p></div>
+                        </header>
+                        <div class="defaults-quota-fields">
+                          <label class="defaults-quota-field" id="defaults-daily-token-label" data-token-quota-scope"><span class="quota-limit-period-label">Daily limit</span>
+                            <span class="quota-limit-amount"><input type="number" name="default_daily_token_limit" min="0" max="10000000" value="{{ selected_team.default_daily_token_limit }}" required aria-labelledby="defaults-tokens-heading defaults-daily-token-label" aria-describedby="quota-default-token-warning-daily" data-token-quota-limit><span>tokens</span></span>
+                            {% set default_daily_warning_models = [] %}{% if selected_team.default_daily_token_limit > 0 %}{% for item in quota_provider_output_caps %}{% if selected_team.default_daily_token_limit <= item.cap %}{% set _ = default_daily_warning_models.append(item) %}{% endif %}{% endfor %}{% endif %}
+                            <span id="quota-default-token-warning-daily" class="quota-reservation-warning" data-token-quota-warning data-period-label="daily" data-model-caps='{{ quota_provider_output_caps|tojson|forceescape }}' {% if not default_daily_warning_models %}hidden{% endif %} role="status" aria-live="polite">{% for item in default_daily_warning_models %}{{ item.model }} can reserve up to {{ item.cap|quota_units('tokens') }} for output in one generation or check, plus variable input tokens. A daily limit of {{ selected_team.default_daily_token_limit|quota_units('tokens') }} may block generation or checks. Longer or split requests may need more.{% if not loop.last %} {% endif %}{% endfor %}</span>
+                          </label>
+                          <label class="defaults-quota-field" id="defaults-monthly-token-label" data-token-quota-scope><span class="quota-limit-period-label">Monthly limit</span>
+                            <span class="quota-limit-amount"><input type="number" name="default_monthly_token_limit" min="0" max="100000000" value="{{ selected_team.default_monthly_token_limit }}" required aria-labelledby="defaults-tokens-heading defaults-monthly-token-label" aria-describedby="quota-default-token-warning-monthly" data-token-quota-limit><span>tokens</span></span>
+                            {% set default_monthly_warning_models = [] %}{% if selected_team.default_monthly_token_limit > 0 %}{% for item in quota_provider_output_caps %}{% if selected_team.default_monthly_token_limit <= item.cap %}{% set _ = default_monthly_warning_models.append(item) %}{% endif %}{% endfor %}{% endif %}
+                            <span id="quota-default-token-warning-monthly" class="quota-reservation-warning" data-token-quota-warning data-period-label="monthly" data-model-caps='{{ quota_provider_output_caps|tojson|forceescape }}' {% if not default_monthly_warning_models %}hidden{% endif %} role="status" aria-live="polite">{% for item in default_monthly_warning_models %}{{ item.model }} can reserve up to {{ item.cap|quota_units('tokens') }} for output in one generation or check, plus variable input tokens. A monthly limit of {{ selected_team.default_monthly_token_limit|quota_units('tokens') }} may block generation or checks. Longer or split requests may need more.{% if not loop.last %} {% endif %}{% endfor %}</span>
+                          </label>
+                        </div>
+                      </section>
+                      <section class="quota-editor-resource" aria-labelledby="defaults-audio-heading">
+                        <header class="quota-editor-resource-heading">
+                          <span class="quota-resource-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M4 13c2.2 0 2.2-5 4.5-5s2.3 8 4.5 8 2.3-8 4.5-8 2.3 5 4.5 5" /></svg></span>
+                          <div><h3 id="defaults-audio-heading">Transcription audio</h3><p>Limits for audio transcription.</p></div>
+                        </header>
+                        <div class="defaults-quota-fields">
+                          <label class="defaults-quota-field" id="defaults-daily-audio-label"><span class="quota-limit-period-label">Daily limit</span>
+                            <span class="quota-limit-amount"><input type="number" name="default_daily_audio_hours" min="0" max="24" step="any" value="{{ '%.15g'|format(selected_team.default_daily_audio_seconds_limit / 3600) }}" required aria-labelledby="defaults-audio-heading defaults-daily-audio-label"><span>hours</span></span>
+                          </label>
+                          <label class="defaults-quota-field" id="defaults-monthly-audio-label"><span class="quota-limit-period-label">Monthly limit</span>
+                            <span class="quota-limit-amount"><input type="number" name="default_monthly_audio_hours" min="0" max="1000" step="any" value="{{ '%.15g'|format(selected_team.default_monthly_audio_seconds_limit / 3600) }}" required aria-labelledby="defaults-audio-heading defaults-monthly-audio-label"><span>hours</span></span>
+                          </label>
+                        </div>
+                      </section>
+                    </div>
+                    <div class="defaults-quota-footer">
+                      <p class="field-help">A limit of 0 disables that resource for the period. These finite defaults apply only when a new member is created.{% if quota_provider_output_caps %} Generation also reserves estimated input tokens; larger or split requests may need more than these output allowances.{% endif %}</p>
+                      <button class="btn primary" type="submit">Save quota defaults</button>
+                    </div>
+                  </form>
+                </section>

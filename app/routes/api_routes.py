@@ -78,6 +78,8 @@ from ..schemas import (
     LlmConfigInspectResult,
     LlmConfigUpsert,
     LlmInspectRequest,
+    LlmProviderModelPolicyDetail,
+    LlmProviderModelPolicyUpsert,
     LlmSelectionDetail,
     LlmSelectionUpsert,
     LoginRequest,
@@ -264,6 +266,8 @@ from ..services.llm import (
     create_llm_config_draft as create_llm_config_draft_service,
     delete_llm_config as delete_llm_config_service,
     finalize_llm_config_draft as finalize_llm_config_draft_service,
+    get_llm_config as get_llm_config_service,
+    get_llm_provider_model_policy as get_llm_provider_model_policy_service,
     get_team_hallucination_check_selection as get_team_hallucination_check_selection_service,
     get_team_llm_selection as get_team_llm_selection_service,
     get_user_llm_preference as get_user_llm_preference_service,
@@ -274,10 +278,12 @@ from ..services.llm import (
     replace_llm_config_draft_credential as replace_llm_config_draft_credential_service,
     resolve_user_llm as resolve_user_llm_service,
     set_team_hallucination_check_selection as set_team_hallucination_check_selection_service,
+    set_llm_provider_model_policy as set_llm_provider_model_policy_service,
     set_team_llm_selection as set_team_llm_selection_service,
     set_user_llm_preference as set_user_llm_preference_service,
     upsert_llm_config as upsert_llm_config_service,
 )
+from ..services.llm_model_policy import model_allowed_for_provider
 from ..services.preferences import (
     clear_user_app_preferences as clear_user_app_preferences_service,
     get_user_app_preferences as get_user_app_preferences_service,
@@ -1013,6 +1019,21 @@ def list_llm_configs(team_id: UUID | None = None, context: AuthenticatedContext 
     return [llm_config_response(config) for config in list_llm_configs_service(db, context.user, team_id=team_id)]
 
 
+@api.get("/llm-configs/{config_id}", response_model=LlmConfigDetail, responses=error_responses)
+def get_llm_config(config_id: UUID, team_id: UUID | None = None, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return llm_config_response(get_llm_config_service(db, context.user, config_id=config_id, team_id=team_id))
+
+
+@api.get("/llm-configs/{config_id}/model-policy", response_model=LlmProviderModelPolicyDetail, responses=error_responses)
+def get_llm_provider_model_policy(config_id: UUID, team_id: UUID, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return get_llm_provider_model_policy_service(db, context.user, config_id=config_id, team_id=team_id)
+
+
+@api.put("/llm-configs/{config_id}/model-policy", response_model=LlmProviderModelPolicyDetail, responses=error_responses)
+def set_llm_provider_model_policy(config_id: UUID, payload: LlmProviderModelPolicyUpsert, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
+    return set_llm_provider_model_policy_service(db, context.user, config_id=config_id, payload=payload)
+
+
 @api.post("/llm-configs/inspect", response_model=LlmConfigInspectResult, responses=error_responses)
 def inspect_llm_config(payload: LlmInspectRequest, context: AuthenticatedContext = Depends(require_system_admin), db: Session = Depends(get_db)):
     try:
@@ -1208,7 +1229,8 @@ def get_llm_preference(context: AuthenticatedContext = Depends(require_full_cont
     if preference is None:
         return None
     selection, config, resolved_model_name, _ = resolve_user_llm_service(db, context.user)
-    allowed_models = list(selection.allowed_models_json or config.available_models_json or [])
+    policy = config.model_policy
+    allowed_models = [model for model in (policy.enabled_models_json if policy else []) if model_allowed_for_provider(db, config=config, model_name=model)]
     return user_llm_preference_response(preference, resolved_model_name=resolved_model_name, allowed_models=allowed_models)
 
 
@@ -1216,7 +1238,8 @@ def get_llm_preference(context: AuthenticatedContext = Depends(require_full_cont
 def set_llm_preference(payload: UserLlmPreferenceUpsert, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
     preference = set_user_llm_preference_service(db, context.user, payload)
     selection, config, resolved_model_name, _ = resolve_user_llm_service(db, context.user)
-    allowed_models = list(selection.allowed_models_json or config.available_models_json or [])
+    policy = config.model_policy
+    allowed_models = [model for model in (policy.enabled_models_json if policy else []) if model_allowed_for_provider(db, config=config, model_name=model)]
     return user_llm_preference_response(preference, resolved_model_name=resolved_model_name, allowed_models=allowed_models)
 
 

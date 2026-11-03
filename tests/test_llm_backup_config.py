@@ -18,7 +18,6 @@ from app.services.content_crypto import ensure_user_dek
 from app.services.llm_backup import freeze_backup_selection
 from app.services import llm as llm_service
 from app.services.llm import (
-    _reconcile_llm_config_model_selections,
     set_team_llm_backup_selection,
     set_team_llm_selection,
     snapshot_team_llm_backup,
@@ -38,7 +37,8 @@ def test_admin_can_set_backup_and_primary_leader_change_does_not_replace_it(
         team_role=TeamRole.leader,
     )
     primary = make_llm_config(
-        team=team, actor=admin, label="Primary", available_models_json=["primary-a"]
+        team=team, actor=admin, label="Primary", model_name="primary-a",
+        available_models_json=["primary-a"]
     )
     backup = make_llm_config(
         team=team,
@@ -48,6 +48,7 @@ def test_admin_can_set_backup_and_primary_leader_change_does_not_replace_it(
         available_models_json=["backup-a", "backup-b"],
         has_secret=False,
     )
+    backup.model_policy.default_model_name = None
 
     saved = set_team_llm_backup_selection(
         db_session,
@@ -117,7 +118,7 @@ def test_backup_selection_is_system_admin_only_and_team_scoped(
     assert wrong_model.value.status_code == 422
 
 
-def test_backup_model_reconciles_to_new_provider_default_and_clear_removes_selection(
+def test_backup_model_stays_pinned_when_catalog_changes_and_clear_removes_selection(
     db_session, make_team, make_user, make_llm_config
 ):
     team = make_team(name="Backup Reconcile Clinic")
@@ -137,11 +138,11 @@ def test_backup_model_reconciles_to_new_provider_default_and_clear_removes_selec
 
     config.available_models_json = ["model-c"]
     config.model_name = "model-c"
-    _reconcile_llm_config_model_selections(db_session, config=config)
     db_session.commit()
     db_session.expire_all()
-    assert db_session.get(TeamLlmBackupSelection, team.id).model_name == "model-c"
-    assert snapshot_team_llm_backup(db_session, team_id=team.id)["model"] == "model-c"
+    pinned = db_session.get(TeamLlmBackupSelection, team.id)
+    assert pinned.model_name == "model-b"
+    assert snapshot_team_llm_backup(db_session, team_id=team.id) is None
 
     cleared = set_team_llm_backup_selection(
         db_session,
@@ -247,7 +248,7 @@ def _backup_reference_document(db, owner, make_generated_document):
     return make_generated_document(owner=owner, transcript=root, transcript_version=version)
 
 
-def test_empty_provider_catalog_clears_backup_selection(
+def test_empty_provider_catalog_retains_pinned_backup_but_disables_new_snapshot(
     db_session, make_user, make_llm_config,
 ):
     admin = make_user(email="empty-catalog-admin@example.com", is_system_admin=True)
@@ -255,9 +256,22 @@ def test_empty_provider_catalog_clears_backup_selection(
     set_team_llm_backup_selection(db_session, admin, LlmBackupSelectionUpsert(
         team_id=config.team_id, llm_config_id=config.id, model_name="model-a"))
     config.available_models_json = []
-    _reconcile_llm_config_model_selections(db_session, config=config)
     db_session.commit()
-    assert db_session.get(TeamLlmBackupSelection, config.team_id) is None
+    assert db_session.get(TeamLlmBackupSelection, config.team_id).model_name == "model-a"
+    assert snapshot_team_llm_backup(db_session, team_id=config.team_id) is None
+
+
+def test_disabled_pinned_backup_cannot_be_frozen_for_new_work(db_session, make_user, make_llm_config):
+    admin = make_user(email=f"disabled-backup-admin-{uuid4()}@example.com", is_system_admin=True)
+    config = make_llm_config(actor=admin, model_name="model-a", available_models_json=["model-a", "model-b"])
+    set_team_llm_backup_selection(db_session, admin, LlmBackupSelectionUpsert(
+        team_id=config.team_id, llm_config_id=config.id, model_name="model-b"))
+    config.model_policy.default_model_name = None
+    config.model_policy.enabled_models_json = ["model-a"]
+    db_session.commit()
+
+    assert db_session.get(TeamLlmBackupSelection, config.team_id).model_name == "model-b"
+    assert snapshot_team_llm_backup(db_session, team_id=config.team_id) is None
 
 
 @pytest.mark.parametrize("entry_point", ["upsert", "draft"])

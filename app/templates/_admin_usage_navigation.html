@@ -5,10 +5,10 @@
 {% set usage_range_menu_view = usage_page_view if standalone_usage else ('users' if request.query_params.get('usage_view') == 'users' else 'team') %}
 {% set usage_range_menu_team_id = selected_team.id %}
 <div class="usage-view-bar">
-<nav class="usage-view-navigation" aria-label="Team usage views">
-  <a href="/admin/usage?team_id={{ selected_team.id }}&amp;view=team&amp;range={{ usage_navigation_range }}"{% if (standalone_usage and usage_page_view == 'team') or (not standalone_usage and workspace_team_tab != 'quotas' and request.query_params.get('usage_view') != 'users') %} aria-current="page"{% endif %}>Team</a>
-  <a href="/admin/usage?team_id={{ selected_team.id }}&amp;view=users&amp;range={{ usage_navigation_range }}"{% if (standalone_usage and usage_page_view == 'users') or (not standalone_usage and workspace_team_tab != 'quotas' and request.query_params.get('usage_view') == 'users') %} aria-current="page"{% endif %}>Users</a>
-  <a href="/admin/usage?team_id={{ selected_team.id }}&amp;view=quotas&amp;range={{ usage_navigation_range }}"{% if (standalone_usage and usage_page_view == 'quotas') or (not standalone_usage and workspace_team_tab == 'quotas') %} aria-current="page"{% endif %}>Quotas</a>
+<nav class="tabs usage-view-navigation" aria-label="Team usage views">
+  <a class="tab" href="/admin/usage?team_id={{ selected_team.id }}&amp;view=team&amp;range={{ usage_navigation_range }}"{% if (standalone_usage and usage_page_view == 'team') or (not standalone_usage and workspace_team_tab != 'quotas' and request.query_params.get('usage_view') != 'users') %} aria-current="page"{% endif %}>Team</a>
+  <a class="tab" href="/admin/usage?team_id={{ selected_team.id }}&amp;view=users&amp;range={{ usage_navigation_range }}"{% if (standalone_usage and usage_page_view == 'users') or (not standalone_usage and workspace_team_tab != 'quotas' and request.query_params.get('usage_view') == 'users') %} aria-current="page"{% endif %}>Users</a>
+  <a class="tab" href="/admin/usage?team_id={{ selected_team.id }}&amp;view=quotas&amp;range={{ usage_navigation_range }}"{% if (standalone_usage and usage_page_view == 'quotas') or (not standalone_usage and workspace_team_tab == 'quotas') %} aria-current="page"{% endif %}>Quotas</a>
 </nav>
 {% if (standalone_usage and usage_page_view != 'quotas') or (not standalone_usage and workspace_team_tab == 'usage') %}
   {% include "_admin_usage_range_menu.html" %}

@@ -203,6 +203,8 @@ Queued ingestion snapshots the resolved provider/config/model/contract metadata 
 System-admin provisioning:
 
 - `GET /api/v1/llm-configs`
+- `GET /api/v1/llm-configs/{config_id}/model-policy?team_id=...`
+- `PUT /api/v1/llm-configs/{config_id}/model-policy`
 - `POST /api/v1/llm-configs/inspect`
 - `POST /api/v1/llm-configs/{config_id}/inspect`
 - `POST /api/v1/llm-configs/drafts`
@@ -217,6 +219,13 @@ Manager team policy:
 - `GET /api/v1/llm-selection/options`
 - `POST /api/v1/llm-selection`
 - `DELETE /api/v1/llm-selection`
+
+The system-admin model-policy routes store each provider's enabled model IDs
+and writing default independently. An empty enabled list means no models are
+allowed; a non-empty list requires its default to be enabled. The team
+selection POST changes only the active writing-provider pointer. Deprecated
+allowance/default fields are accepted only when they exactly match that
+provider's saved policy, so leaders cannot change the global allowance.
 
 System-admin hallucination-check policy:
 

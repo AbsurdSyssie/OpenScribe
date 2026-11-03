@@ -21,9 +21,12 @@ from app.services.consultation_split_generation import (
 )
 from app.services.consultation_splits import queue_split_execution, read_split_batch_json
 from app.services.content_crypto import encrypt_json_for_existing_owner
-from app.services.llm import resolve_user_llm
 from app.services.llm_adapters.runtime import build_provider_snapshot
 from app.services.llm_backup import freeze_backup_selection
+from app.services.llm_generation_provider import (
+    require_frozen_backup_matches,
+    resolve_new_writing_provider,
+)
 
 SPLIT_GENERATION_RESERVATION_SECONDS = 1_500
 
@@ -73,10 +76,14 @@ def queue_confirmed_split_generation(
         db, source=batch, owner_user_id=owner.id, team_id=batch.team_id,
     )
 
-    _selection, config, model, _preference = resolve_user_llm(db, owner)
-    if not isinstance(model, str) or not model.strip():
-        raise AppError(422, "consultation_split_llm_model_unavailable", "No LLM model is available for consultation splitting")
-    model = model.strip()
+    writing_provider = resolve_new_writing_provider(
+        db, owner,
+        unavailable_code="consultation_split_llm_model_unavailable",
+        unavailable_message="No LLM model is available for consultation splitting",
+    )
+    config, model = writing_provider.config, writing_provider.model_name
+    if writing_provider.uses_backup:
+        require_frozen_backup_matches(db, source=batch, config_id=config.id, model_name=model)
     prepared = prepare_split_generation_request(
         source_snapshot=read_split_batch_json(db, owner, batch=batch, field="source_snapshot_encrypted") or {},
         clinical_snapshot=read_split_batch_json(db, owner, batch=batch, field="clinical_snapshot_encrypted") or {},

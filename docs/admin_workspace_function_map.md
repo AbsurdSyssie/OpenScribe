@@ -20,32 +20,66 @@ selectable. Create team opens the existing Name, Status and retention form in
 a dialog. A successful creation selects the new team and opens its Overview;
 validation errors keep the dialog and safe non-secret values visible.
 
-The sidebar keeps Usage and the selected Team workspace separate from Global
-administration. Global pages include Account requests, System admins, Global
-defaults, De-ID providers, Audit and Legal content. Selecting a global page
-does not apply the remembered team as a data filter. The picker shows the
-validated remembered team name, and the Usage navigation link restores its
-team section or Usage view. The bottom account disclosure retains the existing
-POST logout action; the brand is not a link.
+The sidebar groups Usage & Quotas, Providers, Members, Security & Data, and Team
+workspace under Team settings, using the same link spacing as Global
+administration. Members opens the selected-team Members route and stays
+selected when switching teams. Security & data contains account-security
+status, transcript retention and a clearly separated Danger zone. Team
+workspace opens the team overview. Providers opens the selected team's Provider
+policy, STT, LLM and De-identification pages; without a selected team it
+presents a team picker. Its four pages use a visible provider navigation row,
+and the sidebar destination remains active across them. The global De-ID
+providers page remains separate.
+Global pages include Account requests, System admins, Global defaults, De-ID
+providers, Audit and Legal content. Selecting a global page does not apply the
+remembered team as a data filter. The sidebar keeps its team destinations
+visible and uses the validated remembered team for their links; if no team is
+remembered, those links open Providers so an administrator can choose a team.
+The Usage & Quotas link restores the remembered team's Usage view. The global
+team scope control remains unscoped. The bottom account disclosure retains the
+existing POST logout action; the brand is not a link.
 
-Selected-team workspace navigation keeps Overview, Members and Quotas as
-primary tabs. Usage opens the dedicated standalone admin Usage route described
-in [usage_tab.md](usage_tab.md), rather than the selected-team workspace.
-Provider policy, STT, LLM and De-identification sit under the Providers
-disclosure; Defaults, Security and Danger zone sit under Settings. The active
-child remains visible in its group label and is marked as the current page.
-These links preserve the validated `team_tab` URL values.
+On desktop, the admin shell fills the viewport. The brand stays at the top of
+the sidebar, account controls stay at the bottom, and only the navigation
+middle scrolls when the viewport is short. Main content scrolls independently;
+the centered legal links and browser-storage notice follow the page content at
+the bottom of that scroll area. Short pages place them at the bottom of the
+content viewport; long pages reveal them after scrolling to the end. At narrow
+widths, the shell returns to one document scroll with the navigation
+disclosure, avoiding nested scroll areas.
+
+Selected-team pages do not repeat a second team-settings menu in the content
+area. Usage & Quotas, Providers, Members, Security & Data, and Team workspace
+are direct sidebar destinations. Quotas and Usage are grouped under Usage &
+Quotas; team quota
+defaults appear at the top of Usage → Quotas, ahead of member-specific quota
+management. The Quotas list filters eligible members by name or email; each
+row has a fixed-width **Usage** toggle and a separate **Edit quotas** action.
+The toggle expands the member's usage below the row without changing its label
+or column width. Editing opens a modal while the defaults and member list stay
+in place. The list shows the selected Daily or Monthly UTC window for token and audio
+quotas, with Monthly selected by default; its progress includes unsettled
+accepted work and identifies pending units separately.
+Provider policy, STT, LLM and De-identification are managed in the
+dedicated Providers area. Old `team_tab=defaults` URLs redirect to Usage →
+Quotas; old Security and Danger zone URLs redirect to Security & Data. These
+links preserve validated team scope; switching teams keeps the current
+destination, and All teams returns to the Providers team picker.
 
 Within standalone Usage, a validated team scope exposes Team, Users and Quotas
-destinations. The scope control selects the team; this surface omits the
-selected-team workspace header and primary tabs. The Users table remains
-limited to that team, and Quotas does not load reporting telemetry.
+tabs beneath an area-title header that uses the same summary bar as Members.
+The title changes to Team usage, User usage or Quotas with the selected team
+shown in supporting text. The Users table remains limited to that team, and
+Quotas does not load reporting telemetry. Provider pages use the same summary
+bar with Providers as the area title.
 
-At narrow widths, the selected-team links sit inside a separate native
-“Team navigation” disclosure. Its summary names the current page; opening it
-reveals the same primary tabs and Providers/Settings groups. The global Admin
-navigation remains a separate control. At desktop widths the selected-team
-links are visible without this disclosure.
+At narrow widths, team destinations remain in the Admin navigation disclosure
+with their team scope preserved. Provider pages use a visible
+four-link navigation row beneath the same selected-team area-title header; it
+uses the shared Team settings tab style, wraps at narrow widths and remains
+reachable without opening the team menu. At
+desktop widths the navigation destinations are visible in their respective
+sidebar groups.
 
 Selected team and tab are validated URL state:
 
@@ -66,10 +100,11 @@ Discard before navigation; normal explicit form submission remains available.
 
 On narrow screens, the Admin navigation disclosure exposes the existing global destinations and Log out. It does not change authorization or selected-team scope. Provider setup and member dialogs move keyboard focus inside while open, keep background controls inactive, and return focus to their opening control when dismissed. Provider choices and member-action disclosures expose their selected or expanded state to assistive technology.
 
-Team Defaults presents retention guidance beside its numeric control and Save
-action on desktop; on narrow screens the guidance sits above the input and
-Save action. The setting retains its existing 1–90 day range and applies only
-to transcript roots created after the update.
+Security & data presents retention guidance beside its numeric control and
+Save action on desktop; on narrow screens the guidance sits above the input
+and Save action. The setting retains its existing 1–90 day range and applies
+only to transcript roots created after the update. Quota defaults retain their
+existing form and validation in Usage → Quotas.
 
 Wide data grids scroll within their own labelled regions while surrounding navigation and forms reflow. Required operator legal-setup information remains visible in the page; transient status messages use live-region semantics.
 
@@ -131,24 +166,34 @@ Quota detail is selected-member URL state in the standalone Usage Quotas view:
 
 The Members table links directly to this view. Older Quotas and
 `team_tab=members&member_id=...` links redirect to the standalone route. A
-searchable selector lists only eligible members of the selected team. It is
+searchable table lists only eligible members of the selected team. It is
 system-admin-only and resolves only eligible normal members in the selected
 team. Invalid, cross-team, self, or system-admin targets do not load quota
 detail or fall back to another member.
 
-Quota cards show settled usage, accepted work still in progress, the effective daily/monthly limit, remaining capacity after in-progress work, and the current UTC calendar dates. The Edit limits action replaces the usage view with a focused editor. Each resource and period can be set to a finite limit or Unlimited; zero remains a finite disabled limit. Cancel returns to usage without saving. Allowance forms open on demand. Reset, allowance, and history details remain available below the cards.
+Each row's **See usage** action expands read-only daily/monthly usage details,
+reset dates, temporary allowances, remaining capacity, and lifetime accounted
+usage in place. **Collapse usage** returns to the same list while preserving the
+search, quota period, and reporting range. **Edit quotas** opens a focused modal
+with the existing finite/Unlimited controls and required change reason. Zero
+remains a finite disabled limit. A successful save returns to the table with
+updated usage; validation errors reopen the modal with entered values. The
+expanded usage links to the established selected-member overview for allowance,
+reset, revoke, and history actions. Direct legacy member URLs continue to show
+that full overview. Eligibility and team-scoped authorization apply to every
+selected-member view.
 
 The current quota dimensions include daily/monthly tokens and daily/monthly audio with base limits, temporary grants, reservations/usage, effective/remaining values, reset boundaries, and revocation/reset operations.
 
-Each team's Defaults tab manages retention and finite daily/monthly token and
-audio quota defaults for newly created members. The Overview shows the current
-retention period and links to its editor in Defaults. Retention edits use the
-existing team retention action and apply only to transcript roots created
-afterward. New users, including account-request approvals, receive a snapshot
-of quota defaults in their user quota fields; changing a team default does not
-change existing members. Zero disables the relevant resource and period.
-Existing members can still receive individual finite limits or Unlimited
-through Manage quotas.
+Usage → Quotas manages finite daily/monthly token and audio defaults for new
+members alongside individual quota management. The team overview links to
+Security & data for retention settings. Retention edits use the existing team
+retention action and apply only to transcript roots created afterward. New
+users, including account-request approvals, receive a snapshot of quota
+defaults in their user quota fields; changing a team default does not change
+existing members. Zero disables the relevant resource and period. Existing
+members can still receive individual finite limits or Unlimited through Edit
+quotas in the member table.
 
 When an active team LLM selection, backup, or checker has an assigned model, the
 member limit editor and team defaults show an advisory when a finite token
@@ -171,8 +216,9 @@ Quota reporting is distinct from Usage telemetry. See [usage_tab.md](usage_tab.m
 
 Global Account requests supports all-team review by system administrators.
 
+- The admin page lists pending requests in a table; approved or rejected requests leave the review list.
 - Approval selects/validates target team and allowed role.
-- Rejection records a bounded reason.
+- Rejection records bounded review notes.
 - Created users enter the activation/password-change/onboarding lifecycle.
 - Request metadata must remain minimal and non-clinical.
 
@@ -188,7 +234,7 @@ The selected-team Provider policy tab manages active team selections/defaults fo
 
 - consultation STT;
 - post-consultation dictation STT;
-- LLM/default model policy;
+- writing-provider selection and saved provider model policy;
 - an optional system-admin-owned writing-assistant backup provider and model;
 - hallucination-check configuration;
 - de-identification;
@@ -211,6 +257,71 @@ Provider setup/revision safety:
 - cancellation deletes draft metadata then safely/durably cleans the draft-owned reference;
 - replacement/removal/deletion uses cleanup intents, retries, and live-reference guards;
 - API/browser responses expose bounded status/`has_secret`, never raw secrets or unrestricted references.
+
+The STT and LLM setup dialogs show provider errors inside their own dialog. During
+inspection, finalization, and draft cancellation, the dialog reports progress,
+marks its active form area busy, and prevents edits or duplicate requests. Failed
+requests keep entered non-secret settings available for recovery; supported
+field errors focus a visible matching field, while other errors keep focus on
+the dialog alert. A lost network response has an unconfirmed outcome, so the UI
+asks administrators to reload the provider list before repeating the request.
+When inspection returns a known upstream HTTP status or allowlisted provider
+error code, the dialog includes that bounded diagnostic and a matching recovery
+step. It never displays provider response bodies or arbitrary provider messages.
+The Connection tab has an explicit **Test connection** action. It checks a
+fresh draft and leaves the live provider unchanged. Connection fields remain
+editable after the check; a changed connection causes the tested draft to be
+durably discarded before Save. Test always performs a fresh check. Save reuses
+an unchanged tested draft. Without a prior test, Save checks the connection and
+can complete the revision automatically. Cancel discards any draft before the
+modal closes. API keys use one password field; the page shows only whether a
+key is saved, and replacing it requires pasting the new key. Optional saved
+bearer keys are removed only with the explicit **Remove saved key** action.
+
+If a connection check or save finds unfinished changes for the same provider,
+the editor can show a read-only summary of that earlier revision in the current
+settings dialog. The summary contains safe connection metadata and whether
+authentication is configured; it never displays a secret or Vault reference.
+Reviewing keeps the current form entries in place and does not test, save,
+attach, or apply the earlier revision. The administrator may explicitly
+discard the earlier changes. This removes only that pending revision; the
+saved connection remains in use and the current editor keeps its entered
+values. The administrator must choose to test or save those values afterward.
+Closing the editor leaves the earlier revision untouched.
+
+Ready STT and LLM providers have **Connection** and **Models** tabs under
+**Edit settings**. Connection edits the provider name, team availability, and
+connection details. Name and availability changes use the scoped details route
+without inspecting the provider or changing its credential. A connection
+change uses the existing revision flow; it saves directly when the saved model
+remains available and asks for a deliberate model choice when it does not.
+Optional authentication presets use no authentication when no key is
+configured; keeping a saved optional key requires entering it again, and
+removal is explicit. Models refreshes a provider catalog only when requested.
+Opening a provider editor does not contact the provider. The LLM provider row
+separates team availability from the last explicit connection check, with a
+timestamp and bounded status wording.
+
+Finalizing a new LLM connection creates an empty model policy and does not
+select it for writing. The editor opens its **Models** tab and asks the
+administrator to choose the models the team can use. After saving a nonempty
+policy with a default, an administrator may assign that provider under
+**Provider policy**.
+
+For LLMs, **Models** edits that provider's saved enabled models and writing
+default, even when it is not the active writing provider. Enabled models are
+the overall allowance for writing, backup, and checking; an empty list means
+none. A nonempty list needs an enabled default. Save models never changes the
+active writing provider. Search and the All models / Enabled filters only
+change the view. Refresh retains matching draft choices, leaves new models
+unchecked, and marks removed saved IDs for repair without changing the saved
+policy. Saving a restriction can make an assigned role unavailable; the editor
+shows the affected roles before Save and leaves their provider/model choices
+visible for repair. The Provider policy table shows role warnings with text
+and an icon. System administrators edit model policies; team leaders can choose
+an eligible writing provider only, which uses that provider's saved default.
+STT models and language remain separate for consultation transcription and
+post-consultation dictation.
 
 Queued/processing generated work can constrain provider edits/deletion so snapshotted runtime behavior stays stable. Credential correction is allowed only through the specific validated service path and does not silently change unrelated active config fields.
 
@@ -288,6 +399,14 @@ sizes. On narrow screens, member and provider-policy data reflows into labeled
 stacked rows while wide operational tables remain in named scroll regions.
 
 Navigation, dialogs, forms, menus, validation summaries, charts, and destructive confirmations must retain keyboard and screen-reader semantics.
+
+Ready STT and LLM provider rows use a pencil button to open provider settings
+and a separate “More actions” disclosure for the existing test/refresh and
+delete forms. The action panel is positioned in the document top layer (with a
+viewport-positioned fallback), preserves each form's team and return state, and
+keeps deletion behind the existing confirmation handler. Incomplete setup
+rows retain their existing secondary actions and omit the ready-only edit
+button.
 
 ## Verification
 

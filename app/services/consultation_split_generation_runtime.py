@@ -50,7 +50,9 @@ from app.services.consultation_split_materialization import (
     require_batch_materialization_version,
 )
 from app.services.provider_errors import safe_provider_error_code
-from app.services.quotas import cancel_provider_attempt, mark_provider_attempt_submitted, settle_provider_attempt_tokens, settle_provider_attempt_unknown_tokens
+from app.services.quotas import (cancel_provider_attempt, mark_provider_attempt_submitted,
+    settle_provider_attempt_tokens, settle_provider_attempt_unknown_tokens,
+    settle_provider_attempt_timeout_waived)
 from app.services.task_outbox import cancel_pending_task_dispatch
 from app.services.templates import _transcript_title_can_be_auto_filled
 from app.services.transcripts import transcript_is_expired
@@ -196,14 +198,16 @@ def _has_valid_materialization_binding(db: Session, work: _Work) -> bool:
 
 def _terminal(db: Session, work: _Work, code: str, *, submitted: bool, usage: dict[str, int | None] | None = None,
               provider_error_code: str | None = None, provider_http_status: int | None = None,
-              retain_partial_for_recovery: bool = False) -> SplitGenerationRuntimeResult:
+              retain_partial_for_recovery: bool = False, timeout_waived: bool = False) -> SplitGenerationRuntimeResult:
     now = utcnow()
     if submitted:
-        if usage and usage["total_tokens"] is not None:
+        if timeout_waived:
+            settled_attempt = settle_provider_attempt_timeout_waived(db, attempt_id=work.attempt.id)
+        elif usage and usage["total_tokens"] is not None:
             settled_attempt = settle_provider_attempt_tokens(db, attempt_id=work.attempt.id, reported_total_tokens=usage["total_tokens"], reported_input_tokens=usage["input_tokens"], reported_output_tokens=usage["output_tokens"], outcome=AttemptOutcome.failed)
         else:
             settled_attempt = settle_provider_attempt_unknown_tokens(db, attempt_id=work.attempt.id)
-        settled_attempt.error_code = code
+        settled_attempt.error_code = "llm_provider_timeout" if timeout_waived else code
         settled_attempt.provider_error_code = provider_error_code
         settled_attempt.provider_http_status = provider_http_status
         event_type = ProviderUsageEventType.failed
@@ -231,8 +235,9 @@ def _terminal(db: Session, work: _Work, code: str, *, submitted: bool, usage: di
             feature_type=ProviderFeatureType.consultation_split_generation, event_type=event_type, status="failed",
             provider_adapter=work.attempt.provider_adapter, model_name=work.attempt.provider_model, error_code=code,
             provider_error_code=provider_error_code, provider_http_status=provider_http_status,
-            prompt_tokens=usage["input_tokens"] if usage else None, completion_tokens=usage["output_tokens"] if usage else None,
-            total_tokens=usage["total_tokens"] if usage else None))
+            prompt_tokens=usage["input_tokens"] if usage and not timeout_waived else None,
+            completion_tokens=usage["output_tokens"] if usage and not timeout_waived else None,
+            total_tokens=usage["total_tokens"] if usage and not timeout_waived else None))
     db.commit()
     # A recovery has now failed terminally, so its survivor set cannot change.
     # Queue the optional checker only at this stable boundary; never let a
@@ -379,7 +384,8 @@ def _try_pre_submit_backup_generation(db: Session, *, work: _Work,
             or not _has_valid_materialization_binding(db, work)):
             db.rollback()
             return SplitGenerationRuntimeResult("in_flight", execution_id)
-        return _terminal(db, work, "consultation_split_provider_failed", submitted=True)
+        return _terminal(db, work, "consultation_split_provider_failed", submitted=True,
+            timeout_waived=exc.code == "llm_provider_timeout")
     current = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
     if (current is None or current.attempt.id != child.id or current.attempt.status is not AttemptStatus.submitted
         or current.attempt.deadline_at is None or current.attempt.deadline_at <= utcnow()
@@ -399,6 +405,7 @@ def _try_pre_submit_backup_generation(db: Session, *, work: _Work,
 def _try_backup_generation(db: Session, *, execution_id: UUID, error: AppError,
                            usage: dict[str, int | None] | None = None) -> SplitGenerationRuntimeResult | None:
     """Submit one backup from the immutable request, preserving split lineage."""
+    tag_provider_failure(error)
     if not can_failover(error):
         return None
     if db.in_transaction():
@@ -470,7 +477,10 @@ def _try_backup_generation(db: Session, *, execution_id: UUID, error: AppError,
         db.rollback()
         return None
     provider_error_code, http_status = _safe_provider_error(error)
-    if usage and usage.get("total_tokens") is not None:
+    timeout_waived = error.code == "llm_provider_timeout"
+    if timeout_waived:
+        settled = settle_provider_attempt_timeout_waived(db, attempt_id=work.primary_attempt.id)
+    elif usage and usage.get("total_tokens") is not None:
         settled = settle_provider_attempt_tokens(db, attempt_id=work.primary_attempt.id,
             reported_total_tokens=usage["total_tokens"], reported_input_tokens=usage["input_tokens"],
             reported_output_tokens=usage["output_tokens"], outcome=AttemptOutcome.failed)
@@ -485,9 +495,9 @@ def _try_backup_generation(db: Session, *, execution_id: UUID, error: AppError,
         event_type=ProviderUsageEventType.failed, status="failed", provider_adapter=work.primary_attempt.provider_adapter,
         model_name=work.primary_attempt.provider_model, error_code=error.code,
         provider_error_code=provider_error_code, provider_http_status=http_status,
-        prompt_tokens=usage.get("input_tokens") if usage else None,
-        completion_tokens=usage.get("output_tokens") if usage else None,
-        total_tokens=usage.get("total_tokens") if usage else None))
+        prompt_tokens=usage.get("input_tokens") if usage and not timeout_waived else None,
+        completion_tokens=usage.get("output_tokens") if usage and not timeout_waived else None,
+        total_tokens=usage.get("total_tokens") if usage and not timeout_waived else None))
     if isinstance(request.get("messages"), list):
         texts = tuple(item["content"] for item in request["messages"]
                       if isinstance(item, dict) and isinstance(item.get("content"), str))
@@ -542,7 +552,8 @@ def _try_backup_generation(db: Session, *, execution_id: UUID, error: AppError,
             return SplitGenerationRuntimeResult("in_flight", execution_id)
         details = tagged.details if isinstance(tagged.details, dict) else {}
         return _terminal(db, work, "consultation_split_provider_failed", submitted=True,
-            provider_error_code=_safe_provider_error(tagged)[0], provider_http_status=_safe_provider_error(tagged)[1])
+            provider_error_code=_safe_provider_error(tagged)[0], provider_http_status=_safe_provider_error(tagged)[1],
+            timeout_waived=tagged.code == "llm_provider_timeout")
     work = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
     if (work is None or work.attempt.id != child.id
         or work.attempt.status is not AttemptStatus.submitted
@@ -768,7 +779,7 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
             # This execution did return a durable provider response, so it is
             # safely settled once.  Recovery is a separate, explicit execution
             # and never reuses this attempt or overwrites its siblings.
-            settle_provider_attempt_tokens(db, attempt_id=work.attempt.id, reported_total_tokens=usage["total_tokens"] or 0, reported_input_tokens=usage["input_tokens"], reported_output_tokens=usage["output_tokens"], outcome=AttemptOutcome.succeeded) if usage["total_tokens"] is not None else settle_provider_attempt_unknown_tokens(db, attempt_id=work.attempt.id)
+            settle_provider_attempt_tokens(db, attempt_id=work.attempt.id, reported_total_tokens=usage["total_tokens"] or 0, reported_input_tokens=usage["input_tokens"], reported_output_tokens=usage["output_tokens"], outcome=AttemptOutcome.succeeded) if usage["total_tokens"] is not None else settle_provider_attempt_unknown_tokens(db, attempt_id=work.attempt.id, allow_timeout_waiver=False)
             now = utcnow()
             work.execution.status = ConsultationSplitExecutionStatus.completed
             work.execution.completed_at = now
@@ -810,7 +821,7 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
                     reported_input_tokens=usage["input_tokens"],
                     reported_output_tokens=usage["output_tokens"], outcome=AttemptOutcome.succeeded)
             else:
-                settle_provider_attempt_unknown_tokens(db, attempt_id=work.attempt.id)
+                settle_provider_attempt_unknown_tokens(db, attempt_id=work.attempt.id, allow_timeout_waiver=False)
             now = utcnow()
             work.execution.status = ConsultationSplitExecutionStatus.completed
             work.execution.completed_at = now
@@ -824,7 +835,7 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
         queued_verification = queue_split_verification_or_mark_unchecked(
             db, batch=work.batch, target_status=ConsultationSplitBatchStatus.ready)
         if queued_verification.checked:
-            settle_provider_attempt_tokens(db, attempt_id=work.attempt.id, reported_total_tokens=usage["total_tokens"] or 0, reported_input_tokens=usage["input_tokens"], reported_output_tokens=usage["output_tokens"], outcome=AttemptOutcome.succeeded) if usage["total_tokens"] is not None else settle_provider_attempt_unknown_tokens(db, attempt_id=work.attempt.id)
+            settle_provider_attempt_tokens(db, attempt_id=work.attempt.id, reported_total_tokens=usage["total_tokens"] or 0, reported_input_tokens=usage["input_tokens"], reported_output_tokens=usage["output_tokens"], outcome=AttemptOutcome.succeeded) if usage["total_tokens"] is not None else settle_provider_attempt_unknown_tokens(db, attempt_id=work.attempt.id, allow_timeout_waiver=False)
             now = utcnow(); work.execution.status = ConsultationSplitExecutionStatus.completed; work.execution.completed_at = now; work.execution.recoverable_response_encrypted = None
             db.commit()
             if queued_verification.dispatch_task_id is not None:
@@ -893,7 +904,7 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
             outcome.accepted_execution_id = work.execution.id
             outcome.status = ConsultationSplitTopicOutcomeStatus.ready
         if work.attempt.status is AttemptStatus.submitted:
-            settle_provider_attempt_tokens(db, attempt_id=work.attempt.id, reported_total_tokens=usage["total_tokens"] or 0, reported_input_tokens=usage["input_tokens"], reported_output_tokens=usage["output_tokens"], outcome=AttemptOutcome.succeeded) if usage["total_tokens"] is not None else settle_provider_attempt_unknown_tokens(db, attempt_id=work.attempt.id)
+            settle_provider_attempt_tokens(db, attempt_id=work.attempt.id, reported_total_tokens=usage["total_tokens"] or 0, reported_input_tokens=usage["input_tokens"], reported_output_tokens=usage["output_tokens"], outcome=AttemptOutcome.succeeded) if usage["total_tokens"] is not None else settle_provider_attempt_unknown_tokens(db, attempt_id=work.attempt.id, allow_timeout_waiver=False)
         now=utcnow(); work.execution.status=ConsultationSplitExecutionStatus.completed; work.execution.completed_at=now; work.execution.recoverable_response_encrypted=None; work.batch.status=ConsultationSplitBatchStatus.ready; work.batch.completed_at=now
         db.add(ProviderUsageEvent(team_id=work.transcript.team_id, owner_user_id=work.owner.id, transcript_id=work.transcript.id, consultation_split_execution_id=work.execution.id, llm_config_id=_provider_config_id(work), feature_type=ProviderFeatureType.consultation_split_generation, event_type=ProviderUsageEventType.completed, status="ready", provider_adapter=work.attempt.provider_adapter, model_name=work.attempt.provider_model, prompt_tokens=usage["input_tokens"], completion_tokens=usage["output_tokens"], total_tokens=usage["total_tokens"]))
         db.commit(); return SplitGenerationRuntimeResult("ready", execution_id)
@@ -968,6 +979,7 @@ def process_consultation_split_generation_execution(db: Session, *, execution_id
             db, work, "consultation_split_provider_failed", submitted=True,
             provider_error_code=provider_error_code,
             provider_http_status=provider_http_status,
+            timeout_waived=tagged.code == "llm_provider_timeout",
         ) if work else SplitGenerationRuntimeResult("in_flight", execution_id)
     except Exception:
         work=_lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)

@@ -43,6 +43,7 @@ from app.models import (
     TeamDeidentificationProviderAssignment,
     TeamDeidentificationSelection,
     TeamLlmConfig,
+    TeamLlmProviderModelPolicy,
     TeamLlmSelection,
     TeamRole,
     TeamStatus,
@@ -722,6 +723,9 @@ def make_llm_config(db_session: Session, make_team: Callable[..., Team], make_us
         resolved_team = team or make_team()
         resolved_actor = actor or make_user(email=f"llm-admin-{resolved_team.id}@example.com", password="password-1", is_system_admin=True)
         resolved_provider_preset = provider_preset or infer_llm_provider_preset(adapter_kind, base_url)
+        # None means a fixture catalog containing its known configured model;
+        # [] is intentionally empty and is used to model no discovered models.
+        catalog = list(available_models_json) if available_models_json is not None else ([model_name] if model_name else [])
         config = TeamLlmConfig(
             team_id=resolved_team.id,
             label=label,
@@ -730,7 +734,7 @@ def make_llm_config(db_session: Session, make_team: Callable[..., Team], make_us
             base_url=base_url,
             auth_mode=LlmAuthMode.bearer if has_secret else LlmAuthMode.none,
             model_name=model_name,
-            available_models_json=available_models_json or [],
+            available_models_json=catalog,
             inspection_metadata_json={},
             vault_secret_ref=f"secret:openscribe/llm/team/{resolved_team.id}/config/{uuid4()}" if has_secret else "",
             is_active=is_active,
@@ -738,6 +742,14 @@ def make_llm_config(db_session: Session, make_team: Callable[..., Team], make_us
             updated_by_user_id=resolved_actor.id,
         )
         db_session.add(config)
+        db_session.commit()
+        db_session.add(TeamLlmProviderModelPolicy(
+            llm_config_id=config.id,
+            team_id=resolved_team.id,
+            enabled_models_json=list(catalog),
+            default_model_name=model_name if model_name in catalog else None,
+            updated_by_user_id=resolved_actor.id,
+        ))
         db_session.commit()
         db_session.refresh(config)
         return config
@@ -764,10 +776,29 @@ def make_llm_selection(db_session: Session, make_user: Callable[..., User]) -> C
         selection = TeamLlmSelection(
             team_id=config.team_id,
             llm_config_id=config.id,
-            allowed_models_json=allowed_models_json or list(config.available_models_json or []),
+            allowed_models_json=(
+                list(config.available_models_json or [])
+                if allowed_models_json is None
+                else list(allowed_models_json)
+            ),
             model_name_override=model_name_override,
             selected_by_user_id=resolved_actor.id,
         )
+        # Legacy tests express intended policy through this fixture. Keep the
+        # persisted policy authoritative while projecting the requested setup.
+        policy = config.model_policy
+        if policy is not None:
+            enabled = (
+                list(allowed_models_json)
+                if allowed_models_json is not None
+                else list(policy.enabled_models_json or [])
+            )
+            requested_default = model_name_override or policy.default_model_name
+            if requested_default not in enabled:
+                requested_default = next((model for model in enabled if model in (config.available_models_json or [])), None)
+            policy.enabled_models_json = enabled
+            policy.default_model_name = requested_default
+            db_session.add(policy)
         db_session.add(selection)
         db_session.commit()
         db_session.refresh(selection)

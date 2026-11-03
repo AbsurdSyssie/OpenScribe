@@ -47,6 +47,7 @@ from app.models import (
     ProviderAttempt,
     QuotaResource,
     TaskDispatchKind,
+    LlmConfigSetupStatus,
     TeamLlmConfig,
     TeamHallucinationCheckSelection,
     TeamRole,
@@ -73,7 +74,17 @@ from app.schemas.templates import (
     RegenerationSteeringPreset,
     StructuredTemplateConfig,
 )
-from app.services.llm import active_team_hallucination_check_selection, resolve_user_llm
+from app.services.llm import active_team_hallucination_check_selection
+from app.services.llm_checker_selection import (
+    FrozenCheckerSelection,
+    copy_hallucination_check_selection,
+    freeze_hallucination_check_selection,
+    read_hallucination_check_selection,
+)
+from app.services.llm_generation_provider import (
+    require_frozen_backup_matches,
+    resolve_new_writing_provider,
+)
 from app.services.llm_backup import (
     effective_provider_attempt, freeze_backup_selection, provider_result_is_current,
     read_backup_provider, reserve_backup_attempt,
@@ -128,6 +139,7 @@ from app.services.quotas import (
     reserve_provider_attempt,
     settle_provider_attempt_tokens,
     settle_provider_attempt_unknown_tokens,
+    settle_provider_attempt_timeout_waived,
 )
 from app.services.task_outbox import add_pending_task_dispatch, try_publish_task_dispatch_safely
 from app.services.vault import read_team_llm_bearer_token
@@ -216,6 +228,7 @@ class _OrdinaryGenerationPreparation:
     dictation_snapshot: str
     config: TeamLlmConfig
     resolved_model_name: str
+    uses_backup: bool
 
 
 def _resolve_generation_credential(config: TeamLlmConfig) -> object | None:
@@ -2609,6 +2622,7 @@ def _try_backup_generated_document(
     output_validator: Callable[[str], None] | None = None,
 ) -> tuple[str, GenerationUsage, TeamLlmConfig, dict[str, object], UUID] | None:
     """Perform one frozen backup call after safely settling and reserving quota."""
+    tag_provider_failure(primary_exc)
     if not can_failover(primary_exc):
         return None
     try:
@@ -2645,7 +2659,9 @@ def _try_backup_generated_document(
         return None
     _settle_main_generation_terminal(
         db, document=document, usage=primary_usage, success=False, attempt_id=primary_attempt_id,
+        timeout_waived=primary_exc.code == "llm_provider_timeout",
     )
+    timeout_failure = primary_exc.code == "llm_provider_timeout"
     db.add(ProviderUsageEvent(
         id=uuid4(), team_id=document.team_id, owner_user_id=document.owner_user_id,
         generated_document_id=document.id, transcript_id=document.transcript_id,
@@ -2653,9 +2669,9 @@ def _try_backup_generated_document(
         event_type=ProviderUsageEventType.failed,
         provider_adapter=primary_config.adapter_kind.value,
         model_name=str(primary_request.get("model") or document.model_used), status="failed",
-        prompt_tokens=primary_usage.get("input_tokens") if primary_usage else None,
-        completion_tokens=primary_usage.get("output_tokens") if primary_usage else None,
-        total_tokens=primary_usage.get("total_tokens") if primary_usage else None,
+        prompt_tokens=primary_usage.get("input_tokens") if primary_usage and not timeout_failure else None,
+        completion_tokens=primary_usage.get("output_tokens") if primary_usage and not timeout_failure else None,
+        total_tokens=primary_usage.get("total_tokens") if primary_usage and not timeout_failure else None,
         error_code=primary_exc.code,
         provider_error_code=_usage_provider_error_code((primary_exc.details or {}).get("provider_error_code"), status=(primary_exc.details or {}).get("provider_http_status")),
         provider_http_status=(primary_exc.details or {}).get("provider_http_status") if type((primary_exc.details or {}).get("provider_http_status")) is int else None,
@@ -3312,6 +3328,7 @@ def _record_hallucination_check_usage_event(
     status: str,
     event_type: ProviderUsageEventType,
     error_code: str | None = None,
+    timeout_waived: bool = False,
 ) -> None:
     usage_event = ProviderUsageEvent(
         id=uuid4(),
@@ -3325,10 +3342,10 @@ def _record_hallucination_check_usage_event(
         provider_adapter=config.adapter_kind.value,
         model_name=model_name,
         status=f"hallucination_check:{status}",
-        prompt_tokens=usage.get("input_tokens") if usage else None,
-        completion_tokens=usage.get("output_tokens") if usage else None,
-        total_tokens=usage.get("total_tokens") if usage else None,
-        estimated_cost_usd=_estimated_cost_usd(config=config, usage=usage) if usage else None,
+        prompt_tokens=usage.get("input_tokens") if usage and not timeout_waived else None,
+        completion_tokens=usage.get("output_tokens") if usage and not timeout_waived else None,
+        total_tokens=usage.get("total_tokens") if usage and not timeout_waived else None,
+        estimated_cost_usd=_estimated_cost_usd(config=config, usage=usage) if usage and not timeout_waived else None,
         duration_ms=usage.get("duration_ms") if usage else None,
         provider_duration_ms=usage.get("provider_duration_ms") if usage else None,
         error_code=error_code,
@@ -3371,9 +3388,12 @@ def _settle_hallucination_check_attempt(
     error_code: str | None = None,
     provider_error_code: str | None = None,
     provider_http_status: int | None = None,
+    timeout_waived: bool = False,
 ) -> ProviderAttempt:
     reported_total = usage.get("total_tokens") if usage is not None else None
-    if isinstance(reported_total, int):
+    if timeout_waived:
+        settled = settle_provider_attempt_timeout_waived(db, attempt_id=attempt.id)
+    elif isinstance(reported_total, int):
         settled = settle_provider_attempt_tokens(
             db,
             attempt_id=attempt.id,
@@ -3385,7 +3405,9 @@ def _settle_hallucination_check_attempt(
         if settled.settled_units > settled.reserved_units:
             error_code = "quota_estimate_underflow"
     else:
-        settled = settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id)
+        settled = settle_provider_attempt_unknown_tokens(
+            db, attempt_id=attempt.id, allow_timeout_waiver=outcome is not AttemptOutcome.succeeded,
+        )
     _set_checker_attempt_error(
         settled,
         error_code=error_code,
@@ -3449,6 +3471,7 @@ def _try_backup_hallucination_check(
     overall_deadline: datetime,
     preclaim: bool = False,
 ) -> tuple[str, GenerationUsage, TeamLlmConfig, str, ProviderAttempt] | None:
+    tag_provider_failure(primary_exc)
     if not can_failover(primary_exc):
         return None
     try:
@@ -3502,11 +3525,12 @@ def _try_backup_hallucination_check(
             error_code=primary_exc.code,
             provider_error_code=(primary_exc.details or {}).get("provider_error_code"),
             provider_http_status=(primary_exc.details or {}).get("provider_http_status"),
+            timeout_waived=primary_exc.code == "llm_provider_timeout",
         )
         _record_hallucination_check_usage_event(
             db, document=document, config=primary_config, model_name=primary_model,
             usage=primary_usage, status="failed_provider", event_type=ProviderUsageEventType.failed,
-            error_code=primary_exc.code,
+            error_code=primary_exc.code, timeout_waived=primary_exc.code == "llm_provider_timeout",
         )
     cap = _request_output_token_cap(request)
     if cap is None:
@@ -3567,10 +3591,12 @@ def _try_backup_hallucination_check(
             db, attempt=child, usage=locals().get("usage"), outcome=AttemptOutcome.failed,
             error_code=exc.code, provider_error_code=(exc.details or {}).get("provider_error_code"),
             provider_http_status=(exc.details or {}).get("provider_http_status"),
+            timeout_waived=exc.code == "llm_provider_timeout",
         )
         _record_hallucination_check_usage_event(
             db, document=document, config=config, model_name=backup.model, usage=locals().get("usage"),
             status="failed_provider", event_type=ProviderUsageEventType.failed, error_code=exc.code,
+            timeout_waived=exc.code == "llm_provider_timeout",
         )
         db.commit()
         return None
@@ -3603,7 +3629,7 @@ def _run_hallucination_check(
 ) -> tuple[str, list[dict[str, str | int]], HallucinationCheckStatus, int | None]:
     log_context = _checker_log_context(document)
     checker_started_at = utcnow()
-    selection = active_team_hallucination_check_selection(db, team_id=document.team_id)
+    frozen_selection = read_hallucination_check_selection(db, source=document)
     debug_payload: dict[str, object] | None = None
     if _hallucination_check_debug_enabled():
         debug_payload = {
@@ -3615,7 +3641,19 @@ def _run_hallucination_check(
             "provider_error_code": None,
             "provider_http_status": None,
         }
-    if selection is None or selection.config is None:
+    if frozen_selection is None:
+        # Pre-upgrade queued work has no historical snapshot. Core policy and
+        # selection mutations remain guarded until these jobs drain, preserving
+        # the legacy live choice without allowing it to change underneath them.
+        legacy_selection = active_team_hallucination_check_selection(db, team_id=document.team_id)
+        if legacy_selection is None or legacy_selection.config is None:
+            frozen_selection = None
+        else:
+            frozen_selection = FrozenCheckerSelection(
+                "configured", legacy_selection.config,
+                legacy_selection.model_name_override or legacy_selection.config.model_name,
+            )
+    if frozen_selection is None or frozen_selection.status == "not_configured":
         if debug_payload is not None:
             debug_payload["failure_code"] = "not_configured"
             set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
@@ -3624,9 +3662,18 @@ def _run_hallucination_check(
             status=HallucinationCheckStatus.skipped_not_configured.value,
         )
         return title, sections, HallucinationCheckStatus.skipped_not_configured, None
-    config = selection.config
-    model_name = selection.model_name_override or config.model_name
-    if not model_name:
+    if frozen_selection.status != "configured" or frozen_selection.config is None or not frozen_selection.model_name:
+        if debug_payload is not None:
+            debug_payload["failure_code"] = "config_invalid"
+            set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
+        _checker_usage_event(
+            event="llm_hallucination_check_skipped", context=log_context,
+            status=HallucinationCheckStatus.skipped_config_invalid.value,
+        )
+        return title, sections, HallucinationCheckStatus.skipped_config_invalid, None
+    config = frozen_selection.config
+    model_name = frozen_selection.model_name
+    if not config.is_active or config.setup_status != LlmConfigSetupStatus.ready:
         if debug_payload is not None:
             debug_payload["failure_code"] = "config_invalid"
             set_generated_document_hallucination_check_debug(db, document=document, plaintext=debug_payload)
@@ -3941,10 +3988,12 @@ def _run_hallucination_check(
                     error_code=exc.code,
                     provider_error_code=(exc.details or {}).get("provider_error_code"),
                     provider_http_status=(exc.details or {}).get("provider_http_status"),
+                    timeout_waived=exc.code == "llm_provider_timeout",
                 )
                 _record_hallucination_check_usage_event(
                     db, document=document, config=config, model_name=model_name, usage=None,
                     status="failed_provider", event_type=ProviderUsageEventType.failed, error_code=exc.code,
+                    timeout_waived=exc.code == "llm_provider_timeout",
                 )
                 if debug_payload is not None:
                     set_generated_document_hallucination_check_debug(
@@ -4478,6 +4527,15 @@ def _flush_generated_document_with_quota(
         max_completion_tokens=output_cap,
     )
     now = utcnow()
+    if document.backup_llm_config_id is None and document.backup_provider_snapshot_encrypted is None:
+        freeze_backup_selection(
+            db, source=document, owner_user_id=document.owner_user_id, team_id=document.team_id,
+        )
+    if document.hallucination_check_selection_snapshot_encrypted is None:
+        freeze_hallucination_check_selection(
+            db, source=document, owner_user_id=document.owner_user_id,
+            applicable=document.document_mode is TemplateMode.structured,
+        )
     db.add(document)
     db.flush()
     reserve_provider_attempt(
@@ -4546,9 +4604,8 @@ def _prepare_ordinary_generation(
         ),
         mark_transcript_ready=not waiting_for_transcript,
     )
-    _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
-    if not resolved_model_name:
-        raise AppError(422, "business_rule_violation", "No active LLM model is configured for this user", {"field": "preferred_model_name"})
+    writing_provider = resolve_new_writing_provider(db, actor)
+    config, resolved_model_name = writing_provider.config, writing_provider.model_name
     return _OrdinaryGenerationPreparation(
         waiting_for_transcript=waiting_for_transcript,
         transcript_version=transcript_version,
@@ -4558,6 +4615,7 @@ def _prepare_ordinary_generation(
         dictation_snapshot=dictation_snapshot,
         config=config,
         resolved_model_name=resolved_model_name,
+        uses_backup=writing_provider.uses_backup,
     )
 
 
@@ -4617,6 +4675,11 @@ def _new_ordinary_generated_document(
     freeze_backup_selection(
         db, source=generated_document, owner_user_id=actor.id, team_id=transcript.team_id,
     )
+    if preparation.uses_backup:
+        require_frozen_backup_matches(
+            db, source=generated_document, config_id=config.id,
+            model_name=preparation.resolved_model_name,
+        )
     set_generated_document_text(
         db,
         document=generated_document,
@@ -4656,9 +4719,11 @@ def _new_ordinary_generated_document(
 def _main_generation_attempt(db: Session, *, document_id: UUID, lock: bool = False) -> ProviderAttempt | None:
     statement = select(ProviderAttempt).where(
         ProviderAttempt.correlation_id == document_id,
-        ProviderAttempt.attempt_number == 1,
         ProviderAttempt.attempt_kind == AttemptKind.llm_generation,
-    )
+        ProviderAttempt.backup_of_attempt_id.is_(None),
+    ).order_by(
+        ProviderAttempt.attempt_number.desc(),
+    ).limit(1)
     if lock:
         statement = statement.with_for_update()
     return db.scalar(statement)
@@ -5063,14 +5128,8 @@ def _queue_template_document_regeneration(
                 "The saved generation source is unavailable for regeneration",
             )
 
-    _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
-    if not resolved_model_name:
-        raise AppError(
-            422,
-            "business_rule_violation",
-            "No active LLM model is configured for this user",
-            {"field": "preferred_model_name"},
-        )
+    writing_provider = resolve_new_writing_provider(db, actor)
+    config, resolved_model_name = writing_provider.config, writing_provider.model_name
 
     generated_document = GeneratedDocument(
         id=uuid4(),
@@ -5109,9 +5168,15 @@ def _queue_template_document_regeneration(
         llm_base_url=config.base_url,
         llm_provider_config_json=dict(config.provider_config_json or {}),
     )
+    if split_topic is not None:
+        copy_hallucination_check_selection(db, source=batch, target=generated_document)
     freeze_backup_selection(
         db, source=generated_document, owner_user_id=actor.id, team_id=scope.transcript.team_id,
     )
+    if writing_provider.uses_backup:
+        require_frozen_backup_matches(
+            db, source=generated_document, config_id=config.id, model_name=resolved_model_name,
+        )
     source_context = generated_document_structured_context(db, document=source_document)
     generated_document.structured_context_json = encrypt_json_for_owner(
         db,
@@ -5319,14 +5384,8 @@ def queue_generated_document_regeneration(
             or bool(dictation_snapshot)
         ),
     )
-    _, config, resolved_model_name, _ = resolve_user_llm(db, actor)
-    if not resolved_model_name:
-        raise AppError(
-            422,
-            "business_rule_violation",
-            "No active LLM model is configured for this user",
-            {"field": "preferred_model_name"},
-        )
+    writing_provider = resolve_new_writing_provider(db, actor)
+    config, resolved_model_name = writing_provider.config, writing_provider.model_name
 
     generated_document = GeneratedDocument(
         id=uuid4(),
@@ -5369,6 +5428,10 @@ def queue_generated_document_regeneration(
     freeze_backup_selection(
         db, source=generated_document, owner_user_id=actor.id, team_id=transcript.team_id,
     )
+    if writing_provider.uses_backup:
+        require_frozen_backup_matches(
+            db, source=generated_document, config_id=config.id, model_name=resolved_model_name,
+        )
     if source_document.generator_type is GeneratedDocumentGeneratorType.followup:
         set_generated_document_text(
             db,
@@ -5695,6 +5758,7 @@ def _settle_main_generation_terminal(
     usage: GenerationUsage | None,
     success: bool,
     attempt_id: UUID | None = None,
+    timeout_waived: bool = False,
 ) -> None:
     """Settle authoritative usage with terminal document state in one commit."""
     attempt = (
@@ -5706,9 +5770,14 @@ def _settle_main_generation_terminal(
         raise AppError(500, "llm_generation_attempt_missing", "Generation accounting state is missing")
     if attempt.status is not AttemptStatus.submitted:
         raise AppError(500, "llm_generation_attempt_conflict", "Generation accounting state conflicts")
+    if timeout_waived:
+        settled = settle_provider_attempt_timeout_waived(db, attempt_id=attempt.id)
+        settled.error_code = "llm_provider_timeout"
+        db.add(settled)
+        return
     reported_total = usage.get("total_tokens") if usage is not None else None
     if reported_total is None:
-        settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id)
+        settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id, allow_timeout_waiver=not success)
         return
     settled = settle_provider_attempt_tokens(
         db,
@@ -5826,8 +5895,17 @@ def _fail_generated_document_after_submit(
             plaintext=output_redacted,
         )
     document.completed_at = utcnow()
+    timeout_waived = exc is not None and exc.code == "llm_provider_timeout"
+    if timeout_waived:
+        document.input_token_count = None
+        document.output_token_count = None
+        document.total_token_count = None
+        document.estimated_cost_usd = None
     db.add(document)
-    _settle_main_generation_terminal(db, document=document, usage=usage, success=False, attempt_id=submitted_attempt_id)
+    _settle_main_generation_terminal(
+        db, document=document, usage=usage, success=False, attempt_id=submitted_attempt_id,
+        timeout_waived=timeout_waived,
+    )
     db.commit()
     db.refresh(document)
     _record_generation_usage_event(
@@ -5891,7 +5969,12 @@ def _terminalize_generation_after_unhandled_error(
         cancel_provider_attempt(db, attempt_id=attempt.id)
         failure_code = exc.code if isinstance(exc, AppError) else "llm_generation_preparation_failed"
     elif attempt.status is AttemptStatus.submitted:
-        settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id)
+        if isinstance(exc, AppError) and exc.code == "llm_provider_timeout":
+            settled = settle_provider_attempt_timeout_waived(db, attempt_id=attempt.id)
+            settled.error_code = "llm_provider_timeout"
+            db.add(settled)
+        else:
+            settle_provider_attempt_unknown_tokens(db, attempt_id=attempt.id)
         failure_code = exc.code if isinstance(exc, AppError) else "llm_generation_failed"
     else:
         db.rollback()

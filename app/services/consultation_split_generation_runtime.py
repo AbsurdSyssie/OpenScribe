@@ -405,6 +405,7 @@ def _try_pre_submit_backup_generation(db: Session, *, work: _Work,
 def _try_backup_generation(db: Session, *, execution_id: UUID, error: AppError,
                            usage: dict[str, int | None] | None = None) -> SplitGenerationRuntimeResult | None:
     """Submit one backup from the immutable request, preserving split lineage."""
+    tag_provider_failure(error)
     if not can_failover(error):
         return None
     if db.in_transaction():

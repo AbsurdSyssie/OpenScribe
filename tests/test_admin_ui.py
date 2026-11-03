@@ -482,15 +482,19 @@ def test_admin_quota_panel_is_scoped_searchable_and_addressable(client, make_tea
     system_admin = make_user(email="quota-ui-system@example.com", password="password-1", is_system_admin=True)
     _login_quota_admin(client, admin)
 
-    page = client.get(_quota_panel_url(team, member))
+    page = client.get(f"/admin/usage?team_id={team.id}&view=quotas")
     assert page.status_code == 200
-    assert f"/admin/usage?team_id={team.id}&amp;view=quotas&amp;member_id={member.id}" in page.text
     assert 'data-panel="quotas"' in page.text
     assert 'id="quota-member-filter"' in page.text
-    assert 'id="quota-member-select"' in page.text
-    assert "quota-resource-grid" in page.text
-    assert "AI tokens" in page.text and "Transcription audio" in page.text
-    assert "Edit limits" in page.text and "Add allowance" in page.text
+    assert 'id="quota-member-table"' in page.text
+    assert f'data-quota-member-id="{member.id}"' in page.text
+    assert f'data-quota-member-id="{other.id}"' not in page.text
+    assert "Edit quotas" in page.text and "LLM quota" in page.text and "STT quota" in page.text
+    member_page = client.get(_quota_panel_url(team, member))
+    assert 'id="quota-panel"' in member_page.text
+    assert "quota-resource-grid" in member_page.text
+    assert "AI tokens" in member_page.text and "Transcription audio" in member_page.text
+    assert "Add allowance" in member_page.text
     legacy = client.get(f"/admin?team_id={team.id}&team_tab=members&member_id={member.id}", follow_redirects=False)
     assert legacy.status_code == 303
     legacy_destination = client.get(legacy.headers["location"], follow_redirects=True)
@@ -498,7 +502,7 @@ def test_admin_quota_panel_is_scoped_searchable_and_addressable(client, make_tea
     assert urlparse(str(legacy_destination.url)).path == "/admin/usage"
     assert 'data-panel="quotas"' in legacy_destination.text
     assert "Unlimited" in page.text
-    assert "in progress" in page.text.lower()
+    assert "in progress" in member_page.text.lower()
     assert "allowance" in page.text.lower()
 
     calls = []
@@ -510,7 +514,14 @@ def test_admin_quota_panel_is_scoped_searchable_and_addressable(client, make_tea
     assert calls == []
 
     for team_tab in ("overview", "provider-policy", "stt", "llm", "deidentification", "defaults", "usage", "security", "danger"):
-        client.get(f"/admin?team_id={team.id}&team_tab={team_tab}&member_id={member.id}")
+        response = client.get(
+            f"/admin?team_id={team.id}&team_tab={team_tab}&member_id={member.id}",
+            follow_redirects=False,
+        )
+        if team_tab in {"defaults", "usage", "security", "danger"}:
+            assert response.status_code == 303
+        else:
+            assert response.status_code == 200
     assert calls == []
     legacy_without_following = client.get(
         f"/admin?team_id={team.id}&team_tab=members&member_id={member.id}", follow_redirects=False
@@ -530,32 +541,38 @@ def test_admin_quota_limits_editor_keeps_mixed_current_modes_and_cancel_discards
     db_session.commit()
     _login_quota_admin(client, admin)
 
-    edit_url = _quota_panel_url(team, member) + "&quota_edit=limits"
+    edit_url = _quota_panel_url(team, member) + "&quota_edit=limits&quota_flow=table"
     editor = client.get(edit_url)
     assert editor.status_code == 200
-    assert "Edit quota limits" in editor.text
+    assert "Edit quotas · quota-editor-member@example.com" in editor.text
     assert 'class="quota-resource-card"' not in editor.text
-    assert 'class="quota-member-picker quota-member-picker--editing"' in editor.text
+    assert 'class="modal quota-limits-modal"' in editor.text
     assert "Review usage and manage limits and allowances" not in editor.text
     assert '<legend class="visually-hidden">Daily tokens</legend>' in editor.text
-    assert '<div class="quota-limit-heading">\n          <span aria-hidden="true">Daily tokens</span>' in editor.text
-    assert editor.text.count("Back to quotas") == 1
+    assert '<div class="quota-limit-row">' in editor.text
+    assert editor.text.count("Back to quotas") == 0
     assert re.search(r'class="quota-unsaved-badge"[^>]*hidden', editor.text)
-    assert re.search(r'name="daily_token_unlimited" value=""[^>]*checked', editor.text)
+    assert re.search(r'name="daily_token_unlimited" value="true"[^>]*>', editor.text)
+    assert not re.search(r'name="daily_token_unlimited" value="true"[^>]*checked', editor.text)
     assert re.search(r'name="monthly_token_unlimited" value="true"[^>]*checked', editor.text)
-    assert re.search(r'name="daily_audio_unlimited" value=""[^>]*checked', editor.text)
+    assert re.search(r'name="daily_audio_unlimited" value="true"[^>]*>', editor.text)
+    assert not re.search(r'name="daily_audio_unlimited" value="true"[^>]*checked', editor.text)
     assert re.search(r'name="monthly_audio_unlimited" value="true"[^>]*checked', editor.text)
     assert 'name="daily_token_limit" value="0"' in editor.text
     assert 'name="daily_audio_hours" value="0.5"' in editor.text
-    assert 'href="/admin/usage?team_id=' + str(team.id) + '&amp;view=quotas&amp;member_id=' + str(member.id) + '"' in editor.text
+    assert 'data-quota-modal-close' in editor.text
 
     db_session.refresh(member)
     assert (member.daily_token_limit, member.monthly_token_limit, member.daily_audio_seconds_limit, member.monthly_audio_seconds_limit) == (0, None, 1800, None)
-    back = client.get(_quota_panel_url(team, member))
+    cancel_link = re.search(r'<a class="btn" data-quota-modal-close href="([^"]+)"', editor.text)
+    assert cancel_link is not None
+    cancel_url = cancel_link.group(1).replace("&amp;", "&")
+    back = client.get(cancel_url)
     assert back.status_code == 200
     assert "Edit quota limits" not in back.text
-    assert "Review usage and manage limits and allowances" in back.text
-    assert "quota-resource-grid" in back.text
+    assert "Member quotas" in back.text
+    assert 'id="quota-panel"' not in back.text
+    assert 'id="quota-member-table"' in back.text
     db_session.refresh(member)
     assert (member.daily_token_limit, member.monthly_token_limit, member.daily_audio_seconds_limit, member.monthly_audio_seconds_limit) == (0, None, 1800, None)
 
@@ -606,7 +623,7 @@ def test_quota_editors_warn_when_assigned_gemini_cap_meets_or_exceeds_finite_lim
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in escaped_models.text
     assert "<script>alert(1)</script>" not in escaped_models.text
 
-    defaults = client.get(f"/admin?team_id={team.id}&team_tab=defaults")
+    defaults = client.get(f"/admin/usage?team_id={team.id}&view=quotas")
     assert defaults.status_code == 200
     assert "A daily limit of 10,000 tokens may block generation or checks." in defaults.text
     assert 'id="quota-default-token-warning-monthly" class="quota-reservation-warning"' in defaults.text
@@ -752,15 +769,15 @@ def test_admin_quota_limits_editor_preserves_invalid_draft_and_saves_empty_radio
     assert invalid.status_code == 422
     assert 'aria-label="Usage workspace"' in invalid.text
     assert '<details data-team-navigation' not in invalid.text
-    assert 'class="team-summary"' not in invalid.text
+    assert 'class="team-summary team-summary--area"' in invalid.text
     assert 'class="usage-echart"' not in invalid.text
     assert 'id="quota-panel"' in invalid.text
     assert "Edit quota limits" in invalid.text
     assert "Quota limits are invalid" in invalid.text
-    assert "name=\"daily_token_unlimited\" value=\"\"" in invalid.text
+    assert 'name="daily_token_unlimited" value="true"' in invalid.text
     assert 'name="monthly_token_unlimited" value="true"' in invalid.text
     assert "Change details" in invalid.text
-    assert "Recorded in quota history. Do not include clinical information." in invalid.text
+    assert "Recorded in quota history. Do not include clinical information." not in invalid.text
     assert re.search(r'<select name="reason_code" required>', invalid.text)
     assert re.search(r'<textarea name="reason" maxlength="500" required rows="1">', invalid.text)
     assert ">Mixed limit update</textarea>" in invalid.text
@@ -3608,12 +3625,10 @@ def test_admin_workspace_updates_future_team_retention_default(client, db_sessio
     make_user(email="workspace-retention-admin@example.com", password="password-1", is_system_admin=True)
     client.post("/login", data={"email": "workspace-retention-admin@example.com", "password": "password-1"}, follow_redirects=False)
 
-    page = client.get(f"/admin?team_id={team.id}&team_tab=defaults")
+    page = client.get(f"/admin?team_id={team.id}&team_tab=security-data")
     assert page.status_code == 200
-    defaults_panel = page.text.split('data-panel="defaults"', 1)[1].split('data-panel="usage"', 1)[0]
+    security_panel = page.text.split('data-panel="security-data"', 1)[1].split('</section>', 1)[0]
     overview_panel = page.text.split('data-panel="overview"', 1)[1].split('data-panel="members"', 1)[0]
-    assert 'action="/admin/teams/' in defaults_panel and "Quota defaults for new members" in defaults_panel
-    assert "Quota defaults for new members" not in overview_panel
 
     class QuotaDefaultsFormParser(HTMLParser):
         def __init__(self):
@@ -3623,8 +3638,6 @@ def test_admin_workspace_updates_future_team_retention_default(client, db_sessio
 
         def handle_starttag(self, tag, attrs):
             attributes = dict(attrs)
-            if tag == "form" and attributes.get("action", "").endswith("/quota-defaults"):
-                self.form_panels["quota-defaults"] = next((panel for _, panel in reversed(self.stack) if panel), None)
             if tag == "form" and attributes.get("action", "").endswith("/retention"):
                 self.form_panels["retention"] = next((panel for _, panel in reversed(self.stack) if panel), None)
             if tag not in {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}:
@@ -3638,22 +3651,21 @@ def test_admin_workspace_updates_future_team_retention_default(client, db_sessio
 
     parser = QuotaDefaultsFormParser()
     parser.feed(page.text)
-    assert parser.form_panels["quota-defaults"] == "defaults"
-    assert parser.form_panels["retention"] == "defaults"
-    assert f'action="/admin/teams/{team.id}/retention"' in defaults_panel
+    assert parser.form_panels["retention"] == "security-data"
+    assert f'action="/admin/teams/{team.id}/retention"' in security_panel
     retention_anchor = 'id="retention-default"'
-    assert retention_anchor in defaults_panel
-    assert f'href="/admin?team_id={team.id}&amp;team_tab=defaults#retention-default"' in overview_panel
+    assert retention_anchor in security_panel
+    assert f'href="/admin?team_id={team.id}&amp;team_tab=security-data#retention-default"' in overview_panel
     assert f'action="/admin/teams/{team.id}/retention"' not in overview_panel
     assert "Applies only to transcript roots created afterward" in page.text
 
     response = client.post(
         f"/admin/teams/{team.id}/retention",
-        data={"default_retention_days": "45", "return_view": "workspace", "return_tab": "defaults"},
+        data={"default_retention_days": "45", "return_view": "workspace", "return_tab": "security-data"},
         follow_redirects=False,
     )
     assert response.status_code == 303
-    assert response.headers["location"] == f"/admin?team_id={team.id}&team_tab=defaults"
+    assert response.headers["location"] == f"/admin?team_id={team.id}&team_tab=security-data"
     db_session.refresh(team)
     assert team.default_retention_days == 45
 
@@ -3664,7 +3676,7 @@ def test_admin_workspace_updates_finite_quota_defaults_for_future_members_only(c
     admin = make_user(email="quota-defaults-ui-admin@example.com", password="password-1", is_system_admin=True)
     client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
 
-    page = client.get(f"/admin?team_id={team.id}&team_tab=defaults")
+    page = client.get(f"/admin/usage?team_id={team.id}&view=quotas")
     assert page.status_code == 200
     assert f'action="/admin/teams/{team.id}/quota-defaults"' in page.text
     assert 'name="default_daily_token_limit"' in page.text
@@ -3680,13 +3692,13 @@ def test_admin_workspace_updates_finite_quota_defaults_for_future_members_only(c
             "default_daily_audio_hours": "8",
             "default_monthly_audio_hours": "72",
             "return_view": "workspace",
-            "return_tab": "defaults",
+            "return_tab": "quotas",
         },
         follow_redirects=False,
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == f"/admin?team_id={team.id}&team_tab=defaults"
+    assert response.headers["location"] == f"/admin?team_id={team.id}&team_tab=quotas"
     db_session.refresh(team)
     assert (
         team.default_daily_token_limit,
@@ -3705,7 +3717,7 @@ def test_team_quota_default_audio_hours_round_trip_preserves_seconds(client, db_
     admin = make_user(email="quota-audio-precision-admin@example.com", password="password-1", is_system_admin=True)
     client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
 
-    page = client.get(f"/admin?team_id={team.id}&team_tab=defaults")
+    page = client.get(f"/admin/usage?team_id={team.id}&view=quotas")
     match = re.search(
         r'name="default_monthly_audio_hours"[^>]*value="([^"]+)"',
         page.text,
@@ -3724,7 +3736,7 @@ def test_team_quota_default_audio_hours_round_trip_preserves_seconds(client, db_
             "default_daily_audio_hours": "8",
             "default_monthly_audio_hours": displayed_hours,
             "return_view": "workspace",
-            "return_tab": "defaults",
+            "return_tab": "quotas",
         },
         follow_redirects=False,
     )
@@ -4325,7 +4337,7 @@ def test_transcribe_documents_show_hallucination_check_panel():
 
     assert "Hallucination check" in documents_js
     assert "Debug payload not available" not in documents_js
-    assert "documents.js?v=20261029-preserved-note-version" in app_js
+    assert "documents.js?v=20261014-generation-status" in app_js
 
 
 def test_admin_llm_draft_flow_hides_key_after_saved_and_shows_pending_state(
@@ -4619,6 +4631,20 @@ def test_admin_restyled_account_request_reject_redirects_to_canonical_workspace(
     )
 
     client.post("/login", data={"email": "admin-restyled-requests@example.com", "password": "password-1"}, follow_redirects=False)
+    invalid_rejection = client.post(
+        f"/admin/account-requests/{account_request.id}/reject",
+        data={
+            "review_notes": "   ",
+            "return_view": "restyled",
+            "return_tab": "requests",
+        },
+        follow_redirects=False,
+    )
+    assert invalid_rejection.status_code == 422
+    assert account_request.requested_email in invalid_rejection.text
+    db_session.refresh(account_request)
+    assert account_request.status.value == "pending"
+
     rejected = client.post(
         f"/admin/account-requests/{account_request.id}/reject",
         data={
@@ -4633,6 +4659,10 @@ def test_admin_restyled_account_request_reject_redirects_to_canonical_workspace(
     assert rejected.headers["location"] == "/admin?tab=requests"
     db_session.refresh(account_request)
     assert account_request.status.value == "rejected"
+    pending_requests = client.get(rejected.headers["location"])
+    assert pending_requests.status_code == 200
+    assert account_request.requested_email not in pending_requests.text
+    assert "No pending requests." in pending_requests.text
 
 
 def test_user_home_upload_shows_missing_stt_message_with_team_leader_email(client, db_session, make_team, make_user):
@@ -4898,7 +4928,7 @@ def test_user_transcribe_page_shows_workspace_shell(client, make_team, make_user
     assert 'href="/settings"' not in page.text
     assert 'aria-label="Workspace navigation"' in page.text
     assert "My Library" in page.text
-    assert 'src="/static/js/transcribe/app.js?v=20261029-working-note-revision"' in page.text
+    assert 'src="/static/js/transcribe/app.js?v=20261028-split-template-refresh"' in page.text
     assert "://medscribe.duckdns.org/static/js/transcribe/app.js" not in page.text
 
 
@@ -5759,7 +5789,7 @@ def test_transcribe_reorder_blocks_blank_note_lines():
     assert "row.classList.toggle('is-blank-line', isBlank);" in structured_js
     assert "Add text before reordering line" in structured_js
     assert "reorder.js?v=20260501-blank-line-reorder-guard" in app_js
-    assert "/static/js/transcribe/app.js?v=20261029-working-note-revision" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261028-split-template-refresh" in shell_extras
     assert '"activeWorkingNote": active_working_note' in shell_extras
     assert ".statement-row.is-blank-line .statement-drag-handle" in transcribe_css
 
@@ -7280,12 +7310,12 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "structuredEditor.syncTemplateModeBadge?.();" in app_js
     assert "const canContinue = await handleOutputTemplateChange?.();" in actions_js
     assert "dom.generateOutputTemplateSelect.addEventListener('change', async () => {\n      structuredEditor.syncStructuredTemplateUi();" not in actions_js
-    assert "if (latestGeneratedOutput?.dataset?.latestGeneratedId !== targetId) return null;" in app_js
-    assert "import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20261029-empty-note-version';" in app_js
+    assert "const currentNoteUpdatedAt = () => latestGeneratedOutput?.dataset?.latestGeneratedUpdatedAt || '';" in app_js
+    assert "import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20260521-working-note-baseline-helpers';" in app_js
     assert "let dirtyNoteExpectedUpdatedAt = null;" in app_js
     assert "dirtyNoteExpectedUpdatedAt = captureNoteDirtyBaseline({" in app_js
     assert "const clearNoteDirtyBaseline = () => {" in app_js
-    assert "const noteSaveExpectedUpdatedAtForTarget = (targetId) => {" in app_js
+    assert "const noteSaveExpectedUpdatedAtForTarget = (targetId) => noteBaselineForSave({" in app_js
     assert "noteBaselineForSave({" in app_js
     assert "const expectedUpdatedAt = noteSaveExpectedUpdatedAtForTarget(targetId);" in app_js
     assert "const expectedUpdatedAt = noteSaveExpectedUpdatedAtForTarget(generatedDocumentId);" in app_js
@@ -7461,10 +7491,10 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const ensureFreeformHasEditableRow = () => {" in structured_js
     assert "onNoteEditorChanged?.();" in structured_js
     assert "const hasNoteInputContent = () => {" in structured_js
-    assert "const renderSelectedNote = ({ forcePreserveEditor = false, forceRenderEditor = false } = {}) => {" in documents_js
+    assert "const renderSelectedNote = ({ forcePreserveEditor = false } = {}) => {" in documents_js
     assert "latestGeneratedOutput.dataset.latestGeneratedUpdatedAt = selectedNote?.updated_at || \"\";" in documents_js
     assert "const preserveCurrentEditorRender = Boolean(" in documents_js
-    assert "forcePreserveEditor || (!forceRenderEditor && shouldPreserveNoteEditorRender?.(selectedEditorId, selectedNote))" in documents_js
+    assert "forcePreserveEditor || shouldPreserveNoteEditorRender?.(selectedEditorId, selectedNote)" in documents_js
     assert "if (!preserveCurrentEditorRender) {" in documents_js
     assert "wrapper.className = 'followup-output-card-v2 followup-llm-request-card-v2';" in documents_js
     assert "wrapper.dataset.generatedDocumentId = document.id || '';" in documents_js
@@ -7567,7 +7597,7 @@ def test_transcribe_static_asset_version_bumped_for_pii_source_visibility():
     root = Path(__file__).resolve().parents[1]
     shell_extras = (root / "app" / "templates" / "transcribe" / "_shell_extras.html").read_text(encoding="utf-8")
 
-    assert "/static/js/transcribe/app.js?v=20261029-working-note-revision" in shell_extras
+    assert "/static/js/transcribe/app.js?v=20261028-split-template-refresh" in shell_extras
 
 
 def test_transcribe_workspace_keeps_all_assistant_tabs_inside_scroll_panel():
@@ -10308,7 +10338,7 @@ def test_admin_page_usage_tab_shows_team_and_user_telemetry(client, db_session, 
     db_session.commit()
 
     client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin?team_id={team.id}&team_tab=usage")
+    page = client.get(f"/admin/usage?team_id={team.id}&view=team")
 
     assert page.status_code == 200
     assert '<div class="usage-summary-table-wrap table-scroll-region" role="region" aria-label="Usage summary table" tabindex="0">' in page.text
@@ -10333,7 +10363,7 @@ def test_admin_page_usage_tab_shows_team_and_user_telemetry(client, db_session, 
     assert "User usage breakdown" not in page.text
     assert 'class="usage-user-table"' not in page.text
 
-    users_page = client.get(f"/admin?team_id={team.id}&team_tab=usage&usage_view=users")
+    users_page = client.get(f"/admin/usage?team_id={team.id}&view=users")
     assert users_page.status_code == 200
     assert "User usage breakdown" in users_page.text
     assert "owner-usage-ui@example.com" in users_page.text
@@ -10592,7 +10622,7 @@ def test_new_admin_team_usage_views_scope_charts_and_user_table(client, db_sessi
     db_session.commit()
 
     client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin?team_id={team.id}&team_tab=usage&range=90d")
+    page = client.get(f"/admin/usage?team_id={team.id}&view=team&range=90d")
 
     assert page.status_code == 200
     assert 'data-panel="usage"' in page.text
@@ -10609,9 +10639,7 @@ def test_new_admin_team_usage_views_scope_charts_and_user_table(client, db_sessi
     assert "Scoped confidential title" not in page.text
     assert "Other confidential title" not in page.text
 
-    users_page = client.get(
-        f"/admin?team_id={team.id}&team_tab=usage&usage_view=users&range=90d"
-    )
+    users_page = client.get(f"/admin/usage?team_id={team.id}&view=users&range=90d")
     assert users_page.status_code == 200
     assert "User usage breakdown" in users_page.text
     assert "scoped-user@example.com" in users_page.text
@@ -10744,7 +10772,7 @@ def test_admin_usage_split_failure_diagnostics_are_bounded_scoped_and_content_fr
     db_session.commit()
 
     client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin?team_id={team.id}&team_tab=usage&range=30d")
+    page = client.get(f"/admin/usage?team_id={team.id}&view=team&range=30d")
 
     assert page.status_code == 200
     assert "Recent split failures" in page.text

@@ -523,6 +523,7 @@ def _try_backup_suggestion_impl(
     primary_usage: dict[str, int | None] | None = None,
     preclaim: bool = False,
 ) -> tuple[dict[str, object] | None, dict[str, int | None], TeamLlmConfig, object] | None:
+    tag_provider_failure(primary_exc)
     if not can_failover(primary_exc):
         return None
     try:

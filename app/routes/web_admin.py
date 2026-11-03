@@ -427,6 +427,21 @@ def admin_page(
             f"/admin?{urlencode({'team_id': team_id, 'team_tab': 'security-data'})}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
+    if team_id and team_tab == "usage":
+        # The old team workspace exposed Usage as a team tab. Preserve links
+        # from saved bookmarks while keeping the standalone usage page canonical.
+        params = {
+            "view": "users" if request.query_params.get("usage_view") == "users" else "team",
+            "team_id": team_id,
+        }
+        allowed_range = request.query_params.get("range")
+        if allowed_range in {"30d", "90d", "1y", "all"}:
+            params["range"] = allowed_range
+        for name in ("reference", "monitor_since"):
+            value = request.query_params.get(name)
+            if value:
+                params[name] = value
+        return RedirectResponse(f"/admin/usage?{urlencode(params)}", status_code=status.HTTP_303_SEE_OTHER)
     # Preserve old Manage quotas links by mapping their selected member into
     # the dedicated team Quotas tab.
     if team_id and team_tab == "members" and member_id:
@@ -3881,7 +3896,25 @@ def admin_reject_account_request(
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
     try:
-        reject_account_request_service(db, context.user, request_id, AccountRequestReject(review_notes=review_notes))
+        reject_account_request_service(
+            db,
+            context.user,
+            request_id,
+            AccountRequestReject(review_notes=review_notes.strip()),
+        )
+    except ValidationError:
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=return_team_id or None,
+            message="Review notes are required.",
+            message_kind="error",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            active_admin_tab=return_tab or "requests",
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
     except AppError as exc:
         return render_admin(
             request,

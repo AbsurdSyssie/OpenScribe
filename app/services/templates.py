@@ -2622,6 +2622,7 @@ def _try_backup_generated_document(
     output_validator: Callable[[str], None] | None = None,
 ) -> tuple[str, GenerationUsage, TeamLlmConfig, dict[str, object], UUID] | None:
     """Perform one frozen backup call after safely settling and reserving quota."""
+    tag_provider_failure(primary_exc)
     if not can_failover(primary_exc):
         return None
     try:
@@ -3470,6 +3471,7 @@ def _try_backup_hallucination_check(
     overall_deadline: datetime,
     preclaim: bool = False,
 ) -> tuple[str, GenerationUsage, TeamLlmConfig, str, ProviderAttempt] | None:
+    tag_provider_failure(primary_exc)
     if not can_failover(primary_exc):
         return None
     try:

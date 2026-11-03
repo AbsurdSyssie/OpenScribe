@@ -206,7 +206,12 @@ def test_provider_inspection_failure_is_visible_and_recoverable(
     notice = page.locator("#provider-save-notice")
     notice.wait_for(state="visible")
     assert notice.get_attribute("role") == "status"
-    assert f"{kind.upper()} provider settings saved." in notice.inner_text()
+    expected_notice = (
+        "Connection saved. Choose the models your team can use."
+        if kind == "llm"
+        else "STT provider settings saved."
+    )
+    assert expected_notice in notice.inner_text()
     assert "provider_notice" not in page.url
 
     # A failed draft deletion leaves the same draft in the open dialog for retry.

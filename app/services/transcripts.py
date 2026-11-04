@@ -21,6 +21,7 @@ from app.models import (
     Transcript,
     TranscriptCaptureSettings,
     TranscriptAudioCleanupJob,
+    TelehealthCapturePart,
     TranscriptIngestionJob,
     TranscriptIngestionJobKind,
     TranscriptIngestionJobStatus,
@@ -373,6 +374,17 @@ def queue_retry_source_cleanup_for_transcripts(db: Session, *, transcript_ids: l
                    TranscriptStreamWindow.recovery_audio_vault_ref.is_not(None))
         ) if ref
     )
+    # Telehealth holds staged but not-yet-transcribed audio in separate owner-
+    # scoped capture-part rows. The transcript root remains its deletion and
+    # retention root: schedule cleanup in the SAME transaction as root deletion.
+    vault_refs.update(
+        ref for ref in db.scalars(
+            select(TelehealthCapturePart.source_audio_vault_ref).where(
+                TelehealthCapturePart.transcript_id.in_(transcript_ids),
+                TelehealthCapturePart.source_audio_vault_ref.is_not(None),
+            )
+        ) if ref
+    )
     if not vault_refs:
         return []
     return queue_transcript_audio_cleanup(db, secret_refs=vault_refs)
@@ -387,6 +399,10 @@ def _is_live_transcript_ingestion_source_audio_ref(db: Session, *, secret_ref: s
     ) is not None or db.scalar(
         select(TranscriptStreamWindow.id).where(
             TranscriptStreamWindow.recovery_audio_vault_ref == secret_ref,
+        ).limit(1)
+    ) is not None or db.scalar(
+        select(TelehealthCapturePart.id).where(
+            TelehealthCapturePart.source_audio_vault_ref == secret_ref,
         ).limit(1)
     ) is not None
 

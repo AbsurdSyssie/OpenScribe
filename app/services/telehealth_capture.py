@@ -45,6 +45,8 @@ from app.services.telehealth_audio import (
 )
 from app.services.transcripts import (
     INGESTION_SOURCE_AUDIO_MAX_AGE,
+    WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS,
+    WHOLE_FILE_HOURLY_UPLOAD_BYTES,
     assert_no_unresolved_stream_session,
     queue_orphan_transcript_audio_after_rollback,
 )
@@ -276,6 +278,25 @@ def stage_telehealth_audio_part(
     )).where(TelehealthCapturePart.session_id == session.id)) or 0)
     if staged_seconds + measured_duration > WHOLE_FILE_MAX_DURATION_SECONDS * 2:
         raise AppError(413, "payload_too_large", "Telehealth source audio duration limit reached.")
+
+    # Bound Vault staging independently of later provider/ASR quota charging.
+    # The owner lock serializes concurrent requests across both sources and
+    # capture sessions, so two channels cannot exceed these limits together.
+    hourly_since = utcnow() - timedelta(hours=1)
+    used_bytes, used_duration = db.execute(select(
+        func.coalesce(func.sum(TelehealthCapturePart.source_audio_size_bytes), 0),
+        func.coalesce(func.sum(TelehealthCapturePart.source_audio_duration_seconds), 0),
+    ).where(
+        TelehealthCapturePart.owner_user_id == owner.id,
+        TelehealthCapturePart.created_at >= hourly_since,
+    )).one()
+    if WHOLE_FILE_HOURLY_UPLOAD_BYTES > 0 and used_bytes + len(audio_bytes) > WHOLE_FILE_HOURLY_UPLOAD_BYTES:
+        raise AppError(429, "rate_limited", "Telehealth hourly staged-audio size limit exceeded.")
+    if (
+        WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS > 0
+        and float(used_duration) + measured_duration > WHOLE_FILE_HOURLY_DURATION_LIMIT_SECONDS
+    ):
+        raise AppError(429, "rate_limited", "Telehealth hourly staged-audio duration limit exceeded.")
 
     part_id = uuid4()
     vault_ref = write_transcript_ingestion_source_audio(job_id=part_id, audio_bytes=audio_bytes)

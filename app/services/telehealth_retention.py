@@ -46,8 +46,9 @@ def expire_telehealth_staged_audio(
             TelehealthCapturePart.id.asc(),
         ).limit(batch_size)
     ))
-    # Release the snapshot transaction before acquiring the owner/root locks.
-    db.rollback()
+    # Stay in the caller's transaction: this sweep is also invoked from the
+    # existing ingestion expiry routine. An unconditional rollback here could
+    # discard another expiry handler's pending source-cleanup metadata.
     expired = 0
     for part_id in candidates:
         part_identity = db.get(TelehealthCapturePart, part_id)

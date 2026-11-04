@@ -2078,10 +2078,16 @@ def delete_transcripts(
     if not unique_ids:
         raise AppError(422, "business_rule_violation", "Select at least one transcript to delete")
 
-    transcripts = [
-        _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
-        for transcript_id in unique_ids
-    ]
+    # Lock the owner/transcript roots BEFORE enumerating Vault refs. A
+    # concurrent telehealth source-part upload holds this same owner/root
+    # scope until its Vault reference is committed. Without the lock the
+    # delete could miss a just-accepted staged part and orphan its secret.
+    # Sort root locks to avoid a multi-consultation delete deadlock.
+    transcripts_by_id = {
+        transcript_id: _lock_split_source_writer_transcript(db, owner, transcript_id=transcript_id)
+        for transcript_id in sorted(unique_ids)
+    }
+    transcripts = [transcripts_by_id[transcript_id] for transcript_id in unique_ids]
     deleting_transcript_ids = [transcript.id for transcript in transcripts]
     cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=deleting_transcript_ids)
     terminalize_attempts_for_transcripts(db, deleting_transcript_ids, utcnow())

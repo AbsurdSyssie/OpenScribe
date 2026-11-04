@@ -1,10 +1,10 @@
 # Telehealth dual-channel capture — implementation and decision plan
 
-**Status:** DRAFT — product and architecture decisions outstanding; do not treat this file as authorisation to implement.
+**Status:** PRODUCT SCOPE AGREED — implementation work packages ready for agents. Engineering feasibility, security, privacy and clinical-safety release gates remain mandatory; this status is **not** production deployment approval.
 **Branch:** feature/telehealth-dual-channel-capture (branched from master at bf63c2879dd8526db582a9598663db92df13642b on 2026-11-04).
 **Owner:** OpenScribe maintainers. **Scope:** One clinician-owned consultation in OpenScribe Scribe, with local microphone and remote-call/tab audio kept separate for transcription and mapped into one ordered structured transcript.
 **Plan authority:** This document was requested explicitly in the repository root. Repository AGENTS.md normally prefers plans/; the root placement is intentional.
-**Source of truth:** Reconcile this draft with the current implementation, tests, migrations, and operational documentation before any code change. All TBD items below need explicit maintainer decisions. Do not infer approval from recommendations.
+**Source of truth:** Maintainer decisions in rounds 1–3 define the product contract. The latest dated decision overrides earlier provisional wording. Reconcile the design against current implementation, tests, migrations, and operational documentation before coding. Agents may autonomously resolve ordinary engineering choices within the agreed behavior; escalate only architecture/safety conflicts or changes to the specified product scope.
 
 ## Maintainer decisions — round 1 (2026-11-04)
 
@@ -18,7 +18,7 @@ These decisions supersede any earlier "candidate" recommendations in this draft.
 6. **Separate, subtle Telehealth button/toggle near recording controls**, not a third option inside the Recorded upload / Live capture dropdown. A **per-user show/hide preference** is desired for consideration; exact default, UX and persistence require sign-off.
 7. **Original shared sample clock remains mandatory before VAD**, with per-channel source offsets, independent VAD and independent ASR metering. Existing batch VAD concatenation loses silence offsets and cannot be reused unchanged.
 
-**Still unresolved:** exact failure/restart state transitions, persistent interruption markers, incomplete-generation warning/acknowledgement contract, per-part mapping and flat-text assembly, provider diarisation, overlap handling, exact toggle/meter details, consent and release matrix. See round-2 decisions and the decision register below.
+**Engineering design remaining:** exact failure/restart state transitions, persistent interruption markers, warning implementation, per-part mapping and flat-text assembly, overlap handling, VAD timing validation and release-test evidence. See the final product decisions above and the implementation work packages below.
 
 ## Maintainer decisions — round 2 and visualiser refinement (2026-11-04)
 
@@ -39,6 +39,23 @@ These decisions supersede any earlier "candidate" recommendations in this draft.
 - **Required safety distinction:** five seconds of VAD-confirmed speech is a *signal-confidence milestone*, **not proof** the recording is reliable/complete. A connected but silent track is neither a failure nor a reason to block capture. Use an accessible waiting/amber state rather than indicating silence as broken; reserve true red/error for missing or disconnected tracks. Retain two small independent source-health indicators in collapsed state; automatically re-expand on source loss or degraded capture and announce the failure. Combined meter may use max/aggregate *visual* level but never mix the underlying ASR sources.
 - Prefer a minimal CSS transition and existing level/VAD signals, avoiding expensive waveform reconstruction. Respect reduced-motion and non-colour status cues. Keep the split-button and dictation layout compact; test mobile/responsive width.
 - **Open:** exact graphic, whether five seconds cumulative VAD is the right threshold, whether collapse is automatic and reversible, visual calibration and tooltip copy. Do not implement this as a fixed contract without maintainer approval.
+
+## Maintainer decisions — final product confirmation (2026-11-04)
+
+**This section supersedes earlier draft suggestions where they differ. The maintainer has answered all six final product questions.**
+
+1. **Recoverable audio, not indefinite storage.** "Never discard audio" means **do not throw away captured/recoverable source audio because one channel fails, a call drops, or capture restarts before it has been transcribed**. Retain pending/failed source data through the established owner-encrypted Vault retry and expiry workflow; if the current 24-hour recovery window is insufficient for a specific supported interrupted-recording recovery path, identify and resolve that safely as an engineering/release gate. After successful transcription, normal source cleanup, deletion, GDPR/privacy and configured retention apply. Do **not** introduce permanent recording/replay storage.
+2. **Recorded-mode switch accepted.** The independent phone-icon Telehealth toggle selects recorded/whole-file capture when enabled; if an existing live-mode consultation would be switched, use confirmation and the existing mode-change constraints, never changing mode during active recording or while unresolved jobs block switching. Turning telehealth off returns to ordinary recording controls but must not alter/corrupt already captured audio. Two-channel live ASR is deferred.
+3. **Provider diarisation disabled/bypassed for telehealth v1** where supported. Speaker provenance is assigned deterministically from input source: **Clinician**=local microphone; **Patient**=call/tab audio. Additional people on either source are not individually separated in v1; no false claim of verified identity. Continue to respect existing provider configuration snapshots and avoid altering non-telehealth diarisation settings.
+4. **Five-second audio check is informational only.** Recording starts as soon as both usable audio tracks and recording pipeline are ready, **not after speech-verification thresholds**. Show compact initial Clinician/Patient activity bars, independently accumulate approximately five seconds of valid detected speech on each (not elapsed time), display a brief positive visual confirmation and collapse to a combined visual **only** once both have been heard. A connected silent channel remains waiting/neutral, not failed. A user can re-expand the channels. After collapse, **continue monitoring both source tracks independently** and re-expand/show a clear error on dropout. Single visualizer is UI-only; never mix underlying ASR audio. The five-second threshold and exact animation are a visual-design target, not an audio integrity guarantee.
+5. **One-time first-use modal with acknowledgement.** Before initiating the first Telehealth recording, show a short, accessible notice that microphone and call/tab audio will be captured; **headphones are recommended** to minimise echo/duplicate speech; the clinician must inform call participants and follow organisational recording/consent policy. Use an owner-scoped persisted acknowledgement and do not ask again under unchanged policy; require positive Continue. Existing policy, clinical-safety and privacy review still apply; this modal alone is not legal consent from remote participants.
+6. **Browser v1 first; desktop WhatsApp is still required on roadmap.** Launch baseline: **Chrome/Edge on Windows and macOS with user-selected browser-tab audio** (Teams/WhatsApp Web or equivalent tested calls); validate actual browser support in WP0. Separate **Phase 2: WhatsApp native desktop application audio** with platform-specific feasibility, implementation and acceptance tests; it is not a v1 launch blocker or omitted TODO. Linux, Firefox, Safari and other native apps remain unpromised pending validation.
+
+**Carry-forward decisions from round 2:** warn/stop/restart same consultation without discarding recoverable audio; generation from explicitly acknowledged incomplete source is allowed with a prominent warning; bounded uploads while recording are allowed; combine per-channel submitted/provider-metered audio for quota/billing; preserve provenance when timings are absent; no automatic echo/cross-channel transcript deduplication.
+
+**No additional product interview is required for first-release coding.** Remaining unspecified details—backend session entities, endpoint shape, track acquisition races, VAD sample-to-timeline mapping, interrupted upload state machine, quota reservation and UI implementation—are engineering design work within these constraints. An agent must stop and escalate only if evidence proves a product contract cannot be satisfied safely or an existing ownership/privacy/clinical safety invariant conflicts with it.
+
+
 
 ## 0. Established intent from maintainer discussion
 
@@ -66,17 +83,17 @@ The following are user-stated requirements, not open proposals:
 - **API constraints:** docs/api.md documents the existing /audio-chunks and /audio-file routes, route limits, measured server-side duration, 24-hour bounded source retention and retry. A second channel doubles submitted duration if two full-length tracks are sent; VAD upload can reduce submitted duration but needs exact original timing metadata.
 - **Testing:** existing focused suites include tests/test_deepgram_live_route.py, tests/test_deepgram_streaming.py, tests/test_transcript_streaming.py, tests/test_deepgram_live_stream_frontend.py and tests/test_workspace_frontend_contract.py. Follow docs/testing.md and docs/dbtesting.md. Update app/api_route_audit.py if adding /api/v1 endpoints.
 
-## 2. Telehealth control and capture UX — partially decided
+## 2. Telehealth control and capture UX — product-agreed
 
 **Confirmed:** Telehealth is a **separate subtle button/toggle** by the recording controls, NOT a third recording-mode dropdown option. The existing recorded upload / live capture selection and backend `whole_file` / `live_chunked` modes must not be silently redesigned. V1 telehealth is two-source recorded capture with **post-consultation ASR**, likely using whole-file ingestion plus a new server-owned channel/session contract; the concrete ingestion design is still open.
 
-**Preference:** implement an **owner-scoped show/hide Telehealth control** setting, shown by default. Existing `app/static/js/transcribe/app.js` sends full saved preferences via `persistUserAppPreferences`; `app/services/preferences.py` and `app/schemas/preferences.py` whitelist fields. A new preference needs coordinated schema, normalisation, persistence and client changes; decide default visibility and discoverability before coding.
+**Preference:** implement an **owner-scoped show/hide Telehealth control** setting, shown by default, with a discoverable control in user preferences so it can be re-enabled. Existing `app/static/js/transcribe/app.js` sends full saved preferences via `persistUserAppPreferences`; `app/services/preferences.py` and `app/schemas/preferences.py` whitelist fields. Coordinate schema, normalisation, persistence, bootstrap and client changes without clobbering unrelated user settings. Persist separate first-use modal acknowledgement.
 
-**Browser first:** after an explicit Start action, request remote tab audio via `getDisplayMedia` and local microphone via `getUserMedia`. Video is required as a browser capture-request parameter but must never be processed or stored. Verify an actual remote audio track exists, show each active channel and any dropout prominently, and direct the user to restart when capture is compromised. Exact recovery policy is still undecided.
+**Browser first:** after an explicit Start action (and first-use notice if not previously acknowledged), request remote tab audio via `getDisplayMedia` and local microphone via `getUserMedia`. Video is required as a browser capture-request parameter but must never be processed or stored. Verify an actual remote audio track exists and recording starts without waiting for either participant to speak. On source loss, immediately warn, stop compromised two-channel capture, preserve recoverable data for transcription and offer another run in the same consultation. Keep missing-audio markers separate from ordinary silence.
 
-**Required future phase:** WhatsApp **native desktop application audio**, with separately scoped platform capture and release testing. Do not promise OS-wide app capture in tab-only v1.
+**Required future phase:** WhatsApp **native desktop application audio**, with explicitly scoped Windows/macOS platform capture, permission, packaging, security and release testing. Phase 2 must have a concrete tracked agent work package (below). Do not promise native OS-wide app capture in tab-only v1.
 
-**Open questions:** final small phone-icon toggle appearance and tooltip, dual visualiser five-second speech milestone and collapse animation, which recording modes can coexist, startup permission handling, when source selection can change, exact partial-audio recovery and tested browser/OS matrix. See proposed UI concept in the round-2 decision record.
+**Agreed interaction:** icon-only phone toggle with tooltip and accessible name, default visible, switching safely to recorded mode; initial two source bars are a non-blocking audio-receipt check and collapse after each has accumulated about five seconds of detected voice. Combined visualizer continues to display either source's activity, with two individual health indicators and re-expand on demand or loss. First-use acknowledged modal recommends headphones and call-participant disclosure. Implementation details and supported browser tests belong to WP0/WP1.
 
 ## 3. Timing and audio capture invariant (mandatory)
 
@@ -112,50 +129,50 @@ Proposed capture model:
 
 An audio payload with 16 kHz samples is not inherently 16 kHz in *timeline frame coordinates*. Either preserve a correctly defined mapping or normalize timestamps to common-millisecond units using integer/rational arithmetic. Require clock and duration validation server-side; client claims are not trust boundaries.
 
-## 4. Backend architecture options — decision required
+## 4. Backend architecture — selected v1 and deferred alternatives
 
-**Option A: two ordinary independently accounted STT jobs, coordinated by a single telehealth capture session.** Recommended conceptual architecture. Design a server-owned capture/session identity, per-channel ordered piece IDs and safe replay/idempotency; jobs may complete in any order. Introduce a **merge readiness/watermark** mechanism per channel. Do not apply a later result to canonical source text until both channels are complete through that timeline boundary, or the user has explicitly resolved a failed/gapped interval. An out-of-order result must not rewrite clinician edits or silently reorder committed text.
+**Option A: two ordinary independently accounted STT jobs, coordinated by a single telehealth capture session.** **SELECTED for v1.** Design a server-owned capture/session identity, per-channel ordered piece IDs and safe replay/idempotency; jobs may complete in any order. Introduce a **merge readiness/watermark** mechanism per channel. Do not apply a later result to canonical source text until both channels are complete through that timeline boundary, or the user has explicitly resolved a failed/gapped interval. An out-of-order result must not rewrite clinician edits or silently reorder committed text.
 
-**Option B: coordinated recorded two-channel batch (v1 candidate).** Post-stop transcription is approved. Assess whether bounded parts still need uploading during recording as the current batch recorder rolls over before stop. Persist the two independently submitted files/jobs; only commit ordered source after both have terminal results, with explicit partial-result recovery. Avoid assuming the existing whole-file jobs can be uploaded concurrently without lifecycle changes.
+**Option B: coordinated recorded two-channel batch (execution strategy for selected v1).** Post-stop transcription and bounded part uploads during capture are approved. Reuse the current batch rollover principles, but preserve per-channel original-time mappings. Persist two independently owned sets of parts/jobs; assemble source-labelled transcript only after safe finalization or explicitly acknowledged incomplete results. Avoid assuming the existing whole-file jobs can be uploaded concurrently without lifecycle changes.
 
 **Option C: two Deepgram live sockets/streams (DEFERRED beyond v1).** Requires deliberate redesign of TranscriptStreamSession uniqueness, source-sample accounting, server relay, checkpoint/commit order, per-channel recovery windows, browser reconnection and finalization. This is a separate work package, not an incidental enhancement to Option A.
 
 **Option D: provider-native multichannel audio in one request (DEFERRED).** Potential later optimization only; cannot be the generic solution while OpenScribe supports multiple STT providers and its current Deepgram protocol is mono. Must preserve source-channel separation and accounting if added.
 
-**Strong constraints for all options:**
-- No new broad admin/leader access to content; per-user DEK encryption for new text/turns and bounded Vault temporary audio.
+**Strong constraints for selected v1 and later options:**
+- No new broad admin/leader access to content; per-user DEK encryption for new text/turns and bounded Vault temporary audio. **Do not lose recoverable audio before transcription due to interruption, but do not introduce permanent post-transcription source-audio retention.**
 - Server-authoritative capture mode, session ownership, provider snapshot, quota reservations/settlements and response validation; no trust in 'clinician' role field or client-supplied durations for billing.
 - Idempotency and retry per *channel + original interval*; correct ordered application after retries; no duplicate turns; clear expiry/deletion.
 - Maintain immutable transcript versions, saved generation snapshots, structured edits and per-version redaction offset mapping. Never overwrite edited turns when a late channel completes; define read-only capture interval, incremental draft vs committed versions and conflict resolution.
 - Preserve provider costs/usage by job attempt, distinct metrics for session elapsed time, per-channel received/captured time, per-channel VAD speech duration, actual transmitted duration and provider-metered/billed duration. Do not infer billed duration from VAD speech alone.
 - **Approved fallback:** an STT provider without timings is supported. Use evidenced chronology where available; otherwise keep separate `Clinician:` and `Patient:` source-labelled blocks and never fabricate precise timestamps or clinical conversation order.
 - Avoid conflict with current 'one stream per transcript' and one global next-live-sequence barriers without an approved migration. Any migration must handle old data and downgrade policy safely.
-- For transcript display and generation, fixed v1 source labels are **Clinician** (local microphone) and **Patient** (tab/call audio). Keep provider diarisation separate and do not claim the remote channel proves actual speaker identity.
+- For transcript display and generation, fixed v1 source labels are **Clinician** (local microphone) and **Patient** (tab/call audio). **Bypass provider diarisation for telehealth v1**, independent of ordinary non-telehealth preferences. Do not claim remote-channel provenance verifies personal identity.
 
-## 5. Decision register (maintainer answers dated 2026-11-04)
+## 5. Product decision register — closed 2026-11-04
 
-**DECIDED** items are approved scope; **PARTIAL** means the product direction is known but agents must not assume implementation specifics; **OPEN** requires the next maintainer interview.
+All product-level D1–D14 decisions are resolved sufficiently to begin implementation. **Engineering design details and formal release review are still required**, not additional product-question rounds.
 
-| ID | State | Decision / question |
-| --- | --- | --- |
-| D1 | **DECIDED (round 2)** | V1 two recorded sources and post-consultation ASR. **Bounded audio-part uploads during capture are approved** for memory safety. Live dual-ASR streaming is deferred. |
-| D2 | **DECIDED, matrix OPEN** | Browser-call **tabs first**. **WhatsApp native desktop app audio is a required later development phase**. OPEN: supported v1 browser/OS matrix; future platform adapters. |
-| D3 | **DECIDED (round 2), adapter mechanics OPEN** | Providers without timestamps remain eligible; merge only at evidenced chunk/segment granularity and otherwise show **Clinician:** / **Patient:** blocks. Generation must preserve role provenance and acknowledge unknown chronology. |
-| D4 | **DECIDED** | Always display **Clinician** for mic and **Patient** for remote audio in v1; later manual relabeling optional. These are provenance assumptions, not verified speaker identity. |
-| D5 | **OPEN** | Run provider diarisation within channels or rely solely on two fixed labels? How should multiple remote voices be displayed? |
-| D6 | **DECIDED (round 2), technical details OPEN** | **Stop compromised dual-source capture, warn immediately, preserve all already captured/recoverable audio, and allow a new run in the same consultation.** No silent mono fallback. Define interruption markers and interrupted-upload/retry races; obey existing retention/deletion. |
-| D7 | **DECIDED (round 2), warning UX OPEN** | **Allow generation from incomplete transcript after a prominent warning and acknowledgement.** Missing channel/segments must remain distinguishable from a merely untimed-but-complete result; no false full-coverage claim. |
-| D8 | **OPEN** | Timing precision target, both VAD settings/pre-roll, original-frame mapping, trim and resampling drift. Ensure independent silence suppression doesn't destroy shared timeline. |
-| D9 | **OPEN** | Timed overlapping utterances/ties and fallback presentation when only flat text is available. Proposal: preserve both with deterministic stable order when timing is known, no fabricated order otherwise. |
-| D10 | **DECIDED (round 2)** | Meter each channel independently; **apply provider limits to aggregate submitted/metered channel-minutes**. Consultation wall-clock duration stays distinct. Exact usage presentation remains a UI choice. |
-| D11 | **OPEN** | Telehealth toggle on existing consultation, coexistence with ordinary modes/recordings, repeated restarts and capture-session scopes. |
-| D12 | **PARTIAL (round 2 + new concept)** | Subtle separate control **beside recording**, **shown by default**, **per-user hide preference**. Enabling recorded capture may require mode confirmation. Latest concept: **icon-only phone toggle** with tooltip; two temporary Clinician/Patient level bars, five seconds cumulative voiced activity per source, green feedback then one combined visualisation; retain separate health indicators and reopen on fault. Treat exact animation/status palette as unapproved prototype, not settled spec. |
-| D13 | **DECIDED baseline, guidance details OPEN** | **No automatic cross-channel deduplication for v1.** Recommend headphones/echo cancellation; first-use modal/guidance for telehealth and optional per-user acknowledgment/preference. Still test for speaker bleed and duplicate clinician/patient turns. |
-| D14 | **OPEN** | Recording notice, consent/objections, clinical safety review, deployment/provider policy, retention/export, staged rollout. |
+| ID | Resolution for first release |
+| --- | --- |
+| D1 | Record two independent audio sources; post-stop transcription only. Bounded audio-part uploads *during* the consultation are allowed and should be used to constrain memory. |
+| D2 | Tested Chrome/Edge **browser tabs** on Windows/macOS first; **Phase 2 must implement native WhatsApp desktop audio** after a feasibility spike. |
+| D3 | Use provider timestamps if available; otherwise use original chunk boundaries where meaningful, or separate complete source-labelled **Clinician:** / **Patient:** blocks with no invented chronology. LLM note input retains provenance and uncertainty. |
+| D4 | Fixed v1 speaker display: mic=**Clinician**, remote audio=**Patient**. They are assigned source roles, not proven individual identity. |
+| D5 | **Disable/bypass provider speaker diarisation for telehealth v1**. Multiple participants within one source receive its source label; role-editing and within-source diarisation are later scope. |
+| D6 | On source loss, immediately warn and stop the compromised capture; **retain recoverable recorded/queued audio**, offer a new capture run within the same consultation and mark actual gaps. Existing encryption, retry expiry, cleanup and user deletion remain. |
+| D7 | Allow clinical-note generation from incomplete capture **after an explicit prominent warning and acknowledgement**, preserving missing-audio context and clinician review. Do not confuse untimed-but-complete ASR with dropped source data. |
+| D8 | Shared pre-VAD sample timeline on both channels, with exact retained-sample mapping through VAD/pre-roll/trim/resample/rollovers. Agents must establish accuracy tolerances and test them using synthetic audio; silence never compresses consultation time. |
+| D9 | Preserve real simultaneous overlapping speech and use deterministic tie order when timing exists. No fabricated ordering if text-only ASR lacks sufficient provenance. |
+| D10 | Meter captured, submitted and provider-accounted time independently for both channels; enforce combined submitted/metered channel-minute quota while separating elapsed consultation duration. |
+| D11 | Enabling separate Telehealth toggle switches to recorded mode under existing safe mode-transition/confirmation rules; disabling restores ordinary mic-only recording controls and preserves prior transcript content. Repeated interrupted runs remain attributable within one consultation. |
+| D12 | Separate **subtle phone-icon** control by recording bar, tooltip + accessible label, **shown by default** with per-user show/hide preference. Temporary two-channel audio check, ~5s cumulative speech per source, non-blocking confirmation/brief glow, then combined meter; manual expand and auto-expand on fault with individual source status always available. |
+| D13 | No auto-deduplication in v1; use mic echo-cancellation as appropriate, recommend headphones in **first-use acknowledged modal** stored per user and test for bleed. |
+| D14 | One-time modal also states microphone and call audio capture and clinician responsibility to inform participants/observe organisational policy; it is not remote participant consent. Preserve owner access, source retention/deletion and explicit DCB0129/privacy/security release review. |
 
-**Next interview priorities:** D12 phone toggle and short dual-bar verification/collapse animation; D6 interrupted-track warning, preserved-audio restart and gap markers; D7 exact incomplete-note acknowledgement; D5 diarisation and multi-speaker cases; D8 timing accuracy; D14 clinical governance and rollout. Record answers with dates; request sign-off before proceeding to code. Unresolved details remain decision gates.
+**Engineering authority:** Implement ordinary details autonomously if consistent with this table. If a technical spike finds a platform/browser inability or safety conflict, document the evidence and escalate **only the conflicting contract**. Do not silently reduce supported sources, drop audio, fabricate timestamps, store recordings indefinitely or weaken existing backend invariants.
 
-## 6. Proposed agent work packages (not authorised until dependent decisions are resolved)
+## 6. Implementation work packages — authorised product scope, sequential dependencies
 
 ### WP0 — Evidence and timing prototype
 - Examine pinned vad-web behavior, independent VAD fed from AudioContext/AudioWorklet tracks, original sample offset tracking, pause/restart, device changes, forced flush and overlap. Audit **existing batchSpeechSegments concatenation and rollover during capture**: the current voice-only batch recorder drops silence offsets, and long sessions may upload parts before Stop. Establish a bounded-memory two-channel design even though STT results are post-consultation.
@@ -163,26 +180,26 @@ An audio payload with 16 kHz samples is not inherently 16 kHz in *timeline frame
 - Deliver capability matrix and measured timing/CPU/memory findings before choosing a capture API design.
 
 ### WP1 — Capture UX and two-channel lifecycle
-- Add a **separate subtle Telehealth toggle/button near recording controls**, preserve the existing split-menu options and preferred recording mode semantics; implement optional owner-scoped show/hide preference only after D12 resolution.
-- Build a small, well-owned capture module with two source streams, one common clock, per-channel VAD, explicit teardown, stop/restart/disconnect and reliable metadata. Keep native OS audio adapters out of scope unless authorised.
+- Add an **icon-only phone Telehealth toggle near recording controls**, tooltip/accessible name, shown by default with owner-scoped show/hide preference. Preserve existing split-menu options, automatically select recorded mode with safe confirmation, and add one-time persisted user acknowledgement with headset/participant notice guidance.
+- Build a small, well-owned capture module with two source streams, one common clock, per-channel VAD, explicit teardown, stop/restart/disconnect and reliable metadata. Add two initially expanded source activity meters, non-blocking ~5-second per-channel speech confirmation, brief green feedback, collapse to one combined level meter, separate persistent source-health checks, user-expand and auto-expand on drop; do not mix recorded channels. Use minimal accessible CSS and existing VAD level signals. Native OS audio adapters belong to Phase 2.
 - Test permission revocation, hidden tab, interrupted media track, startup races, late async returns, stopping during prompts, browser refresh, navigation and sign-out. No user content in Web Storage or logs.
 
 ### WP2 — Secure server capture/session model and ingestion jobs
-- Design schema/migrations to group channel jobs into the same consultation session, preserve per-source sample mappings, maintain per-channel stable ordering and finalization barriers.
+- Design schema/migrations to group channel jobs and bounded upload parts into one consultation capture session, preserve per-source sample mappings, stable source ordering, interruption and actual missing-audio gap metadata, and finalization barriers. Ensure no source-audio buffer or pending upload is discarded on a source failure before safe transcription or explicit configured expiry/deletion.
 - Reuse existing request validation, idempotency, team STT snapshots, Vault source-audio retention, retries, rate limits, owner authorization, quota/outbox, audit and expiry; do not silently loosen unique constraints.
-- Enforce bounded metadata and safe per-source failure/recovery. Update route audit if routes added. Adapt source-duration rules to measured rather than client-declared audio.
+- Enforce bounded metadata and safe per-source failure/recovery; allow a new run in the same consultation with preserved prior parts, idempotent retry and visible incomplete status. Support explicit warned/acknowledged incomplete-note generation. Update route audit if routes added. Adapt quota rules to aggregate measured provider-submitted audio durations, independent of consultation elapsed time.
 
 ### WP3 — ASR adapter timing and transcript merge
-- Provide normalized timed segments where the STT provider supports them, independently of diarisation. Also **support flat-text outputs** without inventing word timings: label one or more source-text blocks unambiguously as **Clinician:** / **Patient:** and ensure note-generation source text preserves both.
+- Provide normalized timed segments where the STT provider supports them **without relying on speaker diarisation**, which is bypassed for telehealth. Also support flat-text outputs without inventing word timings: label source-text blocks **Clinician:** / **Patient:**, expose uncertainty and ensure note-generation inputs preserve both. Existing diarisation remains unchanged for ordinary capture.
 - Convert available ASR-relative offsets through the exact speech-segment-to-consultation mapping and stable-merge timed outputs, retaining overlapping words/turns, fixed source labels, turn UUID stability, version/PII/redaction/generation mapping and edits. For untimed flat results, output distinct **Clinician:** / **Patient:** blocks instead of false chronological merging.
 - Enforce channel watermarks: a quicker completed channel must not permanently commit newer text before an earlier region from the other channel is resolved. Retries must not duplicate turns.
 
 ### WP4 — Test, safety, operational docs and staged rollout
 - Focused unit tests for source-frame timing, VAD trimming/pre-roll, ASR timing offset calculations, staggered completion, track loss, source mismatch, duplicate/idempotent submissions, retry barriers, provider/quota cases, retention, deletion, encryption and cross-owner authorization.
-- Browser E2E tests of split-button, source consent/permissions, call-tab selector, recording indicators, recovery and a real two-track synthetic conversation. Test supported browser/OS combinations with speaker leakage/headphones and long-run timing.
+- Browser E2E tests of icon toggle and preference, safe recorded-mode switch, first-use persisted acknowledgement, source consent/permissions, call-tab selector, initial two VAD meters and collapse/re-expand with real source-health diagnostics, recoverable audio on dropout, incomplete-generation warning, and synthetic dual-track consultation. Test Chrome and Edge on Windows and macOS with web-call sources, headset/speaker leakage and long-running capture.
 - Update docs/transcript-capture.md, docs/live_stt.md, docs/api.md, docs/stt-config.md, docs/testing.md as relevant, SAFETY.md/hazard case, tests and docs index. Use synthetic data only. Run relevant automated tests plus operational-doc/route audits.
 
-## 7. Acceptance criteria (draft)
+## 7. Acceptance criteria — agreed v1 product scope; verify engineering implementation
 
 1. Clinician uses a **separate subtle Telehealth icon toggle beside recording**, shown by default and optionally hidden through an owner-scoped preference; existing mode dropdown remains unchanged. Both sources are visible during initial verification and their independent health remains observable after any meter collapse.
 2. Local mic and remote tab audio stay independent through capture and ASR; no video or unintended system audio is sent/stored.
@@ -191,13 +208,27 @@ An audio payload with 16 kHz samples is not inherently 16 kHz in *timeline frame
 5. Non-timestamped provider results are permitted via `Clinician:` / `Patient:` fallback blocks. Missing audio, source interruption, gaps or ASR failures have explicit warnings and preserved recoverable audio; **incomplete-note generation is allowed only after an explicit warning/acknowledgement**, without claiming that capture was complete.
 6. Existing microphone-only whole-file, live-chunk and Deepgram stream/dictation paths continue to behave identically; all existing authorization, encrypted persistence, redaction, versioned edits, generation, quotas, retry, retention and deletion controls hold.
 7. Usage accounts for captured/submitted/provider-metered seconds independently by channel and combined for STT quota/billing; consultation wall-clock duration is distinct. Bounded uploads during recording must preserve sample-to-original-clock mapping.
-8. No medical/patient details or raw audio in logs, provider metadata, browser storage or test fixtures. Review clinical safety and disclosure text before release.
-9. V1 does not require dual Deepgram live sockets. WhatsApp **native app** capture is an explicit later-phase deliverable with separate platform feasibility/testing; it is not silently dropped.
+8. No medical/patient details or raw audio in logs, provider metadata, browser storage or test fixtures. One-time owner-persisted guidance covers microphone/call audio, headphones and clinician participant-notification obligations. Privacy/security and DCB0129 clinical-safety review are mandatory before release.
+9. V1 does not require dual Deepgram live sockets. **WhatsApp native desktop audio is an explicit Phase 2 deliverable**, with a separate tracked feasibility and Windows/macOS platform-capture work package; it is not silently dropped.
+10. Existing successful-transcription source cleanup/retention continues unchanged. Failure/restart never silently destroys recoverable untranscribed audio, while deletion/expiry still apply.
+11. The initial visualiser does not delay recording while waiting for ~5s cumulative speech; a quiet connected patient channel is not reported as a failure. Any later track loss produces persistent warning and visible source status.
+
+## 7a. Required Phase 2 — WhatsApp native desktop application audio (post-v1)
+
+This is **in scope for the overall feature roadmap**, but not required for browser-tab v1 release.
+
+1. **Platform feasibility:** inventory actual supported Windows and macOS mechanisms for extracting *application/window-specific playback* (e.g. Windows WASAPI process/loopback capture and macOS ScreenCaptureKit/Core Audio where permitted), permissions and whether WhatsApp desktop audio can be isolated without incidental system/patient audio. Do not assume current browser getDisplayMedia universally captures native WhatsApp; validate concrete desktop app versions.
+2. **Architecture:** design the smallest secure OS-specific capture bridge, helper or packaging integration that emits the *same* remote source samples/time mapping/capture health contract as the browser tab adapter. Define authenticated handshake and least-privilege local interface; no broad OS recording or new content-sharing endpoint by default.
+3. **Privacy/safety:** user-initiated selection/consent, persistent recording indicator, source verification, no accidental unrelated app audio, encrypted transport to existing user session, no raw audio on logs/disk outside approved ephemeral storage, signed/updated binaries where required, trustworthy process/device selection and teardown.
+4. **Compatibility/E2E:** test WhatsApp desktop microphone and far-end audio with headphones and speakers on Windows/macOS, app restart, permission loss, notifications, conferencing changes and long-running drift; run the same v1 offset/retention/quota/clinical-safety suite.
+5. **Deliverable:** a separate detailed plan/PR chain with platform test results and acceptance criteria, not an untracked footnote; if a platform cannot reliably isolate app audio, do not ship an unbounded system-audio substitute without maintainer approval.
+
+
 
 ## 8. Implementation guardrails and handoff
 
-- **STOP:** No agent should implement an architectural choice covered by unresolved D1–D14 without specific maintainer approval. Purely read-only exploration and synthetic proof-of-concept branches are acceptable if requested separately; do not merge them into this feature branch as implicit policy.
-- **NO code yet on this branch.** This initial commit contains only this planning Markdown file.
+- **START:** Product behavior is agreed. Agents may implement the scoped WP0→WP4 work, beginning with timing/platform feasibility and an API/data-contract design checkpoint. Stop and escalate only an evidenced technical impossibility, user-visible scope change, privacy/security/clinical-safety conflict or deviation from the confirmed product contracts.
+- **Planning-only branch at handoff.** No application code has been changed in preparing this plan. Agents should create focused commits/PRs according to team workflow, using this document as the explicitly requested implementation specification.
 - Before implementing, re-fetch current code and tests and explicitly map each work package to symbols, migrations, API contracts, browser assets and regression tests. Keep changes focused and staged.
 - Maintain AGENTS.md non-negotiables: user/owner content isolation, encryption under user DEK, Vault cleanup, provider secrets, redaction/generation snapshots, clinical safety, quota/outbox and audit metadata.
-- Do not auto-merge or open a production rollout. Update this file with decisions and a dependency-ordered executable implementation plan before creating code work items.
+- Do not auto-merge or open a production rollout. Keep this document current as WP0's timing findings, final API/schema design, actual tested OS/browser support, test results and clinical-safety release evidence are produced. Phase 2 WhatsApp native audio remains a required separate workstream.

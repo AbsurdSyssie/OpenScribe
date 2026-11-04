@@ -6,6 +6,20 @@
 **Plan authority:** This document was requested explicitly in the repository root. Repository AGENTS.md normally prefers plans/; the root placement is intentional.
 **Source of truth:** Reconcile this draft with the current implementation, tests, migrations, and operational documentation before any code change. All TBD items below need explicit maintainer decisions. Do not infer approval from recommendations.
 
+## Maintainer decisions — round 1 (2026-11-04)
+
+These decisions supersede any earlier "candidate" recommendations in this draft. Preserve their rationale during the next review.
+
+1. **V1 is recorded capture with transcription after the consultation**. No simultaneous Deepgram live ASR sessions in the first release. Bounded uploads *during* recording remain a technical option if needed for memory safety, but no live result display is required.
+2. **Browser-tab audio comes first.** Support for **WhatsApp native desktop application audio remains a required later phase**; it must not delay initial tab support, and does require a separate supported platform approach.
+3. **Do not exclude STT configurations lacking timestamps.** Prefer real per-word/segment timestamps for chronological mixing. Without them, preserve source-attributed text using best-effort grouping; a transcript consisting of two blocks titled **Clinician:** and **Patient:** is acceptable. Never invent fine-grained timestamps/chronology or assume an LLM's inferred sequence is fact.
+4. **Fixed v1 speaker labels:** microphone **Clinician**, remote call audio **Patient**. Manual reassignment is optional future work. These labels describe expected source roles, not guaranteed real-person identity.
+5. **Capture-source loss must produce an unmistakable warning directing the clinician to restart.** Exactly what stops, what recorded content is retained and how to restart require further decisions; no silent one-source fallback.
+6. **Separate, subtle Telehealth button/toggle near recording controls**, not a third option inside the Recorded upload / Live capture dropdown. A **per-user show/hide preference** is desired for consideration; exact default, UX and persistence require sign-off.
+7. **Original shared sample clock remains mandatory before VAD**, with per-channel source offsets, independent VAD and independent ASR metering. Existing batch VAD concatenation loses silence offsets and cannot be reused unchanged.
+
+**Unresolved architecture:** failure/restart and partial-note policy; whether to upload during capture to bound memory; flat-text chunk representation; provider diarisation; overlap handling; UI placement/visibility; role leakage; quotas; safety/consent and release matrix.
+
 ## 0. Established intent from maintainer discussion
 
 The following are user-stated requirements, not open proposals:
@@ -13,11 +27,11 @@ The following are user-stated requirements, not open proposals:
 - Capture two *independent* sources: clinician/local microphone and patient/remote tab or call audio, rather than mixing sources into one monophonic STT input.
 - Send each source separately through the existing STT/ASR provider workflow, then merge recognized speech into a single chronological transcript.
 - Give turns source-derived labels (initially "Clinician" and "Patient"/remote side) and reuse OpenScribe's structured speaker-turn presentation/editing rather than introducing a separate transcript editor.
-- Use the existing recording-mode dropdown/split-button in the Scribe workspace.
+- Keep the existing recording-mode dropdown unchanged. Offer a subtle **separate Telehealth control**, with optional owner-scoped visibility preference subject to sign-off.
 - Maintain a single **original consultation timeline** even though each channel's VAD removes different amounts of silence. Timestamp frames **before VAD**; never use file creation time, VAD callback time, or concatenated voiced-audio duration as the shared time coordinate.
 - Meter the two capture sources separately and preserve accurate STT audio usage/quota accounting.
 
-**Not yet agreed:** exact v1 browser/OS support, whether to start with recorded batch or live incremental notes, source-role naming/verification, provider timestamp support strategy, partial failure policy, UI confirmation/recovery, speaker diarisation within each channel, quota semantics and retention choices. The answer to these questions materially affects architecture.
+**Partially agreed:** post-stop transcription, browser-tab-first scope, fixed labels, no-timestamp fallback and independent Telehealth control. Outstanding questions are detailed in the maintainer decision register below.
 
 ## 1. Baseline findings, verified against master at branch point
 
@@ -32,19 +46,17 @@ The following are user-stated requirements, not open proposals:
 - **API constraints:** docs/api.md documents the existing /audio-chunks and /audio-file routes, route limits, measured server-side duration, 24-hour bounded source retention and retry. A second channel doubles submitted duration if two full-length tracks are sent; VAD upload can reduce submitted duration but needs exact original timing metadata.
 - **Testing:** existing focused suites include tests/test_deepgram_live_route.py, tests/test_deepgram_streaming.py, tests/test_transcript_streaming.py, tests/test_deepgram_live_stream_frontend.py and tests/test_workspace_frontend_contract.py. Follow docs/testing.md and docs/dbtesting.md. Update app/api_route_audit.py if adding /api/v1 endpoints.
 
-## 2. Candidate UX: existing dropdown (requires sign-off)
+## 2. Telehealth control and capture UX — partially decided
 
-Add one user-facing option to the current recording-mode menu, provisionally **Telehealth (microphone + call audio)**, retaining "Recorded upload" and "Live capture" unchanged. Internal persisted configuration must distinguish *capture source* from *ingestion mode*. The selected consultation should not change underlying source type midway without an explicit transition/reset contract.
+**Confirmed:** Telehealth is a **separate subtle button/toggle** by the recording controls, NOT a third recording-mode dropdown option. The existing recorded upload / live capture selection and backend `whole_file` / `live_chunked` modes must not be silently redesigned. V1 telehealth is two-source recorded capture with **post-consultation ASR**, likely using whole-file ingestion plus a new server-owned channel/session contract; the concrete ingestion design is still open.
 
-Proposed permission flow: after an explicit Start action, acquire the selected remote tab's shared audio via getDisplayMedia (requires video capture request; its video track must not be sent or saved), and the clinician microphone via getUserMedia. Validate that a remote audio track really exists; do not downgrade to mic-only without an explicit user decision. Require clear UI showing each channel's signal/availability and whether the system is recording, stopping, transcribing or blocked. User chooses the tab/window; OpenScribe does not connect to Teams/WhatsApp APIs and cannot programmatically choose an arbitrary app.
+**Preference:** consider an optional **per-user show/hide Telehealth control** setting. Existing `app/static/js/transcribe/app.js` sends full saved preferences via `persistUserAppPreferences`; `app/services/preferences.py` and `app/schemas/preferences.py` whitelist fields. A new preference needs coordinated schema, normalisation, persistence and client changes; decide default visibility and discoverability before coding.
 
-No claim of universal native desktop app/system audio compatibility. Start with a tested matrix for Chrome/Edge + tab audio; later native/window/system audio only if tested and separately authorised. OS-specific capture code is *not* the starting requirement.
+**Browser first:** after an explicit Start action, request remote tab audio via `getDisplayMedia` and local microphone via `getUserMedia`. Video is required as a browser capture-request parameter but must never be processed or stored. Verify an actual remote audio track exists, show each active channel and any dropout prominently, and direct the user to restart when capture is compromised. Exact recovery policy is still undecided.
 
-Questions to resolve:
-- Does "Telehealth" perform **live incremental transcription**, **recorded two-channel upload after stop**, or both?
-- Is the v1 call source strictly a browser tab, or also desktop app/window/system audio when the browser offers it?
-- Should both input permissions be reacquired per session; what if remote audio is missing or sharing is revoked?
-- Should the dropdown be selectable mid-consultation, or only before recording starts?
+**Required future phase:** WhatsApp **native desktop application audio**, with separately scoped platform capture and release testing. Do not promise OS-wide app capture in tab-only v1.
+
+**Open questions:** toggle placement/appearance, show/hide preference default, which recording modes can coexist, startup permission handling, when source selection can change, partial-audio recovery and tested browser/OS matrix.
 
 ## 3. Timing and audio capture invariant (mandatory)
 
@@ -84,11 +96,11 @@ An audio payload with 16 kHz samples is not inherently 16 kHz in *timeline frame
 
 **Option A: two ordinary independently accounted STT jobs, coordinated by a single telehealth capture session.** Recommended conceptual architecture. Design a server-owned capture/session identity, per-channel ordered piece IDs and safe replay/idempotency; jobs may complete in any order. Introduce a **merge readiness/watermark** mechanism per channel. Do not apply a later result to canonical source text until both channels are complete through that timeline boundary, or the user has explicitly resolved a failed/gapped interval. An out-of-order result must not rewrite clinician edits or silently reorder committed text.
 
-**Option B: synchronous whole-session two-file batch with common metadata.** Simpler v1 candidate if *recorded-after-stop* is acceptable. Persist the two independently submitted files/jobs; only commit ordered source after both have terminal results, with explicit partial-result recovery. Avoid assuming the existing whole-file jobs can be uploaded concurrently without lifecycle changes.
+**Option B: coordinated recorded two-channel batch (v1 candidate).** Post-stop transcription is approved. Assess whether bounded parts still need uploading during recording as the current batch recorder rolls over before stop. Persist the two independently submitted files/jobs; only commit ordered source after both have terminal results, with explicit partial-result recovery. Avoid assuming the existing whole-file jobs can be uploaded concurrently without lifecycle changes.
 
-**Option C: two Deepgram live sockets/streams.** Requires deliberate redesign of TranscriptStreamSession uniqueness, source-sample accounting, server relay, checkpoint/commit order, per-channel recovery windows, browser reconnection and finalization. This is a separate work package, not an incidental enhancement to Option A.
+**Option C: two Deepgram live sockets/streams (DEFERRED beyond v1).** Requires deliberate redesign of TranscriptStreamSession uniqueness, source-sample accounting, server relay, checkpoint/commit order, per-channel recovery windows, browser reconnection and finalization. This is a separate work package, not an incidental enhancement to Option A.
 
-**Option D: provider-native multichannel audio in one request.** Potential later optimization only; cannot be the generic solution while OpenScribe supports multiple STT providers and its current Deepgram protocol is mono. Must preserve source-channel separation and accounting if added.
+**Option D: provider-native multichannel audio in one request (DEFERRED).** Potential later optimization only; cannot be the generic solution while OpenScribe supports multiple STT providers and its current Deepgram protocol is mono. Must preserve source-channel separation and accounting if added.
 
 **Strong constraints for all options:**
 - No new broad admin/leader access to content; per-user DEK encryption for new text/turns and bounded Vault temporary audio.
@@ -96,9 +108,9 @@ An audio payload with 16 kHz samples is not inherently 16 kHz in *timeline frame
 - Idempotency and retry per *channel + original interval*; correct ordered application after retries; no duplicate turns; clear expiry/deletion.
 - Maintain immutable transcript versions, saved generation snapshots, structured edits and per-version redaction offset mapping. Never overwrite edited turns when a late channel completes; define read-only capture interval, incremental draft vs committed versions and conflict resolution.
 - Preserve provider costs/usage by job attempt, distinct metrics for session elapsed time, per-channel received/captured time, per-channel VAD speech duration, actual transmitted duration and provider-metered/billed duration. Do not infer billed duration from VAD speech alone.
-- Missing provider timings require an explicit supported-provider capability rule or coarser, disclosed ordering guarantee. Never fabricate precise utterance/word timestamps from a flat result.
+- **Approved fallback:** an STT provider without timings is supported. Use evidenced chronology where available; otherwise keep separate `Clinician:` and `Patient:` source-labelled blocks and never fabricate precise timestamps or clinical conversation order.
 - Avoid conflict with current 'one stream per transcript' and one global next-live-sequence barriers without an approved migration. Any migration must handle old data and downgrade policy safely.
-- For transcript display and generation, define source-derived display roles separate from provider diarisation; never claim the remote channel proves patient identity or only contains one person.
+- For transcript display and generation, fixed v1 source labels are **Clinician** (local microphone) and **Patient** (tab/call audio). Keep provider diarisation separate and do not claim the remote channel proves actual speaker identity.
 
 ## 5. Decision register — BLOCKING QUESTIONS FOR MAINTAINER
 
@@ -152,11 +164,11 @@ Mark each with a decision, rationale, and sign-off date before implementing the 
 
 ## 7. Acceptance criteria (draft)
 
-1. Clinician selects Telehealth in existing Scribe recording dropdown and explicitly starts/stops capture; each valid source is clearly visible and controllable.
+1. Clinician uses a **separate subtle Telehealth toggle/button**, leaving the existing mode dropdown unchanged, to explicitly start/stop two-channel recorded capture; each source is visibly monitored.
 2. Local mic and remote tab audio stay independent through capture and ASR; no video or unintended system audio is sent/stored.
 3. An original consultation-time speech map survives independent VAD silence suppression, pre-roll, trimming, resampling and overlap. Test evidence demonstrates deterministic chronological reconstruction.
 4. Two ASR jobs may finish in reverse order; the merged owner-only structured transcript remains correctly ordered, displays trusted **source provenance**, retains both overlapping utterances and does not duplicate results on retry.
-5. Any missing channel, source interruption, non-timestamped provider, gap or failure has an explicit safe outcome; no false "complete" or silent partial note generation.
+5. Non-timestamped provider results are permitted via `Clinician:` / `Patient:` fallback blocks. Missing audio, source interruption, gaps or ASR failures have explicit warnings and safe outcomes; no false 'complete' or silent partial note generation.
 6. Existing microphone-only whole-file, live-chunk and Deepgram stream/dictation paths continue to behave identically; all existing authorization, encrypted persistence, redaction, versioned edits, generation, quotas, retry, retention and deletion controls hold.
 7. Usage shows or reliably accounts for actual captured/submitted/provider-metered seconds by channel and as aggregate provider usage; consultation wall-clock duration is not confused with billed channel-minutes.
 8. No medical/patient details or raw audio in logs, provider metadata, browser storage or test fixtures. Review clinical safety and disclosure text before release.

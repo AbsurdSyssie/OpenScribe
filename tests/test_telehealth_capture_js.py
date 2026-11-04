@@ -94,6 +94,19 @@ assert.equal(projectTelehealthProviderTurn({ start_ms: 900, end_ms: 1100 }, span
 assert.equal(projectTelehealthProviderTurn({ start_ms: 3100, end_ms: 3200 }, spans, {
   fileSampleRate: 16000, timelineSampleRate: 48000,
 }), null);
+const invalidOverlappingSpans = [
+  { fileStartSample: 0, fileEndSample: 16000, timelineStartFrame: 0, timelineEndFrame: 48000 },
+  { fileStartSample: 15000, fileEndSample: 30000, timelineStartFrame: 48000, timelineEndFrame: 93000 },
+];
+assert.equal(projectTelehealthProviderTurn({ start_ms: 100, end_ms: 200 }, invalidOverlappingSpans, {
+  fileSampleRate: 16000, timelineSampleRate: 48000,
+}), null);
+const invalidClockScale = [
+  { fileStartSample: 0, fileEndSample: 16000, timelineStartFrame: 0, timelineEndFrame: 120000 },
+];
+assert.equal(projectTelehealthProviderTurn({ start_ms: 100, end_ms: 200 }, invalidClockScale, {
+  fileSampleRate: 16000, timelineSampleRate: 48000,
+}), null);
 """)
 
 

@@ -2149,6 +2149,24 @@ def delete_expired_transcripts(
     if not transcripts:
         return 0
 
+    # Revalidate and lock the owner/root rows before scanning live Vault
+    # references. This serializes expiry with in-flight telehealth part
+    # acceptance, preventing a just-staged part from escaping root cleanup.
+    candidate_ids = [transcript.id for transcript in transcripts]
+    owner_ids = sorted({transcript.owner_user_id for transcript in transcripts})
+    list(db.scalars(
+        select(User).where(User.id.in_(owner_ids)).order_by(User.id.asc()).with_for_update()
+    ))
+    transcripts = list(db.scalars(
+        select(Transcript)
+        .where(Transcript.id.in_(candidate_ids), Transcript.retention_expires_at <= comparison_now)
+        .order_by(Transcript.id.asc())
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    ))
+    if not transcripts:
+        db.rollback()
+        return 0
     transcript_ids = [transcript.id for transcript in transcripts]
     cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=transcript_ids)
     terminalize_attempts_for_transcripts(db, transcript_ids, comparison_now)

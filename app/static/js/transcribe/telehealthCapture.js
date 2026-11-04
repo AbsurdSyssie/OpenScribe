@@ -87,6 +87,10 @@ export function createTelehealthCapture({
         return;
       }
       if (state !== 'running' && state !== 'stopping') return;
+      if (data?.type === 'overflow') {
+        interruptedCapture(channel, 'audio_backpressure');
+        return;
+      }
       if (data?.type !== 'frames' || data.channel !== channel
         || !(data.samples instanceof Float32Array)) {
         interruptedCapture(channel, 'invalid_frames');
@@ -100,6 +104,7 @@ export function createTelehealthCapture({
         if (accepted === false || (accepted && typeof accepted.then === 'function')) {
           throw new TypeError('Telehealth audio consumer must accept samples synchronously.');
         }
+        tap.port.postMessage({ type: 'ack' });
       } catch (_) {
         interruptedCapture(channel, 'consumer_failed');
       }

@@ -515,15 +515,16 @@ def expire_ingestion_source_audio(
             comparison_now=comparison_now,
         )
         expired_count += 1
-    from app.services.transcript_streaming import expire_stream_recovery_audio
-    expired_count += expire_stream_recovery_audio(db, batch_size=max(1, batch_size - expired_count), now=comparison_now)
-    # Staged telehealth source audio shares the existing 24-hour Vault expiry
-    # scheduler and transcript-root cleanup pipeline. Source parts already
-    # handed off to an ingestion job remain under that job's expiry ownership.
+    # Stage expiry uses short per-part owner/root locks and transaction commits.
+    # Run it BEFORE stream expiry: the existing stream expiry routine flushes
+    # outstanding recovery-window changes in the caller's transaction.
+    # A staged expiry snapshot rollback must not undo those stream changes.
     from app.services.telehealth_retention import expire_telehealth_staged_audio
     expired_count += expire_telehealth_staged_audio(
         db, batch_size=max(1, batch_size - expired_count), now=comparison_now,
     )
+    from app.services.transcript_streaming import expire_stream_recovery_audio
+    expired_count += expire_stream_recovery_audio(db, batch_size=max(1, batch_size - expired_count), now=comparison_now)
     return expired_count
 
 

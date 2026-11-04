@@ -243,7 +243,14 @@ def stage_telehealth_audio_part(
             and existing.source_audio_fingerprint == fingerprint
             and _part_mapping(existing) == mapped
             and existing.status != 'expired'
-            and (existing.source_audio_vault_ref is not None or existing.ingestion_job_id is not None)
+            and (
+                existing.ingestion_job_id is not None
+                or (
+                    existing.source_audio_vault_ref is not None
+                    and existing.source_audio_expires_at is not None
+                    and existing.source_audio_expires_at > utcnow()
+                )
+            )
         ):
             return existing
         raise AppError(409, "idempotency_conflict", "Telehealth audio request conflicts with an earlier part.")

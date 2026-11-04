@@ -790,6 +790,8 @@ let statusDetailsHideTimer = null;
           preferred_transcribe_tab: userAppPreferences.preferred_transcribe_tab || null,
           diarization_enabled: userAppPreferences.diarization_enabled === true,
           diarization_warning_acknowledged: userAppPreferences.diarization_warning_acknowledged === true,
+          show_telehealth_control: userAppPreferences.show_telehealth_control !== false,
+          telehealth_guidance_acknowledged: userAppPreferences.telehealth_guidance_acknowledged === true,
           ...patch,
         };
         const response = await csrfFetch('/api/v1/app-preferences', {

@@ -340,3 +340,123 @@ def stage_telehealth_audio_part(
         raise
     db.refresh(part)
     return part
+
+
+# Source interruption reason codes are fixed transport/availability metadata:
+# never accept arbitrary error/exception text as persisted diagnostic content.
+_TELEHEALTH_FAILURE_CODES = frozenset((
+    "source_ended", "permission_revoked", "audio_clock_interrupted",
+    "audio_backpressure", "audio_processor_failed", "upload_failed",
+    "browser_capture_failed",
+))
+
+
+def _owner_capture_session_locked(
+    db: Session,
+    owner: User,
+    *,
+    transcript_id: UUID,
+    capture_session_id: UUID,
+) -> tuple[Transcript, TelehealthCaptureSession]:
+    transcript = _owner_transcript_locked(db, owner, transcript_id=transcript_id)
+    session = db.scalar(select(TelehealthCaptureSession).where(
+        TelehealthCaptureSession.id == capture_session_id,
+        TelehealthCaptureSession.transcript_id == transcript.id,
+        TelehealthCaptureSession.owner_user_id == owner.id,
+        TelehealthCaptureSession.team_id == transcript.team_id,
+    ).with_for_update())
+    if session is None:
+        raise AppError(404, "not_found", "Telehealth capture not found.")
+    return transcript, session
+
+
+def request_telehealth_capture_stop(
+    db: Session,
+    owner: User,
+    *,
+    transcript_id: UUID,
+    capture_session_id: UUID,
+    interrupted_channel: str | None = None,
+    failure_code: str | None = None,
+) -> TelehealthCaptureSession:
+    """Stop physical capture while allowing in-flight bounded audio uploads.
+
+    After a source interruption, record only a safe reason code and channel.
+    A 'stopping' run can continue accepting new *audio parts* until all buffered
+    PCM has been safely staged. It is not sealed merely because a track ended.
+    """
+    if (interrupted_channel is None) != (failure_code is None):
+        raise AppError(422, "validation_error", "Capture interruption metadata is incomplete.")
+    if interrupted_channel is not None and interrupted_channel not in ("clinician", "patient"):
+        raise AppError(422, "validation_error", "Capture interruption channel is invalid.")
+    if failure_code is not None and failure_code not in _TELEHEALTH_FAILURE_CODES:
+        raise AppError(422, "validation_error", "Capture interruption reason is invalid.")
+    _, session = _owner_capture_session_locked(
+        db, owner, transcript_id=transcript_id, capture_session_id=capture_session_id,
+    )
+    if session.status not in ("active", "stopping"):
+        # A repeated exact stop acknowledgement after sealing is safe.
+        if session.status in ("ready", "interrupted"):
+            if session.failure_channel == interrupted_channel and session.failure_code == failure_code:
+                return session
+        raise AppError(409, "conflict", "Telehealth capture cannot stop in this state.")
+    if session.status == "stopping" and (
+        session.failure_channel != interrupted_channel or session.failure_code != failure_code
+    ):
+        # Never downgrade a known interrupted capture to a clean recording.
+        if interrupted_channel is None and session.failure_code:
+            return session
+        raise AppError(409, "idempotency_conflict", "Capture interruption details conflict.")
+    if session.status == "active":
+        session.status = "stopping"
+        session.recording_stopped_at = utcnow()
+        session.failure_channel = interrupted_channel
+        session.failure_code = failure_code
+        db.add(session)
+        db.commit()
+    db.refresh(session)
+    return session
+
+
+def seal_telehealth_capture(
+    db: Session,
+    owner: User,
+    *,
+    transcript_id: UUID,
+    capture_session_id: UUID,
+    expected_clinician_parts: int,
+    expected_patient_parts: int,
+) -> TelehealthCaptureSession:
+    """Seal after all locally buffered source parts were durably accepted.
+
+    The client may retry this operation after an ambiguous HTTP response; no
+    new data can be staged after sealing except exact idempotency replays.
+    PART COUNTS alone do not prove every utterance was captured; separate
+    source-drop gaps and VAD confidence evidence must remain visible.
+    """
+    expected = {
+        "clinician": expected_clinician_parts,
+        "patient": expected_patient_parts,
+    }
+    if any(type(count) is not int or count < 0 or count > 100_000 for count in expected.values()):
+        raise AppError(422, "validation_error", "Capture source-part counts are invalid.")
+    _, session = _owner_capture_session_locked(
+        db, owner, transcript_id=transcript_id, capture_session_id=capture_session_id,
+    )
+    if session.status not in ("stopping", "ready", "interrupted"):
+        raise AppError(409, "conflict", "Stop audio capture before sealing its parts.")
+    counts = dict(db.execute(select(
+        TelehealthCapturePart.channel, func.count(TelehealthCapturePart.id),
+    ).where(
+        TelehealthCapturePart.session_id == session.id,
+        TelehealthCapturePart.owner_user_id == owner.id,
+    ).group_by(TelehealthCapturePart.channel)).all())
+    if any(int(counts.get(channel, 0)) != count for channel, count in expected.items()):
+        raise AppError(409, "conflict", "Some recording parts have not been safely uploaded.")
+    if session.status == "stopping":
+        session.status = "interrupted" if session.failure_code else "ready"
+        session.updated_at = utcnow()
+        db.add(session)
+        db.commit()
+    db.refresh(session)
+    return session

@@ -205,8 +205,6 @@ def stage_telehealth_audio_part(
     ).with_for_update())
     if session is None:
         raise AppError(404, "not_found", "Telehealth capture not found.")
-    if session.status not in ("active", "stopping"):
-        raise AppError(409, "conflict", "Telehealth capture is not accepting audio.")
     if session.timeline_sample_rate not in range(8_000, 192_001):
         raise AppError(409, "conflict", "Capture audio clock is invalid.")
 
@@ -242,10 +240,16 @@ def stage_telehealth_audio_part(
             existing.owner_user_id == owner.id
             and existing.source_audio_fingerprint == fingerprint
             and _part_mapping(existing) == mapped
-            and existing.source_audio_vault_ref is not None
+            and existing.status != 'expired'
+            and (existing.source_audio_vault_ref is not None or existing.ingestion_job_id is not None)
         ):
             return existing
         raise AppError(409, "idempotency_conflict", "Telehealth audio request conflicts with an earlier part.")
+
+    # A lost acceptance response remains replayable after Stop/Interruption,
+    # but genuinely NEW parts are accepted only while capture is active.
+    if session.status not in ('active', 'stopping'):
+        raise AppError(409, 'conflict', 'Telehealth capture is not accepting new audio.')
 
     previous = db.scalar(select(TelehealthCapturePart).where(
         TelehealthCapturePart.session_id == session.id,

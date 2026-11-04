@@ -37,6 +37,68 @@ def current_tables() -> set[str]:
     return set(inspector.get_table_names())
 
 
+def _seed_problem_plan_owner(connection) -> dict[str, str]:
+    ids = {
+        "team": "00000000-0000-0000-0000-000000009201",
+        "owner": "00000000-0000-0000-0000-000000009202",
+        "transcript": "00000000-0000-0000-0000-000000009203",
+        "plan": "00000000-0000-0000-0000-000000009204",
+    }
+    connection.execute(text("""
+        INSERT INTO teams (id, name, name_key, status, default_retention_days, created_at, updated_at)
+        VALUES (:id, 'Problem plan migration team', 'problem plan migration team', 'active', 30, NOW(), NOW())
+    """), {"id": ids["team"]})
+    connection.execute(text("""
+        INSERT INTO users (
+            id, full_name, email, password_hash, team_id, team_role, is_system_admin, status,
+            must_change_password, onboarding_state, mfa_required, mfa_enabled,
+            example_consultation_pending, created_at, updated_at
+        ) VALUES (
+            :id, 'Problem plan migration owner', 'problem-plan-migration@example.test', 'synthetic-hash',
+            :team_id, 'user', false, 'active', false, 'complete', true, false, false, NOW(), NOW()
+        )
+    """), {"id": ids["owner"], "team_id": ids["team"]})
+    connection.execute(text("""
+        INSERT INTO transcripts (
+            id, owner_user_id, team_id, title, ingestion_mode, status,
+            next_live_chunk_sequence_no_applied, retention_days_applied,
+            retention_expires_at, created_at, multiple_problems, is_example
+        ) VALUES (
+            :id, :owner_id, :team_id, 'Synthetic migration transcript', 'whole_file', 'ready',
+            1, 30, NOW() + INTERVAL '30 days', NOW(), false, false
+        )
+    """), {"id": ids["transcript"], "owner_id": ids["owner"], "team_id": ids["team"]})
+    return ids
+
+
+def _insert_problem_plan(connection, ids: dict[str, str]) -> None:
+    connection.execute(text("""
+        INSERT INTO consultation_problem_plans (
+            id, owner_user_id, team_id, transcript_id, retention_expires_at,
+            plan_encrypted, created_at, updated_at
+        ) VALUES (
+            :id, :owner_id, :team_id, :transcript_id, NOW() + INTERVAL '30 days',
+            'synthetic encrypted plan', NOW(), NOW()
+        )
+    """), {
+        "id": ids["plan"], "owner_id": ids["owner"], "team_id": ids["team"],
+        "transcript_id": ids["transcript"],
+    })
+
+
+def _assert_integrity_error(
+    connection,
+    statement: str,
+    params: dict[str, object],
+    *,
+    expected_constraint: str,
+) -> None:
+    with pytest.raises(IntegrityError) as exc_info:
+        with connection.begin_nested():
+            connection.execute(text(statement), params)
+    assert exc_info.value.orig.diag.constraint_name == expected_constraint
+
+
 @pytest.mark.migration
 def test_team_quota_defaults_migration_backfills_teams_without_changing_user_limits():
     reset_public_schema()
@@ -230,6 +292,7 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "clinical_entity_runs",
         "consultation_split_analyses",
         "consultation_split_intents",
+        "consultation_problem_plans",
         "consultation_split_batches",
         "consultation_split_batch_topics",
         "consultation_split_drafts",
@@ -3963,6 +4026,250 @@ def test_split_batch_materialization_version_migration_round_trips_nullable_line
     assert "materialization_transcript_version_id" not in {
         column["name"] for column in downgraded.get_columns("consultation_split_batches")
     }
+
+
+@pytest.mark.migration
+def test_problem_plan_revision_repair_migration_round_trips_and_keeps_fk_names():
+    reset_public_schema()
+    config = alembic_config()
+    command.upgrade(config, "m7n8o9p0q1r2")
+    command.upgrade(config, "head")
+
+    inspector = inspect(engine)
+    plan_fks = {item["name"]: item for item in inspector.get_foreign_keys("consultation_problem_plans")}
+    expected_plan_fks = {
+        "fk_consultation_problem_plans_owner_user": ["owner_user_id"],
+        "fk_consultation_problem_plans_team": ["team_id"],
+        "fk_consultation_problem_plans_transcript": ["transcript_id"],
+    }
+    for name, columns in expected_plan_fks.items():
+        assert plan_fks[name]["constrained_columns"] == columns
+
+    from app.models import Base
+
+    metadata_plan_fks = {
+        constraint.name: [column.name for column in constraint.columns]
+        for constraint in Base.metadata.tables["consultation_problem_plans"].foreign_key_constraints
+    }
+    assert {name: metadata_plan_fks[name] for name in expected_plan_fks} == expected_plan_fks
+    for table_name in ("consultation_split_drafts", "consultation_split_draft_topics"):
+        metadata_names = {
+            constraint.name
+            for constraint in Base.metadata.tables[table_name].foreign_key_constraints
+        }
+        assert not set(expected_plan_fks) & metadata_names
+
+    command.downgrade(config, "m7n8o9p0q1r2")
+    command.upgrade(config, "head")
+    assert "ck_consultation_split_intents_plan_revision" in {
+        item["name"] for item in inspect(engine).get_check_constraints("consultation_split_intents")
+    }
+
+
+@pytest.mark.migration
+def test_problem_plan_revision_constraints_reject_unknown_and_invalid_lineage():
+    reset_public_schema()
+    command.upgrade(alembic_config(), "head")
+
+    with engine.begin() as connection:
+        ids = _seed_problem_plan_owner(connection)
+        _insert_problem_plan(connection, ids)
+
+        intent_insert = """
+            INSERT INTO consultation_split_intents (
+                id, owner_user_id, team_id, transcript_id, problem_plan_id,
+                problem_plan_revision, intent_kind, client_idempotency_key, manual_review_requested,
+                generation_snapshot_encrypted, status, retention_expires_at, created_at, updated_at
+            ) VALUES (
+                :id, :owner_id, :team_id, :transcript_id, :plan_id,
+                :revision, :kind, :key, true, 'synthetic encrypted snapshot', 'analysis_pending',
+                NOW() + INTERVAL '30 days', NOW(), NOW()
+            )
+        """
+
+        def try_intent(key: int, kind: str, revision: int | None, *, valid: bool) -> None:
+            params = {
+                "id": f"00000000-0000-0000-0000-{key:012d}",
+                "owner_id": ids["owner"], "team_id": ids["team"],
+                "transcript_id": ids["transcript"], "plan_id": ids["plan"],
+                "revision": revision, "kind": kind,
+                "key": f"00000000-0000-0000-0001-{key:012d}",
+            }
+            if valid:
+                connection.execute(text(intent_insert), params)
+            else:
+                _assert_integrity_error(
+                    connection, intent_insert, params,
+                    expected_constraint="ck_consultation_split_intents_plan_revision",
+                )
+
+        try_intent(9205, "problem_suggestion", None, valid=False)
+        try_intent(9206, "problem_suggestion", -1, valid=False)
+        try_intent(9207, "problem_plan_create", None, valid=False)
+        try_intent(9208, "problem_plan_create", 0, valid=False)
+        try_intent(9209, "problem_suggestion", 0, valid=True)
+        try_intent(9210, "problem_plan_create", 1, valid=True)
+        # ON DELETE SET NULL may clear plan_id while retaining the historical revision.
+        try_intent(9211, "problem_suggestion", 0, valid=True)
+        connection.execute(text("""
+            UPDATE consultation_split_intents SET problem_plan_id = NULL
+            WHERE id = '00000000-0000-0000-0000-000000009211'
+        """))
+
+        batch_insert = """
+            INSERT INTO consultation_split_batches (
+                id, owner_user_id, team_id, transcript_id, analysis_id,
+                problem_plan_id, problem_plan_revision, source_fingerprint,
+                confirmed_plan_encrypted, clinical_snapshot_encrypted, source_snapshot_encrypted,
+                template_snapshot_encrypted, pii_snapshot_encrypted, provider_snapshot_encrypted,
+                note_options_snapshot_encrypted, status, verification_status,
+                retention_expires_at, created_at, updated_at
+            ) VALUES (
+                :id, :owner_id, :team_id, :transcript_id, NULL,
+                :plan_id, :revision, :fingerprint, 'synthetic', 'synthetic', 'synthetic',
+                'synthetic', 'synthetic', 'synthetic', 'synthetic', 'generation_queued', 'pending',
+                NOW() + INTERVAL '30 days', NOW(), NOW()
+            )
+        """
+
+        def try_batch(key: int, revision: int | None, *, valid: bool) -> None:
+            params = {
+                "id": f"00000000-0000-0000-0002-{key:012d}",
+                "owner_id": ids["owner"], "team_id": ids["team"],
+                "transcript_id": ids["transcript"], "plan_id": ids["plan"],
+                "revision": revision, "fingerprint": f"{key:064x}",
+            }
+            if valid:
+                connection.execute(text(batch_insert), params)
+            else:
+                _assert_integrity_error(
+                    connection, batch_insert, params,
+                    expected_constraint="ck_consultation_split_batches_plan_revision",
+                )
+
+        try_batch(9212, None, valid=False)
+        try_batch(9213, 0, valid=False)
+        try_batch(9214, -1, valid=False)
+        try_batch(9215, 1, valid=True)
+
+
+@pytest.mark.migration
+def test_problem_plan_revision_repair_fails_closed_on_preexisting_unknown_revision():
+    reset_public_schema()
+    config = alembic_config()
+    command.upgrade(config, "m7n8o9p0q1r2")
+    with engine.begin() as connection:
+        ids = _seed_problem_plan_owner(connection)
+        _insert_problem_plan(connection, ids)
+        connection.execute(text("""
+            INSERT INTO consultation_split_intents (
+                id, owner_user_id, team_id, transcript_id, problem_plan_id,
+            problem_plan_revision, intent_kind, client_idempotency_key,
+                manual_review_requested, generation_snapshot_encrypted, status, retention_expires_at, created_at, updated_at
+            ) VALUES (
+                '00000000-0000-0000-0000-000000009216', :owner_id, :team_id, :transcript_id,
+                :plan_id, NULL, 'problem_suggestion', '00000000-0000-0000-0001-000000009216', true,
+                'synthetic encrypted snapshot', 'analysis_pending', NOW() + INTERVAL '30 days', NOW(), NOW()
+            )
+        """), {
+            "owner_id": ids["owner"], "team_id": ids["team"],
+            "transcript_id": ids["transcript"], "plan_id": ids["plan"],
+        })
+
+    with pytest.raises(Exception, match="ck_consultation_split_intents_plan_revision"):
+        command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        current_revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+        old_check = next(
+            item["sqltext"]
+            for item in inspect(connection).get_check_constraints("consultation_split_intents")
+            if item["name"] == "ck_consultation_split_intents_plan_revision"
+        )
+    assert current_revision == "m7n8o9p0q1r2"
+    assert "IS NOT NULL" not in old_check
+
+    with engine.begin() as connection:
+        connection.execute(text("""
+            DELETE FROM consultation_split_intents
+            WHERE id = '00000000-0000-0000-0000-000000009216'
+        """))
+    command.upgrade(config, "head")
+    repaired_check = next(
+        item["sqltext"]
+        for item in inspect(engine).get_check_constraints("consultation_split_intents")
+        if item["name"] == "ck_consultation_split_intents_plan_revision"
+    )
+    assert "IS NOT NULL" in repaired_check
+
+
+@pytest.mark.migration
+def test_living_problem_plan_downgrade_guard_and_reupgrade():
+    reset_public_schema()
+    config = alembic_config()
+    command.upgrade(config, "head")
+    with engine.begin() as connection:
+        ids = _seed_problem_plan_owner(connection)
+        _insert_problem_plan(connection, ids)
+        connection.execute(text("""
+            INSERT INTO consultation_split_intents (
+                id, owner_user_id, team_id, transcript_id, problem_plan_id,
+                problem_plan_revision, intent_kind, client_idempotency_key,
+                manual_review_requested, generation_snapshot_encrypted, status,
+                retention_expires_at, created_at, updated_at
+            ) VALUES (
+                '00000000-0000-0000-0000-000000009222', :owner_id, :team_id, :transcript_id,
+                :plan_id, 0, 'problem_suggestion', '00000000-0000-0000-0001-000000009222',
+                true, 'synthetic encrypted snapshot', 'analysis_pending', NOW() + INTERVAL '30 days', NOW(), NOW()
+            )
+        """), {
+            "owner_id": ids["owner"], "team_id": ids["team"],
+            "transcript_id": ids["transcript"], "plan_id": ids["plan"],
+        })
+        connection.execute(text("""
+            INSERT INTO consultation_split_intents (
+                id, owner_user_id, team_id, transcript_id, problem_plan_id,
+                problem_plan_revision, intent_kind, client_idempotency_key,
+                manual_review_requested, generation_snapshot_encrypted, status,
+                retention_expires_at, created_at, updated_at
+            ) VALUES (
+                '00000000-0000-0000-0000-000000009223', :owner_id, :team_id, :transcript_id,
+                NULL, NULL, 'legacy_generate', '00000000-0000-0000-0001-000000009223',
+                false, 'synthetic encrypted snapshot', 'analysis_pending', NOW() + INTERVAL '30 days', NOW(), NOW()
+            )
+        """), {
+            "owner_id": ids["owner"], "team_id": ids["team"],
+            "transcript_id": ids["transcript"],
+        })
+
+    # The repair revision can downgrade its constraints with persisted data,
+    # but the original feature migration must retain its destructive-data guard.
+    command.downgrade(config, "m7n8o9p0q1r2")
+    with pytest.raises(Exception, match="cannot downgrade while living plans"):
+        command.downgrade(config, "k3l4m5n6o7p8")
+
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM consultation_problem_plans WHERE id = :id"), {"id": "00000000-0000-0000-0000-000000009204"})
+        retained_plan_intent = connection.execute(text("""
+            SELECT problem_plan_id, problem_plan_revision, intent_kind
+            FROM consultation_split_intents
+            WHERE id = '00000000-0000-0000-0000-000000009222'
+        """)).one()
+    assert retained_plan_intent == (None, 0, "problem_suggestion")
+    with pytest.raises(Exception, match="cannot downgrade while living plans, plan-backed batches, or plan intents exist"):
+        command.downgrade(config, "k3l4m5n6o7p8")
+
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM consultation_split_intents WHERE id = :id"), {"id": "00000000-0000-0000-0000-000000009222"})
+    command.downgrade(config, "k3l4m5n6o7p8")
+    assert "consultation_problem_plans" not in current_tables()
+    command.upgrade(config, "head")
+    assert "consultation_problem_plans" in current_tables()
+    with engine.connect() as connection:
+        assert connection.execute(text("""
+            SELECT intent_kind FROM consultation_split_intents
+            WHERE id = '00000000-0000-0000-0000-000000009223'
+        """)).scalar_one() == "legacy_generate"
 
 
 @pytest.mark.migration

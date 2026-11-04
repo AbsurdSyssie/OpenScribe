@@ -34,9 +34,13 @@ An untouched consultation with automatic splitting enabled may still use the exi
 
 `GET` and `PUT /api/v1/transcripts/{transcript_id}/consultation-problem-plan` read and replace the living plan. The replacement requires `expected_revision` and an `operation_id`; concurrent edits fail with a revision conflict instead of silently overwriting one another. The plan is encrypted under the owning user's content key and follows transcript-root retention/deletion. Workspace REST/SSE exposes only the current owner's plan projection.
 
+If a save response cannot be read, the browser retries the same operation and payload before saving later edits. This recovers a committed save without treating its old revision as a new conflicting edit.
+
 `POST /api/v1/transcripts/{transcript_id}/consultation-problem-suggestions` starts explicit Auto suggest. It requires an idempotency key, expected revision, and an accessible selected template; a failed analysis can only be retried explicitly. `POST /api/v1/transcripts/{transcript_id}/consultation-note-batches` creates a batch from the saved current plan and latest successfully prepared redacted source. Both are owner-only, CSRF/origin protected, no-store operations subject to the existing generation transport limits. The suggestion response exposes safe operation state; the create response exposes only batch ID, queued status, counts, timestamps, and replay state.
 
 The confirmed plan is an encrypted versioned snapshot. Version 2 records the problem-plan ID and revision, one output UUID per note tile, order, exactly one Primary tile, the tile template snapshot, redacted problem scopes, and ignored titles. A Primary-only plan is valid and yields one note. There is one durable batch topic and one outcome per output tile; ignored problems do not become extra note topics. Existing accepted version-1 batches retain their legacy request reconstruction.
+
+Migration `n8o9p0q1r2s3` requires a non-null revision on plan-backed intents and batches. Suggestions may start at revision zero; creation requires revision one or later. It validates existing rows and fails if their required revision is missing, rather than inventing lineage. Legacy rows without a plan retain their existing lifecycle rules. Downgrading past the living-plan migration requires that no living plans, plan-backed batches, or intents retaining living-plan lineage remain.
 
 ## Create, immutability and recovery
 

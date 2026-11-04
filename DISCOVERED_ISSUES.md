@@ -1,8 +1,19 @@
 # Discovered issues
 
+### SPLIT-SUGGESTION-MISSING-PROPOSAL-RECOVERY — 2026-11-04
+
+- Status: Open; defensive recovery follow-up, not reproduced through a valid provider-completion flow.
+- Discovery commit: `fe53dd86324b3296588715ddbb501ce5d4236ef0`.
+- Location: `app/services/consultation_problem_plans.py::apply_problem_plan_suggestion`.
+- Exact excerpt: `if proposal_value is None and analysis.status.value != "not_required":` marks the plan suggestion failed and returns without marking the durable intent terminal.
+- Impact: if an analysis loses its persisted proposal despite having a status that requires one, its intent may remain pending after the UI reports suggestion failure.
+- Not fixed here: the reviewed normal completion paths persist the validated proposal; handling missing or corrupt stored proposals needs a focused recovery reproduction before changing intent transitions.
+- Follow-up: reproduce a missing proposal with synthetic persisted state and verify that the intent and plan fail consistently without a provider resubmission or loss of the saved plan.
+
 ### SPLIT-TEST-CONTRACT-DRIFT — 2026-11-04
 
-- Status: Open; test updates are deferred until the user has exercised the new flows, as requested. No implementation contract was weakened to satisfy these expectations.
+- Status: Resolved after the user accepted the flows and authorized tests. The original findings below record the earlier deferred work; no implementation contract was weakened to satisfy these expectations.
+- Resolution: aligned the split-specific error expectation and schema inventories, and patched the actual `resolve_new_writing_provider` boundary while preserving the frozen-provider snapshot assertions. The merge review reran the plan/API/generation and intent checks successfully, plus five focused schema/migration checks.
 - Baseline: `cef90cd800bb380c315ed9c446ba42c3986a21ee`; `app/services/consultation_split_queue.py`, `app/services/consultation_split_generation_queue.py`, and `app/services/consultation_split_runtime.py` were unchanged during this task.
 - Locations and exact excerpts:
   - `tests/test_consultation_split_api.py::test_confirm_split_draft_freezes_encrypted_batch_and_replays_before_timestamp` asserts `no_selection.value.code == "business_rule_violation"`; the existing generation queue selects `unavailable_code="consultation_split_llm_model_unavailable"` for this path.

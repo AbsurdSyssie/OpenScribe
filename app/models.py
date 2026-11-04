@@ -2337,7 +2337,7 @@ class ConsultationSplitIntent(Base):
             name="uq_consultation_split_intents_owner_idempotency_key",
         ),
         CheckConstraint(
-            "problem_plan_id IS NULL OR (intent_kind = 'problem_suggestion' AND problem_plan_revision >= 0) OR (intent_kind = 'problem_plan_create' AND problem_plan_revision >= 1)",
+            "problem_plan_id IS NULL OR (intent_kind = 'problem_suggestion' AND problem_plan_revision IS NOT NULL AND problem_plan_revision >= 0) OR (intent_kind = 'problem_plan_create' AND problem_plan_revision IS NOT NULL AND problem_plan_revision >= 1)",
             name="ck_consultation_split_intents_plan_revision",
         ),
         CheckConstraint("intent_kind IN ('legacy_generate', 'problem_suggestion', 'problem_plan_create')", name="ck_consultation_split_intents_kind"),
@@ -2425,9 +2425,9 @@ class ConsultationSplitDraft(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     analysis_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("consultation_split_analyses.id", ondelete="CASCADE"), nullable=False)
-    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", name="fk_consultation_problem_plans_owner_user"), nullable=False)
-    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id", name="fk_consultation_problem_plans_team"), nullable=False)
-    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE", name="fk_consultation_problem_plans_transcript"), nullable=False)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False)
     source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[ConsultationSplitDraftStatus] = mapped_column(
         Enum(ConsultationSplitDraftStatus),
@@ -2505,9 +2505,9 @@ class ConsultationProblemPlan(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
-    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", name="fk_consultation_problem_plans_owner_user"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id", name="fk_consultation_problem_plans_team"), nullable=False)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE", name="fk_consultation_problem_plans_transcript"), nullable=False)
     retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
     manual_override: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
@@ -2538,7 +2538,7 @@ class ConsultationSplitBatch(Base):
             name="ck_consultation_split_batches_one_lineage",
         ),
         CheckConstraint(
-            "(problem_plan_id IS NULL AND problem_plan_revision IS NULL) OR (problem_plan_id IS NOT NULL AND problem_plan_revision >= 1)",
+            "(problem_plan_id IS NULL AND problem_plan_revision IS NULL) OR (problem_plan_id IS NOT NULL AND problem_plan_revision IS NOT NULL AND problem_plan_revision >= 1)",
             name="ck_consultation_split_batches_plan_revision",
         ),
         CheckConstraint("source_fingerprint ~ '^[0-9a-f]{64}$'", name="ck_consultation_split_batches_source_fingerprint_canonical"),

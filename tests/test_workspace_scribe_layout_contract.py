@@ -164,7 +164,7 @@ def test_scribe_mobile_dictation_modal_owns_the_top_layer_and_safe_viewport():
     assert "body.modal-open [data-workspace-scribe-main] { z-index: 200; }" in transcribe_css
     assert "padding: var(--mobile-safe-top, env(safe-area-inset-top, 0px)) 0 var(--mobile-safe-bottom, env(safe-area-inset-bottom, 0px));" in transcribe_css
     assert "height: 100%; max-height: 100%; min-height: 0;" in transcribe_css
-    assert 'transcribe.css?v=20261027-live-dictation' in read("app/templates/transcribe/_head_assets.html")
+    assert re.search(r'/static/css/transcribe\.css\?v=[^"\s]+', read("app/templates/transcribe/_head_assets.html"))
 
 
 def test_shared_modal_close_control_centres_its_icon():

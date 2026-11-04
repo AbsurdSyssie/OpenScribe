@@ -1232,6 +1232,31 @@ modal.querySelector=(s)=>s==='.split-review-modal__dialog'?dialog:(s==='[data-sp
 const loading=new E('div'); list.rect={{left:0,right:600,top:0,bottom:600}}; add.dataset.splitReviewAdd=''; list.append(add); ignored.dataset.splitReviewIgnored=''; pop.dataset.splitReviewIgnoredPopover='';
 let writes=0, writeBody=null, releaseSave=null, suggestRelease=null, createCalls=0, holdSave=false, saveFailureStatus=null;
 const template={{id:'tpl-primary',name:'Primary'}};
+
+// A committed PUT whose response body cannot be read must be retried with its
+// original idempotency key before any newer local snapshot is submitted.
+const ambiguousModal=new E('div'), ambiguousList=new E('div'), ambiguousStatus=new E('p'), ambiguousCreate=new E('button');
+ambiguousModal.querySelector=(s)=>s==='[data-split-review-loading]'?new E('div'):null;
+let ambiguousPlan=null, ambiguousJsonReject=true, ambiguousMalformedOnce=true; const ambiguousBodies=[], ambiguousCommits=new Map();
+const ambiguousController=createSplitReviewController({{trigger:new E('button'),modal:ambiguousModal,topicList:ambiguousList,status:ambiguousStatus,createButton:ambiguousCreate,closeButtons:[],getTranscriptId:()=> 'tx-ambiguous',getSelectedTemplateId:()=>template.id,
+  fetcher:async(_url,opts)=>{{const body=JSON.parse(opts.body);ambiguousBodies.push(body);let committed=ambiguousCommits.get(body.operation_id);if(!committed){{const currentRevision=ambiguousPlan?.revision||1;if(body.expected_revision!==currentRevision)return {{ok:false,status:409,json:async()=>({{error:{{code:'consultation_problem_plan_conflict'}}}})}};committed={{plan_id:'plan-ambiguous',revision:currentRevision+1,manual_override:true,tiles:body.tiles,problems:body.problems,suggestion:null}};ambiguousCommits.set(body.operation_id,committed);ambiguousPlan=committed;}}return {{ok:true,status:200,json:async()=>{{if(ambiguousJsonReject){{ambiguousJsonReject=false;throw new Error('response body unavailable');}}if(ambiguousMalformedOnce){{ambiguousMalformedOnce=false;return null;}}return committed;}}}};}} ,
+  refreshWorkspace:async()=>({{available_templates:[template]}})}});
+ambiguousController.applyWorkspaceState({{problemPlan:{{plan_id:'plan-ambiguous',revision:1,manual_override:false,tiles:[{{uuid:'amb-primary',is_primary:true,template_id:template.id}}],problems:[{{uuid:'amb-problem',title:'Initial finding',origin:'manual',ignored:false,group_id:'amb-primary'}}]}},problemPlanProjectionAvailable:true,availableTemplates:[template],nextCapabilityAvailable:true,nextTranscriptId:'tx-ambiguous'}});
+ambiguousController.open(); const ambiguousTitle=ambiguousList.querySelector('[data-problem-title]');
+ambiguousTitle.value='Edited finding'; ambiguousTitle.fire('input');
+await new Promise(r=>setTimeout(r,700)); await flush();
+if(ambiguousBodies.length!==1||!ambiguousStatus.textContent.includes('edits are preserved'))throw new Error('unreadable committed save response did not preserve pending state');
+const ambiguousOriginalBody=JSON.stringify(ambiguousBodies[0]);
+ambiguousTitle.value='Edited while save outcome was unknown'; ambiguousTitle.fire('input');
+await new Promise(r=>setTimeout(r,700)); await flush();
+if(ambiguousBodies.length!==2||JSON.stringify(ambiguousBodies[1])!==ambiguousOriginalBody||!ambiguousStatus.textContent.includes('edits are preserved'))throw new Error('malformed successful save response discarded its pending operation');
+ambiguousTitle.value='Edited again while save outcome was unknown'; ambiguousTitle.fire('input');
+await new Promise(r=>setTimeout(r,700)); await flush();
+if(ambiguousBodies.length!==4||ambiguousBodies.slice(0,3).some(body=>JSON.stringify(body)!==ambiguousOriginalBody)
+  ||JSON.stringify(ambiguousBodies[2])!==ambiguousOriginalBody||ambiguousBodies[3].expected_revision!==2||ambiguousBodies[3].problems[0].title!=='Edited again while save outcome was unknown'
+  ||ambiguousController.getPlan().problems[0].title!=='Edited again while save outcome was unknown'||ambiguousController.getPlan().revision!==3||ambiguousController.isDirty())
+  throw new Error('ambiguous save retry did not replay the committed operation and retain the local edit: '+JSON.stringify({{bodies:ambiguousBodies,plan:ambiguousController.getPlan(),dirty:ambiguousController.isDirty(),status:ambiguousStatus.textContent}}));
+
 const initial={{plan_id:'plan-1',revision:1,status:'active',manual_override:false,tiles:[{{uuid:'tile-primary',is_primary:true,template_id:'tpl-primary'}},{{uuid:'tile-b',is_primary:false,template_id:'tpl-other'}}],problems:[{{uuid:'p1',title:'Knee pain',origin:'suggested',ignored:false,group_id:'tile-primary'}},{{uuid:'p2',title:'Blood pressure',origin:'suggested',ignored:false,group_id:'tile-b'}}],suggestion:null}};
 let currentTranscript='tx1';
 const c=createSplitReviewController({{trigger:new E('button'),modal,topicList:list,status,problemCount:count,createButton:create,addButton:add,suggestButton:suggest,ignoredButton:ignored,ignoredPopover:pop,closeButtons:[],getTranscriptId:()=>currentTranscript,getSelectedTemplateId:()=>template.id,

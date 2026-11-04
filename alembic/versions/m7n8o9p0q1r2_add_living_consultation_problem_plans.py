@@ -92,10 +92,17 @@ def downgrade() -> None:
     op.execute(sa.text("""
         DO $$ BEGIN
             IF EXISTS (SELECT 1 FROM consultation_problem_plans) OR
-               EXISTS (SELECT 1 FROM consultation_split_batches WHERE problem_plan_id IS NOT NULL) THEN
-                RAISE EXCEPTION 'cannot downgrade while living plans or plan-backed batches exist';
+               EXISTS (SELECT 1 FROM consultation_split_batches WHERE problem_plan_id IS NOT NULL) OR
+               EXISTS (
+                   SELECT 1 FROM consultation_split_intents
+                   WHERE intent_kind <> 'legacy_generate'
+                      OR problem_plan_id IS NOT NULL
+                      OR problem_plan_revision IS NOT NULL
+               ) THEN
+                RAISE EXCEPTION 'cannot downgrade while living plans, plan-backed batches, or plan intents exist';
             END IF;
-        END $$
+        END;
+        $$
     """))
     op.drop_constraint("ck_consultation_split_intents_kind", "consultation_split_intents", type_="check")
     op.drop_constraint("ck_consultation_split_intents_plan_revision", "consultation_split_intents", type_="check")

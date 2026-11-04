@@ -429,12 +429,21 @@ pytest -q tests/test_consultation_split_intent_progress.py
 The living-plan regressions cover encrypted persistence and owner boundaries,
 revision conflicts and idempotency, ignored exclusions, suggestion replacement,
 and immutable grouped generation batches. JavaScript controller tests cover
-editing, autosave, grouping, Primary selection, and quiet success states.
+editing, autosave, grouping, Primary selection, quiet success states, and replay
+after an unreadable committed save response while retaining later local edits.
 
 Run the focused files sequentially with other database-backed checks:
 
 ```bash
 APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_consultation_problem_plans.py tests/test_split_review_js.py tests/test_consultation_split_api.py tests/test_consultation_split_generation_runtime.py
+```
+
+Run the migration checks separately. They exercise plan revision constraints,
+model foreign-key names, repair migration rollback, and the living-plan
+downgrade guard against the isolated PostgreSQL database:
+
+```bash
+APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_migrations.py -k 'problem_plan or alembic_upgrade_head_creates_expected_schema'
 ```
 
 ## Consultation-split browser regression

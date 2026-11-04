@@ -2776,21 +2776,23 @@ export function createSplitReviewController({
     const requestId = ++saveSequence;
     const revision = plan.revision;
     const payload = snapshotForSave();
-    const localStateSignature = JSON.stringify({ tiles: plan.tiles, problems: plan.problems });
+    const currentLocalStateSignature = JSON.stringify({ tiles: plan.tiles, problems: plan.problems });
     const requestSignature = JSON.stringify({ revision, ...payload });
-    if (!pendingSaveRequest || pendingSaveRequest.signature !== requestSignature || pendingSaveRequest.transcriptId !== requestTranscript) {
+    if (!pendingSaveRequest || pendingSaveRequest.transcriptId !== requestTranscript) {
       pendingSaveRequest = {
         signature: requestSignature,
         transcriptId: requestTranscript,
+        localStateSignature: currentLocalStateSignature,
         body: JSON.stringify({ expected_revision: revision, operation_id: uuid(), ...payload }),
       };
     }
+    const request = pendingSaveRequest;
     saving = true; updateControls();
     try {
       const endpoint = `/api/v1/transcripts/${requestTranscript}/consultation-problem-plan`;
       const requestOptions = {
         method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' },
-        body: pendingSaveRequest.body,
+        body: request.body,
       };
       let response;
       try { response = await fetcher(endpoint, requestOptions); }
@@ -2799,15 +2801,20 @@ export function createSplitReviewController({
       if (requestId !== saveSequence || requestTranscript !== transcriptId) return false;
       if (!response.ok) {
         const error = await readSafeError(response);
+        // A definitive client response cannot have committed this operation;
+        // allow corrected local input to receive a fresh idempotency key.
+        if (response.status < 500 && pendingSaveRequest === request) pendingSaveRequest = null;
         if (response.status === 409) { conflictBlocked = true; setStatus('This problem plan changed elsewhere. Refresh to load the latest plan; your local edits are preserved.', 'error'); }
         else setStatus('Could not save this problem plan. Your edits are preserved; retry after resolving the save error.', 'error');
         if (response.status === 409 && error.code === 'consultation_problem_plan_conflict') showMessage('This problem plan changed elsewhere. Your edits are preserved.', 'error');
         return false;
       }
-      pendingSaveRequest = null;
-      const persisted = cloneProblemPlan(await response.json());
-      if (!persisted || requestId !== saveSequence || requestTranscript !== transcriptId) return false;
-      const changedDuringSave = JSON.stringify({ tiles: plan.tiles, problems: plan.problems }) !== localStateSignature;
+      const responsePayload = await response.json();
+      const persisted = cloneProblemPlan(responsePayload);
+      if (!persisted) throw new Error('Invalid saved problem plan response.');
+      if (requestId !== saveSequence || requestTranscript !== transcriptId) return false;
+      if (pendingSaveRequest === request) pendingSaveRequest = null;
+      const changedDuringSave = JSON.stringify({ tiles: plan.tiles, problems: plan.problems }) !== request.localStateSignature;
       persisted.tiles = persisted.tiles.map((tile) => ({ ...tile, _temporary: false }));
       persisted.problems = persisted.problems.map((problem) => ({ ...problem, _temporary: false }));
       if (changedDuringSave) {

@@ -1015,12 +1015,12 @@ def test_manual_retry_uses_frozen_analysis_and_terminalizes_old_pending_create(
         db_session, owner,
         UserAppPreferencesUpsert(split_consultations_into_separate_notes=False),
     )
+    from app.services import consultation_split_queue as queue_service
     monkeypatch.setattr(
-        "app.services.consultation_split_queue.resolve_user_llm",
+        "app.services.consultation_split_queue.resolve_new_writing_provider",
         lambda *_args, **_kwargs: pytest.fail("retry selected a new provider"),
     )
 
-    from app.services import consultation_split_queue as queue_service
     original_queue = queue_service.queue_split_execution
     monkeypatch.setattr(queue_service, "queue_split_execution", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("retry queue failed")))
     with pytest.raises(RuntimeError, match="retry queue failed"):

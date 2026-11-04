@@ -25,6 +25,8 @@ from app.models import (
 from app.services.telehealth_audio import TelehealthSourceSpan
 from app.services.telehealth_capture import (
     begin_telehealth_capture,
+    request_telehealth_capture_stop,
+    seal_telehealth_capture,
     stage_telehealth_audio_part,
 )
 from app.services.transcripts import (
@@ -252,3 +254,99 @@ def test_staged_audio_prevents_cleanup_when_source_reference_is_still_live(
     assert db_session.scalar(select(TranscriptAudioCleanupJob.id)) is None
     db_session.refresh(part)
     assert part.source_audio_vault_ref == ref
+
+
+
+def test_capture_stop_salvages_pending_audio_then_seals_interrupted_run(
+    db_session, make_team, make_user,
+):
+    team = make_team(name="Telehealth Capture Lifecycle Team")
+    owner = make_user(email="telehealth-stop@example.com", password="password-1", team=team)
+    transcript = _transcript(db_session, owner)
+    session = _session(db_session, owner, transcript)
+    session_id = session.id
+
+    stopped = request_telehealth_capture_stop(
+        db_session, owner,
+        transcript_id=transcript.id,
+        capture_session_id=session_id,
+        interrupted_channel="patient",
+        failure_code="source_ended",
+    )
+    assert stopped.status == "stopping"
+    assert stopped.failure_channel == "patient"
+    assert stopped.recording_stopped_at is not None
+
+    with pytest.raises(AppError, match="not been safely uploaded"):
+        seal_telehealth_capture(
+            db_session, owner,
+            transcript_id=transcript.id,
+            capture_session_id=session_id,
+            expected_clinician_parts=0,
+            expected_patient_parts=1,
+        )
+    db_session.rollback()
+
+    # The original recording may have buffered source data when its tab
+    # disconnected. Its parts can still finish staging while stopping.
+    _part(
+        db_session, owner, session, transcript,
+        deadline=utcnow() + timedelta(hours=1),
+    )
+    sealed = seal_telehealth_capture(
+        db_session, owner,
+        transcript_id=transcript.id,
+        capture_session_id=session_id,
+        expected_clinician_parts=0,
+        expected_patient_parts=1,
+    )
+    assert sealed.status == "interrupted"
+    assert sealed.failure_channel == "patient"
+    assert sealed.failure_code == "source_ended"
+    assert seal_telehealth_capture(
+        db_session, owner,
+        transcript_id=transcript.id,
+        capture_session_id=session_id,
+        expected_clinician_parts=0,
+        expected_patient_parts=1,
+    ).status == "interrupted"
+
+    assert request_telehealth_capture_stop(
+        db_session, owner,
+        transcript_id=transcript.id,
+        capture_session_id=session_id,
+        interrupted_channel="patient",
+        failure_code="source_ended",
+    ).status == "interrupted"
+
+    with pytest.raises(AppError):
+        request_telehealth_capture_stop(
+            db_session, owner,
+            transcript_id=transcript.id,
+            capture_session_id=session_id,
+            interrupted_channel="clinician",
+            failure_code="source_ended",
+        )
+    db_session.rollback()
+
+
+def test_clean_telehealth_capture_can_seal_with_no_detected_patient_speech(
+    db_session, make_team, make_user,
+):
+    team = make_team(name="Telehealth Silent Patient Team")
+    owner = make_user(email="telehealth-silent@example.com", password="password-1", team=team)
+    transcript = _transcript(db_session, owner)
+    session = _session(db_session, owner, transcript)
+    assert request_telehealth_capture_stop(
+        db_session, owner,
+        transcript_id=transcript.id,
+        capture_session_id=session.id,
+    ).status == "stopping"
+    # VAD may retain zero patient speech; that is not proof the source failed.
+    assert seal_telehealth_capture(
+        db_session, owner,
+        transcript_id=transcript.id,
+        capture_session_id=session.id,
+        expected_clinician_parts=0,
+        expected_patient_parts=0,
+    ).status == "ready"

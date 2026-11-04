@@ -385,7 +385,7 @@ def request_telehealth_capture_stop(
     A 'stopping' run can continue accepting new *audio parts* until all buffered
     PCM has been safely staged. It is not sealed merely because a track ended.
     """
-    if (interrupted_channel is None) != (failure_code is None):
+    if interrupted_channel is not None and failure_code is None:
         raise AppError(422, "validation_error", "Capture interruption metadata is incomplete.")
     if interrupted_channel is not None and interrupted_channel not in ("clinician", "patient"):
         raise AppError(422, "validation_error", "Capture interruption channel is invalid.")
@@ -400,14 +400,22 @@ def request_telehealth_capture_stop(
             if session.failure_channel == interrupted_channel and session.failure_code == failure_code:
                 return session
         raise AppError(409, "conflict", "Telehealth capture cannot stop in this state.")
-    if session.status == "stopping" and (
-        session.failure_channel != interrupted_channel or session.failure_code != failure_code
-    ):
-        # Never downgrade a known interrupted capture to a clean recording.
-        if interrupted_channel is None and session.failure_code:
-            return session
-        raise AppError(409, "idempotency_conflict", "Capture interruption details conflict.")
-    if session.status == "active":
+    if session.status == "stopping":
+        if session.failure_code:
+            # A later clean stop cannot erase an existing interruption.
+            if failure_code is None:
+                return session
+            if session.failure_channel != interrupted_channel or session.failure_code != failure_code:
+                raise AppError(409, "idempotency_conflict", "Capture interruption details conflict.")
+        elif failure_code:
+            # A final audio upload/flush error can be discovered after a
+            # nominal Stop was requested. Escalate the stopping run to
+            # interrupted; do not mark it falsely complete.
+            session.failure_channel = interrupted_channel
+            session.failure_code = failure_code
+            db.add(session)
+            db.commit()
+    else:
         session.status = "stopping"
         session.recording_stopped_at = utcnow()
         session.failure_channel = interrupted_channel

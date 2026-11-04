@@ -106,13 +106,28 @@ export function projectTelehealthProviderTurn(turn, spans, {
   const fileEndSample = Math.round(turn.end_ms * fileSampleRate / 1000);
   if (!isFrame(fileStartSample) || !isFrame(fileEndSample)) return null;
 
-  const span = spans.find((piece) =>
-    isFrame(piece.fileStartSample) && isFrame(piece.fileEndSample)
-    && isFrame(piece.timelineStartFrame) && isFrame(piece.timelineEndFrame)
-    && piece.fileEndSample > piece.fileStartSample
-    && piece.timelineEndFrame > piece.timelineStartFrame
-    && fileStartSample >= piece.fileStartSample && fileEndSample <= piece.fileEndSample
-  );
+  // Reject ambiguous or malformed piecewise time maps instead of selecting
+  // whichever overlapping piece happened to be listed first. Upload-side
+  // server validation must additionally check measured WAV duration/size.
+  let previousFileEnd = 0;
+  let previousTimelineEnd = 0;
+  for (const piece of spans) {
+    if (!piece || !isFrame(piece.fileStartSample) || !isFrame(piece.fileEndSample)
+      || !isFrame(piece.timelineStartFrame) || !isFrame(piece.timelineEndFrame)
+      || piece.fileEndSample <= piece.fileStartSample
+      || piece.timelineEndFrame <= piece.timelineStartFrame
+      || piece.fileStartSample !== previousFileEnd
+      || piece.timelineStartFrame < previousTimelineEnd) return null;
+    const sourceDurationMs = (piece.fileEndSample - piece.fileStartSample) * 1000 / fileSampleRate;
+    const timelineDurationMs = (piece.timelineEndFrame - piece.timelineStartFrame) * 1000 / timelineSampleRate;
+    // Resampling may introduce a small edge rounding difference, but a
+    // substantial mismatch would incorrectly attribute dialogue to time.
+    if (Math.abs(sourceDurationMs - timelineDurationMs) > 10) return null;
+    previousFileEnd = piece.fileEndSample;
+    previousTimelineEnd = piece.timelineEndFrame;
+  }
+  const span = spans.find((piece) => fileStartSample >= piece.fileStartSample
+    && fileEndSample <= piece.fileEndSample);
   if (!span) return null;
 
   const position = (sample) => span.timelineStartFrame

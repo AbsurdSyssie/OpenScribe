@@ -27,6 +27,7 @@ class TelehealthSourceTurn:
 
     part_id: UUID
     channel: Channel
+    source_sequence: int
     segment_index: int
     text: str
     start_ms: int | None = None
@@ -50,6 +51,9 @@ class TelehealthMergeResult:
     turns: tuple[TelehealthDisplayTurn, ...]
     # Source text only. Persist through OpenScribe's owner-encrypted draft path.
     canonical_text: str
+    # Presentation-only role projection; generation must run established redaction
+    # against canonical source before adding these labels, never send this raw.
+    labelled_text: str
 
 
 def _valid_timestamp(value: int | None) -> bool:
@@ -69,12 +73,16 @@ def merge_telehealth_source_turns(
     if len(source_turns) > MAX_TURNS:
         raise ValueError("Telehealth transcript exceeds supported turn count.")
     unique: dict[tuple[UUID, Channel, int], TelehealthSourceTurn] = {}
+    part_channel: dict[UUID, Channel] = {}
+    source_sequence_parts: dict[tuple[Channel, int], UUID] = {}
     total = 0
     for turn in source_turns:
         if (
             not isinstance(turn, TelehealthSourceTurn)
             or not isinstance(turn.part_id, UUID)
             or turn.channel not in CHANNEL_LABELS
+            or type(turn.source_sequence) is not int
+            or turn.source_sequence < 0
             or type(turn.segment_index) is not int
             or turn.segment_index < 0
             or type(turn.text) is not str
@@ -90,6 +98,13 @@ def merge_telehealth_source_turns(
             )
         ):
             raise ValueError("Invalid telehealth source turn.")
+        prior_channel = part_channel.setdefault(turn.part_id, turn.channel)
+        if prior_channel != turn.channel:
+            raise ValueError("A telehealth source part cannot change channel.")
+        sequence_key = (turn.channel, turn.source_sequence)
+        prior_part = source_sequence_parts.setdefault(sequence_key, turn.part_id)
+        if prior_part != turn.part_id:
+            raise ValueError("Conflicting telehealth source-part ordering.")
         key = (turn.part_id, turn.channel, turn.segment_index)
         old = unique.get(key)
         if old is not None:
@@ -112,8 +127,9 @@ def merge_telehealth_source_turns(
                 turn.start_ms,
                 turn.end_ms,
                 0 if turn.channel == "clinician" else 1,
-                str(turn.part_id),
+                turn.source_sequence,
                 turn.segment_index,
+                str(turn.part_id),
             ),
         )
         turns = tuple(
@@ -130,29 +146,51 @@ def merge_telehealth_source_turns(
             mode="timed",
             turns=turns,
             canonical_text="\n".join(turn.text for turn in turns),
+            labelled_text="\n".join(
+                f"{turn.speaker_label}: {turn.text}" for turn in turns
+            ),
         )
 
-    # Server-owned per-part ordering is needed for this block presentation.
-    # The caller passes original source turns in that order, not ASR finish order.
+    # Flat text has no evidenced cross-channel chronology. Sort by the durable
+    # server-owned part sequence rather than provider job completion order.
     blocks: list[TelehealthDisplayTurn] = []
     for channel in ("clinician", "patient"):
-        text = "\n".join(
-            turn.text.strip() for turn in items if turn.channel == channel
+        ordered = sorted(
+            (turn for turn in items if turn.channel == channel),
+            key=lambda turn: (turn.source_sequence, turn.segment_index),
         )
-        if text:
-            blocks.append(
-                TelehealthDisplayTurn(
-                    speaker_id=channel,
-                    speaker_label=CHANNEL_LABELS[channel],
-                    text=text,
-                    start_ms=None,
-                    end_ms=None,
+        chunk: list[str] = []
+        chunk_length = 0
+
+        def append_block() -> None:
+            nonlocal chunk_length
+            if chunk:
+                blocks.append(
+                    TelehealthDisplayTurn(
+                        speaker_id=channel,
+                        speaker_label=CHANNEL_LABELS[channel],
+                        text="\n".join(chunk),
+                        start_ms=None,
+                        end_ms=None,
+                    )
                 )
-            )
+                chunk.clear()
+                chunk_length = 0
+
+        for turn in ordered:
+            value = turn.text.strip()
+            if chunk and chunk_length + len(value) + 1 > MAX_TURN_CHARS:
+                append_block()
+            chunk.append(value)
+            chunk_length += len(value) + (1 if chunk_length else 0)
+        append_block()
+
+    result_turns = tuple(blocks)
     return TelehealthMergeResult(
         mode="source_blocks",
-        turns=tuple(blocks),
-        canonical_text="\n\n".join(
-            f"{turn.speaker_label}:\n{turn.text}" for turn in blocks
+        turns=result_turns,
+        canonical_text="\n".join(turn.text for turn in result_turns),
+        labelled_text="\n\n".join(
+            f"{turn.speaker_label}:\n{turn.text}" for turn in result_turns
         ),
     )

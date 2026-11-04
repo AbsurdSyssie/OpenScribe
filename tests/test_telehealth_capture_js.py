@@ -288,4 +288,37 @@ await assert.rejects(pending, /cancelled/);
 assert.equal(lateVideo.stopped, true);
 assert.equal(lateAudio.stopped, true);
 assert.equal(delayed.state, 'stopped');
+
+// If final PCM flush cannot be acknowledged, do not present the recording as
+// safely complete: warn and reject stop(), while releasing both source tracks.
+const flushVideo = new FakeTrack('video', 'browser');
+const flushPatient = new FakeTrack('audio');
+const flushMic = new FakeTrack('audio');
+const badFlushEvents = [];
+const badFlushCapture = createTelehealthCapture({
+  mediaDevices: {
+    getDisplayMedia: async () => ({
+      getTracks: () => [flushVideo, flushPatient],
+      getVideoTracks: () => [flushVideo],
+      getAudioTracks: () => [flushPatient],
+    }),
+    getUserMedia: async () => ({
+      getTracks: () => [flushMic],
+      getAudioTracks: () => [flushMic],
+    }),
+  },
+  AudioContextCtor: FakeContext, AudioWorkletNodeCtor: FakeTap,
+  onFrames: () => {},
+  onInterrupted: (event) => badFlushEvents.push(event),
+});
+await badFlushCapture.start();
+const recentTap = FakeTap.all.at(-1);
+recentTap.port.postMessage = (message) => {
+  if (message.type === 'flush') throw new Error('Synthetic flush failure');
+};
+await assert.rejects(badFlushCapture.stop(), /incomplete audio/);
+assert.equal(badFlushCapture.state, 'stopped');
+assert.equal(flushPatient.stopped, true);
+assert.equal(flushMic.stopped, true);
+assert.equal(badFlushEvents[0].reason, 'audio_flush_failed');
 """)

@@ -517,6 +517,13 @@ def expire_ingestion_source_audio(
         expired_count += 1
     from app.services.transcript_streaming import expire_stream_recovery_audio
     expired_count += expire_stream_recovery_audio(db, batch_size=max(1, batch_size - expired_count), now=comparison_now)
+    # Staged telehealth source audio shares the existing 24-hour Vault expiry
+    # scheduler and transcript-root cleanup pipeline. Source parts already
+    # handed off to an ingestion job remain under that job's expiry ownership.
+    from app.services.telehealth_retention import expire_telehealth_staged_audio
+    expired_count += expire_telehealth_staged_audio(
+        db, batch_size=max(1, batch_size - expired_count), now=comparison_now,
+    )
     return expired_count
 
 

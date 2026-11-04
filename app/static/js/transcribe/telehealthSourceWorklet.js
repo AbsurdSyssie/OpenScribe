@@ -2,6 +2,7 @@
 // AudioWorklet currentFrame is common to every tap in the SAME AudioContext.
 // This produces samples only; silence/VAD decisions belong to the consumer.
 const FRAMES_PER_MESSAGE = 4096;
+const MAX_UNACKNOWLEDGED_MESSAGES = 24; // About two seconds of 48 kHz audio per source.
 
 class TelehealthSourceProcessor extends AudioWorkletProcessor {
   constructor(options = {}) {
@@ -16,7 +17,12 @@ class TelehealthSourceProcessor extends AudioWorkletProcessor {
     this.startFrame = 0;
     this.expectedFrame = null;
     this.closed = false;
+    this.outstanding = 0;
     this.port.onmessage = (event) => {
+      if (event.data?.type === 'ack') {
+        if (this.outstanding > 0) this.outstanding -= 1;
+        return;
+      }
       if (event.data?.type !== 'flush') return;
       this.emit();
       this.closed = true;
@@ -26,7 +32,16 @@ class TelehealthSourceProcessor extends AudioWorkletProcessor {
 
   emit() {
     if (!this.length) return;
+    if (this.outstanding >= MAX_UNACKNOWLEDGED_MESSAGES) {
+      // Do not silently shed frames if the main thread/VAD pipeline stalls.
+      // The controller stops and warns; already accepted audio remains valid.
+      this.closed = true;
+      this.port.postMessage({ type: 'overflow', channel: this.channel });
+      this.length = 0;
+      return;
+    }
     const samples = this.pending.slice(0, this.length);
+    this.outstanding += 1;
     this.port.postMessage({
       type: 'frames',
       channel: this.channel,

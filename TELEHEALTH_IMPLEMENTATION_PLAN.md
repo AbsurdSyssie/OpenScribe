@@ -225,6 +225,38 @@ This is **in scope for the overall feature roadmap**, but not required for brows
 
 
 
+## 7b. Implementation checkpoint — 2026-11-04 (WP0 underway)
+
+**Implementation exists on this feature branch but is NOT enabled in the Scribe UI and is NOT yet an end-to-end telehealth feature.** The existing single-microphone paths are intentionally unchanged at this checkpoint.
+
+### Implemented reusable foundations
+
+| Component | New code | Contract |
+| --- | --- | --- |
+| Shared audio timeline | app/static/js/transcribe/telehealthTimeline.js | Two source sample positions relative to one AudioContext rendering clock; rejects overlapping/rewound input; tracks positive VAD speech duration independently; maps provider-relative ASR times through validated contiguous source spans and rejects segments crossing VAD-discarded silence. |
+| AudioWorklet source taps | app/static/js/transcribe/telehealthSourceWorklet.js | Mic and tab PCM downmixed separately within their own sources; shared AudioWorklet sample-frame timestamp; bounded 4096-sample packets; explicit PCM consumer ACK/backpressure failure instead of silent message growth; flush on stop. |
+| Browser source lifecycle | app/static/js/transcribe/telehealthCapture.js | Requires user-selected browser tab audio and mic, rejects explicit non-tab share, never processes video, uses silent graph connected to one AudioContext, tracks source ended/context interruption, flushes buffered PCM and closes tracks, handles late permission responses safely. Requires an immediately consuming downstream module. |
+| Bounded handoff | app/static/js/transcribe/telehealthWindows.js | Per-channel contiguous capture windows with bounded pending asynchronous durable-consumer queue, preserved original offsets/gaps, explicit backpressure and retry of failed/unaccepted audio. Consumer must await durable storage acceptance before resolving. |
+| Pure transcript merge | app/services/telehealth_merge.py | Deterministic source-assigned Clinician/Patient roles, idempotent source-part replay, timed merge preserving overlap, conservative no-timestamps two-block fallback; canonical source text remains separate from role-labelled presentation text and must pass established redaction before LLM generation. |
+| Tests | tests/test_telehealth_capture_js.py; tests/test_telehealth_windows_js.py; tests/test_telehealth_merge.py | Synthetic JS and Python test coverage of timing, VAD-compressed gaps, backpressure, retries, media source shutdown, provider result ordering and conservative fallback. |
+
+**Verification performed:** Focused in-isolate V8/JavaScript synthetic runtime assertions passed for the timeline, worklet, mock browser capture, cancellation, interrupted tracks and bounded-window handoff. **Not run:** repository pytest, full test suite, integration tests, real browser tab audio tests or clinical-safety validation; the environment does not contain a locally runnable project checkout/test PostgreSQL/Redis setup. The checked-in pytest/Node tests still need to run in a project checkout.
+
+### Pinned VAD investigation
+
+The checked-in @ricky0123/vad-web 0.0.29 browser bundle exposes NonRealTimeVAD. The documented API accepts a Float32Array and native sample rate and yields speech audio with start/end timestamps. **Investigate applying it to clock-aligned bounded raw windows (before upload)** instead of deriving timestamps from existing MicVAD speech-end callbacks, which lack original sample offsets. Verify precise start/end-to-sample mapping, overlap at window boundaries, VAD false-negative hazards, model memory, load/performance and per-channel isolation against the actual pinned 0.0.29 bundle before adopting. See https://docs.vad.ricky0123.com/user-guide/api/.
+
+### Outstanding before any user-facing enablement
+
+1. Build server-owned telehealth capture session, per-channel source-part metadata and API/migrations with owner auth, CSRF, durable idempotency, quotas, correct client-supplied sample-map validation, Vault encryption/retention, and explicit interrupted-capture gap state.
+2. Wire the capture/controller/window producer to *bounded actual VAD* and the new durably acknowledged ingestion APIs. Do not directly connect the raw source tap to an unbounded queue or drop audio on an upload exception.
+3. Integrate server-owned timed/untimed ASR result normalization, transcript-version-safe aggregation, role projection through the existing redaction boundary and warned/acknowledged incomplete note generation. Pure merge function alone must not be used to bypass redaction or current structured-turn invariants.
+4. Implement the approved phone-icon toggle and owner preferences, one-time notice, two-channel audio verification/collapse, recording state and track-loss recovery in Scribe without changing normal microphone flows.
+5. Add and run focused database/route-audit/migration/browser E2E tests, supported Chrome/Edge Windows/macOS matrix and privacy/DCB0129 release review.
+
+**Safety gate:** Do not expose Telehealth as working until BOTH audio sources can be persisted and processed with recoverable failure outcomes, and all UI/clinical-safety contracts above are implemented. The presence of modules on the branch is not an activation flag.
+
+
 ## 8. Implementation guardrails and handoff
 
 - **START:** Product behavior is agreed. Agents may implement the scoped WP0→WP4 work, beginning with timing/platform feasibility and an API/data-contract design checkpoint. Stop and escalate only an evidenced technical impossibility, user-visible scope change, privacy/security/clinical-safety conflict or deviation from the confirmed product contracts.

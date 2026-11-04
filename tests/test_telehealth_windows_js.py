@@ -65,9 +65,14 @@ assert.equal(delivered.length, 1);
 assert.equal(delivered[0].samples.length, 4);
 
 let release;
+let blockFirst = true;
 const blocked = createTelehealthWindows({
   sampleRate: 4, windowSeconds: 1, maxPendingWindows: 1,
-  onWindow: () => new Promise((resolve) => { release = resolve; }),
+  onWindow: () => {
+    if (!blockFirst) return Promise.resolve();
+    blockFirst = false;
+    return new Promise((resolve) => { release = resolve; });
+  },
 });
 assert.equal(blocked.ingest({
   channel: 'clinician', startFrame: 0, endFrame: 4, samples: new Float32Array(4),

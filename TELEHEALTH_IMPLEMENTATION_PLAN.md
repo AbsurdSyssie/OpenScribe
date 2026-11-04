@@ -18,7 +18,27 @@ These decisions supersede any earlier "candidate" recommendations in this draft.
 6. **Separate, subtle Telehealth button/toggle near recording controls**, not a third option inside the Recorded upload / Live capture dropdown. A **per-user show/hide preference** is desired for consideration; exact default, UX and persistence require sign-off.
 7. **Original shared sample clock remains mandatory before VAD**, with per-channel source offsets, independent VAD and independent ASR metering. Existing batch VAD concatenation loses silence offsets and cannot be reused unchanged.
 
-**Unresolved architecture:** failure/restart and partial-note policy; whether to upload during capture to bound memory; flat-text chunk representation; provider diarisation; overlap handling; UI placement/visibility; role leakage; quotas; safety/consent and release matrix.
+**Still unresolved:** exact failure/restart state transitions, persistent interruption markers, incomplete-generation warning/acknowledgement contract, per-part mapping and flat-text assembly, provider diarisation, overlap handling, exact toggle/meter details, consent and release matrix. See round-2 decisions and the decision register below.
+
+## Maintainer decisions — round 2 and visualiser refinement (2026-11-04)
+
+**Confirmed on 2026-11-04:**
+
+- **On unexpected source loss:** warn immediately, stop the compromised two-source capture and offer a restart as another capture run in the **same consultation**; **preserve already recorded audio**, not discard and restart from zero. Preserve it only within existing encrypted storage, retry and retention constraints — this is **not** permission to retain audio indefinitely or after explicit consultation deletion. Define exact stop/upload/error races and interruption markers before coding.
+- **Incomplete note generation is allowed with a prominent warning and explicit acknowledgement**, rather than permanently blocking the clinician. Clearly identify missing/failed audio and avoid claiming the note is based on the full consultation. Do not suppress existing clinician review or safety protections.
+- **Bounded uploads during recording are approved**, while **ASR/transcript assembly remains after Stop**. Current batch recorder already has rollover concepts; telehealth must preserve two-channel original-timeline mappings across all parts and avoid unbounded browser memory. Ensure source parts are safely retained and retryable on interruptions.
+- **Best-effort timing/interleaving** is approved only at evidenced chunk/segment granularity. When timestamp accuracy is inadequate, show source-labelled `Clinician:` and `Patient:` blocks rather than invent event order; feed the LLM the same provenance and uncertainty.
+- **UI placement**: subtle independent Telehealth control beside current recording area, **shown by default with a per-user hide preference**, and enabling Telehealth may switch to recorded mode with confirmation. Existing dropdown stays unchanged.
+- **Usage/quota**: apply limits to **combined actual submitted/provider-metered audio minutes** from both channels, tracked independently by channel. A 30-minute session can consume up to 60 channel-minutes. Keep session duration distinct.
+- **Echo/cross-talk**: recommend headphones and appropriate microphone echo cancellation; automated cross-channel duplicate removal is **not a v1 requirement**. First-use telehealth guidance/modal should include this recommendation, with an appropriate per-user preference/acknowledgement if approved. Do not claim laptop microphones are immune to remote audio bleed.
+
+**UI exploration from latest feedback — concept, NOT final sign-off:**
+
+- Previous illustrated two-row labelled controls were judged **too busy**. Telehealth toggle should be a **small phone icon only**, using an accessible name and hover/focus tooltip (e.g. "Telehealth recording"), with visible on/off state.
+- The existing visualiser should initially expand into compact **Clinician** and **Patient** audio bars. Proposed colour progression **red → green** based on **five cumulative seconds of real voice activity on each source** (not five seconds of elapsed time); after both thresholds, show a brief green confirmation glow and **collapse into one animated combined activity bar** responding to either channel.
+- **Required safety distinction:** five seconds of VAD-confirmed speech is a *signal-confidence milestone*, **not proof** the recording is reliable/complete. A connected but silent track is neither a failure nor a reason to block capture. Use an accessible waiting/amber state rather than indicating silence as broken; reserve true red/error for missing or disconnected tracks. Retain two small independent source-health indicators in collapsed state; automatically re-expand on source loss or degraded capture and announce the failure. Combined meter may use max/aggregate *visual* level but never mix the underlying ASR sources.
+- Prefer a minimal CSS transition and existing level/VAD signals, avoiding expensive waveform reconstruction. Respect reduced-motion and non-colour status cues. Keep the split-button and dictation layout compact; test mobile/responsive width.
+- **Open:** exact graphic, whether five seconds cumulative VAD is the right threshold, whether collapse is automatic and reversible, visual calibration and tooltip copy. Do not implement this as a fixed contract without maintainer approval.
 
 ## 0. Established intent from maintainer discussion
 
@@ -50,13 +70,13 @@ The following are user-stated requirements, not open proposals:
 
 **Confirmed:** Telehealth is a **separate subtle button/toggle** by the recording controls, NOT a third recording-mode dropdown option. The existing recorded upload / live capture selection and backend `whole_file` / `live_chunked` modes must not be silently redesigned. V1 telehealth is two-source recorded capture with **post-consultation ASR**, likely using whole-file ingestion plus a new server-owned channel/session contract; the concrete ingestion design is still open.
 
-**Preference:** consider an optional **per-user show/hide Telehealth control** setting. Existing `app/static/js/transcribe/app.js` sends full saved preferences via `persistUserAppPreferences`; `app/services/preferences.py` and `app/schemas/preferences.py` whitelist fields. A new preference needs coordinated schema, normalisation, persistence and client changes; decide default visibility and discoverability before coding.
+**Preference:** implement an **owner-scoped show/hide Telehealth control** setting, shown by default. Existing `app/static/js/transcribe/app.js` sends full saved preferences via `persistUserAppPreferences`; `app/services/preferences.py` and `app/schemas/preferences.py` whitelist fields. A new preference needs coordinated schema, normalisation, persistence and client changes; decide default visibility and discoverability before coding.
 
 **Browser first:** after an explicit Start action, request remote tab audio via `getDisplayMedia` and local microphone via `getUserMedia`. Video is required as a browser capture-request parameter but must never be processed or stored. Verify an actual remote audio track exists, show each active channel and any dropout prominently, and direct the user to restart when capture is compromised. Exact recovery policy is still undecided.
 
 **Required future phase:** WhatsApp **native desktop application audio**, with separately scoped platform capture and release testing. Do not promise OS-wide app capture in tab-only v1.
 
-**Open questions:** toggle placement/appearance, show/hide preference default, which recording modes can coexist, startup permission handling, when source selection can change, partial-audio recovery and tested browser/OS matrix.
+**Open questions:** final small phone-icon toggle appearance and tooltip, dual visualiser five-second speech milestone and collapse animation, which recording modes can coexist, startup permission handling, when source selection can change, exact partial-audio recovery and tested browser/OS matrix. See proposed UI concept in the round-2 decision record.
 
 ## 3. Timing and audio capture invariant (mandatory)
 
@@ -118,22 +138,22 @@ An audio payload with 16 kHz samples is not inherently 16 kHz in *timeline frame
 
 | ID | State | Decision / question |
 | --- | --- | --- |
-| D1 | **DECIDED** | V1 is two separate recorded audio sources and **post-consultation transcription**. Live dual-ASR streams are deferred. OPEN: may bounded parts upload during recording to limit memory? |
+| D1 | **DECIDED (round 2)** | V1 two recorded sources and post-consultation ASR. **Bounded audio-part uploads during capture are approved** for memory safety. Live dual-ASR streaming is deferred. |
 | D2 | **DECIDED, matrix OPEN** | Browser-call **tabs first**. **WhatsApp native desktop app audio is a required later development phase**. OPEN: supported v1 browser/OS matrix; future platform adapters. |
-| D3 | **DECIDED, mechanics OPEN** | Do not reject STT providers without timestamps. Use evidenced timing when available; fallback to **Clinician:** and **Patient:** blocks when chronology cannot be reconstructed. OPEN: how granularity, display and LLM note-generation prompt represent this uncertainty. |
+| D3 | **DECIDED (round 2), adapter mechanics OPEN** | Providers without timestamps remain eligible; merge only at evidenced chunk/segment granularity and otherwise show **Clinician:** / **Patient:** blocks. Generation must preserve role provenance and acknowledge unknown chronology. |
 | D4 | **DECIDED** | Always display **Clinician** for mic and **Patient** for remote audio in v1; later manual relabeling optional. These are provenance assumptions, not verified speaker identity. |
 | D5 | **OPEN** | Run provider diarisation within channels or rely solely on two fixed labels? How should multiple remote voices be displayed? |
-| D6 | **PARTIAL** | If a channel ends unexpectedly, **warn clearly and tell clinician to restart**; no silent mono downgrade. OPEN: stop both, resume within same session or new session, retain or discard partial audio, how to mark capture gaps. |
-| D7 | **OPEN** | If one channel is missing/ASR fails, may an explicitly acknowledged incomplete transcript generate a note, or must it be retried first? Distinguish this from allowed no-timestamp fallback. |
+| D6 | **DECIDED (round 2), technical details OPEN** | **Stop compromised dual-source capture, warn immediately, preserve all already captured/recoverable audio, and allow a new run in the same consultation.** No silent mono fallback. Define interruption markers and interrupted-upload/retry races; obey existing retention/deletion. |
+| D7 | **DECIDED (round 2), warning UX OPEN** | **Allow generation from incomplete transcript after a prominent warning and acknowledgement.** Missing channel/segments must remain distinguishable from a merely untimed-but-complete result; no false full-coverage claim. |
 | D8 | **OPEN** | Timing precision target, both VAD settings/pre-roll, original-frame mapping, trim and resampling drift. Ensure independent silence suppression doesn't destroy shared timeline. |
 | D9 | **OPEN** | Timed overlapping utterances/ties and fallback presentation when only flat text is available. Proposal: preserve both with deterministic stable order when timing is known, no fabricated order otherwise. |
-| D10 | **OPEN** | Separate per-source captured/submitted/metered minutes, combined ASR billing/quota (two 30-min tracks may cost up to 60 audio-minutes) and where shown. |
+| D10 | **DECIDED (round 2)** | Meter each channel independently; **apply provider limits to aggregate submitted/metered channel-minutes**. Consultation wall-clock duration stays distinct. Exact usage presentation remains a UI choice. |
 | D11 | **OPEN** | Telehealth toggle on existing consultation, coexistence with ordinary modes/recordings, repeated restarts and capture-session scopes. |
-| D12 | **PARTIAL** | **Separate subtle button/toggle**, not in mode dropdown. Possible per-user show/hide preference; OPEN: default, placement, persistence, whether toggle locks recorded mode, two source indicators. |
-| D13 | **OPEN** | Clinician mic/call speaker bleed, duplicate speech, headset recommendation, other voices in tab. |
+| D12 | **PARTIAL (round 2 + new concept)** | Subtle separate control **beside recording**, **shown by default**, **per-user hide preference**. Enabling recorded capture may require mode confirmation. Latest concept: **icon-only phone toggle** with tooltip; two temporary Clinician/Patient level bars, five seconds cumulative voiced activity per source, green feedback then one combined visualisation; retain separate health indicators and reopen on fault. Treat exact animation/status palette as unapproved prototype, not settled spec. |
+| D13 | **DECIDED baseline, guidance details OPEN** | **No automatic cross-channel deduplication for v1.** Recommend headphones/echo cancellation; first-use modal/guidance for telehealth and optional per-user acknowledgment/preference. Still test for speaker bleed and duplicate clinician/patient turns. |
 | D14 | **OPEN** | Recording notice, consent/objections, clinical safety review, deployment/provider policy, retention/export, staged rollout. |
 
-**Next interview priorities:** D6/D7 failure and restart; D1 bounded memory/rollovers; D12 placement, mode interaction and preference; D3 fallback/notes; D10 quotas; D5 diarisation and multi-speaker cases. Record answers with dates; request sign-off before proceeding to a code implementation plan. All unresolved items remain decision gates.
+**Next interview priorities:** D12 phone toggle and short dual-bar verification/collapse animation; D6 interrupted-track warning, preserved-audio restart and gap markers; D7 exact incomplete-note acknowledgement; D5 diarisation and multi-speaker cases; D8 timing accuracy; D14 clinical governance and rollout. Record answers with dates; request sign-off before proceeding to code. Unresolved details remain decision gates.
 
 ## 6. Proposed agent work packages (not authorised until dependent decisions are resolved)
 
@@ -164,13 +184,13 @@ An audio payload with 16 kHz samples is not inherently 16 kHz in *timeline frame
 
 ## 7. Acceptance criteria (draft)
 
-1. Clinician uses a **separate subtle Telehealth toggle/button**, leaving the existing mode dropdown unchanged, to explicitly start/stop two-channel recorded capture; each source is visibly monitored.
+1. Clinician uses a **separate subtle Telehealth icon toggle beside recording**, shown by default and optionally hidden through an owner-scoped preference; existing mode dropdown remains unchanged. Both sources are visible during initial verification and their independent health remains observable after any meter collapse.
 2. Local mic and remote tab audio stay independent through capture and ASR; no video or unintended system audio is sent/stored.
 3. An original consultation-time speech map survives independent VAD silence suppression, pre-roll, trimming, resampling and overlap. Test evidence demonstrates deterministic chronological reconstruction.
 4. Two ASR jobs may finish in reverse order; with supported timings, the merged owner-only structured transcript is correctly ordered and retains overlapping utterances, with source-derived **Clinician/Patient** labels and no duplicates on retry. Without timings, maintain two explicitly source-labelled blocks; do not invent chronology.
-5. Non-timestamped provider results are permitted via `Clinician:` / `Patient:` fallback blocks. Missing audio, source interruption, gaps or ASR failures have explicit warnings and safe outcomes; no false 'complete' or silent partial note generation.
+5. Non-timestamped provider results are permitted via `Clinician:` / `Patient:` fallback blocks. Missing audio, source interruption, gaps or ASR failures have explicit warnings and preserved recoverable audio; **incomplete-note generation is allowed only after an explicit warning/acknowledgement**, without claiming that capture was complete.
 6. Existing microphone-only whole-file, live-chunk and Deepgram stream/dictation paths continue to behave identically; all existing authorization, encrypted persistence, redaction, versioned edits, generation, quotas, retry, retention and deletion controls hold.
-7. Usage shows or reliably accounts for actual captured/submitted/provider-metered seconds by channel and as aggregate provider usage; consultation wall-clock duration is not confused with billed channel-minutes.
+7. Usage accounts for captured/submitted/provider-metered seconds independently by channel and combined for STT quota/billing; consultation wall-clock duration is distinct. Bounded uploads during recording must preserve sample-to-original-clock mapping.
 8. No medical/patient details or raw audio in logs, provider metadata, browser storage or test fixtures. Review clinical safety and disclosure text before release.
 9. V1 does not require dual Deepgram live sockets. WhatsApp **native app** capture is an explicit later-phase deliverable with separate platform feasibility/testing; it is not silently dropped.
 

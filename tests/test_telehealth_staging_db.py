@@ -75,6 +75,7 @@ def _session(db, owner, transcript):
 
 def _part(db, owner, session, transcript, *, deadline):
     row = TelehealthCapturePart(
+        id=uuid4(),
         session_id=session.id,
         transcript_id=transcript.id,
         owner_user_id=owner.id,

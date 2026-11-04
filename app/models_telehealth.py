@@ -180,6 +180,8 @@ class TelehealthCapturePart(Base):
     # Metadata only; an array of original/file sample coordinates (never audio).
     timing_spans_json: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
     source_audio_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Owner-keyed digest of source bytes, for exact idempotency replay checks.
+    source_audio_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     source_audio_duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     source_audio_vault_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
     source_audio_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

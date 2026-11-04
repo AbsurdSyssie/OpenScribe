@@ -71,6 +71,8 @@ document.querySelectorAll('[data-diarization-preference]').forEach((input) => {
         preferred_transcribe_tab: current.preferred_transcribe_tab || null,
         diarization_enabled: input.checked,
         diarization_warning_acknowledged: current.diarization_warning_acknowledged === true,
+        show_telehealth_control: current.show_telehealth_control !== false,
+        telehealth_guidance_acknowledged: current.telehealth_guidance_acknowledged === true,
       };
       const saveResponse = await csrfFetch('/api/v1/app-preferences', {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),

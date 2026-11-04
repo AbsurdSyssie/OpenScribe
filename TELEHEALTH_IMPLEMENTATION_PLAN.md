@@ -225,7 +225,7 @@ This is **in scope for the overall feature roadmap**, but not required for brows
 
 
 
-## 7b. Implementation checkpoint — 2026-11-04 (WP0 underway)
+## 7b. Implementation checkpoint — 2026-11-04 (WP0 + WP2 foundations)
 
 **Implementation exists on this feature branch but is NOT enabled in the Scribe UI and is NOT yet an end-to-end telehealth feature.** The existing single-microphone paths are intentionally unchanged at this checkpoint.
 
@@ -246,9 +246,22 @@ This is **in scope for the overall feature roadmap**, but not required for brows
 
 The checked-in @ricky0123/vad-web 0.0.29 browser bundle exposes NonRealTimeVAD. The documented API accepts a Float32Array and native sample rate and yields speech audio with start/end timestamps. **Investigate applying it to clock-aligned bounded raw windows (before upload)** instead of deriving timestamps from existing MicVAD speech-end callbacks, which lack original sample offsets. Verify precise start/end-to-sample mapping, overlap at window boundaries, VAD false-negative hazards, model memory, load/performance and per-channel isolation against the actual pinned 0.0.29 bundle before adopting. See https://docs.vad.ricky0123.com/user-guide/api/.
 
+### Backend WP2 groundwork committed (non-public)
+
+- **app/services/telehealth_audio.py:** validates server-measured mono PCM sample counts, original sample mappings across VAD gaps, shared-clock frame bounds, per-source sequence numbers and safe retry replay.
+- **app/models_telehealth.py**, registered in **app/models.py**: owner/team/transcript-scoped capture session and per-channel part models. Parts store only timing metadata, owner-keyed audio fingerprints and Vault retry refs—not raw audio or clinical text.
+- **alembic/versions/o9p0q1r2s3t4_add_telehealth_capture_sessions.py:** additive migration on master revision n8o9p0q1r2s3 with unique source sequence and idempotency guards; downgrade refuses to erase existing sessions.
+- **app/services/telehealth_capture.py:** internal owner/root-locked session start and durable staging of exact mono PCM16 WAV parts. Requires real measured source duration, owner-keyed replay fingerprint and storage limits; writes audio to existing Vault source-audio storage and uses established orphan-secret compensation on transaction rollback. No external route is enabled yet.
+- **app/services/telehealth_retention.py** and **app/services/transcripts.py:** include staged refs in owner-root deletion and live-ref protection, expire staged sources using existing cleanup scheduling, flag incomplete/expired capture and lock transcript deletion against concurrent source acceptance.
+- **tests/test_telehealth_audio.py**, **tests/test_telehealth_capture_contract.py**, **tests/test_telehealth_staging_db.py**: synthetic validation tests and PostgreSQL fixture tests for owner authorization, durable retry/expiry, and exact cleanup behaviour.
+
+**Verification:** Synthetic JavaScript timing/window/capture assertions were executed in an isolated runtime. Repository pytest, database/migration/CI tests and actual browser recording have NOT yet been executed; no local checkout or supported PostgreSQL/Redis test infrastructure was available.
+
+**Critical backend gap:** Post-stop finalization must transfer staged parts to provider-accounted STT work without dropping Vault references, waiting for both channels, retaining recoverable failed source data and merging into an owner-encrypted, versioned, redacted transcript. The existing ordinary whole-file worker immediately applies text and permits only one active file job per transcript. Do NOT publish staged-audio endpoints or enable UI capture until this gap is resolved.
+
 ### Outstanding before any user-facing enablement
 
-1. Build server-owned telehealth capture session, per-channel source-part metadata and API/migrations with owner auth, CSRF, durable idempotency, quotas, correct client-supplied sample-map validation, Vault encryption/retention, and explicit interrupted-capture gap state.
+1. **Continue WP2:** Wire the new session/part models into a reviewed owner-authorized, CSRF/rate-limited API only after durable post-stop STT finalization exists. Add explicit interruption/gap state and aggregate quota handling; no public routes have been exposed yet.
 2. Wire the capture/controller/window producer to *bounded actual VAD* and the new durably acknowledged ingestion APIs. Do not directly connect the raw source tap to an unbounded queue or drop audio on an upload exception.
 3. Integrate server-owned timed/untimed ASR result normalization, transcript-version-safe aggregation, role projection through the existing redaction boundary and warned/acknowledged incomplete note generation. Pure merge function alone must not be used to bypass redaction or current structured-turn invariants.
 4. Implement the approved phone-icon toggle and owner preferences, one-time notice, two-channel audio verification/collapse, recording state and track-loss recovery in Scribe without changing normal microphone flows.

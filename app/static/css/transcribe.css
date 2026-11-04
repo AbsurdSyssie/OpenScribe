@@ -1064,341 +1064,99 @@ text-align: left;
 transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
 }
 
-.split-review-modal[hidden] {
-  display: none;
-}
-
+.split-review-modal[hidden] { display: none; }
 .split-review-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 220;
-
-  display: grid;
-  place-items: center;
-
-  padding: 1.25rem;
+  position: fixed; inset: 0; z-index: 220; display: grid; place-items: center; padding: 1rem;
 }
-
-.split-review-modal__backdrop {
-  position: absolute;
-  inset: 0;
-
-  background: rgba(26, 32, 44, 0.28);
-  backdrop-filter: blur(3px);
-}
-
+.split-review-modal__backdrop { position: absolute; inset: 0; background: rgba(26, 32, 44, 0.28); backdrop-filter: blur(3px); }
 .split-review-modal__dialog {
-  position: relative;
-  z-index: 1;
-
-  display: flex;
-  flex-direction: column;
-
-  width: min(46rem, 100%);
-  max-height: min(90vh, 54rem);
-
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
-
-  /* Keep native select menus from being clipped by the dialog. */
+  position: relative; z-index: 1; display: flex; flex-direction: column;
+  max-width: 94vw; max-height: min(90vh, 56rem); min-width: min(28rem, 94vw);
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-lg);
   overflow: visible;
 }
-
-.split-review-modal__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-
-  padding: 0.9rem 1.1rem;
-
-  background: var(--card);
-  border-bottom: 1px solid var(--border);
-  border-radius: var(--radius-md) var(--radius-md) 0 0;
-}
-
-.split-review-modal__header h2 {
-  margin: 0;
-
-  font-size: 1.05rem;
-  font-weight: 800;
-  line-height: 1.25;
-}
-
-.split-review-modal__problem-count {
-  margin-top: 0.2rem;
-
-  color: var(--muted);
-
-  font-size: 0.73rem;
-}
-
-.split-review-modal__status {
-  margin: 0;
-  padding: 0 1.25rem;
-
-  color: var(--muted);
-
-  font-size: 0.76rem;
-}
-
-.split-review-modal__status:empty {
-  display: none;
-}
-
-.split-review-modal__status:not(:empty) {
-  padding-top: 0.65rem;
-}
-
+.split-review-modal__header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.9rem 1.1rem; background: var(--card); border-bottom: 1px solid var(--border); border-radius: var(--radius-md) var(--radius-md) 0 0; }
+.split-review-modal__header h2 { margin: 0; font-size: 1.05rem; font-weight: 800; line-height: 1.25; }
+.split-review-modal__problem-count { margin-top: 0.2rem; color: var(--slate); font-size: 0.73rem; }
+.split-review-modal__status { margin: 0; padding: 0 1.25rem; color: var(--slate); font-size: 0.76rem; }
+.split-review-modal__status:empty { display: none; }
+.split-review-modal__status:not(:empty) { padding-top: 0.65rem; }
 .split-review-modal__status[data-status-kind="warning"] { color: var(--warning); }
 .split-review-modal__status[data-status-kind="success"] { color: var(--success); }
 .split-review-modal__status[data-status-kind="error"] { color: var(--danger); }
-
-.split-review-modal__topics {
-  min-height: 0;
-  overflow-y: auto;
-
-  padding: 0 1.25rem;
+.split-review-modal__topics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(20rem, 100%), 1fr)); align-content: start; gap: 0.8rem; min-height: 0; overflow-y: auto; padding: 1rem 1.1rem; }
+.split-review-modal__topics[hidden], .split-review-modal__loading[hidden], .split-review-modal__footer [hidden] { display: none !important; }
+.split-review-tile { min-width: 0; min-height: min-content; display: flex; flex-direction: column; gap: 0.7rem; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--card); transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease; overflow: hidden; }
+.split-review-tile__header { display: flex; align-items: center; justify-content: flex-start; gap: 0.5rem; min-height: 3.4rem; padding: 0.55rem 0.7rem; background: color-mix(in srgb, var(--parchment) 65%, var(--card)); }
+.split-review-tile__header.is-primary { background: color-mix(in srgb, var(--accent) 17%, var(--accent-pale)); }
+.split-review-tile__heading { flex: 0 1 auto; min-width: 0; margin: 0; color: var(--ink); font-size: 0.93rem; font-weight: 800; }
+.split-review-tile__header.is-primary .split-review-tile__heading { color: var(--accent); font-size: 1rem; font-weight: 850; }
+.split-review-tile__header-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 0.3rem; margin-left: auto; }
+.split-review-primary-chip { display: inline-flex; align-items: center; justify-content: center; gap: 0.22rem; min-height: 2rem; padding: 0.25rem 0.6rem; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); border-radius: 999px; background: color-mix(in srgb, var(--card) 72%, transparent); color: var(--accent); font-size: 0.73rem; font-weight: 750; white-space: nowrap; cursor: pointer; }
+.split-review-primary-chip:hover:not(.is-selected) { border-color: var(--accent); background: var(--card); }
+.split-review-primary-chip.is-selected { border-color: var(--accent); background: var(--accent); color: var(--card); }
+.split-review-primary-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.split-review-tile__heading:focus { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+.split-review-tile__template { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0.5rem; margin: 0 0.75rem 0.75rem; padding-top: 0; border-top: 0; }
+.split-review-tile__template .field-label { margin: 0; white-space: nowrap; }
+.split-review-tile__template .select-wrap, .split-review-tile__template select { width: 100%; min-width: 0; }
+.split-review-problem { display: grid; grid-template-columns: 1.7rem minmax(0, 1fr); align-items: start; gap: 0.25rem 0.55rem; margin: 0 0.75rem; padding: 0.55rem; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+.split-review-problem__top { grid-column: 2; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 0.25rem; min-width: 0; }
+.split-review-problem__drag-handle { display: grid; place-items: center; width: 1.7rem; min-height: 2.5rem; margin-top: 0.1rem; border: 1px solid transparent; border-radius: 8px; color: #536273; cursor: grab; user-select: none; }
+.split-review-problem__drag-handle:hover { border-color: var(--border); background: var(--card); }
+.split-review-problem__drag-handle:active, .split-review-problem.is-dragging .split-review-problem__drag-handle { cursor: grabbing; }
+.split-review-problem__drag-handle[aria-disabled="true"] { opacity: 0.35; cursor: default; }
+.split-review-problem__drag-handle svg { fill: currentColor; }
+.split-review-problem__title { height: auto; min-height: 2rem; padding: 0.25rem 0.35rem; border-color: transparent; border-radius: 7px; background: transparent; color: var(--ink); font-weight: 750; line-height: 1.35; resize: none; overflow: hidden; overflow-wrap: anywhere; white-space: pre-wrap; }
+.split-review-problem__title:hover:not(:focus) { border-color: var(--border); background: color-mix(in srgb, var(--parchment) 72%, transparent); }
+.split-review-problem__actions { display: flex; align-items: center; flex-wrap: wrap; gap: 0.2rem 0.35rem; }
+.split-review-problem__move-wrap { grid-column: 2; width: 100%; min-width: 0; }
+.split-review-problem__move-wrap select { width: 100%; min-width: 0; height: 2.25rem; padding-left: 0.7rem; padding-right: 2.25rem; font-size: 0.78rem; }
+.split-review-add-problem { align-self: stretch; min-height: 2.35rem; margin: auto 0.75rem 0; padding: 0.45rem 0.65rem; border: 1px solid color-mix(in srgb, var(--accent-pale) 32%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--accent-pale) 32%, var(--card)); color: var(--accent); font-size: 0.78rem; font-weight: 700; text-align: left; cursor: pointer; }
+.split-review-add-problem:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-pale); }
+.split-review-add-problem:disabled { opacity: 0.55; cursor: not-allowed; }
+.split-review-problem.is-dragging { opacity: 0.52; }
+.split-review-tile.is-drop-target { border-color: var(--accent); background: color-mix(in srgb, var(--accent-pale) 62%, var(--card)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent); }
+.split-review-problem.is-ignored { opacity: 0.75; }
+.split-review-text-action { padding: 0; border: 0; background: transparent; color: var(--accent); font-size: 0.75rem; font-weight: 700; cursor: pointer; }
+.split-review-text-action:hover, .split-review-text-action:focus-visible { color: var(--accent-soft); text-decoration: underline; text-underline-offset: 0.15em; }
+.split-review-text-action--danger { color: var(--danger); }
+.split-review-text-action:disabled { color: var(--muted); cursor: not-allowed; text-decoration: none; }
+.split-review-icon-action { display: inline-grid; place-items: center; flex: 0 0 2.25rem; width: 2.25rem; height: 2.25rem; padding: 0; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--accent); cursor: pointer; }
+.split-review-icon-action:hover { border-color: var(--border); background: var(--parchment); }
+.split-review-icon-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.split-review-icon-action.is-danger { color: var(--danger); }
+.split-review-icon-action.is-danger:hover { border-color: color-mix(in srgb, var(--danger) 25%, var(--border)); background: color-mix(in srgb, var(--danger) 7%, var(--card)); }
+.split-review-icon-action svg { display: block; stroke: currentColor; }
+.split-review-add-note { grid-column: 1 / -1; justify-self: start; width: auto; min-width: 7rem; min-height: 2.5rem; border: 1px solid var(--border); background: var(--card); color: var(--accent); transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, width 140ms ease; }
+.split-review-add-note:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-pale); }
+.split-review-add-note.is-drop-target { justify-self: stretch; width: 100%; border-style: dashed; border-color: var(--accent); background: var(--accent-pale); color: var(--ink); font-weight: 800; }
+.split-review-add-note:disabled { opacity: 0.55; }
+.split-review-modal__loading { display: grid; place-items: center; min-height: 20rem; padding: 2rem; text-align: center; }
+.split-review-modal__loading .note-generation-loading { max-width: 25rem; }
+.split-review-modal__footer { position: relative; z-index: 2; display: flex; align-items: center; gap: 0.5rem; padding: 0.8rem 1rem; background: var(--card); border-top: 1px solid var(--border); border-radius: 0 0 var(--radius-md) var(--radius-md); }
+.split-review-modal__footer-spacer { flex: 1; }
+.split-review-modal__ignored-wrap { position: static; }
+.split-review-modal__ignored-popover { position: absolute; left: 1rem; right: auto; bottom: calc(100% + 0.55rem); z-index: 5; width: min(22rem, calc(100% - 2rem)); max-height: min(20rem, 50vh); overflow-y: auto; padding: 0.85rem; border: 1px solid var(--border); border-radius: 12px; background: var(--card); box-shadow: var(--shadow-lg); }
+.split-review-modal__ignored-popover[hidden] { display: none; }
+.split-review-ignored__title { margin: 0 0 0.65rem; font-size: 0.9rem; }
+.split-review-ignored__help { margin: 0 0 0.65rem; color: var(--slate); font-size: 0.75rem; }
+.split-review-ignored__row { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; padding: 0.55rem 0; border-top: 1px solid var(--border); font-size: 0.8rem; }
+.split-review-ignored__row span { overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .split-review-modal { padding: 0.45rem; }
+  .split-review-modal__dialog { width: 100% !important; min-width: 0; max-height: 94vh; }
+  .split-review-modal__topics { grid-template-columns: minmax(0, 1fr); grid-auto-rows: min-content; padding: 0.75rem; }
+  .split-review-problem__actions { gap: 0.4rem 0.6rem; }
+  .split-review-problem__move-wrap { flex-basis: 7rem; }
+  .split-review-modal__footer { flex-wrap: wrap; }
+  .split-review-modal__footer-spacer { display: none; }
+  .split-review-modal__footer > button { flex: 1 1 auto; }
+  .split-review-modal__footer > [data-split-review-close] { flex-basis: 100%; }
 }
 
-.split-review-topic {
-  position: relative;
-
-  display: block;
-
-  margin: 0;
-  padding: 1rem 0;
-
-  border: 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.split-review-topic:last-child {
-  border-bottom: 0;
-}
-
-.split-review-topic__header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.split-review-topic__name {
-  color: var(--ink);
-
-  font-size: 0.95rem;
-  font-weight: 800;
-  line-height: 1.35;
-}
-
-.split-review-topic__description {
-  margin-top: 0.2rem;
-
-  color: var(--muted);
-
-  font-size: 0.73rem;
-}
-
-.split-review-topic__title {
-  display: grid;
-  gap: 0.35rem;
-
-  margin-top: 0.65rem;
-}
-
-.split-review-topic__title input {
-  width: 100%;
-}
-
-.split-review-topic.is-primary {
-  padding-left: 0.75rem;
-}
-
-.split-review-topic.is-primary::before {
-  content: "";
-
-  position: absolute;
-  top: 0.75rem;
-  bottom: 0.75rem;
-  left: 0;
-
-  width: 3px;
-
-  border-radius: 3px;
-
-  background: var(--accent);
-}
-
-.split-review-topic__primary-label {
-  flex: 0 0 auto;
-
-  color: var(--accent);
-
-  font-size: 0.7rem;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-
-.split-review-topic__text-action {
-  padding: 0;
-
-  border: 0;
-  background: transparent;
-
-  color: var(--accent);
-
-  font-size: 0.72rem;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.split-review-topic__text-action:hover,
-.split-review-topic__text-action:focus-visible {
-  color: var(--accent-soft);
-}
-
-.split-review-topic__text-action--danger {
-  color: var(--danger);
-}
-
-.split-review-topic__template {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-
-  width: fit-content;
-  margin-top: 0.65rem;
-}
-
-.split-review-topic__template .select-wrap {
-  width: auto;
-}
-
-.split-review-topic__template select {
-  width: auto;
-  min-width: 10rem;
-  max-width: 14rem;
-}
-
-.split-review-topic__actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-
-  margin-top: 0.5rem;
-
-  color: var(--border-strong);
-}
-
-.split-review-topic__state {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-
-  min-height: 38px;
-  margin-top: 0.65rem;
-  padding: 0.5rem 0.65rem;
-
-  border-radius: 8px;
-
-  font-size: 0.76rem;
-  font-weight: 700;
-}
-
-.split-review-topic__state button {
-  padding: 0;
-
-  border: 0;
-  background: transparent;
-
-  color: inherit;
-
-  font-size: 0.72rem;
-  font-weight: 800;
-  cursor: pointer;
-}
-
-.split-review-topic.is-merged .split-review-topic__state {
-  background: var(--accent-pale);
-  color: var(--accent);
-}
-
-.split-review-topic.is-skipped {
-  opacity: 0.75;
-}
-
-.split-review-topic.is-skipped .split-review-topic__state {
-  background: rgba(197, 48, 48, 0.07);
-  color: var(--danger);
-}
-
-.split-review-modal__footer {
-  position: relative;
-  z-index: 1;
-
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-
-  padding: 0.8rem 1rem;
-
-  background: var(--card);
-  border-top: 1px solid var(--border);
-  border-radius: 0 0 var(--radius-md) var(--radius-md);
-}
-
-.split-review-modal__footer-spacer {
-  flex: 1;
-}
-
-.split-review-modal__empty {
-  margin: 0;
-  padding: 1rem 0;
-  color: var(--muted);
-}
-
-@media (max-width: 640px) {
-  .split-review-modal {
-    padding: 0.5rem;
-  }
-
-  .split-review-modal__dialog {
-    width: 100%;
-    max-height: 94vh;
-  }
-
-  .split-review-modal__topics {
-    padding: 0 1rem;
-  }
-
-  .split-review-topic__template {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .split-review-topic__template,
-  .split-review-topic__template .select-wrap {
-    width: 100%;
-  }
-
-  .split-review-topic__template select {
-    width: 100%;
-    max-width: none;
-  }
-
-  .split-review-modal__footer {
-    flex-wrap: wrap;
-  }
-
-  .split-review-modal__footer .btn-ghost-sm {
-    width: 100%;
-    justify-content: flex-start;
-  }
+@media (prefers-reduced-motion: reduce) {
+  .split-review-modal__dialog, .split-review-tile { animation: none !important; transition: none !important; }
 }
 
 .template-picker-option:hover,

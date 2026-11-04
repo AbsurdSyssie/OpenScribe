@@ -1308,13 +1308,16 @@ def test_generation_topic_titles_are_encrypted_owner_only_and_document_deletion_
     assert projection is not None
     assert projection.deleted_topic_uuids == [surviving_topic.topic_uuid]
     sibling_topic_id = sibling.consultation_split_batch_topic_id
+    sibling_topic_uuid = db_session.get(ConsultationSplitBatchTopic, sibling_topic_id).topic_uuid
+    assert projection.materialized_document_ids_by_topic_uuid == {sibling_topic_uuid: sibling.id}
     db_session.delete(sibling); db_session.commit(); db_session.rollback()
     projection = read_workspace_split_batch(db_session, owner, transcript_id=execution.transcript_id)
     assert projection is not None
     assert set(projection.deleted_topic_uuids) == {
         surviving_topic.topic_uuid,
-        db_session.get(ConsultationSplitBatchTopic, sibling_topic_id).topic_uuid,
+        sibling_topic_uuid,
     }
+    assert projection.materialized_document_ids_by_topic_uuid == {}
     assert projection.failed_topic_count == 0
     assert projection.can_retry_missing is False
 

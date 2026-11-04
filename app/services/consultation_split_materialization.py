@@ -24,6 +24,7 @@ from app.models import (
 )
 from app.services.content_crypto import encrypt_text_for_owner
 from app.services.redaction import reidentify_text
+from app.services.consultation_splits import read_split_batch_json
 
 
 GENERIC_SPLIT_DOCUMENT_TITLE = "Consultation split note"
@@ -87,10 +88,20 @@ def materialize_split_document(
     )
     rendered = content if isinstance(content, str) else json.dumps(content, separators=(",", ":"), sort_keys=True)
     metadata = provider_metadata or SplitDocumentProviderMetadata(None, None, None, None)
+    if batch.analysis_id is not None:
+        redaction_run_id = batch.analysis.redaction_run_id
+    else:
+        source_snapshot = read_split_batch_json(db, owner, batch=batch, field="source_snapshot_encrypted") or {}
+        source_state = source_snapshot.get("source_state") if isinstance(source_snapshot, dict) else None
+        raw_redaction_run_id = source_state.get("redaction_run_id") if isinstance(source_state, dict) else None
+        try:
+            redaction_run_id = UUID(str(raw_redaction_run_id)) if raw_redaction_run_id is not None else None
+        except (TypeError, ValueError, AttributeError):
+            raise AppError(500, "consultation_split_batch_invalid", "Split batch is unavailable") from None
     document = GeneratedDocument(
         id=uuid4(), owner_user_id=owner.id, team_id=batch.team_id,
         transcript_id=batch.transcript_id, transcript_version_id=materialization_version.id,
-        redaction_run_id=batch.analysis.redaction_run_id,
+        redaction_run_id=redaction_run_id,
         consultation_split_batch_topic_id=topic.id, consultation_split_topic_uuid=topic.topic_uuid,
         generator_type=GeneratedDocumentGeneratorType.template,
         template_version_id=None, llm_config_id=metadata.llm_config_id,

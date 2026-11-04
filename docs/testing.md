@@ -424,14 +424,27 @@ The server-owned Create continuation cases are in `tests/test_consultation_split
 pytest -q tests/test_consultation_split_intent_progress.py
 ```
 
+## Living consultation problem plans
+
+The living-plan regressions cover encrypted persistence and owner boundaries,
+revision conflicts and idempotency, ignored exclusions, suggestion replacement,
+and immutable grouped generation batches. JavaScript controller tests cover
+editing, autosave, grouping, Primary selection, and quiet success states.
+
+Run the focused files sequentially with other database-backed checks:
+
+```bash
+APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_consultation_problem_plans.py tests/test_split_review_js.py tests/test_consultation_split_api.py tests/test_consultation_split_generation_runtime.py
+```
+
 ## Consultation-split browser regression
 
 `tests/test_consultation_split_browser.py` uses the same disposable local
-Uvicorn and Chromium setup. It drives the rendered **Create**, review, save,
-confirm, generation, partial **Keep available notes**, and transcript-switch
+Uvicorn and Chromium setup. It drives the rendered **Create**, live review, autosave, grouped generation,
+automatic recovery, partial **Keep available notes**, and transcript-switch
 paths. It also checks passive **Review problems** opening and explicit
-**Suggest problems** with automatic splitting off, including single-problem
-review without document generation. The harness uses synthetic transcript text and a fake provider response
+**Auto suggest** with automatic splitting off, including single-problem
+review without document generation. The living-plan browser case also exercises manual grouping, native drag cancellation and note creation, stable tile identity after Primary promotion, and scrolling at narrow widths. The harness uses synthetic transcript text and a fake provider response
 derived from the confirmed template mode and section keys; it does not use a
 live provider or log note content.
 

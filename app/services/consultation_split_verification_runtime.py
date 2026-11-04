@@ -24,7 +24,7 @@ from app.services.consultation_split_verification import apply_split_verificatio
 from app.services.consultation_split_verification import prepare_split_verification_request
 from app.services.consultation_split_pre_submit import _credential_config_identity
 from app.services.consultation_splits import (read_split_batch_json, read_split_execution_json,
-    read_split_topic_outcome_output)
+    read_split_topic_outcome_output, _require_lineage)
 from app.services.content_crypto import encrypt_json_for_existing_owner
 from app.services.llm_adapters import runtime as llm_runtime
 from app.services.llm_adapters.runtime import generation_request_snapshot, validate_provider_snapshot_for_config
@@ -79,6 +79,10 @@ def _lock(db: Session, execution_id: UUID, *, require_active_dispatch: bool = Tr
     topics = db.scalars(select(ConsultationSplitBatchTopic).where(ConsultationSplitBatchTopic.batch_id == execution.batch_id).execution_options(populate_existing=True).with_for_update()).all() if batch else []
     outcomes = db.scalars(select(ConsultationSplitTopicOutcome).where(ConsultationSplitTopicOutcome.batch_topic_id.in_([x.id for x in topics])).execution_options(populate_existing=True).with_for_update()).all() if topics else []
     if not all((batch, owner, transcript, attempt, primary_attempt)) or len(outcomes) != len(topics):
+        return None
+    try:
+        _require_lineage(db, owner, batch)
+    except AppError:
         return None
     if require_active_dispatch:
         if dispatch is None or dispatch.dispatch_kind.value != "consultation_split_verification":

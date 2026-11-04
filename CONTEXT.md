@@ -10,6 +10,10 @@ The transcript root owns retention and deletion. Team retention is snapshotted f
 
 Designated owner content is encrypted before PostgreSQL persistence under the owner's DEK; Vault Transit wraps DEKs under the deployment KEK.
 
+## Consultation problem planning language
+
+Use **Problem title** for the short name identifying a problem for a split note. Avoid **Description** as an alias: no separate clinical description is implied.
+
 ## Consultation working note
 
 The user-facing label is **Working note**. It is clinician-authored source content used as context for generation and is separate from:

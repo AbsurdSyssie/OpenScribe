@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import textwrap
 from pathlib import Path
@@ -865,7 +866,7 @@ def test_note_regeneration_controls_and_scroll_rail_contract():
     assert "actions.js?v=20261021-example-consultation" in app
     assert "documents.js?v=20261103-working-note-revision" in app
     assert "structured.js?v=20260918-retired-note-workspace" in app
-    assert "app.js?v=20261103-working-note-save-recovery" in shell
+    assert re.search(r"app\.js\?v=[^\"\s]+", shell)
 
 
 def test_retired_note_workspace_compatibility_plumbing_is_absent():

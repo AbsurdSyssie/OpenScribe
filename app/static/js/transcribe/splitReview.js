@@ -1223,7 +1223,7 @@ async function readSafeError(response) {
   }
 }
 
-export function createSplitReviewController({
+function createLegacySplitReviewController({
   trigger = typeof document !== 'undefined' ? document.querySelector('[data-split-review-trigger]') : null,
   modal = typeof document !== 'undefined' ? document.querySelector('[data-split-review-modal]') : null,
   topicList = modal?.querySelector('[data-split-review-topic-list]'),
@@ -1654,7 +1654,7 @@ export function createSplitReviewController({
     updateControlState();
   };
 
-  const close = ({ force = false } = {}) => {
+  const close = async ({ force = false } = {}) => {
     if (!opened) return true;
     if (!force && (saving || continuing || confirming)) return false;
     if (!force && dirty && !confirmDiscard()) return false;
@@ -1928,13 +1928,12 @@ export function createSplitReviewController({
       const confirmationValidation = validateSplitDraftForConfirmation(localDraft);
       setStatus(
         confirmationValidation.valid
-          ? 'Saved.'
+          ? ''
           : (continueAvailable
             ? 'Saved. Continue as one note uses the template selected when you started Create.'
             : confirmationValidation.message),
         confirmationValidation.valid ? 'success' : 'one-note-guidance',
       );
-      showMessage('Note split saved.', 'success');
       return true;
     } catch (_) {
       if (!isCurrentSave()) return false;
@@ -2013,7 +2012,7 @@ export function createSplitReviewController({
     const draftId = localDraft.draft_id;
     const confirmationTranscriptId = activeTranscriptId;
     confirming = true;
-    setStatus('Starting note creation from the reviewed problems. This may take a moment.', 'progress');
+    setStatus('');
     updateControlState();
     try {
       const response = await fetcher(`/api/v1/transcripts/${confirmationTranscriptId}/consultation-split-draft/confirm`, {
@@ -2042,8 +2041,7 @@ export function createSplitReviewController({
       remoteDraft = localDraft;
       dirty = false;
       render();
-      setStatus(result?.idempotency_replayed ? 'This note split is already queued for the next stage.' : 'Note split queued for the next stage.', 'success');
-      showMessage('Note split queued for the next stage.', 'success');
+      setStatus('');
       onSplitBatchStarted({
         draft: localDraft,
         batchId: result?.batch_id || null,
@@ -2181,5 +2179,1029 @@ export function createSplitReviewController({
     getDraft: () => localDraft,
     getRemoteDraft: () => remoteDraft,
     serialize: () => serializeSplitDraft(localDraft, expectedUpdatedAt),
+  };
+}
+
+const newPlanUuid = () => {
+  try { return crypto.randomUUID(); } catch (_) {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (character) => {
+      const value = Math.random() * 16 | 0;
+      return (character === 'x' ? value : (value & 0x3 | 0x8)).toString(16);
+    });
+  }
+};
+
+const cloneProblemPlan = (plan) => plan ? {
+  plan_id: plan.plan_id || null,
+  revision: Number.isInteger(plan.revision) ? plan.revision : 0,
+  manual_override: Boolean(plan.manual_override),
+  tiles: (Array.isArray(plan.tiles) ? plan.tiles : []).map((tile) => ({
+    uuid: asString(tile.uuid),
+    is_primary: Boolean(tile.is_primary),
+    template_id: tile.template_id || null,
+    template_version_id: tile.template_version_id || null,
+    _temporary: Boolean(tile._temporary),
+  })),
+  problems: (Array.isArray(plan.problems) ? plan.problems : []).map((problem) => ({
+    uuid: asString(problem.uuid),
+    title: asString(problem.title),
+    origin: problem.origin === 'suggested' ? 'suggested' : 'manual',
+    ignored: Boolean(problem.ignored),
+    group_id: problem.group_id || null,
+    restore_group_id: problem.restore_group_id || null,
+    _temporary: Boolean(problem._temporary),
+  })),
+  suggestion: plan.suggestion || null,
+} : null;
+const problemPlanSignature = (plan) => JSON.stringify(cloneProblemPlan(plan));
+
+export function createSplitReviewController({
+  trigger = typeof document !== 'undefined' ? document.querySelector('[data-split-review-trigger]') : null,
+  modal = typeof document !== 'undefined' ? document.querySelector('[data-split-review-modal]') : null,
+  topicList = modal?.querySelector('[data-split-review-topic-list]'),
+  status = modal?.querySelector('[data-split-review-status]'),
+  problemCount = modal?.querySelector('[data-split-review-problem-count]'),
+  saveButton = modal?.querySelector('[data-split-review-save]'),
+  createButton = modal?.querySelector('[data-split-review-create]'),
+  addButton = modal?.querySelector('[data-split-review-add]'),
+  suggestButton = modal?.querySelector('[data-split-review-suggest]'),
+  closeButtons = modal ? [...modal.querySelectorAll('[data-split-review-close]')] : [],
+  ignoredButton = modal?.querySelector('[data-split-review-ignored]'),
+  ignoredPopover = modal?.querySelector('[data-split-review-ignored-popover]'),
+  fetcher = csrfFetch,
+  refreshWorkspace = async () => null,
+  getTranscriptId = () => null,
+  getSelectedTemplateId = () => null,
+  saveSources = async () => {},
+  createNoteBatch = async () => false,
+  suggestProblems = async () => false,
+  onSplitBatchStarted = () => {},
+  showMessage = () => {},
+  confirmDiscard = () => (typeof window !== 'undefined' && typeof window.confirm === 'function'
+    ? window.confirm('Discard unsaved changes and review this split later?') : true),
+} = {}) {
+  let plan = null;
+  let savedPlan = null;
+  let templates = [];
+  let transcriptId = null;
+  let sourceReady = false;
+  let sourceReadinessMessage = '';
+  let capabilityAvailable = false;
+  let batch = null;
+  let opened = false;
+  let opener = null;
+  let dirty = false;
+  let saving = false;
+  let suggesting = false;
+  let creating = false;
+  let saveTimer = null;
+  let titleSaveTimer = null;
+  let saveSequence = 0;
+  let pendingSaveRequest = null;
+  let planLoadGeneration = 0;
+  let planLoadTranscript = null;
+  let suggestionSequence = 0;
+  let ignoredOpen = false;
+  let conflictBlocked = false;
+  let popoverOutsideHandler = null;
+  let popoverEscapeHandler = null;
+  let draggingProblemKey = null;
+  let dragCreateTarget = null;
+  let dragTargetTimer = null;
+  let dragStartPoint = null;
+  let latestDragPoint = null;
+  let documentDragoverHandler = null;
+  let pendingFocusMoveProblemKey = null;
+  let nextFocusSerial = 0;
+  const MAX_TILES = 6;
+  const MAX_PROBLEMS = 6;
+
+  const uuid = () => newPlanUuid();
+  const tileForProblem = (problem) => plan?.tiles?.find((tile) => tile.uuid === problem?.group_id) || primaryTile();
+  const primaryTile = () => plan?.tiles?.find((tile) => tile.is_primary) || null;
+  const namedProblems = () => (plan?.problems || []).filter((problem) => !problem._temporary);
+  const problemLimitReached = () => (plan?.problems?.length || 0) >= MAX_PROBLEMS;
+  const activeProblems = () => (plan?.problems || []).filter((problem) => !problem.ignored);
+  const ignoredProblems = () => (plan?.problems || []).filter((problem) => problem.ignored);
+  const isPristineVirtualPrimary = () => Boolean(plan && !plan.plan_id && !savedPlan && !plan.manual_override
+    && !plan.suggestion && plan.problems.length === 0 && plan.tiles.length === 1
+    && plan.tiles[0].is_primary && plan.tiles[0]._temporary);
+  const hasPendingTemporaryEdits = () => Boolean(
+    !(!dirty && isPristineVirtualPrimary())
+    && (plan?.problems?.some((problem) => problem._temporary) || plan?.tiles?.some((tile) => tile._temporary)),
+  );
+  const activeBatch = () => IN_FLIGHT_BATCH_STATUSES.has(batch?.status);
+  const suggestionInFlight = () => suggesting || IN_FLIGHT_ANALYSIS_STATUSES.has(plan?.suggestion?.status);
+  const dragIsLocked = () => suggestionInFlight() || creating;
+  const updateDialogWidth = () => {
+    const dialog = modal?.querySelector('.split-review-modal__dialog');
+    if (!dialog) return;
+    const visibleTileCount = plan?.tiles?.length || 1;
+    const dialogWidthRem = visibleTileCount <= 1 ? 28 : visibleTileCount === 2 ? 52 : visibleTileCount === 3 ? 72 : 110;
+    dialog.style.width = `min(${dialogWidthRem}rem, 94vw)`;
+  };
+  const hideDragCreateTarget = () => {
+    if (!dragCreateTarget) return;
+    dragCreateTarget.classList.remove('is-drop-target');
+    dragCreateTarget.textContent = 'Add note';
+    dragCreateTarget = null;
+  };
+  const clearDragState = () => {
+    if (dragTargetTimer) { clearTimeout(dragTargetTimer); dragTargetTimer = null; }
+    if (documentDragoverHandler) {
+      document.removeEventListener('dragover', documentDragoverHandler, true);
+      documentDragoverHandler = null;
+    }
+    draggingProblemKey = null;
+    dragStartPoint = null;
+    latestDragPoint = null;
+    topicList?.querySelectorAll('.is-dragging, .is-drop-target').forEach((element) => {
+      element.classList.remove('is-dragging', 'is-drop-target');
+    });
+    hideDragCreateTarget();
+    updateDialogWidth();
+    updateControls();
+  };
+  const isPointInside = (rect, point, margin = 0) => point.x >= rect.left - margin && point.x <= rect.right + margin
+    && point.y >= rect.top - margin && point.y <= rect.bottom + margin;
+  const pointIsNewNoteIntent = (point) => {
+    if (!point || !topicList || !plan || plan.tiles.length >= MAX_TILES) return false;
+    const tiles = [...topicList.querySelectorAll('.split-review-tile:not(.split-review-create-note-target)')];
+    const rects = tiles.map((tile) => tile.getBoundingClientRect());
+    if (!rects.length || rects.some((rect) => isPointInside(rect, point))) return false;
+    const boardRect = topicList.getBoundingClientRect();
+    if (point.y < boardRect.top || point.y > boardRect.bottom
+      || point.x < boardRect.left - 64 || point.x > boardRect.right + 64) return false;
+    const addNote = topicList.querySelector('[data-split-review-add]');
+    if (addNote && isPointInside(addNote.getBoundingClientRect(), point, 20)) return true;
+    const outerLeft = Math.min(...rects.map((rect) => rect.left));
+    const outerRight = Math.max(...rects.map((rect) => rect.right));
+    const outerTop = Math.min(...rects.map((rect) => rect.top));
+    const outerBottom = Math.max(...rects.map((rect) => rect.bottom));
+    return point.x < outerLeft || point.x > outerRight || point.y < outerTop || point.y > outerBottom;
+  };
+  const trackDragIntent = (event) => {
+    if (!draggingProblemKey || dragIsLocked()) return;
+    latestDragPoint = { x: event.clientX, y: event.clientY };
+    if (dragCreateTarget && !pointIsNewNoteIntent(latestDragPoint)) hideDragCreateTarget();
+    const moved = dragStartPoint && Math.hypot(latestDragPoint.x - dragStartPoint.x, latestDragPoint.y - dragStartPoint.y) >= 24;
+    if (!moved || !pointIsNewNoteIntent(latestDragPoint)) {
+      if (dragTargetTimer) { clearTimeout(dragTargetTimer); dragTargetTimer = null; }
+      return;
+    }
+    if (dragTargetTimer) return;
+    const targetProblemKey = draggingProblemKey;
+    dragTargetTimer = setTimeout(() => {
+      dragTargetTimer = null;
+      const current = findProblem(targetProblemKey);
+      if (draggingProblemKey === targetProblemKey && current && !dragIsLocked() && normalizeTitle(current.title)
+        && pointIsNewNoteIntent(latestDragPoint)) showDragCreateTarget();
+    }, 200);
+  };
+  const showDragCreateTarget = () => {
+    if (dragCreateTarget || !topicList || plan.tiles.length >= MAX_TILES || dragIsLocked()) return;
+    const problem = plan.problems.find((item) => problemKey(item) === draggingProblemKey);
+    if (!problem || !normalizeTitle(problem.title)) return;
+    const addNoteButton = topicList.querySelector('[data-split-review-add]');
+    if (!addNoteButton) return;
+    dragCreateTarget = addNoteButton;
+    addNoteButton.textContent = 'Drop here to create a note';
+    addNoteButton.classList.add('is-drop-target');
+  };
+  const sourceMessage = () => sourceReadinessMessage || 'Save consultation content before creating notes.';
+  const makeVirtualPlan = () => ({
+    plan_id: null, revision: 0, manual_override: false,
+    tiles: [{ uuid: uuid(), is_primary: true, template_id: getSelectedTemplateId() || null, template_version_id: null, _temporary: true }],
+    problems: [], suggestion: null,
+  });
+  const setOpen = (value) => {
+    opened = Boolean(value);
+    if (modal) modal.hidden = !opened;
+    if (trigger) trigger.setAttribute('aria-expanded', String(opened));
+  };
+  const setStatus = (message = '', kind = '') => {
+    if (!status) return;
+    status.textContent = message;
+    status.dataset.statusKind = kind;
+  };
+  const snapshotForSave = () => ({
+    tiles: (plan?.tiles || []).filter((tile) => !tile._temporary).map(({ uuid: id, is_primary, template_id, template_version_id }) => ({
+      uuid: id, is_primary, template_id: template_id || null, template_version_id: template_version_id || null,
+    })),
+    problems: (plan?.problems || []).filter((problem) => !problem._temporary && normalizeTitle(problem.title)).map((problem) => ({
+      uuid: problem.uuid, title: normalizeTitle(problem.title), origin: problem.origin,
+      ignored: problem.ignored, group_id: problem.group_id || null, restore_group_id: problem.restore_group_id || null,
+    })),
+  });
+  const ensurePrimary = (next) => {
+    if (!next.tiles?.some((tile) => tile.is_primary)) {
+      next.tiles = [{ uuid: uuid(), is_primary: true, template_id: getSelectedTemplateId() || null, template_version_id: null }, ...(next.tiles || [])];
+    }
+    next.tiles = next.tiles.map((tile, index) => ({ ...tile, is_primary: index === next.tiles.findIndex((item) => item.is_primary) }));
+    return next;
+  };
+  const planValid = () => {
+    if (!plan) return false;
+    const persistedProblems = plan.problems.filter((problem) => !problem._temporary);
+    const incomplete = plan.problems.some((problem) => problem._temporary && normalizeTitle(problem.title));
+    if (incomplete || persistedProblems.some((problem) => !normalizeTitle(problem.title))) return false;
+    if (persistedProblems.length > MAX_PROBLEMS || plan.tiles.filter((tile) => !tile._temporary).length > MAX_TILES) return false;
+    const availableTemplateIds = new Set(templates.map(templateId).filter(Boolean));
+    if (plan.tiles.some((tile) => !tile.template_id || !availableTemplateIds.has(asString(tile.template_id)))) return false;
+    return plan.tiles.some((tile) => tile.is_primary) && plan.tiles.length > 0;
+  };
+  const saveable = () => planValid() && !plan.problems.some((problem) => problem._temporary);
+  const updateCounts = () => {
+    const outputCount = plan?.tiles?.length || 0;
+    const includedProblemCount = (plan?.problems || []).filter((problem) => !problem.ignored && !problem._temporary && normalizeTitle(problem.title)).length;
+    if (problemCount) {
+      problemCount.textContent = includedProblemCount
+        ? `${includedProblemCount} included problem${includedProblemCount === 1 ? '' : 's'} · ${outputCount} note${outputCount === 1 ? '' : 's'}`
+        : `${outputCount} note${outputCount === 1 ? '' : 's'}`;
+    }
+    if (createButton) createButton.textContent = `Create ${outputCount} note${outputCount === 1 ? '' : 's'}`;
+    if (ignoredButton) {
+      const count = ignoredProblems().length;
+      ignoredButton.textContent = `Ignored (${count})`;
+      ignoredButton.hidden = count === 0 || suggestionInFlight();
+      ignoredButton.setAttribute('aria-expanded', String(ignoredOpen));
+    }
+  };
+  const templateOptions = (selectedId) => {
+    const options = [{ value: '', label: 'Choose a template' }];
+    templates.forEach((template) => {
+      const id = templateId(template);
+      if (!id) return;
+      const version = latestVersion(template);
+      options.push({ value: id, label: `${templateName(template)}${version?.mode ? ` (${version.mode})` : ''}` });
+    });
+    if (selectedId && !options.some((option) => option.value === selectedId)) options.push({ value: selectedId, label: 'Unavailable template' });
+    return options;
+  };
+  const domNode = (tag, className, text) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  const iconAction = ({ iconName, label, action, problem }) => {
+    const button = domNode('button', `split-review-icon-action${action === 'delete' ? ' is-danger' : ''}`);
+    button.type = 'button'; button.dataset.problemAction = action; button.dataset.problemKey = problemKey(problem);
+    button.setAttribute('aria-label', label); button.title = label;
+    const iconDefinition = typeof window !== 'undefined' ? window.lucide?.icons?.[iconName] : null;
+    if (iconDefinition && typeof window.lucide?.createElement === 'function') {
+      const svg = window.lucide.createElement(iconDefinition, { width: 16, height: 16, 'aria-hidden': 'true', focusable: 'false' });
+      button.append(svg);
+    } else {
+      button.textContent = action === 'delete' ? 'Delete' : 'Ignore';
+    }
+    return button;
+  };
+  const resizeProblemTitle = (field) => {
+    if (!field) return;
+    field.style.height = 'auto';
+    const style = typeof window !== 'undefined' && typeof window.getComputedStyle === 'function'
+      ? window.getComputedStyle(field) : null;
+    const borderHeight = style?.boxSizing === 'border-box'
+      ? (Number.parseFloat(style.borderTopWidth) || 0) + (Number.parseFloat(style.borderBottomWidth) || 0) : 0;
+    field.style.height = `${Math.max(field.scrollHeight + borderHeight, 40)}px`;
+  };
+  const resizeAllProblemTitles = () => topicList?.querySelectorAll('[data-problem-title]').forEach(resizeProblemTitle);
+  let titleResizeFrame = null;
+  const scheduleProblemTitleResize = () => {
+    if (titleResizeFrame !== null || typeof window === 'undefined') return;
+    if (typeof window.requestAnimationFrame !== 'function') { resizeAllProblemTitles(); return; }
+    titleResizeFrame = window.requestAnimationFrame(() => {
+      titleResizeFrame = null;
+      resizeAllProblemTitles();
+    });
+  };
+  const problemKey = (problem) => problem.uuid || problem._key;
+  const renderProblem = (problem, tile) => {
+    const row = domNode('div', `split-review-problem${problem.ignored ? ' is-ignored' : ''}`);
+    row.dataset.problemKey = problemKey(problem);
+    const handle = domNode('span', 'split-review-problem__drag-handle');
+    handle.draggable = !dragIsLocked() && Boolean(normalizeTitle(problem.title));
+    handle.dataset.problemDragHandle = ''; handle.dataset.problemKey = problemKey(problem);
+    handle.setAttribute('aria-hidden', 'true'); handle.title = 'Drag to move this problem';
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('viewBox', '0 0 16 20'); icon.setAttribute('width', '16'); icon.setAttribute('height', '20'); icon.setAttribute('focusable', 'false');
+    for (const y of [5, 10, 15]) for (const x of [5, 11]) {
+      const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      dot.setAttribute('cx', String(x)); dot.setAttribute('cy', String(y)); dot.setAttribute('r', '1.35'); icon.append(dot);
+    }
+    handle.append(icon);
+    const title = document.createElement('textarea');
+    title.rows = 1; title.maxLength = 255; title.value = problem.title || '';
+    title.className = 'field-input split-review-problem__title';
+    title.placeholder = 'Problem title'; title.required = true;
+    title.dataset.problemTitle = ''; title.dataset.problemKey = problemKey(problem);
+    title.setAttribute('aria-label', `Problem title${problem.title ? `: ${problem.title}` : ''}`);
+    const top = domNode('div', 'split-review-problem__top');
+    top.append(title);
+    const actions = domNode('div', 'split-review-problem__actions');
+    const moveWrap = domNode('span', 'select-wrap split-review-problem__move-wrap');
+    const move = document.createElement('select');
+    move.dataset.problemMove = ''; move.dataset.problemKey = problemKey(problem);
+    move.setAttribute('aria-label', `Move ${problem.title || 'problem'} to a note`);
+    const prompt = document.createElement('option'); prompt.value = ''; prompt.textContent = 'Move to…'; move.append(prompt);
+    (plan?.tiles || []).filter((candidate) => candidate.uuid !== tile.uuid).forEach((candidate) => {
+      const option = document.createElement('option'); option.value = candidate.uuid;
+      const destinationTitles = plan.problems.filter((item) => !item.ignored && item.group_id === candidate.uuid).map((item) => item.title).filter(Boolean);
+      option.textContent = candidate.is_primary ? 'Primary note' : `Note: ${destinationTitles.join(', ') || 'New note'}`;
+      move.append(option);
+    });
+    const newNote = document.createElement('option'); newNote.value = '__new_note__'; newNote.textContent = 'New note…'; move.append(newNote);
+    moveWrap.append(move);
+    const ignore = problem.ignored
+      ? domNode('button', 'split-review-text-action', 'Restore')
+      : iconAction({ iconName: 'EyeOff', label: `Ignore ${problem.title || 'problem'}; exclude it from every note`, action: 'ignore', problem });
+    ignore.type = 'button'; ignore.dataset.problemAction = problem.ignored ? 'restore' : 'ignore'; ignore.dataset.problemKey = problemKey(problem);
+    if (!problem.ignored) {
+      ignore.disabled = !normalizeTitle(problem.title) || suggestionInFlight();
+    }
+    actions.append(ignore);
+    if (!problem.ignored) {
+      const label = `Delete ${problem.title || 'problem'} assignment; source content can return to Primary`;
+      actions.append(iconAction({ iconName: 'Trash2', label, action: 'delete', problem }));
+    }
+    top.append(actions);
+    row.append(handle, top, moveWrap);
+    return row;
+  };
+  const renderIgnoredPopover = () => {
+    if (!ignoredPopover) return;
+    ignoredPopover.replaceChildren();
+    ignoredPopover.hidden = !ignoredOpen;
+    ignoredPopover.setAttribute('role', 'dialog');
+    if (!ignoredOpen) return;
+    ignoredPopover.append(domNode('h3', 'split-review-ignored__title', 'Ignored problems'));
+    ignoredPopover.append(domNode('p', 'split-review-ignored__help', 'Excluded from every note until restored.'));
+    ignoredProblems().forEach((problem) => {
+      const row = domNode('div', 'split-review-ignored__row');
+      row.append(domNode('span', '', problem.title));
+      const restore = domNode('button', 'split-review-text-action', 'Restore');
+      restore.type = 'button'; restore.dataset.problemAction = 'restore'; restore.dataset.problemKey = problemKey(problem);
+      const remove = iconAction({ iconName: 'Trash2', label: `Delete ${problem.title || 'problem'} assignment; source content can return to Primary`, action: 'delete', problem });
+      const label = `Delete ${problem.title || 'problem'} assignment; source content can return to Primary`;
+      remove.setAttribute('aria-label', label); remove.title = label;
+      row.append(restore, remove); ignoredPopover.append(row);
+    });
+  };
+  const closeIgnoredPopover = () => {
+    ignoredOpen = false;
+    renderIgnoredPopover(); updateCounts();
+    if (popoverOutsideHandler) document.removeEventListener('pointerdown', popoverOutsideHandler, true);
+    if (popoverEscapeHandler) modal?.removeEventListener('keydown', popoverEscapeHandler);
+    popoverOutsideHandler = null; popoverEscapeHandler = null;
+  };
+  const openIgnoredPopover = () => {
+    if (ignoredOpen) { closeIgnoredPopover(); return; }
+    ignoredOpen = true; renderIgnoredPopover(); updateCounts();
+    popoverOutsideHandler = (event) => {
+      if (!ignoredPopover?.contains(event.target) && !ignoredButton?.contains(event.target)) closeIgnoredPopover();
+    };
+    popoverEscapeHandler = (event) => { if (event.key === 'Escape') { event.stopPropagation(); closeIgnoredPopover(); safeFocus(ignoredButton); } };
+    document.addEventListener('pointerdown', popoverOutsideHandler, true);
+    modal?.addEventListener('keydown', popoverEscapeHandler);
+  };
+  const updateControls = () => {
+    const locked = suggestionInFlight();
+    const active = Boolean(transcriptId && capabilityAvailable);
+    setDisabled(topicList, locked || creating);
+    topicList?.querySelectorAll('[data-problem-action="ignore"]').forEach((button) => {
+      const problem = findProblem(button.dataset.problemKey);
+      button.disabled = locked || creating || !normalizeTitle(problem?.title);
+    });
+    topicList?.querySelectorAll('[data-tile-action="add-problem"]').forEach((button) => {
+      button.disabled = problemLimitReached() || creating || locked;
+    });
+    topicList?.querySelectorAll('[data-split-review-add]').forEach((button) => {
+      button.disabled = !plan || plan.tiles.length >= MAX_TILES || (problemLimitReached() && !draggingProblemKey) || creating || locked;
+    });
+    topicList?.querySelectorAll('[data-problem-drag-handle]').forEach((handle) => {
+      const problem = findProblem(handle.dataset.problemKey);
+      const disabled = dragIsLocked() || !normalizeTitle(problem?.title);
+      handle.draggable = !disabled;
+      handle.setAttribute('aria-disabled', String(disabled));
+    });
+    if (topicList) topicList.hidden = locked;
+    const loading = modal?.querySelector('[data-split-review-loading]');
+    if (loading) loading.hidden = !locked;
+    if (suggestButton) {
+      suggestButton.hidden = locked || !active;
+      suggestButton.textContent = plan?.suggestion?.status === 'failed' ? 'Retry Auto suggest' : 'Auto suggest';
+      suggestButton.disabled = !active || !sourceReady || saving || creating;
+    }
+    if (addButton) { addButton.hidden = locked || !active; addButton.disabled = saving || creating || (namedProblems().length >= MAX_PROBLEMS); }
+    if (saveButton) { saveButton.hidden = true; }
+    if (createButton) {
+      const count = plan?.tiles?.length || 0;
+      createButton.hidden = locked || !active;
+      createButton.disabled = locked || dirty || saving || creating || conflictBlocked || !sourceReady || !saveable() || count < 1 || activeBatch();
+      createButton.title = activeBatch() ? 'Wait for the current note batch to finish before creating another.' : (!sourceReady ? sourceMessage() : '');
+    }
+    closeButtons.forEach((button) => { button.disabled = creating; });
+    if (modal) modal.setAttribute('aria-busy', String(locked || saving || creating));
+    if (status && !status.textContent && !sourceReady && opened) setStatus(sourceMessage(), 'warning');
+  };
+  const render = () => {
+    if (!topicList || typeof document === 'undefined' || !plan) return;
+    if (draggingProblemKey) clearDragState();
+    const previousTilePositions = new Map([...topicList.querySelectorAll('.split-review-tile')]
+      .map((tile) => [tile.dataset.tileUuid, tile.getBoundingClientRect()]));
+    const active = document.activeElement;
+    const focusAttr = active?.hasAttribute?.('data-problem-title') ? 'data-problem-title'
+      : active?.hasAttribute?.('data-tile-template') ? 'data-tile-template'
+        : active?.hasAttribute?.('data-problem-move') ? 'data-problem-move' : null;
+    const focusKey = focusAttr ? active.dataset.problemKey || active.dataset.tileKey : null;
+    const promoteFocusKey = active?.dataset?.tileAction === 'make-primary' ? active.dataset.tileKey : null;
+    const pendingFocusMoveKey = pendingFocusMoveProblemKey;
+    pendingFocusMoveProblemKey = null;
+    const selection = focusAttr === 'data-problem-title' && Number.isInteger(active.selectionStart)
+      ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : null;
+    topicList.replaceChildren();
+    updateDialogWidth();
+    const primary = primaryTile();
+    plan.tiles.forEach((tile, index) => {
+      const tileProblems = plan.problems.filter((problem) => !problem.ignored && problem.group_id === tile.uuid);
+      tile.problems = tileProblems;
+      const section = domNode('section', `split-review-tile${tile.is_primary ? ' is-primary' : ''}`);
+      section.dataset.tileKey = tile.uuid; section.dataset.tileUuid = tile.uuid;
+      section.addEventListener('dragover', (event) => {
+        const problem = findProblem(draggingProblemKey);
+        if (!problem || dragIsLocked() || !normalizeTitle(problem.title) || problem.group_id === tile.uuid) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+        section.classList.add('is-drop-target');
+      });
+      section.addEventListener('dragleave', (event) => {
+        if (!(event.relatedTarget instanceof Node) || !section.contains(event.relatedTarget)) section.classList.remove('is-drop-target');
+      });
+      section.addEventListener('drop', (event) => {
+        const key = event.dataTransfer?.getData('text/plain') || draggingProblemKey;
+        const problem = findProblem(key);
+        if (!problem || dragIsLocked() || !normalizeTitle(problem.title)) { clearDragState(); return; }
+        event.preventDefault();
+        pendingFocusMoveProblemKey = problemKey(problem);
+        clearDragState();
+        moveProblem(problem, tile.uuid);
+      });
+      const header = domNode('header', `split-review-tile__header${tile.is_primary ? ' is-primary' : ' is-secondary'}`);
+      const heading = domNode('h3', 'split-review-tile__heading', `Note ${index + 1}`);
+      heading.dataset.tileHeading = ''; heading.tabIndex = -1;
+      header.append(heading);
+      const headerActions = domNode('div', 'split-review-tile__header-actions');
+      const primaryAction = domNode('button', `split-review-primary-chip${tile.is_primary ? ' is-selected' : ''}`, tile.is_primary ? 'Primary' : 'Make primary');
+      primaryAction.type = 'button'; primaryAction.dataset.tileAction = 'make-primary'; primaryAction.dataset.tileKey = tile.uuid;
+      primaryAction.setAttribute('aria-pressed', String(tile.is_primary));
+      primaryAction.setAttribute('aria-label', tile.is_primary ? `Note ${index + 1}, Primary note` : `Make Note ${index + 1} primary`);
+      if (tile.is_primary) {
+        const checkIcon = typeof window !== 'undefined' ? window.lucide?.icons?.Check : null;
+        if (checkIcon && typeof window.lucide?.createElement === 'function') {
+          primaryAction.prepend(window.lucide.createElement(checkIcon, { width: 14, height: 14, 'aria-hidden': 'true', focusable: 'false' }));
+        }
+      }
+      header.append(primaryAction);
+      if (!tile.is_primary) {
+        const removeTile = domNode('button', 'split-review-icon-action is-danger');
+        removeTile.type = 'button'; removeTile.dataset.tileAction = 'delete'; removeTile.dataset.tileKey = tile.uuid;
+        removeTile.setAttribute('aria-label', 'Delete note'); removeTile.title = 'Delete note';
+        const trashIcon = typeof window !== 'undefined' ? window.lucide?.icons?.Trash2 : null;
+        if (trashIcon && typeof window.lucide?.createElement === 'function') {
+          removeTile.append(window.lucide.createElement(trashIcon, { width: 16, height: 16, 'aria-hidden': 'true', focusable: 'false' }));
+        } else removeTile.textContent = 'Delete note';
+        headerActions.append(removeTile);
+      }
+      header.append(headerActions);
+      section.append(header);
+      const templateLabel = domNode('label', 'split-review-tile__template');
+      templateLabel.append(domNode('span', 'field-label', 'Template'));
+      const templateSelectWrap = domNode('span', 'select-wrap split-review-tile__select-wrap');
+      const select = document.createElement('select'); select.dataset.tileTemplate = ''; select.dataset.tileKey = tile.uuid;
+      select.setAttribute('aria-label', `Template for ${tile.is_primary ? 'Primary' : 'note'}`);
+      templateOptions(tile.template_id).forEach((item) => { const option = document.createElement('option'); option.value = item.value; option.textContent = item.label; option.selected = item.value === asString(tile.template_id); select.append(option); });
+      templateSelectWrap.append(select); templateLabel.append(templateSelectWrap);
+      tileProblems.forEach((problem) => {
+        const row = renderProblem(problem, tile);
+      const handle = row.querySelector('[data-problem-drag-handle]');
+      handle?.addEventListener('pointerdown', (event) => {
+        dragStartPoint = { x: event.clientX, y: event.clientY };
+      });
+      handle?.addEventListener('dragstart', (event) => {
+          if (dragIsLocked() || !normalizeTitle(problem.title) || !event.dataTransfer) { event.preventDefault(); return; }
+          draggingProblemKey = problemKey(problem);
+          dragStartPoint = dragStartPoint || { x: event.clientX, y: event.clientY };
+          latestDragPoint = { x: event.clientX, y: event.clientY };
+          updateControls();
+          documentDragoverHandler = trackDragIntent;
+          document.addEventListener('dragover', documentDragoverHandler, true);
+          event.dataTransfer.setData('text/plain', draggingProblemKey);
+          event.dataTransfer.effectAllowed = 'move';
+          if (typeof event.dataTransfer.setDragImage === 'function') {
+            const bounds = row.getBoundingClientRect();
+            event.dataTransfer.setDragImage(row, Math.min(48, bounds.width / 2), Math.min(24, bounds.height / 2));
+          }
+          row.classList.add('is-dragging');
+        });
+        section.append(row);
+      });
+      const addProblem = domNode('button', 'btn-secondary-sm split-review-add-problem', '+ Add problem');
+      addProblem.type = 'button'; addProblem.dataset.tileAction = 'add-problem'; addProblem.dataset.tileKey = tile.uuid; section.append(addProblem);
+      addProblem.disabled = problemLimitReached() || creating || suggestionInFlight();
+      section.append(templateLabel);
+      topicList.append(section);
+    });
+    const addNoteButton = domNode('button', 'btn-secondary-sm split-review-add-note', '+ Add note');
+    addNoteButton.type = 'button'; addNoteButton.dataset.splitReviewAdd = '';
+    addNoteButton.disabled = plan.tiles.length >= MAX_TILES || (problemLimitReached() && !draggingProblemKey) || creating || suggestionInFlight();
+    addNoteButton.addEventListener('dragover', (event) => {
+      const problem = findProblem(draggingProblemKey);
+      const movedDeliberately = dragStartPoint && latestDragPoint
+        && Math.hypot(latestDragPoint.x - dragStartPoint.x, latestDragPoint.y - dragStartPoint.y) >= 24;
+      if (!problem || !movedDeliberately || dragIsLocked() || !normalizeTitle(problem.title) || plan.tiles.length >= MAX_TILES) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      if (dragTargetTimer) { clearTimeout(dragTargetTimer); dragTargetTimer = null; }
+      showDragCreateTarget();
+    });
+    addNoteButton.addEventListener('drop', (event) => {
+      const key = event.dataTransfer?.getData('text/plain') || draggingProblemKey;
+      const problem = findProblem(key);
+      if (!problem || !dragCreateTarget || dragIsLocked() || !normalizeTitle(problem.title) || plan.tiles.length >= MAX_TILES) { clearDragState(); return; }
+      event.preventDefault();
+      pendingFocusMoveProblemKey = problemKey(problem);
+      clearDragState();
+      moveProblem(problem, '__new_note__');
+    });
+    topicList.append(addNoteButton);
+    resizeAllProblemTitles();
+    if (!plan.tiles.length) plan = ensurePrimary(plan);
+    renderIgnoredPopover(); updateCounts(); updateControls();
+    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      window.requestAnimationFrame(() => {
+        topicList.querySelectorAll('.split-review-tile').forEach((tile) => {
+          const previous = previousTilePositions.get(tile.dataset.tileUuid);
+          if (!previous || typeof tile.animate !== 'function') return;
+          const next = tile.getBoundingClientRect();
+          const deltaX = previous.left - next.left;
+          const deltaY = previous.top - next.top;
+          if (!deltaX && !deltaY) return;
+          tile.animate([
+            { transform: `translate(${deltaX}px, ${deltaY}px)` },
+            { transform: 'translate(0, 0)' },
+          ], { duration: 240, easing: 'cubic-bezier(0.2, 0.75, 0.25, 1)' });
+        });
+      });
+    }
+    if (focusAttr && focusKey) {
+      const replacement = topicList.querySelector(`[${focusAttr}][data-problem-key="${CSS.escape(focusKey)}"], [${focusAttr}][data-tile-key="${CSS.escape(focusKey)}"]`);
+      if (replacement) { safeFocus(replacement); if (selection && replacement.setSelectionRange) { try { replacement.setSelectionRange(...selection); } catch (_) {} } }
+    }
+    else if (pendingFocusMoveKey) safeFocus(topicList.querySelector(`[data-problem-move][data-problem-key="${CSS.escape(pendingFocusMoveKey)}"]`));
+    if (promoteFocusKey) safeFocus(topicList.querySelector(`[data-tile-uuid="${CSS.escape(promoteFocusKey)}"] [data-tile-heading]`));
+  };
+  const findProblem = (key) => plan?.problems?.find((problem) => problemKey(problem) === asString(key));
+  const markDirty = ({ immediate = false } = {}) => {
+    dirty = true;
+    updateControls();
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { saveTimer = null; void save(); }, immediate ? 0 : 500);
+  };
+  const save = async () => {
+    if (!dirty || saving || !transcriptId || !plan || conflictBlocked) return !dirty && !conflictBlocked;
+    if (!planValid()) { setStatus('Finish or remove the incomplete problem title before saving.', 'warning'); updateControls(); return false; }
+    const requestTranscript = transcriptId;
+    const requestId = ++saveSequence;
+    const revision = plan.revision;
+    const payload = snapshotForSave();
+    const localStateSignature = JSON.stringify({ tiles: plan.tiles, problems: plan.problems });
+    const requestSignature = JSON.stringify({ revision, ...payload });
+    if (!pendingSaveRequest || pendingSaveRequest.signature !== requestSignature || pendingSaveRequest.transcriptId !== requestTranscript) {
+      pendingSaveRequest = {
+        signature: requestSignature,
+        transcriptId: requestTranscript,
+        body: JSON.stringify({ expected_revision: revision, operation_id: uuid(), ...payload }),
+      };
+    }
+    saving = true; updateControls();
+    try {
+      const endpoint = `/api/v1/transcripts/${requestTranscript}/consultation-problem-plan`;
+      const requestOptions = {
+        method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: pendingSaveRequest.body,
+      };
+      let response;
+      try { response = await fetcher(endpoint, requestOptions); }
+      catch (_) { response = await fetcher(endpoint, requestOptions); }
+      if (response.status >= 500) response = await fetcher(endpoint, requestOptions);
+      if (requestId !== saveSequence || requestTranscript !== transcriptId) return false;
+      if (!response.ok) {
+        const error = await readSafeError(response);
+        if (response.status === 409) { conflictBlocked = true; setStatus('This problem plan changed elsewhere. Refresh to load the latest plan; your local edits are preserved.', 'error'); }
+        else setStatus('Could not save this problem plan. Your edits are preserved; retry after resolving the save error.', 'error');
+        if (response.status === 409 && error.code === 'consultation_problem_plan_conflict') showMessage('This problem plan changed elsewhere. Your edits are preserved.', 'error');
+        return false;
+      }
+      pendingSaveRequest = null;
+      const persisted = cloneProblemPlan(await response.json());
+      if (!persisted || requestId !== saveSequence || requestTranscript !== transcriptId) return false;
+      const changedDuringSave = JSON.stringify({ tiles: plan.tiles, problems: plan.problems }) !== localStateSignature;
+      persisted.tiles = persisted.tiles.map((tile) => ({ ...tile, _temporary: false }));
+      persisted.problems = persisted.problems.map((problem) => ({ ...problem, _temporary: false }));
+      if (changedDuringSave) {
+        const current = plan;
+        current.plan_id = persisted.plan_id; current.revision = persisted.revision; current.manual_override = persisted.manual_override;
+        savedPlan = persisted; dirty = true;
+      } else {
+        const temporaryTiles = plan.tiles.filter((tile) => tile._temporary);
+        const temporaryProblems = plan.problems.filter((problem) => problem._temporary);
+        plan = ensurePrimary(persisted);
+        plan.tiles.push(...temporaryTiles);
+        plan.problems.push(...temporaryProblems);
+        savedPlan = cloneProblemPlan(persisted); dirty = false;
+      }
+      setStatus('');
+      if (changedDuringSave) { saving = false; updateControls(); return save(); }
+      return true;
+    } catch (_) {
+      if (requestId === saveSequence && requestTranscript === transcriptId) setStatus('Could not save this problem plan. Your edits are preserved; retry after resolving the save error.', 'error');
+      return false;
+    } finally {
+      if (requestId === saveSequence) { saving = false; updateControls(); }
+    }
+  };
+  const moveProblem = (problem, targetId) => {
+    if (!problem || !targetId || dragIsLocked() || !normalizeTitle(problem.title)) return;
+    let destination = plan.tiles.find((tile) => tile.uuid === targetId);
+    if (targetId === '__new_note__') {
+      if (plan.tiles.length >= MAX_TILES) { setStatus('You can create up to six notes.', 'warning'); return; }
+      destination = { uuid: uuid(), is_primary: false, template_id: primaryTile()?.template_id || getSelectedTemplateId() || null, template_version_id: null };
+      plan.tiles.push(destination);
+    }
+    if (!destination) return;
+    if (!problem.ignored && problem.group_id === destination.uuid) return;
+    problem.group_id = destination.uuid; problem.ignored = false; problem.restore_group_id = null;
+    cleanupEmptySecondaryTiles(); render(); markDirty({ immediate: true });
+  };
+  const cleanupEmptySecondaryTiles = () => {
+    const occupied = new Set(plan.problems.filter((problem) => !problem.ignored).map((problem) => problem.group_id));
+    plan.tiles = plan.tiles.filter((tile) => tile.is_primary || occupied.has(tile.uuid));
+    if (!primaryTile()) plan.tiles.unshift({ uuid: uuid(), is_primary: true, template_id: getSelectedTemplateId() || null, template_version_id: null });
+  };
+  const addProblem = (tileId = primaryTile()?.uuid, temporaryTile = false) => {
+    if (!plan || problemLimitReached() || suggestionInFlight()) return false;
+    const problem = { uuid: uuid(), _key: `new-problem-${++nextFocusSerial}`, title: '', origin: 'manual', ignored: false, group_id: tileId, restore_group_id: null, _temporary: true };
+    plan.problems.push(problem);
+    if (temporaryTile) plan.tiles.find((tile) => tile.uuid === tileId)._temporary = true;
+    render();
+    safeFocus(topicList?.querySelector(`[data-problem-title][data-problem-key="${problemKey(problem)}"]`));
+    return true;
+  };
+  const deleteProblem = (problem) => {
+    if (!problem) return;
+    plan.problems = plan.problems.filter((item) => item !== problem);
+    cleanupEmptySecondaryTiles(); render(); markDirty({ immediate: true });
+  };
+  const ignoreProblem = (problem) => {
+    if (!problem || !normalizeTitle(problem.title)) return false;
+    problem.ignored = true; problem.restore_group_id = problem.group_id; problem.group_id = null;
+    cleanupEmptySecondaryTiles(); render(); markDirty({ immediate: true });
+    return true;
+  };
+  const restoreProblem = (problem) => {
+    if (!problem) return;
+    const groupStillExists = plan.tiles.some((tile) => tile.uuid === problem.restore_group_id);
+    problem.group_id = groupStillExists ? problem.restore_group_id : primaryTile()?.uuid;
+    problem.restore_group_id = null; problem.ignored = false; render(); markDirty({ immediate: true });
+    if (!ignoredProblems().length) closeIgnoredPopover();
+  };
+  const deleteTile = (tile) => {
+    if (!tile || tile.is_primary) return;
+    const primary = primaryTile();
+    plan.problems.forEach((problem) => { if (problem.group_id === tile.uuid) problem.group_id = primary?.uuid || null; });
+    plan.tiles = plan.tiles.filter((candidate) => candidate !== tile);
+    render(); markDirty({ immediate: true });
+  };
+  const close = async ({ force = false } = {}) => {
+    if (!opened) return true;
+    if (!force && creating) return false;
+    const closeTranscriptId = transcriptId;
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    if (titleSaveTimer) { clearTimeout(titleSaveTimer); titleSaveTimer = null; }
+    while (!force && saving && closeTranscriptId === transcriptId) await new Promise((resolve) => setTimeout(resolve, 25));
+    if (!force && closeTranscriptId !== transcriptId) return false;
+    if (plan?.tiles) {
+      plan.problems.forEach((problem) => {
+        if (!problem._temporary || !normalizeTitle(problem.title)) return;
+        problem._temporary = false;
+        const ownerTile = plan.tiles.find((tile) => tile.uuid === problem.group_id);
+        if (ownerTile) ownerTile._temporary = false;
+      });
+      const blankTemporaryProblemKeys = new Set(plan.problems.filter((problem) => problem._temporary && !normalizeTitle(problem.title)).map(problemKey));
+      plan.tiles = plan.tiles.filter((tile) => tile.is_primary || !tile._temporary);
+      plan.problems = plan.problems.filter((problem) => !blankTemporaryProblemKeys.has(problemKey(problem)));
+      cleanupEmptySecondaryTiles();
+      const untouchedVirtualPrimary = isPristineVirtualPrimary();
+      if (untouchedVirtualPrimary) dirty = false;
+    }
+    if (!force && dirty) {
+      if (conflictBlocked) {
+        if (!confirmDiscard()) { render(); return false; }
+        plan = savedPlan ? cloneProblemPlan(savedPlan) : makeVirtualPlan(); dirty = false;
+      } else if (planValid()) {
+        if (!await save()) { render(); return false; }
+      } else if (!confirmDiscard()) { render(); return false; }
+      else { plan = savedPlan ? cloneProblemPlan(savedPlan) : makeVirtualPlan(); dirty = false; }
+    }
+    clearDragState(); closeIgnoredPopover(); setOpen(false);
+    if (opener && isUsableFocusTarget(opener)) safeFocus(opener); else if (isUsableFocusTarget(trigger)) safeFocus(trigger);
+    return true;
+  };
+  const open = () => {
+    if (!transcriptId || !capabilityAvailable) return false;
+    opener = document.activeElement;
+    if (!plan) plan = makeVirtualPlan();
+    plan = ensurePrimary(plan);
+    setOpen(true); render(); scheduleProblemTitleResize();
+    safeFocus(modal?.querySelector('#split-review-modal-title') || modal?.querySelector('button[data-split-review-close]'));
+    return true;
+  };
+  const create = async () => {
+    if (creating || suggestionInFlight() || activeBatch() || !sourceReady || !planValid()) return false;
+    const requestTranscriptId = transcriptId;
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    if (!plan.plan_id) {
+      plan.tiles.forEach((tile) => { tile._temporary = false; });
+      dirty = true;
+    }
+    if (dirty && !await save()) return false;
+    if (dirty || saving || !plan?.plan_id) return false;
+    const immutablePlan = cloneProblemPlan(plan);
+    creating = true; setStatus(''); updateControls();
+    try {
+      const result = await createNoteBatch({ transcriptId: requestTranscriptId, plan: immutablePlan });
+      if (requestTranscriptId !== transcriptId || requestTranscriptId !== getTranscriptId()) return false;
+      if (!result) { setStatus('Note creation could not be started. Your saved plan remains available.', 'error'); return false; }
+      batch = { status: result.status || 'generation_queued', batch_id: result.batch_id };
+      const placeholderDraft = {
+        status: 'active',
+        topics: immutablePlan.tiles.map((tile, index) => ({
+          topic_uuid: tile.uuid,
+          title: immutablePlan.problems.filter((problem) => !problem.ignored && problem.group_id === tile.uuid).map((problem) => problem.title).join(' + ') || (tile.is_primary ? 'Primary note' : `Note ${index + 1}`),
+          disposition: 'separate_note', is_primary: tile.is_primary, template_id: tile.template_id,
+        })),
+      };
+      onSplitBatchStarted({ draft: placeholderDraft, plan: immutablePlan, batchId: result.batch_id || null, phase: result.status || 'generation_queued' });
+      await close({ force: true }); return true;
+    } catch (_) {
+      if (requestTranscriptId === transcriptId) setStatus('Note creation could not be started. Your saved plan remains available.', 'error');
+      return false;
+    } finally {
+      if (requestTranscriptId === transcriptId) { creating = false; updateControls(); }
+    }
+  };
+  const askSuggestions = async () => {
+    if (!plan || !transcriptId || !sourceReady || suggesting || saving || creating) return false;
+    const confirmed = typeof window === 'undefined' || typeof window.confirm !== 'function'
+      ? true
+      : window.confirm('Auto suggest will replace the current problem grouping after a valid suggestion is ready. Ignored problems will remain excluded. Continue?');
+    if (!confirmed) return false;
+    if (dirty && !await save()) return false;
+    if (dirty) return false;
+    const targetTranscript = transcriptId;
+    const sequence = ++suggestionSequence;
+    const retryFailedAnalysis = plan.suggestion?.status === 'failed';
+    const expectedRevision = plan.revision;
+    const selectedTemplateId = getSelectedTemplateId() || primaryTile()?.template_id || null;
+    suggesting = true; setStatus(''); render();
+    try {
+      await saveSources({ transcriptId: targetTranscript });
+      if (targetTranscript !== transcriptId || targetTranscript !== getTranscriptId() || sequence !== suggestionSequence) return false;
+      const result = await suggestProblems({ transcriptId: targetTranscript, expectedRevision, selectedTemplateId, retryFailedAnalysis });
+      if (!result) throw new Error('suggestion_start_failed');
+      if (result?.suggestion?.status && !IN_FLIGHT_ANALYSIS_STATUSES.has(result.suggestion.status)) {
+        plan.suggestion = result.suggestion;
+      }
+      let latest = result;
+      let terminalSuggestionSeen = false;
+      for (let attempt = 0; attempt < 40 && sequence === suggestionSequence && targetTranscript === transcriptId; attempt += 1) {
+        const state = latest?.consultation_problem_plan || latest;
+        if (state?.tiles && state?.problems && state.suggestion && !IN_FLIGHT_ANALYSIS_STATUSES.has(state.suggestion.status)) {
+          terminalSuggestionSeen = true;
+          if (state.suggestion.status === 'ready' || state.suggestion.status === 'completed') {
+            plan = ensurePrimary(cloneProblemPlan(state)); savedPlan = cloneProblemPlan(plan); dirty = false; setStatus('');
+          } else {
+            plan.plan_id = state.plan_id || plan.plan_id;
+            plan.revision = Number.isInteger(state.revision) ? state.revision : plan.revision;
+            plan.manual_override = Boolean(state.manual_override);
+            plan.suggestion = { ...state.suggestion };
+            savedPlan = cloneProblemPlan(plan);
+            setStatus('Suggestions could not be prepared. Your previous plan is preserved. Retry Auto suggest or continue editing it.', 'error');
+          }
+          break;
+        }
+        if (attempt === 0 && result?.analysis?.status === 'failed') throw new Error('suggestion_failed');
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        latest = await refreshWorkspace(targetTranscript) || latest;
+      }
+      if (!terminalSuggestionSeen && sequence === suggestionSequence && targetTranscript === transcriptId) {
+        setStatus('Suggestions are still processing. Your saved plan is unchanged; check Review again shortly.', 'warning');
+      }
+      render(); return true;
+    } catch (_) {
+      if (sequence === suggestionSequence && targetTranscript === transcriptId) setStatus('Suggestions could not be prepared. Your previous plan is preserved. Retry Auto suggest or continue editing it.', 'error');
+      render(); return false;
+    } finally {
+      if (sequence === suggestionSequence && targetTranscript === transcriptId) { suggesting = false; render(); }
+    }
+  };
+  const applyWorkspaceState = ({
+    problemPlan = null, draft = null, availableTemplates, batch: nextBatch,
+    problemPlanProjectionAvailable = false,
+    nextCapabilityAvailable, nextSourceReady, nextSourceReadinessMessage, nextTranscriptId,
+  } = {}) => {
+    const nextId = nextTranscriptId === undefined ? (getTranscriptId() || null) : (nextTranscriptId || null);
+    const changedTranscript = nextId !== transcriptId;
+    const wasDragging = Boolean(draggingProblemKey);
+    const previousCapability = capabilityAvailable;
+    const previousSuggestionLock = suggestionInFlight();
+    const previousCreatingLock = creating;
+    if (changedTranscript) {
+      if (saveTimer) clearTimeout(saveTimer);
+      if (titleSaveTimer) clearTimeout(titleSaveTimer);
+      clearDragState();
+      if (opened) close({ force: true });
+      plan = null; savedPlan = null; dirty = false; saving = false; suggesting = false; creating = false; batch = null;
+      conflictBlocked = false; sourceReady = false; sourceReadinessMessage = ''; pendingSaveRequest = null;
+      saveSequence += 1; suggestionSequence += 1;
+      planLoadGeneration += 1; planLoadTranscript = null;
+      transcriptId = nextId;
+    }
+    if (Array.isArray(availableTemplates)) templates = availableTemplates;
+    if (nextBatch !== undefined) batch = nextBatch;
+    if (typeof nextCapabilityAvailable === 'boolean') capabilityAvailable = nextCapabilityAvailable;
+    if (typeof nextSourceReady === 'boolean') sourceReady = nextSourceReady;
+    if (typeof nextSourceReadinessMessage === 'string') sourceReadinessMessage = nextSourceReadinessMessage;
+    const incoming = problemPlan || null;
+    // Workspace refreshes can omit the living plan projection entirely. An
+    // omitted projection is not a plan change: keep the in-progress native
+    // drag mounted until a refresh actually reports a different plan or lock.
+    const incomingMatchesSaved = incoming
+      ? Boolean(savedPlan && problemPlanSignature(incoming) === problemPlanSignature(savedPlan))
+      : !problemPlanProjectionAvailable;
+    const preserveActiveDrag = wasDragging && !changedTranscript && previousCapability && capabilityAvailable
+      && !previousSuggestionLock && !suggestionInFlight() && !previousCreatingLock && !creating && incomingMatchesSaved;
+    const hasTemporaryRows = hasPendingTemporaryEdits();
+    if (incoming && !preserveActiveDrag && ((!dirty && !hasTemporaryRows) || changedTranscript || !plan || (incoming.revision > plan.revision && !opened))) {
+      plan = ensurePrimary(cloneProblemPlan(incoming)); savedPlan = cloneProblemPlan(plan); dirty = false;
+    } else if (!plan && (draft || incoming === null) && transcriptId) plan = makeVirtualPlan();
+    if (!problemPlanProjectionAvailable && transcriptId && planLoadTranscript !== transcriptId) {
+      const target = transcriptId;
+      const generation = ++planLoadGeneration;
+      planLoadTranscript = target;
+      void fetcher(`/api/v1/transcripts/${target}/consultation-problem-plan`, { method: 'GET', credentials: 'include' })
+        .then(async (response) => (response?.ok ? response.json() : null))
+        .then((payload) => {
+          if (!payload || generation !== planLoadGeneration || target !== transcriptId || target !== getTranscriptId()) return;
+          if (dirty || hasPendingTemporaryEdits()) return;
+          const fetchedPlan = ensurePrimary(cloneProblemPlan(payload));
+          if (draggingProblemKey && capabilityAvailable && !dragIsLocked()
+            && savedPlan && problemPlanSignature(fetchedPlan) === problemPlanSignature(savedPlan)) {
+            updateDialogWidth(); updateCounts(); updateControls();
+            return;
+          }
+          plan = fetchedPlan; savedPlan = cloneProblemPlan(plan);
+          if (opened) render(); else updateControls();
+        })
+        .catch(() => null);
+    }
+    if (trigger) { trigger.hidden = !(capabilityAvailable && transcriptId); trigger.disabled = !(capabilityAvailable && transcriptId); }
+    if (opened && preserveActiveDrag) { updateDialogWidth(); updateCounts(); updateControls(); }
+    else { updateCounts(); if (opened) render(); else updateControls(); }
+  };
+  const handleAction = (event) => {
+    if (suggestionInFlight() || creating) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest('[data-split-review-add]')) {
+      if (plan.tiles.length >= MAX_TILES) { setStatus('You can create up to six notes.', 'warning'); return; }
+      if (problemLimitReached()) { setStatus('You can add up to six problems.', 'warning'); return; }
+      const tile = { uuid: uuid(), is_primary: false, template_id: primaryTile()?.template_id || getSelectedTemplateId() || null, template_version_id: null, _temporary: true };
+      plan.tiles.push(tile); addProblem(tile.uuid, true);
+      return;
+    }
+    const action = target?.closest('[data-problem-action]');
+    if (action) {
+      const problem = findProblem(action.dataset.problemKey);
+      if (action.dataset.problemAction === 'ignore') ignoreProblem(problem);
+      else if (action.dataset.problemAction === 'delete') deleteProblem(problem);
+      else if (action.dataset.problemAction === 'restore') restoreProblem(problem);
+      return;
+    }
+    const tileAction = target?.closest('[data-tile-action]');
+    if (tileAction) {
+      const tile = plan.tiles.find((candidate) => candidate.uuid === tileAction.dataset.tileKey);
+      if (tileAction.dataset.tileAction === 'add-problem') addProblem(tile?.uuid);
+      else if (tileAction.dataset.tileAction === 'delete') deleteTile(tile);
+      else if (tileAction.dataset.tileAction === 'make-primary' && tile && !tile.is_primary) {
+        plan.tiles.forEach((candidate) => { candidate.is_primary = candidate === tile; });
+        plan.tiles = [tile, ...plan.tiles.filter((candidate) => candidate !== tile)];
+        cleanupEmptySecondaryTiles();
+        render(); markDirty({ immediate: true });
+      }
+      return;
+    }
+    const move = target?.closest('[data-problem-move]');
+    if (move && move.value) { moveProblem(findProblem(move.dataset.problemKey), move.value); move.value = ''; }
+  };
+  trigger?.addEventListener('click', open);
+  closeButtons.forEach((button) => button.addEventListener('click', () => close()));
+  modal?.addEventListener('click', (event) => { if (event.target instanceof Element && event.target.hasAttribute('data-split-review-close')) close(); });
+  topicList?.addEventListener('click', handleAction);
+  ignoredPopover?.addEventListener('click', handleAction);
+  ignoredButton?.addEventListener('click', openIgnoredPopover);
+  topicList?.addEventListener('dragend', clearDragState);
+  topicList?.addEventListener('input', (event) => {
+    const input = event.target instanceof HTMLTextAreaElement ? event.target : null;
+    if (!input?.hasAttribute('data-problem-title')) return;
+    const problem = findProblem(input.dataset.problemKey); if (!problem) return;
+    problem.title = input.value;
+    resizeProblemTitle(input);
+    if (problem._temporary && normalizeTitle(input.value)) problem.origin = 'manual';
+    dirty = true; updateControls();
+    if (titleSaveTimer) clearTimeout(titleSaveTimer);
+    titleSaveTimer = setTimeout(() => {
+      titleSaveTimer = null;
+      const current = plan.problems.find((item) => item === problem);
+      if (!current || !normalizeTitle(current.title)) return;
+      plan.problems.filter((item) => item._temporary && normalizeTitle(item.title)).forEach((current) => {
+        current._temporary = false;
+        const ownerTile = plan.tiles.find((tile) => tile.uuid === current.group_id);
+        if (ownerTile) ownerTile._temporary = false;
+      });
+      // The edited row may already be persisted; every completed title edit
+      // needs a save, and any other titled temporary rows should save with it.
+      markDirty({ immediate: true });
+    }, 650);
+  });
+  topicList?.addEventListener('change', (event) => {
+    const input = event.target instanceof HTMLSelectElement ? event.target : null;
+    if (input?.hasAttribute('data-tile-template')) {
+      const tile = plan.tiles.find((candidate) => candidate.uuid === input.dataset.tileKey);
+      if (tile) {
+        tile.template_id = input.value || null; tile.template_version_id = null;
+        if (tile._temporary) { render(); }
+        else markDirty({ immediate: true });
+      }
+    } else if (input?.hasAttribute('data-problem-move') && input.value) moveProblem(findProblem(input.dataset.problemKey), input.value);
+  });
+  suggestButton?.addEventListener('click', () => { void askSuggestions(); });
+  saveButton?.addEventListener('click', () => { void save(); });
+  createButton?.addEventListener('click', () => { void create(); });
+  modal?.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      if (draggingProblemKey) { event.preventDefault(); clearDragState(); return; }
+      if (ignoredOpen) { closeIgnoredPopover(); safeFocus(ignoredButton); return; }
+      close(); return;
+    }
+    if (event.key !== 'Tab') return;
+    const elements = focusableElements(modal); if (!elements.length) return;
+    if (event.shiftKey && document.activeElement === elements[0]) { event.preventDefault(); safeFocus(elements[elements.length - 1]); }
+    else if (!event.shiftKey && document.activeElement === elements[elements.length - 1]) { event.preventDefault(); safeFocus(elements[0]); }
+  });
+  if (topicList && typeof ResizeObserver !== 'undefined') {
+    let lastObservedWidth = -1;
+    const titleResizeObserver = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect?.width;
+      if (!Number.isFinite(width) || Math.abs(width - lastObservedWidth) < 1) return;
+      lastObservedWidth = width;
+      scheduleProblemTitleResize();
+    });
+    titleResizeObserver.observe(topicList);
+  }
+  if (typeof window !== 'undefined') window.addEventListener('resize', scheduleProblemTitleResize, { passive: true });
+  const resultDraft = () => {
+    const current = plan || makeVirtualPlan();
+    return {
+      status: 'active', draft_id: current.plan_id, revision: current.revision,
+      topics: current.tiles.map((tile, index) => ({ topic_uuid: tile.uuid, title: current.problems.filter((problem) => !problem.ignored && problem.group_id === tile.uuid).map((problem) => problem.title).join(' + ') || (tile.is_primary ? 'Primary note' : `Note ${index + 1}`), is_primary: tile.is_primary, disposition: 'separate_note', template_id: tile.template_id })),
+      plan: cloneProblemPlan(current),
+    };
+  };
+  return {
+    applyWorkspaceState,
+    updateSuggestionReadiness: ({ nextCapabilityAvailable, nextSourceReady, nextSourceReadinessMessage } = {}) => {
+      if (typeof nextCapabilityAvailable === 'boolean') capabilityAvailable = nextCapabilityAvailable;
+      if (typeof nextSourceReady === 'boolean') sourceReady = nextSourceReady;
+      if (typeof nextSourceReadinessMessage === 'string') sourceReadinessMessage = nextSourceReadinessMessage;
+      if (opened) render(); else updateControls();
+    },
+    close, open, render, addProblem, requestSuggestions: askSuggestions, save, confirm: create,
+    createFromSavedPlan: create,
+    isDirty: () => dirty, isOpen: () => opened,
+    getDraft: resultDraft, getRemoteDraft: () => savedPlan ? { ...resultDraft(), plan: cloneProblemPlan(savedPlan) } : null,
+    getPlan: () => cloneProblemPlan(plan), isManualOverride: () => Boolean(plan?.manual_override),
+    isSuggestionRunning: () => suggestionInFlight(),
   };
 }

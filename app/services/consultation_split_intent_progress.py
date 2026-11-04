@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.errors import AppError
 from app.models import (
+    ConsultationProblemPlan,
     ConsultationSplitAnalysis,
     ConsultationSplitAnalysisStatus,
     ConsultationSplitIntent,
@@ -49,6 +50,7 @@ _SAFE_PROGRESS_ERROR_CODES = {
     "consultation_split_source_stale",
     "consultation_split_template_unavailable",
     "consultation_split_generation_unavailable",
+    "consultation_problem_plan_conflict",
 }
 
 
@@ -85,6 +87,18 @@ def _fail_intent(
     locked.status = ConsultationSplitIntentStatus.failed
     locked.error_code = safe_code
     locked.completed_at = utcnow()
+    if locked.intent_kind == "problem_suggestion" and locked.problem_plan_id is not None:
+        plan = db.scalar(select(ConsultationProblemPlan).where(
+            ConsultationProblemPlan.id == locked.problem_plan_id,
+            ConsultationProblemPlan.owner_user_id == locked.owner_user_id,
+            ConsultationProblemPlan.team_id == locked.team_id,
+            ConsultationProblemPlan.transcript_id == locked.transcript_id,
+        ).with_for_update())
+        if (plan is not None and plan.revision == locked.problem_plan_revision
+                and plan.suggestion_intent_id == locked.id
+                and plan.suggestion_base_revision == locked.problem_plan_revision):
+            plan.suggestion_status = "failed"
+            plan.suggestion_error_code = safe_code
     db.commit()
     return ConsultationSplitIntentProgressResult("failed", intent.id, safe_code)
 
@@ -144,6 +158,14 @@ def progress_consultation_split_intent(
         )
 
     try:
+        if intent.intent_kind == "problem_suggestion":
+            from app.services.consultation_problem_plans import apply_problem_plan_suggestion
+            applied = apply_problem_plan_suggestion(db, actor, intent_id=intent.id, analysis=analysis)
+            if not applied:
+                db.commit()
+                return ConsultationSplitIntentProgressResult("failed", intent_id, "consultation_problem_plan_conflict")
+            db.commit()
+            return ConsultationSplitIntentProgressResult("review_ready", intent_id)
         if (
             analysis.status is ConsultationSplitAnalysisStatus.not_required
             and not intent.manual_review_requested
@@ -155,7 +177,10 @@ def progress_consultation_split_intent(
                 intent_id=intent.id,
             )
             return ConsultationSplitIntentProgressResult("continued_as_one_note", intent_id)
-        initialize_or_reuse_split_draft_for_intent(db, actor, intent_id=intent.id)
+        draft = initialize_or_reuse_split_draft_for_intent(db, actor, intent_id=intent.id)
+        if intent.intent_kind != "problem_suggestion":
+            from app.services.consultation_problem_plans import sync_problem_plan_from_split_draft_detail
+            sync_problem_plan_from_split_draft_detail(db, actor, transcript_id=intent.transcript_id, detail=draft)
         return ConsultationSplitIntentProgressResult("review_ready", intent_id)
     except AppError as exc:
         db.rollback()

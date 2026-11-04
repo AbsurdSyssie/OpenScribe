@@ -28,6 +28,7 @@ from app.services.consultation_splits import (
     read_split_batch_json,
     read_split_batch_topic_template_snapshot,
     read_split_topic_title,
+    _require_lineage,
 )
 from app.services.content_crypto import encrypt_json_for_owner
 from app.services.task_outbox import try_publish_task_dispatch_safely
@@ -117,6 +118,7 @@ def regenerate_confirmed_split_batch(
     )
     if source is None or source.status not in _TERMINAL_BATCH_STATUSES:
         raise _unavailable()
+    _require_lineage(db, actor, source)
     if not batch_split_enabled(db, actor, batch=source):
         raise AppError(403, "consultation_split_disabled", "Consultation splitting is not enabled")
 
@@ -125,9 +127,12 @@ def regenerate_confirmed_split_batch(
     intent = ConsultationSplitIntent(
         id=uuid4(), owner_user_id=actor.id, team_id=actor.team_id,
         transcript_id=transcript_id, analysis_id=source.analysis_id,
+        problem_plan_id=source.problem_plan_id,
+        problem_plan_revision=source.problem_plan_revision,
+        intent_kind="problem_plan_create" if source.problem_plan_id is not None else "legacy_generate",
         # Legacy batches may predate durable intent binding.  They retain the
         # automatic gate and never gain the explicit-manual exception.
-        manual_review_requested=bool(source.intent and source.intent.manual_review_requested),
+        manual_review_requested=bool(source.problem_plan_id is not None or (source.intent and source.intent.manual_review_requested)),
         client_idempotency_key=client_idempotency_key,
         status=ConsultationSplitIntentStatus.confirmed,
         retention_expires_at=scope.transcript.retention_expires_at,
@@ -160,7 +165,12 @@ def regenerate_confirmed_split_batch(
     plan = deepcopy(snapshots["confirmed_plan_encrypted"])
     plan["intent_id"] = str(intent.id)
     batch = create_split_batch(
-        db, actor, analysis=source.analysis, intent_id=intent.id, confirmed_plan=plan,
+        db, actor,
+        analysis=source.analysis if source.analysis_id is not None else None,
+        problem_plan=source.problem_plan if source.problem_plan_id is not None else None,
+        problem_plan_revision=source.problem_plan_revision,
+        source_fingerprint=source.source_fingerprint if source.problem_plan_id is not None else None,
+        intent_id=intent.id, confirmed_plan=plan,
         clinical_snapshot=snapshots["clinical_snapshot_encrypted"], source_snapshot=snapshots["source_snapshot_encrypted"],
         template_snapshot=snapshots["template_snapshot_encrypted"], pii_snapshot=snapshots["pii_snapshot_encrypted"],
         provider_snapshot={}, note_options_snapshot=snapshots["note_options_snapshot_encrypted"],

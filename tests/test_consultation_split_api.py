@@ -391,7 +391,7 @@ def test_confirm_split_draft_freezes_encrypted_batch_and_replays_before_timestam
             db_session, owner, transcript_id=transcript.id,
             payload=ConsultationSplitDraftConfirmRequest(intent_id=intent.id, expected_updated_at=draft.updated_at),
         )
-    assert no_selection.value.code == "business_rule_violation"
+    assert no_selection.value.code == "consultation_split_llm_model_unavailable"
     db_session.rollback()
     assert db_session.query(ConsultationSplitBatch).filter_by(intent_id=intent.id).count() == 0
     assert db_session.get(ConsultationSplitIntent, intent.id).status is ConsultationSplitIntentStatus.analysis_pending
@@ -1985,10 +1985,12 @@ def test_workspace_rest_and_sse_safe_split_projection_excludes_encrypted_source_
     _enable_split(db_session, owner, monkeypatch)
     from app.schemas.consultation_split import ConsultationSplitBatchDetail
 
+    topic_uuid, document_id = uuid4(), uuid4()
     expected = ConsultationSplitBatchDetail(
         batch_id=uuid4(), status="partially_ready", failed_topic_count=1, validated_topic_count=1,
         primary_failed=True, can_retry_missing=True, can_keep_available=True,
-        active_execution_id=None, preferred_document_id=None, deleted_topic_uuids=[uuid4()],
+        active_execution_id=None, preferred_document_id=document_id,
+        materialized_document_ids_by_topic_uuid={topic_uuid: document_id}, deleted_topic_uuids=[uuid4()],
     )
     monkeypatch.setattr("app.web.transcribe_workspace.read_workspace_split_batch", lambda *_args, **_kwargs: expected)
     assert client.post("/api/v1/auth/login", json={"email": owner.email, "password": "password-1"}).status_code == 200
@@ -1997,6 +1999,7 @@ def test_workspace_rest_and_sse_safe_split_projection_excludes_encrypted_source_
     split = rest.json()["consultation_split_batch"]
     assert split == expected.model_dump(mode="json")
     assert split["deleted_topic_uuids"] == [str(expected.deleted_topic_uuids[0])]
+    assert split["materialized_document_ids_by_topic_uuid"] == {str(topic_uuid): str(document_id)}
     assert not ({"source_snapshot", "confirmed_plan", "provider_snapshot", "output", "title"} & set(split))
 
     from app.schemas import TranscribeWorkspaceDetail

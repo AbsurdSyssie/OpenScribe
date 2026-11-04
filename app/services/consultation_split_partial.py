@@ -20,7 +20,8 @@ from app.models import (ConsultationSplitBatch, ConsultationSplitBatchStatus,
     GeneratedDocument, TeamRole, TemplateMode, User)
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.consultation_splits import (read_split_batch_topic_template_snapshot,
-    read_split_batch_phi_index, read_split_topic_outcome_output, read_split_topic_outcome_verified_output)
+    read_split_batch_phi_index, read_split_topic_outcome_output, read_split_topic_outcome_verified_output,
+    _require_lineage)
 from app.services.consultation_split_materialization import (
     materialize_split_document,
     require_batch_materialization_version,
@@ -58,6 +59,7 @@ def keep_available_split_notes(db: Session, actor: User, *, transcript_id: UUID,
         ConsultationSplitBatch.transcript_id == transcript_id).with_for_update())
     if batch is None:
         raise AppError(404, "consultation_split_batch_unavailable", "Split batch is unavailable")
+    _require_lineage(db, actor, batch)
     if not batch_split_enabled(db, actor, batch=batch):
         raise AppError(403, "consultation_split_disabled", "Consultation splitting is not enabled")
     topics = db.scalars(select(ConsultationSplitBatchTopic).where(

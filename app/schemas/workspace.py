@@ -4,7 +4,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from .dictation import PostConsultationDictationDetail
-from .consultation_split import ConsultationSplitAnalysisDetail, ConsultationSplitBatchDetail, ConsultationSplitDraftDetail, ConsultationSplitIntentWorkspaceDetail
+from .consultation_split import ConsultationProblemPlanProjection, ConsultationSplitAnalysisDetail, ConsultationSplitBatchDetail, ConsultationSplitDraftDetail, ConsultationSplitIntentWorkspaceDetail
 from .smart_phrases import SmartPhraseDetail
 from .templates import GeneratedDocumentDetail, PromptTemplateDetail, QuickActionDetail
 from .transcripts import TranscriptDetail, TranscriptListItem, TranscriptPiiEntityDetail, WorkingNoteDetail
@@ -65,6 +65,7 @@ class TranscribeWorkspaceDetail(BaseModel):
     consultation_split_intent: ConsultationSplitIntentWorkspaceDetail | None = None
     consultation_split_draft: ConsultationSplitDraftDetail | None = None
     consultation_split_batch: ConsultationSplitBatchDetail | None = None
+    consultation_problem_plan: ConsultationProblemPlanProjection | None = None
 
 
 class ExampleConsultationResponse(BaseModel):

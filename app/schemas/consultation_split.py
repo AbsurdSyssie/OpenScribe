@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from .templates import GeneratedDocumentDetail, GenerationFailurePresentation
 
@@ -193,6 +193,82 @@ class ConsultationSplitDraftConfirmResponse(BaseModel):
     idempotency_replayed: bool
 
 
+class ConsultationProblemPlanTile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    uuid: UUID
+    is_primary: StrictBool
+    template_id: UUID | None = None
+    template_version_id: UUID | None = None
+
+
+class ConsultationProblemPlanProblem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    uuid: UUID
+    title: str = Field(min_length=1, max_length=255)
+    origin: Literal["manual", "suggested"]
+    ignored: StrictBool
+    group_id: UUID | None = None
+    restore_group_id: UUID | None = None
+
+    @field_validator("title")
+    @classmethod
+    def reject_blank_title(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Problem title must not be blank")
+        return value
+
+
+class ConsultationProblemPlanProjection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    plan_id: UUID | None = None
+    revision: int = Field(ge=0)
+    manual_override: StrictBool
+    tiles: list[ConsultationProblemPlanTile] = Field(default_factory=list, max_length=6)
+    problems: list[ConsultationProblemPlanProblem] = Field(default_factory=list, max_length=6)
+    suggestion: "ConsultationProblemPlanSuggestion | None" = None
+
+
+class ConsultationProblemPlanSuggestion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    intent_id: UUID
+    analysis_id: UUID
+    status: Literal["queued", "processing", "ready", "failed"]
+    error_code: str | None = Field(default=None, max_length=128)
+
+
+class ConsultationProblemPlanReplace(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=0)
+    operation_id: UUID
+    tiles: list[ConsultationProblemPlanTile] = Field(max_length=6)
+    problems: list[ConsultationProblemPlanProblem] = Field(max_length=6)
+
+
+class ConsultationProblemSuggestionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    client_idempotency_key: UUID
+    expected_revision: int = Field(ge=0)
+    selected_template_id: UUID
+    retry_failed_analysis: StrictBool = False
+
+
+class ConsultationProblemPlanCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    client_idempotency_key: UUID
+    expected_revision: int = Field(ge=0)
+
+
+class ConsultationProblemPlanCreateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    batch_id: UUID
+    status: Literal["generation_queued"]
+    separate_note_count: int = Field(ge=1, le=6)
+    topic_count: int = Field(ge=1, le=6)
+    created_at: datetime
+    updated_at: datetime
+    idempotency_replayed: bool
+
+
 class ConsultationSplitKeepAvailableResponse(BaseModel):
     """Content-safe acknowledgement of a clinician's partial acceptance."""
 
@@ -214,7 +290,7 @@ class ConsultationSplitRetryMissingResponse(BaseModel):
 
 
 class ConsultationSplitBatchDetail(BaseModel):
-    """Owner-safe partial-batch state; never includes topic titles or output."""
+    """Owner-safe batch state with frozen tile labels; never includes note output."""
     model_config = ConfigDict(extra="forbid")
     batch_id: UUID
     status: Literal["generation_queued", "generating", "verifying", "ready", "partially_ready", "completed_partial", "failed"]
@@ -225,9 +301,15 @@ class ConsultationSplitBatchDetail(BaseModel):
     can_keep_available: bool
     active_execution_id: UUID | None = None
     active_since: datetime | None = None
+    # Frozen labels and UUIDs from this submitted batch, independent of the
+    # editable living plan that may have changed while work was in flight.
+    submitted_tiles: list["ConsultationSplitSubmittedTile"] = Field(default_factory=list, max_length=6)
     # This is metadata only.  It lets the workspace select a useful note after
     # a completed partial decision without exposing any topic or provider data.
     preferred_document_id: UUID | None = None
+    # Metadata-only mapping associates materialized notes with immutable split
+    # topics without relying on clinician-editable document titles.
+    materialized_document_ids_by_topic_uuid: dict[UUID, UUID] = Field(default_factory=dict, max_length=6)
     # A ready outcome whose materialized child is absent is the durable signal
     # that the owner independently deleted that note. Topic UUIDs let the
     # browser omit only those slots without exposing titles or output.
@@ -238,3 +320,11 @@ class ConsultationSplitBatchDetail(BaseModel):
     active_retry_presentation: GenerationFailurePresentation | None = None
     checker_unavailable: bool = False
     checker_failure_presentation: GenerationFailurePresentation | None = None
+
+
+class ConsultationSplitSubmittedTile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    topic_uuid: UUID
+    title: str = Field(min_length=1, max_length=255)
+    order: int = Field(ge=0, le=5)
+    is_primary: StrictBool

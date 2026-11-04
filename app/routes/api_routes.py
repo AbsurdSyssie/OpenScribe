@@ -149,6 +149,11 @@ from ..schemas import (
     UserLlmPreferenceUpsert,
 )
 from ..schemas.consultation_split import (
+    ConsultationProblemPlanProjection,
+    ConsultationProblemPlanReplace,
+    ConsultationProblemSuggestionRequest,
+    ConsultationProblemPlanCreateRequest,
+    ConsultationProblemPlanCreateResponse,
     ConsultationSplitAnalysisDetail,
     ConsultationSplitBatchRegenerateRequest,
     ConsultationSplitBatchRegenerateResponse,
@@ -161,6 +166,12 @@ from ..schemas.consultation_split import (
     ConsultationSplitIntentStartResponse,
     ConsultationSplitKeepAvailableResponse,
     ConsultationSplitRetryMissingResponse,
+)
+from ..services.consultation_problem_plans import (
+    read_consultation_problem_plan,
+    replace_consultation_problem_plan,
+    start_consultation_problem_suggestion,
+    create_consultation_notes_from_problem_plan,
 )
 from ..schemas.quick_action_io import QuickActionBundleExportRequest
 from ..schemas.smart_phrase_io import SmartPhraseBundleExportRequest
@@ -1547,6 +1558,85 @@ def list_personal_smart_phrases(context: AuthenticatedContext = Depends(require_
     return [smart_phrase_response(phrase) for phrase in list_personal_smart_phrases_service(db, context.user)]
 
 
+@api.get(
+    "/transcripts/{transcript_id}/consultation-problem-plan",
+    response_model=ConsultationProblemPlanProjection,
+    responses=error_responses,
+)
+def get_consultation_problem_plan(
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    return read_consultation_problem_plan(db, context.user, transcript_id=transcript_id)
+
+
+@api.put(
+    "/transcripts/{transcript_id}/consultation-problem-plan",
+    response_model=ConsultationProblemPlanProjection,
+    responses=error_responses,
+)
+def put_consultation_problem_plan(
+    transcript_id: UUID,
+    payload: ConsultationProblemPlanReplace,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    return replace_consultation_problem_plan(db, context.user, transcript_id=transcript_id, payload=payload)
+
+
+@api.post(
+    "/transcripts/{transcript_id}/consultation-problem-suggestions",
+    response_model=ConsultationSplitIntentStartResponse,
+    responses=error_responses,
+)
+@LLM_GENERATION_DAILY_RATE_LIMIT
+@LLM_GENERATION_BURST_RATE_LIMIT
+def suggest_consultation_problems(
+    request: Request,
+    transcript_id: UUID,
+    payload: ConsultationProblemSuggestionRequest,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    result = start_consultation_problem_suggestion(
+        db, context.user, transcript_id=transcript_id,
+        client_idempotency_key=payload.client_idempotency_key,
+        expected_revision=payload.expected_revision,
+        selected_template_id=payload.selected_template_id,
+        retry_failed_analysis=payload.retry_failed_analysis,
+    )
+    response = project_consultation_split_intent_start(db, context.user, result=result)
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED if response.analysis.status in {"queued", "processing"} else status.HTTP_200_OK,
+        content=response.model_dump(mode="json"),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@api.post(
+    "/transcripts/{transcript_id}/consultation-note-batches",
+    response_model=ConsultationProblemPlanCreateResponse,
+    responses=error_responses,
+)
+@LLM_GENERATION_DAILY_RATE_LIMIT
+@LLM_GENERATION_BURST_RATE_LIMIT
+def create_consultation_note_batch_from_plan(
+    request: Request,
+    transcript_id: UUID,
+    payload: ConsultationProblemPlanCreateRequest,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    response = create_consultation_notes_from_problem_plan(
+        db, context.user, transcript_id=transcript_id,
+        client_idempotency_key=payload.client_idempotency_key,
+        expected_revision=payload.expected_revision,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_200_OK if response.idempotency_replayed else status.HTTP_202_ACCEPTED,
+        content=response.model_dump(mode="json"), headers={"Cache-Control": "no-store"},
+    )
 @api.post(
     "/smart-phrases/personal",
     response_model=SmartPhraseDetail,

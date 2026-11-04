@@ -18,7 +18,7 @@ import { createExampleConsultationBoundary, createExampleConsultationInitializer
 import { createTranscriptTurnsEditor } from './transcriptTurnsEditor.js?v=20261022-recording-headings';
 import { createAutosaveController } from './autosaveController.js?v=20261022-diarized-turn-editor';
 import { createWorkingNoteAttemptStore } from './workingNoteSaveRecovery.js?v=20261103-working-note-save-recovery';
- import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261028-template-availability-refresh';
+import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261104-living-problem-plan-28';
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,
@@ -3165,8 +3165,6 @@ let statusDetailsHideTimer = null;
         return true;
       };
 
-      const splitTitleKey = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
-
       const splitTopicsForPlaceholders = (draft) => (Array.isArray(draft?.topics) ? draft.topics : [])
         .filter((topic) => topic?.disposition === 'separate_note' && String(topic?.title || '').trim())
         .map((topic, index) => ({
@@ -3194,20 +3192,14 @@ let statusDetailsHideTimer = null;
         const visibleTopics = splitPlaceholderState.topics.filter(
           (topic) => !splitPlaceholderState.deletedTopicUuids?.has(topic.topicUuid),
         );
-        const allTopicKeys = new Set(splitPlaceholderState.topics.map((topic) => splitTitleKey(topic.title)));
-        const topicKeys = new Set(visibleTopics.map((topic) => splitTitleKey(topic.title)));
-        const priorDocumentIds = new Set(splitPlaceholderState.existingDocumentIds || []);
-        const candidates = new Map();
-        noteDocuments.forEach((document) => {
-          const key = splitTitleKey(document?.title);
-          if (!topicKeys.has(key) || priorDocumentIds.has(document?.id)) return;
-          const existing = candidates.get(key);
-          if (!existing) candidates.set(key, document);
-        });
+        const materializedDocumentIdsByTopicUuid = splitPlaceholderState.materializedDocumentIdsByTopicUuid || {};
         const phase = splitPlaceholderState.phase || latestSplitBatch?.status || 'generation_queued';
         const displayTopics = visibleTopics.map((topic) => {
-          const candidate = candidates.get(splitTitleKey(topic.title));
-          if (candidate?.status === 'ready') {
+          const materializedDocumentId = materializedDocumentIdsByTopicUuid[topic.topicUuid];
+          const candidate = materializedDocumentId
+            ? noteDocuments.find((document) => document?.id === materializedDocumentId)
+            : null;
+          if (candidate) {
             return { ...candidate, split_slot_key: splitSlotKey(topic), split_topic_uuid: topic.topicUuid };
           }
           const failurePresentation = latestSplitBatch?.failure_presentation || splitPlaceholderState.failurePresentation;
@@ -3229,21 +3221,23 @@ let statusDetailsHideTimer = null;
             order: topic.order,
           };
         });
-        const splitDocumentIds = new Set(displayTopics.map((document) => document.id));
+        const splitDocumentIds = new Set(displayTopics
+          .filter((document) => !document?.split_placeholder)
+          .map((document) => document.id));
         const otherDocuments = noteDocuments.filter((document) => {
-          const key = splitTitleKey(document?.title);
-          return !allTopicKeys.has(key) && !splitDocumentIds.has(document.id);
+          return !splitDocumentIds.has(document.id);
         });
         return [...otherDocuments, ...displayTopics];
       };
 
-      const startSplitPlaceholderBatch = ({ draft, batchId = null, phase = 'generation_queued', pendingBatchId = false, existingDocumentIds = null, deletedTopicUuids = null, activeSince = null, failurePresentation = null } = {}) => {
+      const startSplitPlaceholderBatch = ({ draft, batchId = null, phase = 'generation_queued', pendingBatchId = false, materializedDocumentIdsByTopicUuid = null, deletedTopicUuids = null, activeSince = null, failurePresentation = null } = {}) => {
         const topics = splitTopicsForPlaceholders(draft);
         if (!transcriptId || !topics.length) return;
         splitBatchFallbackState = null;
         const topicSignature = topics.map((topic) => `${topic.topicUuid}:${topic.title}`).join('|');
         const sameBatchTopics = splitPlaceholderState
           && splitPlaceholderState.transcriptId === transcriptId
+          && splitPlaceholderState.batchId === batchId
           && splitPlaceholderState.topicSignature === topicSignature;
         const primaryTopic = topics.find((topic) => topic.isPrimary) || topics[0];
         splitPlaceholderState = {
@@ -3256,9 +3250,7 @@ let statusDetailsHideTimer = null;
           topicSignature,
           topics,
           deletedTopicUuids: new Set(Array.isArray(deletedTopicUuids) ? deletedTopicUuids.map(String) : []),
-          existingDocumentIds: sameBatchTopics
-            ? splitPlaceholderState.existingDocumentIds
-            : (Array.isArray(existingDocumentIds) ? existingDocumentIds : workspaceNoteHistoryDocuments.map((document) => document.id)),
+          materializedDocumentIdsByTopicUuid: materializedDocumentIdsByTopicUuid || (sameBatchTopics ? splitPlaceholderState.materializedDocumentIdsByTopicUuid : {}),
           selectedSlotKey: selectedNoteSlotKey || (primaryTopic ? splitSlotKey(primaryTopic) : null),
         };
         workspaceNoteDocuments = buildSplitDisplayDocuments(workspaceNoteHistoryDocuments);
@@ -3280,6 +3272,36 @@ let statusDetailsHideTimer = null;
         const draftIsConfirmed = draft?.status === 'confirmed';
         const batchId = batch?.batch_id || null;
         const batchIsRelevant = Boolean(batchId && (splitBatchInFlightStatuses.has(batch?.status) || splitBatchTerminalStatuses.has(batch?.status)));
+        if (batchIsRelevant && Array.isArray(batch.submitted_tiles)) {
+          const frozenDraft = {
+            status: 'confirmed',
+            topics: batch.submitted_tiles.map((tile) => ({
+              topic_uuid: String(tile.topic_uuid),
+              title: String(tile.title || 'Note'),
+              is_primary: Boolean(tile.is_primary),
+              disposition: 'separate_note',
+            })),
+          };
+          if (!splitPlaceholderState || splitPlaceholderState.transcriptId !== transcriptId || splitPlaceholderState.batchId !== batchId) {
+            startSplitPlaceholderBatch({
+              draft: frozenDraft,
+              batchId,
+              phase: batch.status,
+              materializedDocumentIdsByTopicUuid: batch.materialized_document_ids_by_topic_uuid || {},
+              deletedTopicUuids: batch.deleted_topic_uuids,
+              activeSince: batch.active_since,
+              failurePresentation: batch.failure_presentation,
+            });
+          } else {
+            splitPlaceholderState.phase = batch.status;
+            splitPlaceholderState.materializedDocumentIdsByTopicUuid = batch.materialized_document_ids_by_topic_uuid || {};
+            splitPlaceholderState.deletedTopicUuids = new Set(Array.isArray(batch.deleted_topic_uuids) ? batch.deleted_topic_uuids.map(String) : []);
+            splitPlaceholderState.activeSince = batch.active_since || splitPlaceholderState.activeSince;
+            splitPlaceholderState.failurePresentation = batch.failure_presentation || splitPlaceholderState.failurePresentation;
+          }
+          splitBatchFallbackState = null;
+          return buildSplitDisplayDocuments(noteDocuments);
+        }
         if (draft?.status === 'active' && splitPlaceholderState) {
           splitPlaceholderState = null;
           splitBatchFallbackState = null;
@@ -3290,24 +3312,24 @@ let statusDetailsHideTimer = null;
           return noteDocuments;
         }
         splitBatchFallbackState = null;
-        if (!splitPlaceholderState && draftIsConfirmed && batchIsRelevant) {
+        if ((!splitPlaceholderState || (batchId && splitPlaceholderState.batchId !== batchId)) && draftIsConfirmed && batchIsRelevant) {
           startSplitPlaceholderBatch({
             draft,
             batchId,
             phase: batch.status,
-            existingDocumentIds: splitBatchTerminalStatuses.has(batch.status)
-              ? []
-              : noteDocuments.map((document) => document.id),
+            materializedDocumentIdsByTopicUuid: batch.materialized_document_ids_by_topic_uuid || {},
             deletedTopicUuids: batch.deleted_topic_uuids,
             activeSince: batch.active_since,
             failurePresentation: batch.failure_presentation,
           });
         }
         if (!splitPlaceholderState || splitPlaceholderState.transcriptId !== transcriptId) return noteDocuments;
-        if (batchId && splitPlaceholderState.batchId && batchId === splitPlaceholderState.batchId) {
+        if (batchId && (!splitPlaceholderState.batchId || batchId === splitPlaceholderState.batchId)) {
+          splitPlaceholderState.batchId = batchId;
           splitPlaceholderState.phase = batch?.status || splitPlaceholderState.phase;
           splitPlaceholderState.activeSince = batch?.active_since || splitPlaceholderState.activeSince;
           splitPlaceholderState.failurePresentation = batch?.failure_presentation || splitPlaceholderState.failurePresentation;
+          splitPlaceholderState.materializedDocumentIdsByTopicUuid = batch?.materialized_document_ids_by_topic_uuid || {};
           splitPlaceholderState.pendingBatchId = false;
           splitPlaceholderState.deletedTopicUuids = new Set(
             Array.isArray(batch?.deleted_topic_uuids) ? batch.deleted_topic_uuids.map(String) : [],
@@ -4679,6 +4701,26 @@ let statusDetailsHideTimer = null;
          if (splitCreateEnabled() && splitGenerateController) {
            const generationContext = closeDictationModal ? { transcriptId: generationTranscriptId, modalGeneration } : null;
            if (generationContext) dictationGenerationContext = generationContext;
+           if (
+             splitReviewController?.isManualOverride?.()
+             && splitReviewController?.getPlan?.()?.plan_id
+             && splitReviewController?.getPlan?.()?.revision >= 0
+           ) {
+             const manualPlanRequest = splitReviewController.createFromSavedPlan();
+             submissionBarrier.task = manualPlanRequest;
+             void Promise.resolve(manualPlanRequest).then(
+               (accepted) => {
+                 submissionBarrier.settle(Boolean(accepted));
+                 if (accepted && closeDictationModal && transcriptId === generationTranscriptId) setDictationModalOpen(false);
+                 if (dictationGenerationContext === generationContext) dictationGenerationContext = null;
+               },
+               () => {
+                 submissionBarrier.settle(false);
+                 if (dictationGenerationContext === generationContext) dictationGenerationContext = null;
+               },
+             );
+             return manualPlanRequest;
+           }
            const splitRequest = dispatchTemplateGeneration({
              capabilityEnabled: splitCreateEnabled(),
              splitController: splitGenerateController,
@@ -5117,6 +5159,8 @@ let statusDetailsHideTimer = null;
           const suggestionReadiness = splitSuggestionReadiness();
           splitReviewController?.applyWorkspaceState({
           draft: workspace.consultation_split_draft || null,
+          problemPlan: workspace.consultation_problem_plan || null,
+          problemPlanProjectionAvailable: Object.prototype.hasOwnProperty.call(workspace, 'consultation_problem_plan'),
           availableTemplates: workspace.available_templates || [],
           batch: workspace.consultation_split_batch || null,
           manualReview: Boolean(latestSplitIntent?.manual_review_requested),
@@ -5256,7 +5300,7 @@ let statusDetailsHideTimer = null;
           return latestSplitIntent?.status === 'analysis_pending' && latestSplitIntent.analysis_id === analysisId
             ? latestSplitIntent.intent_id : null;
         };
-        const setContinueOneNoteAvailable = (available) => {
+      const setContinueOneNoteAvailable = (available) => {
           const isAvailable = Boolean(available);
           if (splitContinueOneNoteButton) {
             splitContinueOneNoteButton.hidden = !isAvailable;
@@ -5264,35 +5308,108 @@ let statusDetailsHideTimer = null;
           }
           splitReviewController?.setContinueAvailable?.(isAvailable);
         };
+       let pendingProblemSuggestionRequest = null;
+       let pendingProblemBatchRequest = null;
+       const postLivingPlanAction = async (url, body) => {
+         const options = { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body };
+         let response;
+         try { response = await csrfFetch(url, options); }
+         catch (_) { response = await csrfFetch(url, options); }
+         if (response.status >= 500) response = await csrfFetch(url, options);
+         return response;
+       };
        splitReviewController = createSplitReviewController({
          getTranscriptId: () => transcriptId,
+         getSelectedTemplateId: () => generateOutputTemplateSelect?.value || null,
+         saveSources: async ({ transcriptId: sourceTranscriptId } = {}) => {
+           await saveWorkingNoteBeforeGeneration(sourceTranscriptId);
+           if (sourceTranscriptId !== transcriptId) throw new Error('Consultation changed before source save completed.');
+           await saveDictationBeforeGeneration(sourceTranscriptId);
+           if (sourceTranscriptId !== transcriptId) throw new Error('Consultation changed before source save completed.');
+         },
          refreshWorkspace: (nextTranscriptId) => fetchWorkspace(nextTranscriptId, {
            guardTranscriptId: nextTranscriptId,
          }),
          showMessage: showFlash,
-         continueAsOneNote: () => splitGenerateController?.continueAsOneNote?.({
-           transcriptId,
-           intentId: getConfirmSplitIntentId(),
-         }) || false,
-          suggestProblems: async ({ transcriptId: suggestedTranscriptId, retryFailedAnalysis = false, forceNewReview = false } = {}) => {
-            const editTranscriptId = suggestedTranscriptId || transcriptId;
-            const templateId = generateOutputTemplateSelect?.value || '';
-            if (!editTranscriptId || !templateId) {
-              showFlash('Choose an available template before suggesting problems.', 'warning');
-              return false;
-            }
-            return splitGenerateController?.start?.({
-              transcriptId: editTranscriptId,
-              templateId,
-              manualReviewRequested: true,
-              retryFailedAnalysis: Boolean(retryFailedAnalysis),
-              forceNewReview: Boolean(forceNewReview),
-            }) || false;
-          },
-          getConfirmIntentId: () => getConfirmSplitIntentId(),
-          onSplitBatchStarted: ({ draft, batchId, phase, pendingBatchId = false } = {}) => {
-            startSplitPlaceholderBatch({ draft, batchId, phase, pendingBatchId });
-          },
+         suggestProblems: async ({ transcriptId: targetTranscriptId, expectedRevision, selectedTemplateId, retryFailedAnalysis = false } = {}) => {
+           if (!targetTranscriptId || targetTranscriptId !== transcriptId || !selectedTemplateId) return false;
+           const templateWorkspace = await fetchWorkspace(targetTranscriptId, { guardTranscriptId: targetTranscriptId });
+           if (targetTranscriptId !== transcriptId || !templateWorkspace) return false;
+           const availableTemplateIds = new Set((templateWorkspace.available_templates || []).map((template) => String(template.id || template.template_id || '')));
+           if (!availableTemplateIds.has(String(selectedTemplateId))) {
+             showFlash('Choose an available template before suggesting problems.', 'warning');
+             return false;
+           }
+           const signature = JSON.stringify([targetTranscriptId, expectedRevision, selectedTemplateId, Boolean(retryFailedAnalysis)]);
+           if (pendingProblemSuggestionRequest?.signature !== signature) {
+             pendingProblemSuggestionRequest = {
+               signature,
+               transcriptId: targetTranscriptId,
+               url: `/api/v1/transcripts/${targetTranscriptId}/consultation-problem-suggestions`,
+               body: JSON.stringify({
+                 client_idempotency_key: crypto.randomUUID(),
+                 expected_revision: expectedRevision,
+                 selected_template_id: selectedTemplateId,
+                 retry_failed_analysis: Boolean(retryFailedAnalysis),
+               }),
+             };
+           }
+           const pending = pendingProblemSuggestionRequest;
+           const response = await postLivingPlanAction(pending.url, pending.body);
+           if (targetTranscriptId !== transcriptId) return false;
+           if (!response.ok) {
+             if (response.status < 500) pendingProblemSuggestionRequest = null;
+             else void fetchWorkspace(targetTranscriptId, { guardTranscriptId: targetTranscriptId });
+             return false;
+           }
+           const result = await response.json();
+           if (targetTranscriptId !== transcriptId) return false;
+           pendingProblemSuggestionRequest = null;
+           return result;
+         },
+         createNoteBatch: async ({ transcriptId: targetTranscriptId, plan } = {}) => {
+           if (!targetTranscriptId || targetTranscriptId !== transcriptId || !plan?.plan_id) return false;
+           const submittedPlan = structuredClone(plan);
+           const signature = JSON.stringify([targetTranscriptId, submittedPlan.plan_id, submittedPlan.revision]);
+           const generationContext = dictationGenerationContext;
+           const contextIsCurrent = () => !generationContext || (
+             generationContext.transcriptId === targetTranscriptId
+             && isCurrentDictationContext(generationContext.transcriptId, generationContext.modalGeneration)
+           );
+           const templateWorkspace = await fetchWorkspace(targetTranscriptId, { guardTranscriptId: targetTranscriptId });
+           if (targetTranscriptId !== transcriptId || !contextIsCurrent() || !templateWorkspace) return false;
+           const availableTemplateIds = new Set((templateWorkspace.available_templates || []).map((template) => String(template.id || template.template_id || '')));
+           if (submittedPlan.tiles.some((tile) => !availableTemplateIds.has(String(tile.template_id || '')))) {
+             showFlash('A selected note template is no longer available. Choose an available template in Review.', 'warning');
+             return false;
+           }
+           await saveWorkingNoteBeforeGeneration(targetTranscriptId);
+           if (targetTranscriptId !== transcriptId || !contextIsCurrent()) return false;
+           await saveDictationBeforeGeneration(targetTranscriptId);
+           if (targetTranscriptId !== transcriptId || !contextIsCurrent()) return false;
+           if (pendingProblemBatchRequest?.signature !== signature) {
+             pendingProblemBatchRequest = {
+               signature, transcriptId: targetTranscriptId,
+               url: `/api/v1/transcripts/${targetTranscriptId}/consultation-note-batches`,
+               body: JSON.stringify({ client_idempotency_key: crypto.randomUUID(), expected_revision: submittedPlan.revision }),
+             };
+           }
+           const pending = pendingProblemBatchRequest;
+           const response = await postLivingPlanAction(pending.url, pending.body);
+           if (targetTranscriptId !== transcriptId) return false;
+           if (!response.ok) {
+             if (response.status < 500) pendingProblemBatchRequest = null;
+             else void fetchWorkspace(targetTranscriptId, { guardTranscriptId: targetTranscriptId });
+             return false;
+           }
+           const result = await response.json();
+           if (targetTranscriptId !== transcriptId) return false;
+           pendingProblemBatchRequest = null;
+           return result;
+         },
+         onSplitBatchStarted: ({ draft, batchId, phase, pendingBatchId = false } = {}) => {
+           startSplitPlaceholderBatch({ draft, batchId, phase, pendingBatchId });
+         },
        });
        splitGenerateController = createSplitGenerateController({
          getCapabilityEnabled: () => splitCreateEnabled(),

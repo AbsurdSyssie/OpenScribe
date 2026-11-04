@@ -18,6 +18,8 @@ from app.services.llm_adapters.runtime import request_output_token_cap
 from app.services.quotas import estimate_token_reservation
 from app.services.consultation_split_generation import (
     SplitGenerationTopic,
+    _validate_clinical,
+    _validate_sources,
     parse_split_generation,
 )
 from app.services.templates import (
@@ -63,13 +65,45 @@ def _invalid() -> AppError:
     return AppError(502, "consultation_split_verification_invalid_output", "Bundled verification output was invalid")
 
 
+def _redacted_verification_sources(value: Mapping[str, Any]) -> dict[str, object]:
+    """Project only redacted provider fields; omit encrypted mappings/lineage.
+
+    Canonical batch snapshots carry the canonical source keys and are
+    validated by the generation contract. The versioned compatibility shape
+    for minimal pre-canonical snapshots permits only explicitly named
+    redacted source fields; unknown metadata is rejected.
+    """
+    if "phi_index" in value or "source_state" in value:
+        return _validate_sources(value)
+    if set(value) == {"redacted"} and isinstance(value.get("redacted"), str):
+        return {"redacted": value["redacted"]}
+    if set(value) == {"sources"} and isinstance(value.get("sources"), Mapping):
+        sources = value["sources"]
+        if set(sources) != {"transcript"} or not isinstance(sources.get("transcript"), str):
+            raise _invalid()
+        return {
+            "transcript": sources["transcript"],
+            "working_note": None,
+            "dictation": "",
+        }
+    raise _invalid()
+
+
+def _redacted_verification_clinical(value: Mapping[str, Any]) -> dict[str, object]:
+    """Keep only bounded validated clinical hints; omit source metadata."""
+    if not value:
+        return {}
+    return {"clinical_nlp_hints": _validate_clinical(value)}
+
+
 def _topics(plan: Mapping[str, Any], allowed: set[UUID] | None = None) -> list[SplitGenerationTopic]:
-    raw_topics = plan.get("topics")
+    grouped = plan.get("version") == 2
+    raw_topics = plan.get("notes") if grouped else plan.get("topics")
     if not isinstance(raw_topics, list):
         raise _invalid()
     result: list[SplitGenerationTopic] = []
     for item in raw_topics:
-        if not isinstance(item, dict) or item.get("disposition") != "separate_note":
+        if not isinstance(item, dict) or (not grouped and item.get("disposition") != "separate_note"):
             continue
         try:
             item_uuid = UUID(str(item["topic_uuid"]))
@@ -109,7 +143,13 @@ def prepare_split_verification_request(*, source_snapshot: Mapping[str, Any], cl
         if output.get("mode") != "structured" or not isinstance(output.get("content"), dict):
             raise _invalid()
         notes.append({"topic_uuid": str(topic.topic_uuid), "content": output["content"]})
-    payload = {"source": source_snapshot, "clinical": clinical_snapshot, "plan": confirmed_plan, "notes": notes}
+    # The encrypted source snapshot also carries the PHI mapping and lineage,
+    # which are required for owner materialization but must not reach any
+    # verifier provider. Canonical request binding fails closed for a queued
+    # legacy checker request built from the broader historical payload.
+    source_payload = _redacted_verification_sources(source_snapshot)
+    clinical_payload = _redacted_verification_clinical(clinical_snapshot)
+    payload = {"source": source_payload, "clinical": clinical_payload, "plan": confirmed_plan, "notes": notes}
     try:
         encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
     except (TypeError, ValueError, RecursionError):

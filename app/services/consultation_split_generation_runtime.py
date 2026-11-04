@@ -28,7 +28,7 @@ from app.models import (AttemptOutcome, AttemptStatus, ConsultationSplitAnalysis
 from app.services.consultation_split_generation import (SplitGenerationTopic, parse_split_generation_partial,
     prepare_split_generation_request, prepare_split_generation_recovery_request,
     split_generation_request_snapshot, split_generation_response_json_schema)
-from app.services.consultation_splits import read_split_topic_outcome_output
+from app.services.consultation_splits import read_split_topic_outcome_output, _require_lineage
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.consultation_splits import read_split_batch_json, read_split_batch_phi_index, read_split_execution_json
 from app.services.content_crypto import encrypt_json_for_existing_owner
@@ -78,7 +78,7 @@ class SplitGenerationRuntimeResult:
 
 @dataclass(slots=True)
 class _Work:
-    owner: User; transcript: Transcript; batch: ConsultationSplitBatch; analysis: ConsultationSplitAnalysis
+    owner: User; transcript: Transcript; batch: ConsultationSplitBatch; analysis: ConsultationSplitAnalysis | None
     execution: ConsultationSplitExecution; attempt: ProviderAttempt; primary_attempt: ProviderAttempt; dispatch: TaskDispatchOutbox
     topics: list[object]; outcomes: dict[UUID, ConsultationSplitTopicOutcome]
     materialization_transcript_version: TranscriptVersion | None
@@ -143,14 +143,14 @@ def _lock_work(db: Session, execution_id: UUID, *, status: ConsultationSplitExec
     if execution is None or execution.kind is not ConsultationSplitExecutionKind.generation or execution.status is not status or execution.batch_id is None:
         return None
     batch = db.scalar(select(ConsultationSplitBatch).where(ConsultationSplitBatch.id == execution.batch_id).execution_options(populate_existing=True).with_for_update())
-    analysis = db.scalar(select(ConsultationSplitAnalysis).where(ConsultationSplitAnalysis.id == batch.analysis_id).execution_options(populate_existing=True).with_for_update()) if batch else None
+    analysis = db.scalar(select(ConsultationSplitAnalysis).where(ConsultationSplitAnalysis.id == batch.analysis_id).execution_options(populate_existing=True).with_for_update()) if batch and batch.analysis_id else None
     primary_attempt = db.scalar(select(ProviderAttempt).where(
         ProviderAttempt.consultation_split_execution_id == execution_id,
         ProviderAttempt.backup_of_attempt_id.is_(None),
     ).execution_options(populate_existing=True).with_for_update())
     attempt = effective_provider_attempt(db, primary=primary_attempt, lock=True) if primary_attempt is not None else None
     dispatch = db.scalar(select(TaskDispatchOutbox).where(TaskDispatchOutbox.source_kind == TaskDispatchSourceKind.consultation_split_execution, TaskDispatchOutbox.source_id == execution_id).execution_options(populate_existing=True).with_for_update())
-    if not all((batch, analysis, attempt, primary_attempt, dispatch)) or attempt.attempt_kind.value != "consultation_split_generation":
+    if not all((batch, attempt, primary_attempt, dispatch)) or attempt.attempt_kind.value != "consultation_split_generation":
         return None
     topics = db.scalars(
         select(ConsultationSplitBatchTopic)
@@ -159,11 +159,18 @@ def _lock_work(db: Session, execution_id: UUID, *, status: ConsultationSplitExec
         .with_for_update()
     ).all()
     outcomes = db.scalars(select(ConsultationSplitTopicOutcome).where(ConsultationSplitTopicOutcome.batch_topic_id.in_([topic.id for topic in topics])).with_for_update()).all()
+    try:
+        _require_lineage(db, owner, batch)
+    except AppError:
+        return None
     if (owner.is_system_admin or owner.team_id != transcript.team_id or batch.owner_user_id != owner.id or batch.team_id != owner.team_id
-        or analysis.owner_user_id != owner.id or execution.owner_user_id != owner.id or execution.team_id != owner.team_id
-        or batch.transcript_id != transcript.id or analysis.transcript_id != transcript.id
+        or execution.owner_user_id != owner.id or execution.team_id != owner.team_id
+        or batch.transcript_id != transcript.id or (batch.analysis_id is not None and (analysis is None
+            or analysis.owner_user_id != owner.id or analysis.transcript_id != transcript.id
+            or analysis.retention_expires_at != transcript.retention_expires_at))
+        or (batch.analysis_id is None and (analysis is not None or batch.problem_plan_id is None))
         or execution.retention_expires_at != transcript.retention_expires_at or batch.retention_expires_at != transcript.retention_expires_at
-        or analysis.retention_expires_at != transcript.retention_expires_at or len(outcomes) != len(topics)
+        or len(outcomes) != len(topics)
         or dispatch.dispatch_kind.value != "consultation_split_generation" or dispatch.state not in {TaskDispatchState.pending, TaskDispatchState.published}):
         return None
     materialization_version = (
@@ -679,12 +686,22 @@ def _submit(db: Session, work: _Work) -> bool:
 
 def _topics_from_plan(plan: dict[str, object]) -> list[SplitGenerationTopic]:
     result=[]
-    for raw in plan.get("topics", []):
-        if raw.get("disposition") != "separate_note": continue
+    grouped = plan.get("version") == 2
+    rows = plan.get("notes", []) if grouped else plan.get("topics", [])
+    for raw in rows:
+        if not grouped and raw.get("disposition") != "separate_note": continue
         template=raw["template"]; sections=template["structured_sections"]
         keys=tuple(item["section_key"] for item in sections["sections"]) if template["mode"] == "structured" else ()
         result.append(SplitGenerationTopic(UUID(raw["topic_uuid"]), template["mode"], keys))
     return result
+
+
+def _plan_output_notes(plan: dict[str, object]) -> list[dict[str, object]]:
+    """Return immutable output-note snapshots for both plan generations."""
+    rows = plan.get("notes", []) if plan.get("version") == 2 else plan.get("topics", [])
+    if not isinstance(rows, list):
+        raise AppError(500, "consultation_split_batch_invalid", "Split batch is unavailable")
+    return [item for item in rows if isinstance(item, dict) and (plan.get("version") == 2 or item.get("disposition") == "separate_note")]
 
 def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
     work = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
@@ -874,7 +891,7 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
         )
         for note in complete_notes:
             topic=by_uuid[note.topic_uuid]; outcome=work.outcomes[topic.id]
-            template=next(item["template"] for item in plan["topics"] if UUID(item["topic_uuid"]) == note.topic_uuid)
+            template=next(item["template"] for item in _plan_output_notes(plan) if UUID(item["topic_uuid"]) == note.topic_uuid)
             materialize_split_document(
                 db, owner=work.owner, batch=work.batch, topic=topic,
                 accepted_output={"content": note.content, "mode": note.mode},

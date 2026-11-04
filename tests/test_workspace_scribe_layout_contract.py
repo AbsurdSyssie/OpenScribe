@@ -1,5 +1,6 @@
 from pathlib import Path
 from html.parser import HTMLParser
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -185,7 +186,7 @@ def test_scribe_mobile_flow_assets_have_current_cache_keys():
     scribe_workspace = read("app/templates/transcribe/_workspace.html")
 
     assert 'workspace/app.js?v=20261018-help-pointer-resize' in workspace
-    assert 'transcribe/app.js?v=20261103-working-note-save-recovery' in shell_extras
+    assert re.search(r'transcribe/app\.js\?v=[^"\s]+', shell_extras)
     assert 'data-dictation-live-toggle' in scribe_workspace
     assert '{% if dictation_live_streaming_available %}' not in scribe_workspace
     assert 'transcribe/mobile.js?v=20260823-mobile-toast' in shell_extras

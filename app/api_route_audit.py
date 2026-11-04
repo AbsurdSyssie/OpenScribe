@@ -531,6 +531,26 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-intents/{PLACEHOLDER_UUID_2}/continue-as-one-note",
         AccessTier.full,
     ),
+    AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-problem-plan", AccessTier.full),
+    AuditCase(
+        "POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-problem-suggestions", AccessTier.full,
+        json_body=_json(client_idempotency_key=PLACEHOLDER_UUID, expected_revision=0, selected_template_id=PLACEHOLDER_UUID_2, retry_failed_analysis=False),
+    ),
+    AuditCase(
+        "POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-note-batches", AccessTier.full,
+        json_body=_json(client_idempotency_key=PLACEHOLDER_UUID, expected_revision=1),
+    ),
+    AuditCase(
+        "PUT",
+        f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-problem-plan",
+        AccessTier.full,
+        json_body=_json(
+            expected_revision=0,
+            operation_id=PLACEHOLDER_UUID,
+            tiles=[{"uuid": PLACEHOLDER_UUID_2, "is_primary": True}],
+            problems=[],
+        ),
+    ),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-draft", AccessTier.full),
     AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-draft", AccessTier.full),
     AuditCase(

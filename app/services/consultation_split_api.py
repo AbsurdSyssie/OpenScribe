@@ -26,7 +26,7 @@ from app.services.consultation_split_intent_progress import safe_split_intent_er
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.consultation_split_queue import queue_or_reuse_split_analysis
 from app.services.consultation_split_sources import current_consultation_split_analysis_source_matches
-from app.services.consultation_splits import read_split_analysis_json
+from app.services.consultation_splits import read_split_analysis_json, read_split_topic_title
 from app.services.preferences import consultation_splitting_enabled, consultation_splitting_feature_enabled
 from app.services.consultation_split_gates import analysis_split_enabled
 from app.services.generation_presentation import active_retry_presentation, generation_failure_presentation
@@ -420,11 +420,23 @@ def read_workspace_split_batch(db: Session, actor: User, *, transcript_id: UUID)
         and actor.team_id == batch.team_id
     )
     partial = batch.status is ConsultationSplitBatchStatus.partially_ready
-    documents_by_topic = {
-        document.consultation_split_batch_topic_id: document.id
-        for document in db.scalars(select(GeneratedDocument).where(
-            GeneratedDocument.consultation_split_batch_topic_id.in_([topic.id for topic in topics])
-        )).all()
+    documents_by_topic = {}
+    materialized_documents = db.scalars(
+        select(GeneratedDocument)
+        .where(
+            GeneratedDocument.owner_user_id == actor.id,
+            GeneratedDocument.transcript_id == transcript_id,
+            GeneratedDocument.consultation_split_batch_topic_id.in_([topic.id for topic in topics]),
+        )
+        .order_by(GeneratedDocument.created_at.desc(), GeneratedDocument.id.desc())
+    ).all()
+    for document in materialized_documents:
+        documents_by_topic.setdefault(document.consultation_split_batch_topic_id, document.id)
+    materialized_document_ids_by_topic_uuid = {
+        topic.topic_uuid: documents_by_topic[topic.id]
+        for topic in topics
+        if topic.disposition is ConsultationSplitTopicDisposition.separate_note
+        and topic.id in documents_by_topic
     }
     primary = next((topic for topic in topics if topic.is_primary), None)
     preferred_document_id = documents_by_topic.get(primary.id) if primary is not None else None
@@ -491,7 +503,12 @@ def read_workspace_split_batch(db: Session, actor: User, *, transcript_id: UUID)
         can_keep_available=partial and bool(validated) and active is None,
         active_execution_id=active.id if active else None,
         active_since=(active.started_at or active.created_at) if active else None,
+        submitted_tiles=[{"topic_uuid": topic.topic_uuid, "title": read_split_topic_title(db, actor, topic=topic),
+                          "order": topic.topic_order, "is_primary": topic.is_primary}
+                         for topic in sorted(topics, key=lambda item: (item.topic_order, str(item.id)))
+                         if topic.disposition is ConsultationSplitTopicDisposition.separate_note],
         preferred_document_id=preferred_document_id,
+        materialized_document_ids_by_topic_uuid=materialized_document_ids_by_topic_uuid,
         deleted_topic_uuids=deleted_topic_uuids,
         verification_status=batch.verification_status.value,
         verification_correction_count=batch.verification_correction_count,

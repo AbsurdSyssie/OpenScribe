@@ -1135,8 +1135,8 @@ aria-describedby="split-review-status"
 >
 <header class="split-review-modal__header">
 <div>
-<h2 id="split-review-modal-title">
-Review note split
+<h2 id="split-review-modal-title" tabindex="-1">
+Review problems
 </h2>
 
 <div
@@ -1168,40 +1168,33 @@ class="split-review-modal__topics"
 data-split-review-topic-list
 ></div>
 
+<div class="split-review-modal__loading" data-split-review-loading hidden>
+  <div class="note-generation-loading" role="status" aria-live="polite">
+    <div class="note-generation-loading__orbit" aria-hidden="true">
+      <div class="note-generation-loading__ring"></div>
+      <div class="note-generation-loading__dot-wrap"><div class="note-generation-loading__dot"></div></div>
+      <div class="note-generation-loading__star">&#10022;</div>
+    </div>
+    <h2>Suggesting problems</h2>
+    <p>Preparing a new problem plan. Your current plan is kept until suggestions are ready.</p>
+  </div>
+</div>
+
 <footer class="split-review-modal__footer">
-<button
-type="button"
-class="btn-ghost-sm"
-data-split-review-close
->
-Review later
-</button>
-
-<div class="split-review-modal__footer-spacer"></div>
-
 <button
 type="button"
 class="btn-secondary-sm"
 data-split-review-suggest
 >
-Suggest problems
+Auto suggest
 </button>
 
-<button
-type="button"
-class="btn-secondary-sm"
-data-split-review-add
->
-Add problem
-</button>
+<div class="split-review-modal__ignored-wrap">
+  <button type="button" class="btn-ghost-sm" data-split-review-ignored hidden aria-haspopup="dialog" aria-expanded="false">Ignored (0)</button>
+  <div class="split-review-modal__ignored-popover" data-split-review-ignored-popover hidden></div>
+</div>
 
-<button
-type="button"
-class="btn-secondary-sm"
-data-split-review-save
->
-Save split
-</button>
+<div class="split-review-modal__footer-spacer"></div>
 
 <button
 type="button"
@@ -1209,9 +1202,6 @@ class="btn-primary-sm"
 data-split-review-create
 >
 Create notes
-</button>
-<button type="button" class="btn-secondary-sm" data-split-review-continue hidden>
-Continue as one note
 </button>
 </footer>
 </section>

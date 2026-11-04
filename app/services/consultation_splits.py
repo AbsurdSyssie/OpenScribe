@@ -25,6 +25,7 @@ from app.models import (
     ConsultationSplitDraft,
     ConsultationSplitDraftStatus,
     ConsultationSplitDraftTopic,
+    ConsultationProblemPlan,
     ConsultationSplitExecution,
     ConsultationSplitExecutionKind,
     ConsultationSplitExecutionStatus,
@@ -323,11 +324,92 @@ def _require_lineage(db: Session, actor: User, row: Any) -> Transcript:
             raise _internal_scope_error()
         return transcript
 
+    if isinstance(row, ConsultationProblemPlan):
+        if row.revision < 1 or not is_encrypted_envelope(row.plan_encrypted):
+            raise _internal_scope_error()
+        # The plan is intentionally independent of mutable consultation
+        # sources. Its owner/root/retention ancestry is the lifecycle boundary.
+        return transcript
+
     parent: Any | None = None
     if isinstance(row, ConsultationSplitDraft):
         parent = db.get(ConsultationSplitAnalysis, row.analysis_id)
     elif isinstance(row, ConsultationSplitBatch):
-        parent = db.get(ConsultationSplitAnalysis, row.analysis_id)
+        if row.analysis_id is not None and row.problem_plan_id is None and row.problem_plan_revision is None:
+            parent = db.get(ConsultationSplitAnalysis, row.analysis_id)
+            if parent is None or not _scope_matches_transcript(parent, transcript):
+                raise _internal_scope_error()
+            _require_lineage(db, actor, parent)
+            if row.source_fingerprint != parent.source_fingerprint:
+                raise _internal_scope_error()
+            return transcript
+        if row.analysis_id is not None or row.problem_plan_id is None or row.problem_plan_revision is None:
+            raise _internal_scope_error()
+        plan = db.get(ConsultationProblemPlan, row.problem_plan_id)
+        if plan is None or not _scope_matches_transcript(plan, transcript) or row.problem_plan_revision < 1:
+            raise _internal_scope_error()
+        _require_lineage(db, actor, plan)
+        try:
+            _validate_fingerprint(row.source_fingerprint)
+            snapshot = decrypt_json_for_owner(
+                db, owner_user_id=row.owner_user_id, table=_TABLE_BATCH,
+                field="confirmed_plan_encrypted", record_id=row.id,
+                stored_value=row.confirmed_plan_encrypted,
+            )
+            lineage = snapshot.get("source_lineage") if isinstance(snapshot, dict) else None
+            if (
+                not isinstance(lineage, dict)
+                or lineage != {"problem_plan_id": str(plan.id), "revision": row.problem_plan_revision}
+            ):
+                raise ValueError("invalid plan lineage")
+            snapshot_version = snapshot.get("version")
+            if snapshot_version != 2:
+                raise ValueError("unsupported plan snapshot")
+            source_snapshot = decrypt_json_for_owner(
+                db, owner_user_id=row.owner_user_id, table=_TABLE_BATCH,
+                field="source_snapshot_encrypted", record_id=row.id,
+                stored_value=row.source_snapshot_encrypted,
+            )
+            source_state = source_snapshot.get("source_state") if isinstance(source_snapshot, dict) else None
+            if not isinstance(source_state, dict) or any(
+                source_state.get(key) != str(expected)
+                for key, expected in (("owner_user_id", transcript.owner_user_id),
+                                      ("team_id", transcript.team_id),
+                                      ("transcript_id", transcript.id))
+            ):
+                raise ValueError("invalid frozen source scope")
+            source_transcript = source_state.get("transcript")
+            if not isinstance(source_transcript, dict):
+                raise ValueError("invalid frozen transcript binding")
+            source_version_id = source_transcript.get("transcript_version_id")
+            redaction_run_id = source_transcript.get("redaction_run_id")
+            if source_version_id is None:
+                if source_transcript.get("present") is not False or redaction_run_id is not None:
+                    raise ValueError("invalid source-only binding")
+            else:
+                source_version = db.get(TranscriptVersion, UUID(str(source_version_id)))
+                if source_version is None or source_version.transcript_id != transcript.id:
+                    raise ValueError("invalid transcript version")
+                if redaction_run_id is None:
+                    raise ValueError("missing redaction binding")
+                source_run = db.get(RedactionRun, UUID(str(redaction_run_id)))
+                if (source_run is None or source_run.transcript_id != transcript.id
+                        or source_run.owner_user_id != transcript.owner_user_id
+                        or source_run.team_id != transcript.team_id
+                        or source_run.transcript_version_id != source_version.id):
+                    raise ValueError("invalid redaction binding")
+            materialization = _validate_transcript_version(
+                db, transcript=transcript, transcript_version_id=row.materialization_transcript_version_id
+            )
+            if materialization is None:
+                raise ValueError("missing materialization version")
+        except (AppError, KeyError, TypeError, ValueError):
+            raise _internal_scope_error() from None
+        # Later edits are allowed; only prove the immutable submitted revision
+        # existed when the batch was created.
+        if plan.revision < row.problem_plan_revision:
+            raise _internal_scope_error()
+        return transcript
     elif isinstance(row, ConsultationSplitDraftTopic):
         parent = db.get(ConsultationSplitDraft, row.draft_id)
     elif isinstance(row, ConsultationSplitBatchTopic):
@@ -343,7 +425,7 @@ def _require_lineage(db: Session, actor: User, row: Any) -> Transcript:
     if parent is None or not _scope_matches_transcript(parent, transcript):
         raise _internal_scope_error()
     _require_lineage(db, actor, parent)
-    if isinstance(row, (ConsultationSplitDraft, ConsultationSplitBatch)) and row.source_fingerprint != parent.source_fingerprint:
+    if isinstance(row, ConsultationSplitDraft) and row.source_fingerprint != parent.source_fingerprint:
         raise _internal_scope_error()
     return transcript
 
@@ -444,12 +526,39 @@ def create_split_draft_topic(
 
 
 def create_split_batch(
-    db: Session, actor: User, *, analysis: ConsultationSplitAnalysis, intent_id: UUID | None = None, confirmed_plan: dict[str, Any],
+    db: Session, actor: User, *, analysis: ConsultationSplitAnalysis | None = None,
+    problem_plan: ConsultationProblemPlan | None = None, problem_plan_revision: int | None = None,
+    source_fingerprint: str | None = None, intent_id: UUID | None = None, confirmed_plan: dict[str, Any],
     clinical_snapshot: dict[str, Any], source_snapshot: dict[str, Any], template_snapshot: dict[str, Any],
     pii_snapshot: dict[str, Any], provider_snapshot: dict[str, Any], note_options_snapshot: dict[str, Any],
     materialization_transcript_version_id: UUID | None = None,
 ) -> ConsultationSplitBatch:
-    transcript = _require_lineage(db, actor, analysis)
+    if (analysis is None) == (problem_plan is None):
+        raise AppError(500, "consultation_split_scope_invalid", "Consultation split content is unavailable")
+    if analysis is not None:
+        transcript = _require_lineage(db, actor, analysis)
+        if problem_plan_revision is not None or source_fingerprint not in {None, analysis.source_fingerprint}:
+            raise AppError(500, "consultation_split_scope_invalid", "Consultation split content is unavailable")
+        batch_fingerprint = analysis.source_fingerprint
+        batch_analysis_id = analysis.id
+        batch_problem_plan_id = None
+        batch_problem_plan_revision = None
+    else:
+        assert problem_plan is not None
+        transcript = _require_lineage(db, actor, problem_plan)
+        if problem_plan_revision is None or problem_plan_revision < 1 or source_fingerprint is None:
+            raise AppError(500, "consultation_split_scope_invalid", "Consultation split content is unavailable")
+        try:
+            _validate_fingerprint(source_fingerprint)
+        except AppError as exc:
+            raise AppError(500, "consultation_split_scope_invalid", "Consultation split content is unavailable") from exc
+        lineage = confirmed_plan.get("source_lineage") if isinstance(confirmed_plan, dict) else None
+        if lineage != {"problem_plan_id": str(problem_plan.id), "revision": problem_plan_revision}:
+            raise AppError(500, "consultation_split_scope_invalid", "Consultation split content is unavailable")
+        batch_fingerprint = source_fingerprint
+        batch_analysis_id = None
+        batch_problem_plan_id = problem_plan.id
+        batch_problem_plan_revision = problem_plan_revision
     materialization_version = _validate_transcript_version(
         db,
         transcript=transcript,
@@ -462,9 +571,11 @@ def create_split_batch(
             "A consultation split batch requires a materialization transcript version",
         )
     batch = ConsultationSplitBatch(
-        id=uuid4(), intent_id=intent_id, analysis_id=analysis.id, owner_user_id=transcript.owner_user_id, team_id=transcript.team_id,
+        id=uuid4(), intent_id=intent_id, analysis_id=batch_analysis_id,
+        problem_plan_id=batch_problem_plan_id, problem_plan_revision=batch_problem_plan_revision,
+        owner_user_id=transcript.owner_user_id, team_id=transcript.team_id,
         transcript_id=transcript.id, materialization_transcript_version_id=materialization_version.id,
-        source_fingerprint=analysis.source_fingerprint,
+        source_fingerprint=batch_fingerprint,
         status=ConsultationSplitBatchStatus.generation_queued,
         retention_expires_at=transcript.retention_expires_at,
     )
@@ -486,6 +597,7 @@ def create_split_batch(
     freeze_hallucination_check_selection(db, source=batch, owner_user_id=batch.owner_user_id)
     db.add(batch)
     db.flush()
+    _require_lineage(db, actor, batch)
     return batch
 
 

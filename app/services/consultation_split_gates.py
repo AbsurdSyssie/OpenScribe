@@ -92,6 +92,8 @@ def batch_split_enabled(db: Session, actor: User, *, batch: ConsultationSplitBat
             ConsultationSplitIntent.team_id == actor.team_id,
             ConsultationSplitIntent.transcript_id == batch.transcript_id,
             ConsultationSplitIntent.analysis_id == batch.analysis_id,
+            ConsultationSplitIntent.problem_plan_id == batch.problem_plan_id,
+            ConsultationSplitIntent.problem_plan_revision == batch.problem_plan_revision,
             ConsultationSplitIntent.status == ConsultationSplitIntentStatus.confirmed,
         )
     ) is not None

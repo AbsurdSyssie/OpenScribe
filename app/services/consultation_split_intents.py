@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.errors import AppError
 from app.models import (
+    ConsultationProblemPlan,
     ConsultationSplitAnalysis,
     ConsultationSplitAnalysisStatus,
     ConsultationSplitExecution,
@@ -56,6 +57,7 @@ from app.services.consultation_split_locks import lock_consultation_split_source
 from app.services.consultation_splits import require_split_owner_transcript
 from app.services.transcripts import _has_pending_ingestion_jobs, _resolved_transcript_status, transcript_is_expired
 from app.services.content_crypto import decrypt_json_for_owner, encrypt_json_for_owner
+from app.services.consultation_problem_plans import ensure_empty_problem_plan_for_suggestion
 from app.services.consultation_split_gates import consultation_splitting_available, transcript_split_enabled
 from app.services.task_outbox import add_pending_task_dispatch, try_publish_task_dispatch_safely
 from app.services.templates import (
@@ -426,6 +428,9 @@ def _new_intent(
     transcript_id: UUID,
     retention_expires_at: datetime,
     analysis_id: UUID | None,
+    problem_plan_id: UUID | None = None,
+    problem_plan_revision: int | None = None,
+    intent_kind: str = "legacy_generate",
     snapshot: dict[str, Any],
     manual_review_requested: bool,
     client_idempotency_key: UUID,
@@ -443,6 +448,9 @@ def _new_intent(
         team_id=team_id,
         transcript_id=transcript_id,
         analysis_id=analysis_id,
+        problem_plan_id=problem_plan_id,
+        problem_plan_revision=problem_plan_revision,
+        intent_kind=intent_kind,
         client_idempotency_key=client_idempotency_key,
         manual_review_requested=manual_review_requested,
         status=ConsultationSplitIntentStatus.analysis_pending,
@@ -468,6 +476,9 @@ def _insert_or_replay_intent(
     transcript_id: UUID,
     retention_expires_at: datetime,
     analysis_id: UUID | None,
+    problem_plan_id: UUID | None = None,
+    problem_plan_revision: int | None = None,
+    intent_kind: str = "legacy_generate",
     snapshot: dict[str, Any],
     manual_review_requested: bool,
     client_idempotency_key: UUID,
@@ -488,6 +499,9 @@ def _insert_or_replay_intent(
                 transcript_id=transcript_id,
                 retention_expires_at=retention_expires_at,
                 analysis_id=analysis_id,
+                problem_plan_id=problem_plan_id,
+                problem_plan_revision=problem_plan_revision,
+                intent_kind=intent_kind,
                 snapshot=snapshot,
                 manual_review_requested=manual_review_requested,
                 client_idempotency_key=client_idempotency_key,
@@ -549,6 +563,9 @@ def create_or_replay_consultation_split_intent(
     selected_template_id: UUID,
     manual_review_requested: bool = False,
     retry_failed_analysis: bool = False,
+    problem_plan_id: UUID | None = None,
+    problem_plan_revision: int | None = None,
+    intent_kind: str = "legacy_generate",
 ) -> CreateOrReplayConsultationSplitIntentResult:
     """Atomically bind one durable Generate intent to canonical analysis work.
 
@@ -566,12 +583,18 @@ def create_or_replay_consultation_split_intent(
         client_idempotency_key=client_idempotency_key,
     )
     if existing is not None:
+        if existing.intent_kind != intent_kind:
+            raise AppError(409, "consultation_split_intent_unavailable", "This consultation request key is unavailable")
         replay = _safe_replay_result(db, actor=actor, intent=existing)
         db.commit()
         return replay
 
     if retry_failed_analysis and not manual_review_requested:
         raise AppError(422, "validation_error", "Retry analysis requires explicit problem review")
+    if intent_kind not in {"legacy_generate", "problem_suggestion", "problem_plan_create"}:
+        raise AppError(422, "validation_error", "Invalid consultation split intent kind")
+    if intent_kind == "problem_suggestion" and (problem_plan_id is None or problem_plan_revision is None or not manual_review_requested):
+        raise AppError(422, "validation_error", "A current problem plan is required for suggestions")
 
     # Do not reach a transcript root or prepare redaction/provider work when
     # the rollout is unavailable to this actor.
@@ -602,6 +625,17 @@ def create_or_replay_consultation_split_intent(
         if scope is None or scope.transcript.id != prepared.source_state.transcript_id:
             raise AppError(500, "consultation_split_scope_invalid", "Consultation split content is unavailable")
         transcript = scope.transcript
+        suggestion_plan = None
+        if intent_kind == "problem_suggestion":
+            suggestion_plan = db.scalar(select(ConsultationProblemPlan).where(
+                ConsultationProblemPlan.id == problem_plan_id,
+                ConsultationProblemPlan.owner_user_id == actor.id,
+                ConsultationProblemPlan.team_id == actor.team_id,
+                ConsultationProblemPlan.transcript_id == transcript.id,
+                ConsultationProblemPlan.retention_expires_at == transcript.retention_expires_at,
+            ).with_for_update())
+            if suggestion_plan is None or suggestion_plan.revision != problem_plan_revision:
+                raise AppError(409, "consultation_problem_plan_conflict", "The consultation plan changed elsewhere")
         manual_review_requested = bool(manual_review_requested or retry_failed_analysis or transcript.multiple_problems)
 
         # Preparation can release the source locks while required redaction
@@ -639,6 +673,9 @@ def create_or_replay_consultation_split_intent(
                 transcript_id=cached.transcript_id,
                 retention_expires_at=cached.retention_expires_at,
                 analysis_id=cached.id,
+                problem_plan_id=problem_plan_id,
+                problem_plan_revision=problem_plan_revision,
+                intent_kind=intent_kind,
                 snapshot=snapshot,
                 manual_review_requested=manual_review_requested,
                 client_idempotency_key=client_idempotency_key,
@@ -652,6 +689,12 @@ def create_or_replay_consultation_split_intent(
                 dispatch_kind=TaskDispatchKind.consultation_split_intent,
                 source_id=intent.id,
             )
+            if suggestion_plan is not None:
+                suggestion_plan.suggestion_intent_id = intent.id
+                suggestion_plan.suggestion_analysis_id = cached.id
+                suggestion_plan.suggestion_status = "processing" if cached_result.outcome in {"processing", "ready"} else "queued"
+                suggestion_plan.suggestion_error_code = None
+                suggestion_plan.suggestion_base_revision = problem_plan_revision
             db.commit()
             try_publish_task_dispatch_safely(progress_dispatch.task_id)
             return _new_intent_result(intent=intent, queue_result=cached_result)
@@ -674,6 +717,9 @@ def create_or_replay_consultation_split_intent(
             transcript_id=source_state.transcript_id,
             retention_expires_at=prepared.retention_expires_at,
             analysis_id=None,
+            problem_plan_id=problem_plan_id,
+            problem_plan_revision=problem_plan_revision,
+            intent_kind=intent_kind,
             snapshot=snapshot,
             manual_review_requested=manual_review_requested,
             client_idempotency_key=client_idempotency_key,
@@ -704,6 +750,12 @@ def create_or_replay_consultation_split_intent(
             raise AppError(500, "consultation_split_scope_invalid", "Consultation split content is unavailable")
         intent.analysis_id = analysis.id
         db.add(intent)
+        if suggestion_plan is not None:
+            suggestion_plan.suggestion_intent_id = intent.id
+            suggestion_plan.suggestion_analysis_id = analysis.id
+            suggestion_plan.suggestion_status = "processing" if analysis.status in {ConsultationSplitAnalysisStatus.processing, ConsultationSplitAnalysisStatus.ready} else "queued"
+            suggestion_plan.suggestion_error_code = None
+            suggestion_plan.suggestion_base_revision = problem_plan_revision
         progress_dispatch = add_pending_task_dispatch(
             db,
             dispatch_kind=TaskDispatchKind.consultation_split_intent,

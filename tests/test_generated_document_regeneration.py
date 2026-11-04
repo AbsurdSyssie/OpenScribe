@@ -325,6 +325,13 @@ def test_split_note_regeneration_uses_confirmed_snapshot_and_creates_revision(
         f"safe_error_code={processed.error_code!r}, providers={provider_calls!r}, "
         f"model={processed.model_used!r}"
     )
+    from app.services.consultation_split_api import read_workspace_split_batch
+
+    split_batch_projection = read_workspace_split_batch(
+        db_session, owner, transcript_id=processed.transcript_id,
+    )
+    assert split_batch_projection is not None
+    assert split_batch_projection.materialized_document_ids_by_topic_uuid == {first_topic_uuid: processed.id}
     assert processed.title == PERSISTED_SPLIT_NOTE_TITLE
     expected_config = backup_config if primary_failure else config
     assert provider_calls == ([config.id, backup_config.id] if primary_failure else [config.id])

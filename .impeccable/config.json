@@ -1,3 +1,36 @@
 {
-  "buildPath": "comp"
+  "buildPath": "comp",
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "fraunces",
+        "files": [
+          "app/static/css/transcribe.css"
+        ],
+        "createdAt": "2026-11-04T00:20:31.563Z",
+        "reason": "Existing scoped Scribe heading font documented in DESIGN.md; retain incumbent typography during split-note UX changes."
+      },
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "app/static/css/transcribe.css"
+        ],
+        "createdAt": "2026-11-04T00:20:44.836Z",
+        "reason": "The three existing side borders mark active or selected sessions and follow-up cards. These functional state indicators predate and are outside the split-note modal changes."
+      },
+      {
+        "rule": "design-system-font",
+        "value": "fraunces",
+        "files": [
+          "app/static/css/transcribe.css"
+        ],
+        "createdAt": "2026-11-04T00:20:44.942Z",
+        "reason": "DESIGN.md explicitly records Fraunces as an existing scoped Scribe heading declaration; retain it during the split-note refinement."
+      }
+    ]
+  }
 }

@@ -116,6 +116,7 @@ from ..services.redaction import (
 from ..services.clinical_nlp import clinical_entity_value as clinical_entity_value_service
 from ..services.consultation_split_api import read_workspace_split_analysis, read_workspace_split_batch, read_workspace_split_intent
 from ..services.consultation_split_drafts import read_split_draft
+from ..services.consultation_problem_plans import read_consultation_problem_plan
 from .presentation import generated_document_response, quick_action_response, smart_phrase_response, template_response
 from .templates import templates
 
@@ -1351,6 +1352,7 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, 
     consultation_split_intent = None
     consultation_split_draft = None
     consultation_split_batch = None
+    consultation_problem_plan = None
     stt_selection = workspace.get("stt_selection")
     stt_config = getattr(stt_selection, "config", None) if stt_selection is not None else None
     owner_can_use_diarization = bool(
@@ -1423,6 +1425,12 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, 
             )
         except AppError:
             consultation_split_draft = None
+        try:
+            consultation_problem_plan = read_consultation_problem_plan(
+                db, current_user, transcript_id=active_transcript.id,
+            )
+        except AppError:
+            consultation_problem_plan = None
         consultation_split_batch = read_workspace_split_batch(db, current_user, transcript_id=active_transcript.id)
     return TranscribeWorkspaceDetail(
         example_consultation_pending=bool(
@@ -1479,6 +1487,7 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, 
         consultation_split_intent=consultation_split_intent,
         consultation_split_draft=consultation_split_draft,
         consultation_split_batch=consultation_split_batch,
+        consultation_problem_plan=consultation_problem_plan,
     )
 
 

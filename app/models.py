@@ -536,6 +536,7 @@ class Team(Base):
     consultation_split_batch_topics: Mapped[list["ConsultationSplitBatchTopic"]] = relationship(back_populates="team")
     consultation_split_topic_outcomes: Mapped[list["ConsultationSplitTopicOutcome"]] = relationship(back_populates="team")
     consultation_split_executions: Mapped[list["ConsultationSplitExecution"]] = relationship(back_populates="team")
+    consultation_problem_plans: Mapped[list["ConsultationProblemPlan"]] = relationship(back_populates="team")
 
 
 class User(Base):
@@ -666,6 +667,7 @@ class User(Base):
     consultation_split_batch_topics: Mapped[list["ConsultationSplitBatchTopic"]] = relationship(back_populates="owner")
     consultation_split_topic_outcomes: Mapped[list["ConsultationSplitTopicOutcome"]] = relationship(back_populates="owner")
     consultation_split_executions: Mapped[list["ConsultationSplitExecution"]] = relationship(back_populates="owner")
+    consultation_problem_plans: Mapped[list["ConsultationProblemPlan"]] = relationship(back_populates="owner")
 
 
 class SecurityAuditEvent(Base):
@@ -1719,6 +1721,9 @@ class Transcript(Base):
         back_populates="transcript",
         passive_deletes="all",
     )
+    consultation_problem_plan: Mapped["ConsultationProblemPlan | None"] = relationship(
+        back_populates="transcript", uselist=False, passive_deletes="all"
+    )
     consultation_split_batch_topics: Mapped[list["ConsultationSplitBatchTopic"]] = relationship(
         back_populates="transcript",
         passive_deletes="all",
@@ -2331,6 +2336,11 @@ class ConsultationSplitIntent(Base):
             "client_idempotency_key",
             name="uq_consultation_split_intents_owner_idempotency_key",
         ),
+        CheckConstraint(
+            "problem_plan_id IS NULL OR (intent_kind = 'problem_suggestion' AND problem_plan_revision >= 0) OR (intent_kind = 'problem_plan_create' AND problem_plan_revision >= 1)",
+            name="ck_consultation_split_intents_plan_revision",
+        ),
+        CheckConstraint("intent_kind IN ('legacy_generate', 'problem_suggestion', 'problem_plan_create')", name="ck_consultation_split_intents_kind"),
         Index("ix_consultation_split_intents_transcript_status", "transcript_id", "status"),
         Index("ix_consultation_split_intents_retention", "retention_expires_at"),
     )
@@ -2360,6 +2370,13 @@ class ConsultationSplitIntent(Base):
         ),
         nullable=True,
     )
+    problem_plan_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("consultation_problem_plans.id", ondelete="SET NULL", name="fk_consultation_split_intents_problem_plan"),
+        nullable=True,
+    )
+    problem_plan_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    intent_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="legacy_generate")
     generated_document_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey(
@@ -2408,9 +2425,9 @@ class ConsultationSplitDraft(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     analysis_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("consultation_split_analyses.id", ondelete="CASCADE"), nullable=False)
-    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
-    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", name="fk_consultation_problem_plans_owner_user"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id", name="fk_consultation_problem_plans_team"), nullable=False)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE", name="fk_consultation_problem_plans_transcript"), nullable=False)
     source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[ConsultationSplitDraftStatus] = mapped_column(
         Enum(ConsultationSplitDraftStatus),
@@ -2475,10 +2492,55 @@ class ConsultationSplitDraftTopic(Base):
     template_version: Mapped[PromptTemplateVersion | None] = relationship(foreign_keys=[template_version_id])
 
 
+class ConsultationProblemPlan(Base):
+    """One owner-encrypted, source-independent living problem plan per root."""
+
+    __tablename__ = "consultation_problem_plans"
+    __table_args__ = (
+        UniqueConstraint("transcript_id", name="uq_consultation_problem_plans_transcript"),
+        CheckConstraint("revision >= 0", name="ck_consultation_problem_plans_revision_nonnegative"),
+        CheckConstraint("last_operation_base_revision IS NULL OR last_operation_base_revision >= 0", name="ck_consultation_problem_plans_operation_base_revision"),
+        CheckConstraint("suggestion_status IS NULL OR suggestion_status IN ('queued', 'processing', 'ready', 'failed')", name="ck_consultation_problem_plans_suggestion_status"),
+        Index("ix_consultation_problem_plans_retention", "retention_expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False)
+    retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    manual_override: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    plan_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    last_operation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    last_operation_base_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_operation_receipt_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suggestion_intent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("consultation_split_intents.id", ondelete="SET NULL", name="fk_consultation_problem_plans_suggestion_intent", use_alter=True), nullable=True)
+    suggestion_analysis_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("consultation_split_analyses.id", ondelete="SET NULL", name="fk_consultation_problem_plans_suggestion_analysis"), nullable=True)
+    suggestion_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    suggestion_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    suggestion_base_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    owner: Mapped[User] = relationship(back_populates="consultation_problem_plans")
+    team: Mapped[Team] = relationship(back_populates="consultation_problem_plans")
+    transcript: Mapped[Transcript] = relationship(back_populates="consultation_problem_plan")
+    batches: Mapped[list["ConsultationSplitBatch"]] = relationship(back_populates="problem_plan")
+
+
 class ConsultationSplitBatch(Base):
     __tablename__ = "consultation_split_batches"
     __table_args__ = (
         UniqueConstraint("intent_id", name="uq_consultation_split_batches_intent"),
+        CheckConstraint(
+            "(analysis_id IS NOT NULL AND problem_plan_id IS NULL) OR (analysis_id IS NULL AND problem_plan_id IS NOT NULL)",
+            name="ck_consultation_split_batches_one_lineage",
+        ),
+        CheckConstraint(
+            "(problem_plan_id IS NULL AND problem_plan_revision IS NULL) OR (problem_plan_id IS NOT NULL AND problem_plan_revision >= 1)",
+            name="ck_consultation_split_batches_plan_revision",
+        ),
         CheckConstraint("source_fingerprint ~ '^[0-9a-f]{64}$'", name="ck_consultation_split_batches_source_fingerprint_canonical"),
         CheckConstraint("error_code IS NULL OR char_length(error_code) <= 128", name="ck_consultation_split_batches_error_code_length"),
         Index("ix_consultation_split_batches_transcript_status", "transcript_id", "status"),
@@ -2507,7 +2569,11 @@ class ConsultationSplitBatch(Base):
         ),
         nullable=True,
     )
-    analysis_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("consultation_split_analyses.id", ondelete="RESTRICT"), nullable=False)
+    analysis_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("consultation_split_analyses.id", ondelete="RESTRICT", name="fk_consultation_split_batches_analysis"), nullable=True)
+    problem_plan_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("consultation_problem_plans.id", ondelete="CASCADE", name="fk_consultation_split_batches_problem_plan"), nullable=True
+    )
+    problem_plan_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     team_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False)
     transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False)
@@ -2548,7 +2614,8 @@ class ConsultationSplitBatch(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    analysis: Mapped[ConsultationSplitAnalysis] = relationship(back_populates="batches")
+    analysis: Mapped[ConsultationSplitAnalysis | None] = relationship(back_populates="batches")
+    problem_plan: Mapped["ConsultationProblemPlan | None"] = relationship(back_populates="batches")
     intent: Mapped[ConsultationSplitIntent | None] = relationship(back_populates="batch")
     owner: Mapped[User] = relationship(back_populates="consultation_split_batches")
     team: Mapped[Team] = relationship(back_populates="consultation_split_batches")

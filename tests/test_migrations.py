@@ -3298,6 +3298,7 @@ def test_consultation_split_passive_schema_has_encrypted_content_and_reversible_
 
     inspector = inspect(engine)
     split_tables = {
+        "consultation_problem_plans",
         "consultation_split_analyses",
         "consultation_split_intents",
         "consultation_split_drafts",
@@ -3310,6 +3311,12 @@ def test_consultation_split_passive_schema_has_encrypted_content_and_reversible_
     assert split_tables <= set(inspector.get_table_names())
 
     expected_columns = {
+        "consultation_problem_plans": {
+            "owner_user_id", "team_id", "transcript_id", "retention_expires_at", "revision",
+            "manual_override", "plan_encrypted", "last_operation_id", "last_operation_base_revision",
+            "last_operation_receipt_encrypted", "suggestion_intent_id", "suggestion_analysis_id",
+            "suggestion_status", "suggestion_error_code", "suggestion_base_revision",
+        },
         "consultation_split_analyses": {
             "owner_user_id", "team_id", "transcript_id", "transcript_version_id", "redaction_run_id",
             "source_fingerprint", "source_snapshot_encrypted", "candidate_template_snapshot_encrypted",

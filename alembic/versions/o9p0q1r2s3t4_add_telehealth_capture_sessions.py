@@ -93,6 +93,7 @@ def upgrade() -> None:
         sa.Column("file_samples", sa.Integer(), nullable=False),
         sa.Column("timing_spans_json", sa.JSON(), nullable=False),
         sa.Column("source_audio_size_bytes", sa.Integer(), nullable=False),
+        sa.Column("source_audio_fingerprint", sa.String(length=64), nullable=False),
         sa.Column("source_audio_duration_seconds", sa.Float(), nullable=False),
         sa.Column("source_audio_vault_ref", sa.String(length=512), nullable=True),
         sa.Column("source_audio_expires_at", sa.DateTime(timezone=True), nullable=True),

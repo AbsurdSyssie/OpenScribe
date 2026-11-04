@@ -330,6 +330,43 @@ def test_capture_stop_salvages_pending_audio_then_seals_interrupted_run(
     db_session.rollback()
 
 
+def test_telehealth_clock_failure_can_escalate_after_clean_stop(
+    db_session, make_team, make_user,
+):
+    team = make_team(name="Telehealth Late Capture Failure Team")
+    owner = make_user(email="telehealth-clock@example.com", password="password-1", team=team)
+    transcript = _transcript(db_session, owner)
+    session = _session(db_session, owner, transcript)
+    stopped = request_telehealth_capture_stop(
+        db_session, owner,
+        transcript_id=transcript.id,
+        capture_session_id=session.id,
+    )
+    assert stopped.status == "stopping"
+    interrupted = request_telehealth_capture_stop(
+        db_session, owner,
+        transcript_id=transcript.id,
+        capture_session_id=session.id,
+        failure_code="audio_clock_interrupted",
+    )
+    assert interrupted.status == "stopping"
+    assert interrupted.failure_channel is None
+    assert interrupted.failure_code == "audio_clock_interrupted"
+    # An older clean-stop replay cannot downgrade the interrupted run.
+    assert request_telehealth_capture_stop(
+        db_session, owner,
+        transcript_id=transcript.id,
+        capture_session_id=session.id,
+    ).failure_code == "audio_clock_interrupted"
+    assert seal_telehealth_capture(
+        db_session, owner,
+        transcript_id=transcript.id,
+        capture_session_id=session.id,
+        expected_clinician_parts=0,
+        expected_patient_parts=0,
+    ).status == "interrupted"
+
+
 def test_clean_telehealth_capture_can_seal_with_no_detected_patient_speech(
     db_session, make_team, make_user,
 ):

@@ -32,6 +32,7 @@ export function createTelehealthCapture({
   let timeline = null;
   let stopPromise = null;
   let interrupted = false;
+  let terminalFailure = null;
   const nodes = [];
   const taps = [];
   const cleanups = [];
@@ -42,10 +43,11 @@ export function createTelehealthCapture({
   };
 
   const interruptedCapture = (channel, reason) => {
-    if (interrupted || state === 'stopping' || state === 'stopped') return;
+    if (interrupted || state === 'stopped') return;
     interrupted = true;
+    terminalFailure = { channel, reason };
     try { onInterrupted({ channel, reason }); } catch (_) {}
-    void stop();
+    if (state !== 'stopping') void stop().catch(() => {});
   };
 
   const setUpTrackEvents = (channel, track) => {
@@ -116,6 +118,7 @@ export function createTelehealthCapture({
     const requestId = channel + '-' + startGeneration;
     const timeout = window.setTimeout(() => {
       flushWaiters.delete(channel);
+      interruptedCapture(channel, 'audio_flush_timeout');
       resolve();
     }, 1500);
     flushWaiters.set(channel, {
@@ -129,6 +132,7 @@ export function createTelehealthCapture({
     try { tap.port.postMessage({ type: 'flush', requestId }); } catch (_) {
       window.clearTimeout(timeout);
       flushWaiters.delete(channel);
+      interruptedCapture(channel, 'audio_flush_failed');
       resolve();
     }
   });
@@ -155,6 +159,7 @@ export function createTelehealthCapture({
       context = null;
       timeline?.close();
       state = 'stopped';
+      if (terminalFailure) throw new Error('Telehealth recording ended with incomplete audio.');
     })();
     return stopPromise;
   }
@@ -187,7 +192,7 @@ export function createTelehealthCapture({
       // Reject explicitly non-tab capture, even if system sharing produces
       // audio; native WhatsApp app capture is a separately scoped later phase.
       const displaySurface = displayVideo.getSettings?.().displaySurface;
-      if (displaySurface && displaySurface !== 'browser') {
+      if (displaySurface !== 'browser') {
         throw new Error('Telehealth currently requires sharing a browser tab.');
       }
       const acquiredMic = await mediaDevices.getUserMedia({

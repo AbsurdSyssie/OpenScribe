@@ -42,6 +42,8 @@ export function attachTelehealthControls({
   let restoredCapture = null;
   let lastCheckedTranscriptId = null;
   let captureStatusCheckInFlight = false;
+  let ownProcessingCheckInFlight = false;
+  let ownProcessingLastPollAt = 0;
   let boundTranscriptId = getTranscriptId?.() || null;
   let activating = false;
   let sourceLoss = false;
@@ -173,13 +175,19 @@ export function attachTelehealthControls({
       enabled = true;
       sourceLoss = true;
       resetMeters();
-      receipt.classList.add('is-interrupted');
+      if (['active', 'stopping', 'interrupted', 'failed'].includes(saved.status)) {
+        receipt.classList.add('is-interrupted');
+      } else {
+        receipt.classList.add('is-verified');
+      }
       if (message) {
         message.textContent = saved.status === 'processing'
           ? 'Both Telehealth sources are being transcribed. Wait for completion or retry a failed source if prompted.'
-          : saved.parts?.some((part) => part.ingestion_job_id)
-            ? 'A Telehealth transcription failed. Retry the retained source audio using the consultation recovery controls.'
-            : 'An earlier Telehealth recording is unresolved. Unuploaded browser audio cannot be recovered after a reload. Review retained parts or discard explicitly.';
+          : saved.status === 'ready'
+            ? 'Sealed Telehealth audio is awaiting transcription. Review the stored parts and submit them.'
+            : saved.parts?.some((part) => part.ingestion_job_id)
+              ? 'A Telehealth transcription failed. Retry the retained source audio using the consultation recovery controls.'
+              : 'An earlier Telehealth recording is unresolved. Unuploaded browser audio cannot be recovered after a reload. Review retained parts or discard explicitly.';
       }
       render();
     } catch (_) {
@@ -468,6 +476,36 @@ export function attachTelehealthControls({
     event.preventDefault();
     event.returnValue = '';
   });
+  const checkOwnTranscription = async () => {
+    if (!client || client.state !== 'transcribing' || ownProcessingCheckInFlight
+      || Date.now() - ownProcessingLastPollAt < 2000) return;
+    ownProcessingCheckInFlight = true;
+    ownProcessingLastPollAt = Date.now();
+    const activeClient = client;
+    try {
+      const result = await activeClient.getStatus();
+      if (client !== activeClient) return;
+      if (result?.status === 'completed') {
+        // Permit a follow-on Telehealth recording in the same consultation
+        // only AFTER both sources have been durably applied.
+        client = null;
+        resetMeters();
+        if (mainRecord) mainRecord.disabled = false;
+        if (message) message.textContent = 'Telehealth transcription completed. You may start another recording.';
+        render();
+      } else if (result?.status === 'failed') {
+        sourceLoss = true;
+        receipt.classList.add('is-interrupted');
+        if (message) message.textContent = 'Telehealth transcription failed. Retry the retained source from the consultation controls.';
+        render();
+      }
+    } catch (_) {
+      // A failed status poll is not evidence that the ASR work completed.
+    } finally {
+      ownProcessingCheckInFlight = false;
+    }
+  };
+
   const sync = () => {
     const selected = getTranscriptId?.() || null;
     const unresolved = Boolean(restoredCapture) || Boolean(client
@@ -487,6 +525,7 @@ export function attachTelehealthControls({
     }
     render();
     void checkPersistedCapture();
+    void checkOwnTranscription();
   };
   render();
   void checkPersistedCapture();

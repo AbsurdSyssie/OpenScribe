@@ -39,6 +39,8 @@ export function attachTelehealthControls({
 
   let enabled = false;
   let client = null;
+  let restoredCapture = null;
+  let lastCheckedTranscriptId = null;
   let activating = false;
   let sourceLoss = false;
   let collapsed = false;
@@ -58,7 +60,7 @@ export function attachTelehealthControls({
     if (typeof showNotice === 'function') showNotice(text, kind);
   };
   const recordingInProgress = () => client && ['starting', 'recording', 'stopping'].includes(client.state);
-  const blockSwitch = () => recordingInProgress()
+  const blockSwitch = () => Boolean(restoredCapture) || recordingInProgress()
     || (client && ['recovery_required', 'incomplete', 'sealed'].includes(client.state))
     || Boolean(isOtherRecordingActive?.());
 
@@ -88,17 +90,74 @@ export function attachTelehealthControls({
     toggle.disabled = activating || blockSwitch() || !getTranscriptId?.();
     if (enabled && recordLabel) {
       recordLabel.textContent = recordingInProgress() ? 'Stop' :
+        restoredCapture ? 'Resolve telehealth' :
         client?.state === 'transcribing' ? 'Transcribing…' : 'Start telehealth';
       if (recordIcon) {
         recordIcon.dataset.lucide = recordingInProgress() ? 'square' : 'disc';
         window.refreshLucideIcons?.(recordIcon.parentElement || recordIcon);
       }
-      if (client?.state === 'transcribing') mainRecord.disabled = true;
+      if (client?.state === 'transcribing' || restoredCapture) mainRecord.disabled = true;
     }
     if (retry) retry.hidden = client?.state !== 'recovery_required';
-    if (partial) partial.hidden = client?.state !== 'incomplete';
-    if (discard) discard.hidden = !['recovery_required', 'incomplete', 'sealed'].includes(client?.state);
+    const hasRestoredJob = restoredCapture?.parts?.some((part) => part.ingestion_job_id);
+    const canRestorePartial = restoredCapture
+      && ['active', 'stopping', 'ready', 'interrupted'].includes(restoredCapture.status)
+      && restoredCapture.parts?.some((part) => part.status === 'staged');
+    if (partial) {
+      partial.hidden = client?.state !== 'incomplete' && !canRestorePartial;
+      partial.textContent = canRestorePartial ? 'Recover stored audio' : 'Acknowledge and transcribe';
+    }
+    if (discard) discard.hidden = !(
+      ['recovery_required', 'incomplete', 'sealed'].includes(client?.state)
+      || (restoredCapture && !hasRestoredJob)
+    );
     if (actions) actions.hidden = [retry, partial, discard].every((item) => item?.hidden !== false);
+  };
+
+  const postRecovery = async (capture, suffix, payload = {}) => {
+    const response = await csrfFetch(
+      '/api/v1/transcripts/' + encodeURIComponent(capture.transcript_id)
+      + '/telehealth/captures/' + encodeURIComponent(capture.capture_session_id)
+      + '/' + suffix,
+      {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      },
+    );
+    if (!response.ok) {
+      let errorMessage = 'Could not resolve the saved Telehealth capture.';
+      try { errorMessage = (await response.json())?.error?.message || errorMessage; } catch (_) {}
+      throw new Error(errorMessage);
+    }
+    return response.json();
+  };
+
+  const checkPersistedCapture = async () => {
+    const id = getTranscriptId?.();
+    if (!id || id === lastCheckedTranscriptId || enabled || client) return;
+    lastCheckedTranscriptId = id;
+    try {
+      const response = await csrfFetch(
+        '/api/v1/transcripts/' + encodeURIComponent(id) + '/telehealth/unresolved',
+        { credentials: 'include' },
+      );
+      if (!response.ok) return;
+      const saved = await response.json();
+      if (id !== getTranscriptId?.() || enabled || client || !saved) return;
+      if (!['active', 'stopping', 'ready', 'interrupted', 'failed'].includes(saved.status)) return;
+      restoredCapture = saved;
+      enabled = true;
+      sourceLoss = true;
+      resetMeters();
+      receipt.classList.add('is-interrupted');
+      if (message) message.textContent = saved.parts?.some((part) => part.ingestion_job_id)
+        ? 'A Telehealth transcription failed. Retry the retained source audio using the consultation recovery controls.'
+        : 'An earlier Telehealth recording is unresolved. Unuploaded browser audio cannot be recovered after a reload. Review retained parts or discard explicitly.';
+      render();
+    } catch (_) {
+      // Do not infer that the remote source is complete from a failed check.
+    }
   };
 
   const onSourceState = ({ channel, status: next }) => {
@@ -319,11 +378,14 @@ export function attachTelehealthControls({
     });
   });
   discard?.addEventListener('click', () => {
-    if (!client || !window.confirm(
+    if ((!client && !restoredCapture) || !window.confirm(
       'Permanently discard this unsubmitted recording? Clinician and patient audio staged so far will be queued for deletion. No transcription will be created.',
     )) return;
     discard.disabled = true;
-    void client.discard().then(async () => {
+    const discardRequest = client ? client.discard() : postRecovery(restoredCapture, 'discard');
+    void discardRequest.then(async (result) => {
+      if (result.status !== 'discarded') throw new Error('Discard was not confirmed by the server.');
+      restoredCapture = null;
       resetMeters();
       enabled = false;
       notice('Unsubmitted Telehealth audio was discarded.', 'info');
@@ -335,16 +397,41 @@ export function attachTelehealthControls({
     }).finally(() => { discard.disabled = false; });
   });
   partial?.addEventListener('click', () => {
-    if (!client || !window.confirm(
-      'This recording may be incomplete. Generate clinical notes only after reviewing and correcting the transcript. Continue transcription?',
+    if ((!client && !restoredCapture) || !window.confirm(
+      'This recorded consultation may be incomplete. Unuploaded audio cannot be recovered after a browser reload. Review the transcript for missing clinical information before using generated notes. Continue?',
     )) return;
-    void client.acknowledgeIncomplete().then(() => client.transcribe()).then(async () => {
-      notice('Partial Telehealth transcript is processing. Review all omissions.', 'warning');
+    partial.disabled = true;
+    const continueCapture = async () => {
+      if (client) {
+        await client.acknowledgeIncomplete();
+        return client.transcribe();
+      }
+      const saved = restoredCapture;
+      if (['active', 'stopping'].includes(saved.status)) {
+        const stopDetails = saved.failure_code
+          ? { failure_code: saved.failure_code, interrupted_channel: saved.failure_channel }
+          : { failure_code: 'browser_capture_failed' };
+        await postRecovery(saved, 'stop', stopDetails);
+        const counts = (channel) => saved.parts.filter((part) => part.channel === channel).length;
+        await postRecovery(saved, 'seal', {
+          expected_clinician_parts: counts('clinician'),
+          expected_patient_parts: counts('patient'),
+        });
+      }
+      if (saved.status !== 'ready') await postRecovery(saved, 'acknowledge-incomplete');
+      const queued = await postRecovery(saved, 'transcribe');
+      restoredCapture = null;
+      enabled = false;
+      return queued;
+    };
+    void continueCapture().then(async () => {
+      notice('Recovered Telehealth audio was submitted for transcription. Review for omissions.', 'warning');
       await refreshWorkspace?.();
       render();
     }).catch((error) => {
-      notice(error instanceof Error ? error.message : 'Could not acknowledge partial audio.', 'error');
-    });
+      notice(error instanceof Error ? error.message : 'Could not recover the saved recording.', 'error');
+      render();
+    }).finally(() => { partial.disabled = false; });
   });
   window.addEventListener('beforeunload', (event) => {
     if (!blockSwitch()) return;
@@ -352,9 +439,12 @@ export function attachTelehealthControls({
     event.returnValue = '';
   });
   render();
+  void checkPersistedCapture();
   return {
-    sync: render,
+    sync: () => { render(); void checkPersistedCapture(); },
     isActive: () => enabled,
     isRecording: recordingInProgress,
+    isUnresolved: () => Boolean(restoredCapture) || Boolean(client
+      && ['starting', 'recording', 'stopping', 'recovery_required', 'incomplete', 'sealed'].includes(client.state)),
   };
 }

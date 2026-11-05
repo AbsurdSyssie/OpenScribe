@@ -20,6 +20,12 @@ def test_capture_stop_drain_seal_and_retry_reuse_source_identity(tmp_path):
         "./telehealthWindows.js?v=20261104-telehealth-windows", "./fake.mjs"
     ).replace(
         "./telehealthWav.js?v=20261105-telehealth-wav", "./fake.mjs"
+    ).replace(
+        "./telehealthRecoveryJournal.js?v=20261105-crash-recovery-1", "./journal.mjs"
+    )
+    (tmp_path / "journal.mjs").write_text(
+        (ROOT / "app/static/js/transcribe/telehealthRecoveryJournal.js").read_text(encoding="utf-8"),
+        encoding="utf-8",
     )
     (tmp_path / "client.mjs").write_text(source, encoding="utf-8")
     (tmp_path / "fake.mjs").write_text(
@@ -111,13 +117,24 @@ const fetcher = async (path, opts = {}) => {
       failFirst = false;
       return { ok: false, json: async () => ({ error: { message: 'Synthetic lost upload response' } }) };
     }
-    return { ok: true, json: async () => ({ part: { channel } }) };
+    return { ok: true, json: async () => ({
+      capture_session_id: 'session-uuid',
+      part: { channel, sequence_no: Number(opts.body.get('sequence_no')) },
+    }) };
   }
   throw new Error('Unexpected synthetic route: ' + path);
 };
+const durable = new Map();
+const journal = {
+  async check() { history.push('journal-ready'); },
+  async persist(part) { history.push('journal-committed'); durable.set(part.key, part); },
+  async remove(part) { durable.delete(part.key); },
+  async clear() { durable.clear(); },
+};
 const client = createTelehealthRecordingClient({
   transcriptId: 'transcript-uuid',
-  csrfFetch: fetcher,
+  csrfFetch: fetcher, recoveryJournal: journal,
+  pacedUpload: async () => {},
 });
 const started = await client.start();
 assert.equal(started.status, 'active');
@@ -128,8 +145,10 @@ assert.equal(attempts.length, 1);
 await client.retryPendingUploads();
 assert.equal(client.state, 'sealed');
 assert.deepEqual(client.uploadedParts, { clinician: 1, patient: 1 });
+assert.equal(durable.size, 0);
 assert.deepEqual(attempts.map(([channel]) => channel), ['clinician','clinician','patient']);
 assert.equal(attempts[0][1], attempts[1][1]);
+assert.equal(history.indexOf('journal-committed') < history.indexOf('POST'), true);
 assert.notEqual(attempts[1][1], attempts[2][1]);
 assert.equal(history.indexOf('capture-stop') < history.indexOf('stopped-on-server'), true);
 assert.equal(history.indexOf('sealed-on-server') > history.indexOf('stopped-on-server'), true);

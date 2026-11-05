@@ -56,6 +56,13 @@ def test_dual_audio_never_uses_existing_microphone_handler_for_telehealth():
     assert "isUnresolved:" in ui
 
 
+def test_source_clock_gaps_are_never_ignored_for_medical_audio():
+    recording = (STATIC / "telehealthRecordingClient.js").read_text(encoding="utf-8")
+    assert "if (gap.endFrame > gap.startFrame)" in recording
+    assert "warn(gap.channel, 'audio_clock_interrupted')" in recording
+    assert "void stop().catch(() => {});" in recording
+
+
 def test_owner_only_telehealth_settings_are_independently_switchable():
     html = (ROOT / "app/templates/settings/_preferences.html").read_text(encoding="utf-8")
     controls = (ROOT / "app/static/js/settings/controls.js").read_text(encoding="utf-8")

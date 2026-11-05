@@ -1,12 +1,14 @@
-"""Owner-bound staging for two-channel telehealth recording.
+"""Owner-bound recording lifecycle for dual-source Telehealth capture.
 
-Only *stages* measured PCM16 WAV source parts; this module never authorizes
-provider work or appends clinical text. A later post-stop finalization service
-must dispatch independent STT jobs and atomically transfer Vault source-ref
-ownership from a staged part to its job.
+Capture audio is measured, validated and staged as bounded mono PCM16 WAV parts
+in Vault; no provider work or clinical text is produced in this module.
+telehealth_dispatch transfers accepted parts to separate quota-accounted STT
+jobs only after Stop/Seal, and telehealth_apply atomically publishes both
+role-labelled results. This module also implements explicit owner-authorized
+discard of unsubmitted audio through a durable cleanup outbox.
 
-Do not publish these methods through a public route until that processing,
-retry and warned-incomplete generation pathway is implemented.
+All public capture routes remain gated behind TELEHEALTH_API_ENABLED=false by
+default. Do not enable clinically without browser/privacy/clinical validation.
 """
 from __future__ import annotations
 

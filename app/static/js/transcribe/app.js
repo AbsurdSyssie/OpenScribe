@@ -283,6 +283,19 @@ import {
       const templatePickerModal = document.querySelector('[data-template-picker-modal]');
       const templatePickerOptions = [...document.querySelectorAll('[data-template-picker-option]')];
       const templatePickerCloseButtons = [...document.querySelectorAll('[data-template-picker-close]')];
+      const templatePickerSearch = document.querySelector('[data-template-picker-search]');
+      const templatePickerClear = document.querySelector('[data-template-picker-clear]');
+      const templatePickerResults = document.querySelector('[data-template-picker-results]');
+      const templatePickerActionButtons = [...document.querySelectorAll('[data-template-picker-generate]')];
+      const templatePickerEditLinks = [...document.querySelectorAll('[data-template-picker-edit]')];
+      let templatePickerOpener = null;
+      let templatePickerInertState = [];
+      let templatePickerAnimationToken = 0;
+      let templatePickerCloseTimer = null;
+      let templatePickerActionInFlight = false;
+      let templatePickerSelectionInFlight = false;
+      let templateChangeInFlight = null;
+      let templateChangeTargetId = null;
       const templateSuggestionRegion = document.querySelector('[data-template-suggestion]');
       const templateSuggestionMessage = document.querySelector('[data-template-suggestion-message]');
       const templateSuggestionUse = document.querySelector('[data-template-suggestion-use]');
@@ -413,6 +426,11 @@ let statusDetailsHideTimer = null;
         capabilityAvailable: consultationSplittingAvailable,
         multipleProblemsMarked: multipleProblemsController?.isMarked?.(),
       });
+      const isTemplatePickerDirectGenerationAvailable = () => !splitCreateEnabled() && !multipleProblemsSavePending;
+      const syncTemplatePickerDirectGenerationVisibility = () => {
+        const available = isTemplatePickerDirectGenerationAvailable();
+        templatePickerActionButtons.forEach((button) => { button.hidden = !available; });
+      };
       const splitSuggestionReadiness = () => {
         if (!transcriptId) return { ready: false, message: 'Open a consultation before reviewing problems.' };
         if (isConsultationCaptureActive() || currentTranscriptStatus === 'recording') {
@@ -1743,10 +1761,10 @@ let statusDetailsHideTimer = null;
           dictationSaveButton.disabled = isBusy || !transcriptId;
         }
         if (dictationSaveGenerateButton) {
-          dictationSaveGenerateButton.disabled = isBusy || multipleProblemsSavePending || !transcriptId || !hasLlmSelection || !hasSelectableOptions(generateOutputTemplateSelect);
+          dictationSaveGenerateButton.disabled = isBusy || templatePickerSelectionInFlight || multipleProblemsSavePending || !transcriptId || !hasLlmSelection || !hasSelectableOptions(generateOutputTemplateSelect);
         }
         if (dictationTemplateSelect) {
-          dictationTemplateSelect.disabled = isBusy || isTranscribing || !hasLlmSelection || !hasSelectableOptions(dictationTemplateSelect);
+          dictationTemplateSelect.disabled = isBusy || isTranscribing || templatePickerSelectionInFlight || !hasLlmSelection || !hasSelectableOptions(dictationTemplateSelect);
         }
         if (dictationLiveToggleButton) {
           dictationLiveToggleButton.hidden = !dictationLiveStreamingAvailable && !activeCapture;
@@ -1756,7 +1774,7 @@ let statusDetailsHideTimer = null;
         if (dictationLiveFailure) dictationLiveFailure.hidden = !dictationLiveFailurePending;
         if (dictationLiveUseConfirmedButton) dictationLiveUseConfirmedButton.disabled = !dictationLivePreview.confirmedText;
         if (dictationSaveButton) dictationSaveButton.disabled = isBusy || !transcriptId || dictationLiveFailurePending;
-        if (dictationSaveGenerateButton) dictationSaveGenerateButton.disabled = isBusy || dictationLiveFailurePending || multipleProblemsSavePending || !transcriptId || !hasLlmSelection || !hasSelectableOptions(generateOutputTemplateSelect);
+        if (dictationSaveGenerateButton) dictationSaveGenerateButton.disabled = isBusy || templatePickerSelectionInFlight || dictationLiveFailurePending || multipleProblemsSavePending || !transcriptId || !hasLlmSelection || !hasSelectableOptions(generateOutputTemplateSelect);
         setDictationMicButtons(activeCapture || isTranscribing);
         refreshIcons?.(dictationModal || document);
         renderDictationTimer();
@@ -2862,36 +2880,181 @@ let statusDetailsHideTimer = null;
           templatePickerMode.textContent = option?.dataset?.templateMode === 'structured' ? 'Sectioned note' : 'Free text note';
         }
         templatePickerOptions.forEach((button) => {
-          button.classList.toggle('active', button.dataset.templateId === option?.value);
+          const selected = button.dataset.templateId === option?.value;
+          button.classList.toggle('active', selected);
+          button.closest('[data-template-picker-row]')?.classList.toggle('active', selected);
+          button.setAttribute('aria-pressed', selected ? 'true' : 'false');
         });
         syncDictationTemplateSelect();
       };
 
+      const updateTemplatePickerResults = () => {
+        const query = (templatePickerSearch?.value || '').trim().toLowerCase();
+        if (templatePickerClear) templatePickerClear.hidden = !(templatePickerSearch?.value || '').length;
+        let visibleCount = 0;
+        templatePickerOptions.forEach((button) => {
+          const title = (button.dataset.templateName || '').toLowerCase();
+          const description = (button.dataset.templateDescription || '').toLowerCase();
+          const matches = !query || title.includes(query) || description.includes(query);
+          button.closest('[data-template-picker-row]')?.toggleAttribute('hidden', !matches);
+          button.hidden = !matches;
+          if (matches) visibleCount += 1;
+        });
+        if (templatePickerResults && templatePickerOptions.length) {
+          templatePickerResults.textContent = visibleCount === 0
+            ? 'No templates match your search.'
+            : `${visibleCount} ${visibleCount === 1 ? 'template' : 'templates'} available.`;
+        }
+      };
+
+      const setTemplatePickerBackgroundInert = (inert) => {
+        if (inert) {
+          templatePickerInertState = [];
+          let branch = templatePickerModal;
+          while (branch?.parentElement) {
+            const parent = branch.parentElement;
+            [...parent.children].forEach((sibling) => {
+              if (sibling === branch || sibling.contains(templatePickerModal)) return;
+              templatePickerInertState.push([sibling, sibling.inert]);
+              sibling.inert = true;
+            });
+            branch = parent;
+            if (branch === document.body) break;
+          }
+          return;
+        }
+        templatePickerInertState.forEach(([element, wasInert]) => { element.inert = wasInert; });
+        templatePickerInertState = [];
+      };
+
       const closeTemplatePicker = () => {
         if (!templatePickerModal) return;
-        templatePickerModal.hidden = true;
+        if (templatePickerModal.hidden || templatePickerModal.dataset.state === 'closing') return;
+        const animationToken = ++templatePickerAnimationToken;
+        if (templatePickerCloseTimer) {
+          window.clearTimeout(templatePickerCloseTimer);
+          templatePickerCloseTimer = null;
+        }
+        templatePickerModal.dataset.state = 'closing';
+        templatePickerModal.inert = true;
+        templatePickerModal.setAttribute('aria-hidden', 'true');
         templatePickerButton?.setAttribute('aria-expanded', 'false');
+        setTemplatePickerBackgroundInert(false);
+        const focusTarget = templatePickerOpener?.isConnected && !templatePickerOpener.disabled
+          ? templatePickerOpener
+          : (!templatePickerButton?.disabled ? templatePickerButton : document.querySelector('[data-workspace-scribe-main]'));
+        focusTarget?.focus?.({ preventScroll: true });
+        templatePickerOpener = null;
+        const finishClose = () => {
+          if (animationToken !== templatePickerAnimationToken || templatePickerModal.dataset.state !== 'closing') return;
+          templatePickerModal.hidden = true;
+          templatePickerModal.dataset.state = '';
+          templatePickerModal.inert = false;
+          templatePickerModal.removeAttribute('aria-hidden');
+          templatePickerCloseTimer = null;
+        };
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+          finishClose();
+          return;
+        }
+        templatePickerCloseTimer = window.setTimeout(finishClose, 160);
       };
 
       const openTemplatePicker = () => {
         if (!templatePickerModal || templatePickerButton?.disabled) return;
+        ++templatePickerAnimationToken;
+        if (templatePickerCloseTimer) {
+          window.clearTimeout(templatePickerCloseTimer);
+          templatePickerCloseTimer = null;
+        }
+        templatePickerOpener = document.activeElement instanceof HTMLElement ? document.activeElement : templatePickerButton;
+        if (templatePickerSearch) templatePickerSearch.value = '';
+        updateTemplatePickerResults();
         templatePickerModal.hidden = false;
+        templatePickerModal.inert = false;
+        templatePickerModal.removeAttribute('aria-hidden');
+        templatePickerModal.dataset.state = 'opening';
         templatePickerButton?.setAttribute('aria-expanded', 'true');
-        const activeOption = templatePickerOptions.find((button) => button.classList.contains('active')) || templatePickerOptions[0] || null;
+        setTemplatePickerBackgroundInert(true);
+        const animationToken = templatePickerAnimationToken;
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+          templatePickerModal.dataset.state = 'open';
+          if (templatePickerSearch && !templatePickerSearch.closest('[hidden], [inert]')) templatePickerSearch.focus();
+          return;
+        }
+        const dialog = templatePickerModal.querySelector('.template-picker-modal__dialog');
+        if (dialog) void window.getComputedStyle(dialog).opacity;
         window.requestAnimationFrame(() => {
-          activeOption?.focus();
+          if (animationToken !== templatePickerAnimationToken || templatePickerModal.hidden || templatePickerModal.dataset.state !== 'opening') return;
+          templatePickerModal.dataset.state = 'open';
+          if (templatePickerSearch && !templatePickerSearch.closest('[hidden], [inert]')) {
+            templatePickerSearch.focus();
+          }
         });
       };
 
       const chooseTemplateFromPicker = (templateId) => {
-        if (noteGenerationBusy || !generateOutputTemplateSelect || !templateId) return;
+        if (noteGenerationBusy || templatePickerActionInFlight || templatePickerSelectionInFlight || !generateOutputTemplateSelect || !templateId) return;
         if (generateOutputTemplateSelect.value === templateId) {
           closeTemplatePicker();
           return;
         }
         generateOutputTemplateSelect.value = templateId;
         generateOutputTemplateSelect.dispatchEvent(new Event('change', { bubbles: true }));
+        void handleOutputTemplateChange();
         closeTemplatePicker();
+      };
+
+      const generateTemplateFromPicker = async (button) => {
+        const row = button?.closest('[data-template-picker-row]');
+        const option = row?.querySelector('[data-template-picker-option]');
+        const submitButton = generateOutputForm?.querySelector('button[type="submit"]');
+        const templateId = option?.dataset.templateId || '';
+        const sourceTranscriptId = transcriptId;
+        if (!templateId || !sourceTranscriptId || !generateOutputTemplateSelect || button.disabled || templatePickerActionInFlight || noteGenerationBusy || !isTemplatePickerDirectGenerationAvailable()) return;
+        if (templatePickerSelectionInFlight && generateOutputTemplateSelect.value !== templateId) return;
+        templatePickerActionInFlight = true;
+        syncGenerationAvailability(readActiveDraftText());
+        try {
+          if (generateOutputTemplateSelect.value !== templateId && !templateChangeInFlight) {
+            generateOutputTemplateSelect.value = templateId;
+            generateOutputTemplateSelect.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          const canContinue = templateChangeInFlight
+            ? await handleOutputTemplateChange()
+            : true;
+          if (canContinue === false) return;
+          if (
+            transcriptId !== sourceTranscriptId
+            || generateOutputTemplateSelect.value !== templateId
+            || !generateOutputForm
+            || !submitButton
+            || submitButton.disabled
+            || !isTemplatePickerDirectGenerationAvailable()
+            || noteGenerationBusy
+          ) return;
+          closeTemplatePicker();
+          generateOutputForm.requestSubmit();
+        } finally {
+          templatePickerActionInFlight = false;
+          syncGenerationAvailability(readActiveDraftText());
+        }
+      };
+
+      const navigateFromTemplatePicker = async (event) => {
+        const link = event.currentTarget;
+        event.preventDefault();
+        if (templatePickerActionInFlight || !link?.href) return;
+        templatePickerActionInFlight = true;
+        link.setAttribute('aria-busy', 'true');
+        try {
+          if (!(await persistPendingEditorsBeforeWorkspaceSwitch())) return;
+          closeTemplatePicker();
+          window.location.assign(link.href);
+        } finally {
+          templatePickerActionInFlight = false;
+          link.removeAttribute('aria-busy');
+        }
       };
 
       const templateSuggestionController = createTemplateSuggestionController({
@@ -2915,7 +3078,11 @@ let statusDetailsHideTimer = null;
       };
 
       const chooseTemplateFromDictationModal = () => {
-        if (noteGenerationBusy || !dictationTemplateSelect || !generateOutputTemplateSelect) return;
+        if (!dictationTemplateSelect || !generateOutputTemplateSelect) return;
+        if (noteGenerationBusy || templatePickerActionInFlight || templatePickerSelectionInFlight || templateChangeInFlight) {
+          syncDictationTemplateSelect();
+          return;
+        }
         if (generateOutputTemplateSelect.value === dictationTemplateSelect.value) return;
         generateOutputTemplateSelect.value = dictationTemplateSelect.value;
         generateOutputTemplateSelect.dispatchEvent(new Event('change', { bubbles: true }));
@@ -2928,9 +3095,23 @@ let statusDetailsHideTimer = null;
         structuredEditor.syncTemplateModeBadge?.();
       };
 
-      const handleOutputTemplateChange = async () => {
-        if (!generateOutputTemplateSelect) return true;
-        const currentTemplateId = generateOutputTemplateSelect.value || '';
+      const handleOutputTemplateChange = () => {
+        if (!generateOutputTemplateSelect) return Promise.resolve(true);
+        const requestedTemplateId = generateOutputTemplateSelect.value || '';
+        if (templateChangeInFlight) {
+          if (requestedTemplateId !== templateChangeTargetId) {
+            generateOutputTemplateSelect.value = templateChangeTargetId || '';
+            syncTemplatePickerUi();
+            structuredEditor.syncTemplateModeBadge?.();
+          }
+          return templateChangeInFlight;
+        }
+        templateChangeTargetId = requestedTemplateId;
+        templatePickerSelectionInFlight = true;
+        syncGenerationAvailability(readActiveDraftText());
+        syncDictationControls();
+        const pendingOperation = (async () => {
+        const currentTemplateId = requestedTemplateId;
         if (isWorkingNoteTargetId(currentRenderedNoteTargetId())) {
           if (discardEmptyWorkingNoteDraft()) {
             structuredEditor.syncStructuredTemplateUi();
@@ -2957,6 +3138,18 @@ let statusDetailsHideTimer = null;
         syncTemplatePickerUi();
         lastSelectedOutputTemplateId = currentTemplateId;
         return true;
+        })();
+        const wrappedOperation = pendingOperation.finally(() => {
+          if (templateChangeInFlight === wrappedOperation) {
+            templateChangeInFlight = null;
+            templateChangeTargetId = null;
+            templatePickerSelectionInFlight = false;
+            syncGenerationAvailability(readActiveDraftText());
+            syncDictationControls();
+          }
+        });
+        templateChangeInFlight = wrappedOperation;
+        return wrappedOperation;
       };
 
       const setRetryAvailability = (canRetry, retryExpired = false, retryJobId = null) => {
@@ -3377,24 +3570,29 @@ let statusDetailsHideTimer = null;
         const hasGenerationSource = hasDraft || hasWorkingNote || hasDictation || transcriptWaitingForText;
         const canChooseTemplate = Boolean(transcriptId && hasLlmSelection && hasSelectableOptions(generateOutputTemplateSelect));
         const canGenerateNote = Boolean(transcriptId && hasLlmSelection && selectedTemplateId && hasGenerationSource);
+        const canGenerateTemplateFromPicker = Boolean(canGenerateNote && isTemplatePickerDirectGenerationAvailable());
         const canUseFollowupRequest = Boolean(transcriptId && hasLlmSelection && hasGenerationSource);
         const canChooseQuickAction = Boolean(canUseFollowupRequest && hasSelectableOptions(runQuickActionSelect));
         const canGenerateFollowup = Boolean(canUseFollowupRequest && hasSteeringText);
         const canUsePrimaryFollowupAction = Boolean(canUseFollowupRequest && (selectedQuickActionId || hasSteeringText));
 
         if (generateOutputTemplateSelect) {
-          generateOutputTemplateSelect.disabled = generationBusy || splitBatchActive || !canChooseTemplate;
+          generateOutputTemplateSelect.disabled = generationBusy || splitBatchActive || !canChooseTemplate || templatePickerSelectionInFlight;
         }
         if (templatePickerButton) {
-          templatePickerButton.disabled = generationBusy || splitBatchActive || !canChooseTemplate;
+          templatePickerButton.disabled = generationBusy || splitBatchActive || !canChooseTemplate || templatePickerSelectionInFlight;
         }
         templatePickerOptions.forEach((button) => {
-          button.disabled = generationBusy || splitBatchActive || !canChooseTemplate;
+          button.disabled = generationBusy || splitBatchActive || !canChooseTemplate || templatePickerActionInFlight || templatePickerSelectionInFlight;
+        });
+        syncTemplatePickerDirectGenerationVisibility();
+        templatePickerActionButtons.forEach((button) => {
+          button.disabled = generationBusy || splitBatchActive || !canGenerateTemplateFromPicker || templatePickerActionInFlight || templatePickerSelectionInFlight;
         });
         if (generationBusy) closeTemplatePicker();
         const generateOutputButton = generateOutputForm?.querySelector('button[type="submit"]');
         if (generateOutputButton) {
-          generateOutputButton.disabled = generationBusy || splitBatchActive || multipleProblemsSavePending || !canGenerateNote;
+          generateOutputButton.disabled = generationBusy || splitBatchActive || multipleProblemsSavePending || !canGenerateNote || templatePickerSelectionInFlight;
           const hasGeneratedNotes = workspaceNoteDocuments.some((document) => (
             document?.kind !== 'working_note' && !document?.split_placeholder
           ));
@@ -4157,10 +4355,26 @@ let statusDetailsHideTimer = null;
       templatePickerCloseButtons.forEach((button) => {
         button.addEventListener('click', closeTemplatePicker);
       });
+      templatePickerSearch?.addEventListener('input', updateTemplatePickerResults);
+      templatePickerSearch?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') event.preventDefault();
+      });
+      templatePickerClear?.addEventListener('click', () => {
+        if (!templatePickerSearch) return;
+        templatePickerSearch.value = '';
+        updateTemplatePickerResults();
+        templatePickerSearch.focus();
+      });
       templatePickerOptions.forEach((button) => {
         button.addEventListener('click', () => {
           chooseTemplateFromPicker(button.dataset.templateId || '');
         });
+      });
+      templatePickerActionButtons.forEach((button) => {
+        button.addEventListener('click', () => { void generateTemplateFromPicker(button); });
+      });
+      templatePickerEditLinks.forEach((link) => {
+        link.addEventListener('click', (event) => { void navigateFromTemplatePicker(event); });
       });
       templatePickerModal?.addEventListener('click', (event) => {
         if (event.target instanceof HTMLElement && event.target.hasAttribute('data-template-picker-close')) {
@@ -4168,8 +4382,34 @@ let statusDetailsHideTimer = null;
         }
       });
       document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape' && templatePickerModal && !templatePickerModal.hidden) {
+        if (!templatePickerModal || templatePickerModal.hidden) return;
+        if (templatePickerModal.inert || templatePickerModal.dataset.state === 'closing') {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+          return;
+        }
+        if (event.key === 'Escape') {
           closeTemplatePicker();
+          return;
+        }
+        if (event.key !== 'Tab') return;
+        const focusable = [...templatePickerModal.querySelectorAll('button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')]
+          .filter((element) => !element.hidden && !element.closest('[hidden], [inert]'));
+        if (!focusable.length) {
+          event.preventDefault();
+          templatePickerModal.querySelector('[role="dialog"]')?.focus();
+          return;
+        }
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && (document.activeElement === first || !templatePickerModal.contains(document.activeElement))) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && (document.activeElement === last || !templatePickerModal.contains(document.activeElement))) {
+          event.preventDefault();
+          first.focus();
         }
       });
       syncTemplatePickerUi();
@@ -5193,6 +5433,7 @@ let statusDetailsHideTimer = null;
             nextTranscriptId: transcriptId,
             multipleProblems: transcript?.multiple_problems,
           });
+          syncGenerationAvailability(readActiveDraftText());
           splitPartialActionsController?.applyWorkspaceState(workspace.consultation_split_batch || null, transcriptId);
           splitAnalysisRestorationPoller?.updateWorkspace();
           renderRestoredSplitOperationStatus(workspace);

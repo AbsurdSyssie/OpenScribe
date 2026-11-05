@@ -111,6 +111,11 @@ The workspace exposes authorized default/team/personal Templates and current tea
 Template generation:
 
 - uses the selected template to control output shape;
+- lets the clinician search the available templates in a modal by full name or description, with note mode and personal/team scope shown on each result; filtering does not change selection or server order;
+- offers row actions to open the existing template library (edit when authorized, view otherwise) or generate from that template through the existing consultation flow; generation waits for template-selection/save checks and remains subject to the normal source and availability guards;
+- hides the row-level Generate shortcut while the shared multiple-problems split-create workflow is enabled or saving its selection; the main Generate action continues to route through the existing split review flow;
+- keeps the template picker keyboard-contained while open and restores focus when it closes;
+- uses a brief opacity and small vertical-shift transition on open/close, with immediate closing when reduced motion is requested;
 - can use saved transcript, Working note, and/or dictation as separately labelled sources;
 - blocks when all saved sources are empty;
 - saves dirty Working note before enqueue;

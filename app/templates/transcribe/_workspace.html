@@ -18,7 +18,7 @@
 </div>
 {%- endmacro %}
 
-<main data-workspace-scribe-main class="flex-1 flex flex-col min-w-0 min-h-0 overflow-visible relative z-30">
+<main data-workspace-scribe-main tabindex="-1" class="flex-1 flex flex-col min-w-0 min-h-0 overflow-visible relative z-30">
 <header class="transcribe-capture-header bg-white border-b border-stone px-4 py-3 flex flex-col gap-3 flex-shrink-0" data-mobile-capture-screen>
 <div class="transcribe-capture-header__title-row flex items-center justify-between gap-4" data-tour-fallback>
 <div class="min-w-0 flex-1">
@@ -475,31 +475,55 @@ data-latest-generated-updated-at="{{ latest_generated_document.updated_at.isofor
 <div class="template-picker-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="template-picker-title">
 <div class="template-picker-modal__header">
 <div>
-<div class="section-kicker">Saved templates</div>
 <h2 id="template-picker-title">Choose a template</h2>
-<p>Select from your saved note templates.</p>
+{% if available_templates %}
+<label class="sr-only" for="template-picker-search">Search templates</label>
+<div class="template-picker-search-row">
+<svg class="template-picker-search-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.8" cy="8.8" r="5.8"/><path d="m13.2 13.2 4 4"/></svg>
+<input id="template-picker-search" class="template-picker-search" type="search" data-template-picker-search autocomplete="off" placeholder="Search by name or description" aria-describedby="template-picker-results">
+<button type="button" class="template-picker-clear" data-template-picker-clear aria-label="Clear template search" hidden>
+<svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg>
+</button>
+</div>
+{% endif %}
 </div>
 <button type="button" class="template-picker-modal__close" data-template-picker-close aria-label="Close template picker">
 <i class="w-3.5 h-3.5" data-lucide="x"></i>
 </button>
 </div>
-<div class="template-picker-list">
+<div class="template-picker-results" id="template-picker-results" data-template-picker-results role="status" aria-live="polite" aria-atomic="true">{% if available_templates %}{{ available_templates|length }} templates available.{% endif %}</div>
+<div class="template-picker-list" data-template-picker-list>
 {% if not available_templates %}
-<div class="template-picker-empty">No templates available.</div>
+<div class="template-picker-empty" data-template-picker-empty>No templates available.</div>
 {% else %}
 {% for template in available_templates %}
 {% set latest_version = template.versions|sort(attribute='version_no')|last %}
+<div class="template-picker-row" data-template-picker-row>
 <button
 type="button"
 class="template-picker-option{% if latest_template and template.id == latest_template.id %} active{% endif %}"
 data-template-picker-option
+aria-pressed="{{ 'true' if latest_template and template.id == latest_template.id else 'false' }}"
 data-template-id="{{ template.id }}"
 data-template-name="{{ template.name }}"
+data-template-description="{{ template.description or '' }}"
 data-template-mode="{{ latest_version.mode.value }}"
+aria-describedby="template-picker-meta-{{ template.id }}"
 data-settings-url="/workspace/library/templates?scope={% if template.scope.value == 'team' %}team{% else %}personal{% endif %}&template_id={{ template.id }}">
-<span class="template-picker-option__title">{{ template.name }}</span>
-<span class="template-picker-option__meta">{{ 'Sectioned note' if latest_version.mode.value == 'structured' else 'Free text note' }}{% if template.scope.value == 'team' %} · Team{% else %} · Personal{% endif %}</span>
+<span class="template-picker-option__heading"><span class="template-picker-option__title">{{ template.name }}</span></span>
+{% if template.description %}<span class="template-picker-option__description">{{ template.description }}</span>{% endif %}
 </button>
+<span class="template-picker-option__meta" id="template-picker-meta-{{ template.id }}">{{ 'Sectioned' if latest_version.mode.value == 'structured' else 'Free text' }}<span aria-hidden="true"> · </span>{{ 'Team' if template.scope.value == 'team' else 'Personal' }}</span>
+<div class="template-picker-row__actions">
+{% set can_edit_template = template.scope.value != 'team' or (current_user.team_role and current_user.team_role.value == 'leader') %}
+<a class="template-picker-row__action" href="/workspace/library/templates?scope={% if template.scope.value == 'team' %}team{% else %}personal{% endif %}&amp;template_id={{ template.id }}" data-template-picker-edit data-recording-navigation aria-label="{{ 'Edit' if can_edit_template else 'View' }} template {{ template.name }}" title="{{ 'Edit template' if can_edit_template else 'View template' }}">
+<i data-lucide="{{ 'pencil' if can_edit_template else 'eye' }}" aria-hidden="true"></i>
+</a>
+<button type="button" class="template-picker-row__action" data-template-picker-generate aria-label="Generate using {{ template.name }}" title="Generate using this template">
+<i data-lucide="sparkles" aria-hidden="true"></i>
+</button>
+</div>
+</div>
 {% endfor %}
 {% endif %}
 </div>

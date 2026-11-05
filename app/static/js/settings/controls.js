@@ -45,10 +45,11 @@ document.querySelectorAll(
   input.addEventListener('change', (event) => event.target.form?.requestSubmit());
 });
 
-document.querySelectorAll('[data-diarization-preference]').forEach((input) => {
+document.querySelectorAll('[data-diarization-preference], [data-telehealth-visibility-preference]').forEach((input) => {
+  const telehealthVisibility = input.hasAttribute('data-telehealth-visibility-preference');
   let savedValue = input.checked;
   let saving = false;
-  const status = input.closest('.setting-row')?.querySelector('[data-diarization-save-state]');
+  const status = input.closest('.setting-row')?.querySelector(telehealthVisibility ? '[data-telehealth-visibility-save-state]' : '[data-diarization-save-state]');
   input.addEventListener('change', async () => {
     if (saving) return;
     saving = true;
@@ -69,17 +70,17 @@ document.querySelectorAll('[data-diarization-preference]').forEach((input) => {
         note_generation_length: current.note_generation_length || null,
         preferred_recording_mode: current.preferred_recording_mode || null,
         preferred_transcribe_tab: current.preferred_transcribe_tab || null,
-        diarization_enabled: input.checked,
+        diarization_enabled: telehealthVisibility ? current.diarization_enabled === true : input.checked,
         diarization_warning_acknowledged: current.diarization_warning_acknowledged === true,
-        show_telehealth_control: current.show_telehealth_control !== false,
+        show_telehealth_control: telehealthVisibility ? input.checked : current.show_telehealth_control !== false,
         telehealth_guidance_acknowledged: current.telehealth_guidance_acknowledged === true,
       };
       const saveResponse = await csrfFetch('/api/v1/app-preferences', {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
       });
-      if (!saveResponse.ok) throw new Error('Could not save your diarisation preference.');
+      if (!saveResponse.ok) throw new Error(telehealthVisibility ? 'Could not save Telehealth button visibility.' : 'Could not save your diarisation preference.');
       savedValue = input.checked;
-      if (status) status.textContent = 'Saved. This applies to your next recording.';
+      if (status) status.textContent = telehealthVisibility ? 'Saved. Return to Scribe to see the change.' : 'Saved. This applies to your next recording.';
     } catch (error) {
       input.checked = savedValue;
       if (status) status.textContent = error instanceof Error ? error.message : 'Could not save your preference.';

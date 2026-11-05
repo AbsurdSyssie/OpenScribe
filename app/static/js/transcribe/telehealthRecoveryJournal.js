@@ -76,10 +76,9 @@ export function createTelehealthRecoveryJournal({
   cryptography = globalThis.crypto,
   now = () => Date.now(),
 } = {}) {
-  if (!cryptography?.subtle || typeof cryptography.getRandomValues !== 'function') {
-    throw new Error('Encrypted Telehealth crash recovery requires WebCrypto in a secure browser.');
-  }
-  const { subtle } = cryptography;
+  // The status-only recovery interface should still mount on unsupported
+  // browsers; the recording START itself will fail closed in check().
+  const subtle = cryptography?.subtle;
   let action = Promise.resolve();
   // Serialise per-tab mutations so a key cannot be deleted while its window
   // is being written. IndexedDB commits still form the durable boundary.
@@ -129,6 +128,9 @@ export function createTelehealthRecoveryJournal({
       || spans.length !== 1) {
       throw new Error('Invalid Telehealth local recovery window.');
     }
+    if (!subtle || typeof cryptography?.getRandomValues !== 'function') {
+      throw new Error('Encrypted browser recovery is unavailable.');
+    }
     await prune();
     const id = partId(captureId, channel, sequence);
     const prior = await store.get(WINDOWS, id);
@@ -165,6 +167,7 @@ export function createTelehealthRecoveryJournal({
       (entry) => entry.captureId === captureId && entry.transcriptId === transcriptId,
     ).sort((a, b) => a.channel.localeCompare(b.channel) || a.sequence - b.sequence);
     if (!entries.length) return [];
+    if (!subtle) throw new Error('Browser encryption is unavailable for saved audio.');
     const aesKey = await keyFor(captureId);
     const recovered = [];
     for (const entry of entries) {
@@ -202,9 +205,25 @@ export function createTelehealthRecoveryJournal({
     if (!remaining) await store.remove(KEYS, captureId);
   });
   const check = () => serial(async () => {
-    await store.list(WINDOWS); // Fail BEFORE microphone/tab capture if storage is blocked.
-    const candidate = await subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt']);
-    if (!candidate) throw new Error('Browser encryption is not available.');
+    if (!subtle || typeof cryptography?.getRandomValues !== 'function') {
+      throw new Error('Encrypted Telehealth recovery requires WebCrypto on HTTPS or localhost.');
+    }
+    await store.list(WINDOWS); // Fail BEFORE server capture if storage is blocked.
+    const key = await subtle.generateKey(
+      { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'],
+    );
+    // Some private browsing modes allow a database to open but cannot clone
+    // non-extractable CryptoKeys. Test that exact storage contract up front.
+    const probeId = 'healthcheck-' + cryptography.randomUUID();
+    try {
+      await store.put(KEYS, { id: probeId, key }, { onlyIfMissing: true });
+      const retrieved = await store.get(KEYS, probeId);
+      if (!retrieved?.key || retrieved.key.extractable !== false) {
+        throw new Error('Browser cannot persist encrypted Telehealth recovery data.');
+      }
+    } finally {
+      await store.remove(KEYS, probeId);
+    }
   });
   return { check, persist, list, remove, clear };
 }

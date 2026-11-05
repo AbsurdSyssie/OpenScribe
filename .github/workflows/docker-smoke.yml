@@ -99,6 +99,7 @@ jobs:
           # The runtime image contains pinned application dependencies. Add
           # pytest only in this ephemeral CI container; do not alter releases.
           docker compose cp tests openscribe:/app/tests
+          docker compose cp docker-compose.yml openscribe:/app/docker-compose.yml
           docker compose exec -T -u root openscribe python -m pip install --quiet pytest==9.0.2 pytest-xdist==3.8.0
           docker compose exec -T \
             -e APP_ENV=test \

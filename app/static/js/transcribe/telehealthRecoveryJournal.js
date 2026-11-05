@@ -339,8 +339,9 @@ export async function replayTelehealthRecoveryWindows({
     next[channel] = sequence;
   }
   const replayed = { clinician: 0, patient: 0 };
-  for (const entry of entries) {
-    const serverPart = remote[entry.channel].get(entry.sequence);
+  try {
+    for (const entry of entries) {
+      const serverPart = remote[entry.channel].get(entry.sequence);
     if (serverPart) {
       const span = entry.spans[0];
       if (serverPart.timeline_start_frame !== span.timeline_start_frame
@@ -361,7 +362,11 @@ export async function replayTelehealthRecoveryWindows({
       next[entry.channel] += 1;
       replayed[entry.channel] += 1;
     }
-    entry.bytes.fill(0); // No lingering plaintext replay buffer in our state.
+    }
+  } finally {
+    // Zero every recovered plaintext buffer, including any not sent after
+    // an HTTP, sequence-validation, storage or decryption error.
+    for (const entry of entries) entry.bytes.fill(0);
   }
   return replayed;
 }

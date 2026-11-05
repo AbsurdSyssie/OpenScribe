@@ -156,10 +156,11 @@ export function createTelehealthRecordingClient({
       // This MUST be called directly in the Start click; display capture
       // consumes transient user activation before any awaiting server work.
       const startingCapture = capture.start();
-      const { sampleRate } = await startingCapture;
-      // Browser picker activation has already been consumed. Fail closed
-      // before server start if the encrypted local journal is unavailable.
-      await journal.check();
+      // Start the local storage preflight while the user chooses a call tab.
+      // The display picker MUST be invoked first to preserve its user gesture.
+      const [{ sampleRate }] = await Promise.all([
+        startingCapture, journal.check(),
+      ]);
       windows = createTelehealthWindows({
         sampleRate, windowSeconds: 10, maxPendingWindows: 4,
         onWindow: uploadWindow,

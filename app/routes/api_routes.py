@@ -7,6 +7,7 @@ from uuid import UUID
 
 from fastapi import Body, Depends, File, Form, Header, Request, UploadFile, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import main as main_module
@@ -2057,7 +2058,7 @@ def start_telehealth_capture_route(
     # First-use notice acknowledgement is an owner-persisted precondition,
     # not merely a front-end tooltip. Do not start capture if the client
     # skipped the headphones/participant-notification guidance.
-    preference = db.get(UserAppPreference, context.user.id)
+    preference = db.scalar(select(UserAppPreference).where(UserAppPreference.user_id == context.user.id))
     if preference is None or (preference.preferences_json or {}).get("telehealth_guidance_acknowledged") is not True:
         raise AppError(
             409, "telehealth_guidance_required",

@@ -224,9 +224,11 @@ def test_telehealth_staging_expiry_and_root_deletion_enqueue_vault_cleanup(
         db_session, owner, another_session, another, deadline=now + timedelta(hours=1),
     )
     held_ref = kept.source_audio_vault_ref
+    kept_id = kept.id
     assert delete_transcripts(db_session, owner, transcript_ids=[another.id]) == 1
     assert held_ref in deleted
-    assert db_session.get(TelehealthCapturePart, kept.id) is None
+    # SQLAlchemy may expire a deleted mapped object after the root commit.
+    assert db_session.get(TelehealthCapturePart, kept_id) is None
 
 
 def test_staged_audio_prevents_cleanup_when_source_reference_is_still_live(

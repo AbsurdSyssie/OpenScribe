@@ -83,6 +83,10 @@ def _serialize_preferences_payload(payload: UserAppPreferencesUpsert) -> dict[st
         preferences["diarization_enabled"] = True
     if payload.diarization_warning_acknowledged:
         preferences["diarization_warning_acknowledged"] = True
+    if not payload.telehealth_button_visible:
+        preferences["telehealth_button_visible"] = False
+    if payload.telehealth_first_use_acknowledged:
+        preferences["telehealth_first_use_acknowledged"] = True
     if not payload.show_telehealth_control:
         preferences["show_telehealth_control"] = False
     if payload.telehealth_guidance_acknowledged:
@@ -188,6 +192,10 @@ def _validate_preferences_json(db: Session, actor: User, preferences_json: dict[
         normalized["diarization_enabled"] = True
     if preferences_json.get("diarization_warning_acknowledged") is True:
         normalized["diarization_warning_acknowledged"] = True
+    if preferences_json.get("telehealth_button_visible") is False:
+        normalized["telehealth_button_visible"] = False
+    if preferences_json.get("telehealth_first_use_acknowledged") is True:
+        normalized["telehealth_first_use_acknowledged"] = True
     if preferences_json.get("show_telehealth_control") is False:
         normalized["show_telehealth_control"] = False
     if preferences_json.get("telehealth_guidance_acknowledged") is True:
@@ -261,6 +269,8 @@ def set_user_app_preferences(db: Session, actor: User, payload: UserAppPreferenc
     # preference. Preserve it when older clients submit a full preference set.
     if preference and preference.preferences_json.get("diarization_warning_acknowledged") is True:
         serialized["diarization_warning_acknowledged"] = True
+    if preference and preference.preferences_json.get("telehealth_first_use_acknowledged") is True:
+        serialized["telehealth_first_use_acknowledged"] = True
     # Acknowledgement is monotonic: older clients cannot reset it with a full
     # preferences POST that does not know this new field.
     if preference and (preference.preferences_json or {}).get("telehealth_guidance_acknowledged") is True:

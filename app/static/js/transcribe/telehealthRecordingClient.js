@@ -39,13 +39,17 @@ async function safeJson(response, fallback) {
 
 export function createTelehealthRecordingClient({
   transcriptId, csrfFetch, onLevel = () => {}, onSourceState = () => {},
-  onWarning = () => {}, mediaDevices, AudioContextCtor, AudioWorkletNodeCtor,
+  onWarning = () => {}, onStateChange = () => {}, mediaDevices, AudioContextCtor, AudioWorkletNodeCtor,
 } = {}) {
   if (!transcriptId || typeof csrfFetch !== 'function') {
     throw new TypeError('A consultation and authorized request function are required.');
   }
   const base = '/api/v1/transcripts/' + encodeURIComponent(transcriptId) + '/telehealth/captures';
   let state = 'idle', capture = null, windows = null, captureId = null;
+  const setState = (next) => {
+    state = next;
+    try { onStateChange(next); } catch (_) {}
+  };
   let stopPromise = null, interruption = null, resolveSessionReady = null;
   const ready = new Promise((resolve) => { resolveSessionReady = resolve; });
   let readyResolved = false, earlyFrames = 0;
@@ -123,7 +127,7 @@ export function createTelehealthRecordingClient({
 
   const start = async () => {
     if (state !== 'idle') throw new Error('Recording was already started.');
-    state = 'starting';
+    setState('starting');
     capture = createTelehealthCapture({
       mediaDevices, AudioContextCtor, AudioWorkletNodeCtor,
       onFrames: acceptFrames, onSourceState,
@@ -159,11 +163,11 @@ export function createTelehealthRecordingClient({
       resolveSession(captureId);
       // A track may have ended while the start request was in flight. Never
       // turn a stopped or interrupted capture back into a running one.
-      if (state === 'starting') state = 'recording';
+      if (state === 'starting') setState('recording');
       return started;
     } catch (error) {
       resolveSession(null);
-      state = 'failed';
+      setState('failed');
       warn(null, 'browser_capture_failed');
       try { await capture.stop(); } catch (_) {}
       throw error;
@@ -175,20 +179,20 @@ export function createTelehealthRecordingClient({
     if (!capture || !['starting', 'recording'].includes(state)) {
       return Promise.reject(new Error('No active telehealth recording.'));
     }
-    state = 'stopping';
+    setState('stopping');
     stopPromise = (async () => {
       try { await capture.stop(); }
       catch (_) { warn(null, 'audio_flush_failed'); }
       const id = await ready;
       if (!id) {
-        state = 'failed';
+        setState('failed');
         throw new Error('The recording could not be stored on the server.');
       }
       const stopUrl = base + '/' + encodeURIComponent(id) + '/stop';
       try {
         await post(stopUrl, interruption || {});
       } catch (error) {
-        state = 'recovery_required';
+        setState('recovery_required');
         throw error;
       }
       try {
@@ -200,7 +204,7 @@ export function createTelehealthRecordingClient({
         try {
           onWarning({ channel: null, failure_code: 'upload_failed', recoverable: true });
         } catch (_) {}
-        state = 'recovery_required';
+        setState('recovery_required');
         throw error; // Pending PCM remains available for exact-key replay.
       }
       let sealed;
@@ -210,10 +214,10 @@ export function createTelehealthRecordingClient({
           expected_patient_parts: accepted.patient,
         });
       } catch (error) {
-        state = 'recovery_required';
+        setState('recovery_required');
         throw error;
       }
-      state = sealed.status === 'interrupted' ? 'incomplete' : 'sealed';
+      setState(sealed.status === 'interrupted' ? 'incomplete' : 'sealed');
       return sealed;
     })();
     return stopPromise;
@@ -230,8 +234,22 @@ export function createTelehealthRecordingClient({
       expected_clinician_parts: accepted.clinician,
       expected_patient_parts: accepted.patient,
     });
-    state = sealed.status === 'interrupted' ? 'incomplete' : 'sealed';
+    setState(sealed.status === 'interrupted' ? 'incomplete' : 'sealed');
     return sealed;
+  };
+  const discard = async () => {
+    if (!captureId || !['recovery_required', 'incomplete', 'sealed'].includes(state)) {
+      throw new Error('Only stopped and unsubmitted Telehealth audio can be discarded.');
+    }
+    const discarded = await post(
+      base + '/' + encodeURIComponent(captureId) + '/discard', {},
+    );
+    if (discarded.status !== 'discarded') {
+      throw new Error('The capture discard could not be verified.');
+    }
+    windows = null;
+    setState('discarded');
+    return discarded;
   };
   const acknowledgeIncomplete = async () => {
     if (state !== 'incomplete' || !captureId) {
@@ -246,7 +264,7 @@ export function createTelehealthRecordingClient({
     const queued = await post(
       base + '/' + encodeURIComponent(captureId) + '/transcribe', {},
     );
-    state = 'transcribing';
+    setState('transcribing');
     return queued;
   };
   const getStatus = async () => {
@@ -258,7 +276,7 @@ export function createTelehealthRecordingClient({
     return safeJson(response, 'Could not load telehealth capture status.');
   };
   return {
-    start, stop, retryPendingUploads, acknowledgeIncomplete, transcribe, getStatus,
+    start, stop, retryPendingUploads, acknowledgeIncomplete, discard, transcribe, getStatus,
     get state() { return state; },
     get captureSessionId() { return captureId; },
     get uploadedParts() { return { ...accepted }; },

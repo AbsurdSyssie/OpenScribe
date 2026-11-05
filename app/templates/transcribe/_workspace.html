@@ -78,10 +78,11 @@ data-local-busy-protected
 <span class="mobile-capture-action__label">Upload audio</span>
 <span class="mobile-capture-action__copy">Choose a recording</span>
 </button>
-{% if telehealth_feature_enabled and user_app_preferences_json.get('show_telehealth_control', true) %}
+{% if telehealth_feature_enabled %}
 <button type="button" class="telehealth-toggle" data-telehealth-toggle
   aria-label="Toggle Telehealth recording" aria-pressed="false"
   title="Telehealth · microphone and call audio"
+  {% if not user_app_preferences_json.get('show_telehealth_control', true) %}hidden{% endif %}
   {% if not active_transcript or not stt_selection or not stt_available %}disabled{% endif %}>
   <i data-lucide="phone" aria-hidden="true"></i>
 </button>

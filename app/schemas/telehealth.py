@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 
 TelehealthChannel = Literal["clinician", "patient"]
 CaptureStatus = Literal[
-    "active", "stopping", "interrupted", "ready", "processing", "completed", "failed"
+    "active", "stopping", "interrupted", "ready", "processing", "completed", "failed", "discarded"
 ]
 PartStatus = Literal["staged", "processing", "transcribed", "failed", "expired"]
 

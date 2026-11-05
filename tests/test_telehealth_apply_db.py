@@ -105,7 +105,7 @@ def test_capture_never_applies_before_both_sources_and_commits_once(
     monkeypatch.setattr("app.services.transcripts._create_transcript_version_from_text", fake_version)
     monkeypatch.setattr("app.services.structured_transcripts.store_turns_on_version", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.services.transcripts._attempt_preview_redaction", lambda *args, **kwargs: None)
-    monkeypatch.setattr("app.services.transcripts._trigger_waiting_generation_dispatches", lambda **kwargs: None)
+    monkeypatch.setattr("app.services.transcripts._trigger_waiting_generation_dispatches", lambda *args, **kwargs: None)
 
     assert apply_completed_telehealth_capture(db_session, capture_session_id=session.id) is True
     db_session.refresh(session)

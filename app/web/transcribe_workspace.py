@@ -2,6 +2,7 @@ import asyncio
 import base64
 from datetime import datetime
 import json
+import os
 from contextlib import contextmanager
 from uuid import UUID
 
@@ -1209,6 +1210,10 @@ def resolve_transcribe_workspace(
         "switch_mode_block_message": switch_mode_block_message,
         "available_templates": available_templates,
         "user_app_preferences_json": user_app_preferences_json,
+        "telehealth_feature_enabled": (
+            os.getenv("TELEHEALTH_API_ENABLED", "false").lower() in ("1", "true", "yes")
+            and not current_user.is_system_admin
+        ),
         "consultation_splitting_enabled": consultation_splitting_enabled,
         "consultation_splitting_available": consultation_splitting_available,
         "available_quick_actions": available_quick_actions,

@@ -1,6 +1,11 @@
 import { createTelehealthCapture } from './telehealthCapture.js?v=20261104-telehealth-source';
 import { createTelehealthWindows } from './telehealthWindows.js?v=20261104-telehealth-windows';
 import { encodeTelehealthWavWindow } from './telehealthWav.js?v=20261105-telehealth-wav';
+import {
+  createTelehealthRecoveryJournal,
+  createTelehealthUploadPacer,
+  submitTelehealthRecoveryWindow,
+} from './telehealthRecoveryJournal.js?v=20261105-crash-recovery-1';
 
 // Telehealth recorded-upload v1. Each track is submitted independently;
 // silence is retained in the uploaded audio, while the original context-frame
@@ -40,11 +45,15 @@ async function safeJson(response, fallback) {
 export function createTelehealthRecordingClient({
   transcriptId, csrfFetch, onLevel = () => {}, onSourceState = () => {},
   onWarning = () => {}, onStateChange = () => {}, mediaDevices, AudioContextCtor, AudioWorkletNodeCtor,
+  recoveryJournal = null, pacedUpload = null,
 } = {}) {
   if (!transcriptId || typeof csrfFetch !== 'function') {
     throw new TypeError('A consultation and authorized request function are required.');
   }
   const base = '/api/v1/transcripts/' + encodeURIComponent(transcriptId) + '/telehealth/captures';
+  const journal = recoveryJournal || createTelehealthRecoveryJournal();
+  const pace = pacedUpload || createTelehealthUploadPacer();
+  const acknowledged = { clinician: new Set(), patient: new Set() };
   let state = 'idle', capture = null, windows = null, captureId = null;
   const setState = (next) => {
     state = next;
@@ -104,19 +113,26 @@ export function createTelehealthRecordingClient({
     const currentId = await ready;
     if (!currentId) throw new Error('Recording session was not accepted.');
     const encoded = encodeTelehealthWavWindow(window);
-    const data = new FormData();
-    data.append('channel', window.channel);
-    data.append('sequence_no', String(partNo));
-    data.append('spans_json', JSON.stringify(encoded.spans));
-    data.append('audio', new Blob([encoded.bytes], { type: 'audio/wav' }),
-      'telehealth-' + window.channel + '-' + partNo + '.wav');
-    const response = await csrfFetch(
-      base + '/' + encodeURIComponent(currentId) + '/audio-parts',
-      { method: 'POST', credentials: 'include',
-        headers: { 'Idempotency-Key': key }, body: data },
-    );
-    await safeJson(response, 'Could not store one audio part.');
-    accepted[window.channel] += 1;
+    const part = {
+      captureId: currentId, transcriptId, channel: window.channel,
+      sequence: partNo, key, spans: encoded.spans, bytes: encoded.bytes,
+    };
+    // IndexedDB transaction MUST commit before any HTTP side effect.
+    // An ambiguous server response can then be replayed with identical
+    // per-channel sequence, WAV bytes and idempotency key after a crash.
+    try {
+      await journal.persist(part);
+    } catch (error) {
+      warn(null, 'browser_capture_failed');
+      void stop().catch(() => {});
+      throw error;
+    }
+    await submitTelehealthRecoveryWindow({ part, csrfFetch, pace });
+    await journal.remove(part); // Do not retain the PHI after server acceptance.
+    if (!acknowledged[window.channel].has(partNo)) {
+      acknowledged[window.channel].add(partNo);
+      accepted[window.channel] += 1;
+    }
   };
 
   const post = async (url, payload) => safeJson(await csrfFetch(url, {
@@ -141,6 +157,9 @@ export function createTelehealthRecordingClient({
       // consumes transient user activation before any awaiting server work.
       const startingCapture = capture.start();
       const { sampleRate } = await startingCapture;
+      // Browser picker activation has already been consumed. Fail closed
+      // before server start if the encrypted local journal is unavailable.
+      await journal.check();
       windows = createTelehealthWindows({
         sampleRate, windowSeconds: 10, maxPendingWindows: 4,
         onWindow: uploadWindow,
@@ -251,6 +270,7 @@ export function createTelehealthRecordingClient({
     if (discarded.status !== 'discarded') {
       throw new Error('The capture discard could not be verified.');
     }
+    await journal.clear(captureId, transcriptId);
     windows = null;
     setState('discarded');
     return discarded;
@@ -285,5 +305,6 @@ export function createTelehealthRecordingClient({
     get captureSessionId() { return captureId; },
     get uploadedParts() { return { ...accepted }; },
     get interruption() { return interruption; },
+    get recoveryJournal() { return journal; },
   };
 }

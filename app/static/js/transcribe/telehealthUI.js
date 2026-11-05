@@ -89,6 +89,11 @@ export function attachTelehealthControls({
     }
   };
   const render = () => {
+    // Hidden-by-preference users must still be able to recover a capture
+    // persisted before a tab crash. The phone control becomes visible only
+    // while there is an unresolved server receipt or active local capture.
+    toggle.hidden = getPreferences?.().show_telehealth_control === false
+      && !restoredCapture && !enabled;
     toggle.setAttribute('aria-pressed', String(enabled));
     receipt.hidden = !enabled;
     toggle.disabled = activating || blockSwitch() || !getTranscriptId?.();

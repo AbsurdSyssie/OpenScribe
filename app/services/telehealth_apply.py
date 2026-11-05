@@ -144,7 +144,10 @@ def apply_completed_telehealth_capture(
             TelehealthCapturePart.owner_user_id == owner.id,
         ).order_by(TelehealthCapturePart.channel, TelehealthCapturePart.sequence_no).with_for_update()
     ))
-    if not parts or {p.channel for p in parts} != {"clinician", "patient"}:
+    incomplete = bool(session.failure_code and session.incomplete_acknowledged_at)
+    if not parts or (
+        not incomplete and {p.channel for p in parts} != {"clinician", "patient"}
+    ):
         return False
     if any(p.status != "transcribed" or p.ingestion_job_id is None for p in parts):
         return False
@@ -203,6 +206,18 @@ def apply_completed_telehealth_capture(
         }
         for turn in merged.turns
     ]
+    if incomplete:
+        # Put the warning *inside the source text before redaction*, never
+        # solely in a front-end badge that downstream note generation misses.
+        # Every generation still requires the client's explicit visible notice.
+        formatted.insert(0, {
+            "speaker_id": None, "start_ms": None, "end_ms": None,
+            "text": (
+                "INCOMPLETE TELEHEALTH RECORDING: audio may be missing. "
+                "The clinician must verify this transcript before relying "
+                "on its contents for a clinical note."
+            ),
+        })
     combined = append_transcript_turns(
         db,
         transcript=transcript,

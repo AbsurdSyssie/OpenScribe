@@ -508,6 +508,10 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         AccessTier.full,
     ),
     AuditCase(
+        "POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/captures/{PLACEHOLDER_UUID_2}/discard",
+        AccessTier.full,
+    ),
+    AuditCase(
         "POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/captures/{PLACEHOLDER_UUID_2}/transcribe",
         AccessTier.full,
     ),

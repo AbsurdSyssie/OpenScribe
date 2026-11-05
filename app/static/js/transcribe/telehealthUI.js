@@ -41,6 +41,7 @@ export function attachTelehealthControls({
   let client = null;
   let restoredCapture = null;
   let lastCheckedTranscriptId = null;
+  let boundTranscriptId = getTranscriptId?.() || null;
   let activating = false;
   let sourceLoss = false;
   let collapsed = false;
@@ -438,10 +439,30 @@ export function attachTelehealthControls({
     event.preventDefault();
     event.returnValue = '';
   });
+  const sync = () => {
+    const selected = getTranscriptId?.() || null;
+    const unresolved = Boolean(restoredCapture) || Boolean(client
+      && ['starting', 'recording', 'stopping', 'recovery_required', 'incomplete', 'sealed'].includes(client.state));
+    if (boundTranscriptId !== selected && !unresolved) {
+      // The prior capture has completed processing or was discarded. A new
+      // consultation must never inherit the old session's enabled phone
+      // state or disabled primary record button.
+      boundTranscriptId = selected;
+      enabled = false;
+      client = null;
+      restoredCapture = null;
+      lastCheckedTranscriptId = null;
+      resetMeters();
+      if (recordLabel) recordLabel.textContent = 'Start recording';
+      if (mainRecord) mainRecord.disabled = false;
+    }
+    render();
+    void checkPersistedCapture();
+  };
   render();
   void checkPersistedCapture();
   return {
-    sync: () => { render(); void checkPersistedCapture(); },
+    sync,
     isActive: () => enabled,
     isRecording: recordingInProgress,
     isUnresolved: () => Boolean(restoredCapture) || Boolean(client

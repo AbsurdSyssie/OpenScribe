@@ -94,7 +94,7 @@ export function createTelehealthRecoveryJournal({
     if (!create) throw new Error('The encrypted Telehealth recovery key is no longer available.');
     const key = await subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
     try {
-      await store.put(KEYS, { id: captureId, key }, { onlyIfMissing: true });
+      await store.put(KEYS, { id: captureId, key, createdAt: now() }, { onlyIfMissing: true });
       return key;
     } catch (_) {
       // Two tabs creating the same session key must use the winner's key.
@@ -115,7 +115,12 @@ export function createTelehealthRecoveryJournal({
     const keys = await store.list(KEYS);
     const liveCaptures = new Set(remaining.map((entry) => entry.captureId));
     for (const item of keys) {
-      if (!liveCaptures.has(item.id)) await store.remove(KEYS, item.id);
+      // A different open tab may have created a key but not yet committed
+      // its first encrypted window. Do not race and delete that live key.
+      if (!liveCaptures.has(item.id) && (
+        !Number.isFinite(item.createdAt)
+        || current - item.createdAt > MAX_RECOVERY_AGE_MS
+      )) await store.remove(KEYS, item.id);
     }
   };
   const persist = (part) => serial(async () => {

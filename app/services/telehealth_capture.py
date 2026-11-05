@@ -500,3 +500,71 @@ def acknowledge_incomplete_telehealth_capture(
         db.add(session)
         db.commit()
     return session
+
+
+
+def discard_unsubmitted_telehealth_capture(
+    db: Session,
+    owner: User,
+    *,
+    transcript_id: UUID,
+    capture_session_id: UUID,
+) -> TelehealthCaptureSession:
+    """Discard unsubmitted Telehealth audio with durable Vault cleanup.
+
+    This is an explicit owner action, not automatic forgiveness of an
+    interrupted capture. Do not permit discarding once ANY part has been
+    handed to a provider job. Cleanup intents are committed with the state
+    transition, and remain retryable if Vault is temporarily unavailable.
+    """
+    transcript, session = _owner_capture_session_locked(
+        db, owner, transcript_id=transcript_id,
+        capture_session_id=capture_session_id,
+    )
+    if session.status == "discarded":
+        return session
+    if session.status not in ("active", "stopping", "ready", "interrupted", "failed"):
+        raise AppError(
+            409, "conflict",
+            "A submitted Telehealth recording cannot be discarded here.",
+        )
+    parts = list(db.scalars(select(TelehealthCapturePart).where(
+        TelehealthCapturePart.session_id == session.id,
+        TelehealthCapturePart.transcript_id == transcript.id,
+        TelehealthCapturePart.owner_user_id == owner.id,
+    ).order_by(TelehealthCapturePart.id).with_for_update()))
+    if any(part.ingestion_job_id is not None for part in parts):
+        raise AppError(
+            409, "conflict",
+            "Resolve submitted source transcription separately.",
+        )
+    from app.services.transcripts import (
+        _resolved_transcript_status,
+        process_transcript_audio_cleanup_jobs,
+        queue_transcript_audio_cleanup,
+    )
+
+    cleanup_ids = queue_transcript_audio_cleanup(
+        db, secret_refs=[p.source_audio_vault_ref for p in parts if p.source_audio_vault_ref],
+    )
+    now = utcnow()
+    for part in parts:
+        part.source_audio_vault_ref = None
+        part.source_audio_expired_at = now if part.source_audio_expired_at is None else part.source_audio_expired_at
+        part.status = "expired"
+        part.updated_at = now
+        db.add(part)
+    session.status = "discarded"
+    session.recording_stopped_at = session.recording_stopped_at or now
+    session.failure_code = session.failure_code or "capture_discarded"
+    session.updated_at = now
+    db.add(session)
+    db.flush()
+    if transcript.status is TranscriptStatus.transcribing:
+        transcript.status = _resolved_transcript_status(db, transcript=transcript)
+        db.add(transcript)
+    db.commit()
+    if cleanup_ids:
+        process_transcript_audio_cleanup_jobs(db, job_ids=cleanup_ids)
+    db.refresh(session)
+    return session

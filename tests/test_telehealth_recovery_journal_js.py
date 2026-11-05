@@ -73,6 +73,12 @@ assert.deepEqual(await journal.list(C, '99999999-9999-4999-8999-999999999999'), 
 await assert.rejects(
   journal.persist({ ...clinician, key: otherK }), /Conflicting/,
 );
+const alteredBytes = clinician.bytes.slice();
+alteredBytes[alteredBytes.length-1] ^= 1;
+await assert.rejects(
+  journal.persist({...clinician, bytes: alteredBytes}),
+  /Conflicting Telehealth recovery window audio/,
+);
 const persisted = createTelehealthRecoveryJournal({store, cryptography:webcrypto, now:()=>now});
 assert.deepEqual((await persisted.list(C,T)).map((v)=>v.channel), ['clinician', 'patient']);
 

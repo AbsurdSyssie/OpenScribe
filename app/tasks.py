@@ -14,6 +14,7 @@ from app.services.consultation_split_verification_runtime import process_consult
 from app.services.consultation_split_intent_progress import progress_consultation_split_intent
 from app.services.templates import GeneratedDocumentWaitingForTranscript, process_generated_document
 from app.services.transcripts import delete_expired_transcripts, expire_ingestion_source_audio, process_transcript_audio_cleanup_jobs, process_transcript_ingestion_job
+from app.services.telehealth_apply import reconcile_processing_telehealth_captures
 from app.services.audit_retention import expire_security_audit_events
 from app.services.legal_content_retention import expire_legal_document_versions
 from app.services.provider_secret_cleanup import process_provider_secret_cleanup_jobs
@@ -291,6 +292,12 @@ def process_transcript_audio_cleanup_jobs_task(*, batch_size: int = 100) -> int:
 def expire_ingestion_source_audio_task(*, batch_size: int = 100) -> int:
     with SessionLocal() as db:
         return expire_ingestion_source_audio(db, batch_size=batch_size)
+
+
+@celery_app.task(name="openscribe.reconcile_telehealth_captures")
+def reconcile_telehealth_captures_task(*, batch_size: int = 50) -> int:
+    with SessionLocal() as db:
+        return reconcile_processing_telehealth_captures(db, batch_size=batch_size)
 
 
 @celery_app.task(name="openscribe.expire_security_audit_events")

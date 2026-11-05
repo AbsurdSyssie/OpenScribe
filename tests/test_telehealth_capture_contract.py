@@ -78,3 +78,39 @@ def test_staged_session_tables_have_owner_root_and_cleanup_metadata():
     assert "uq_telehealth_capture_sessions_open_transcript" in {
         index.name for index in session.indexes
     }
+
+
+
+@pytest.mark.parametrize("previous_status", ["recording", "transcribing", "failed"])
+def test_new_telehealth_capture_cannot_overlap_unresolved_consultation_status(
+    db_session, make_team, make_user, previous_status,
+):
+    from datetime import timedelta
+    from sqlalchemy import select
+    from app.models import Transcript, TranscriptIngestionMode, TranscriptStatus, utcnow
+    from app.services.telehealth_capture import begin_telehealth_capture
+
+    team = make_team(name="Telehealth Concurrent Recorder Guard")
+    owner = make_user(
+        email=f"telehealth-overlap-{previous_status}@example.com",
+        password="password-1", team=team,
+    )
+    transcript = Transcript(
+        owner_user_id=owner.id, team_id=owner.team_id,
+        status=TranscriptStatus(previous_status),
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=1),
+    )
+    db_session.add(transcript)
+    db_session.commit()
+    with pytest.raises(AppError) as error:
+        begin_telehealth_capture(
+            db_session, owner,
+            transcript_id=transcript.id, timeline_sample_rate=48000,
+        )
+    assert error.value.status_code == 409
+    assert error.value.code == "conflict"
+    assert db_session.scalars(select(TelehealthCaptureSession).where(
+        TelehealthCaptureSession.transcript_id == transcript.id,
+    )).first() is None

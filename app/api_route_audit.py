@@ -483,6 +483,10 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         AccessTier.full, json_body=_json(timeline_sample_rate=48000),
     ),
     AuditCase(
+        "GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/unresolved",
+        AccessTier.full,
+    ),
+    AuditCase(
         "GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/captures/{PLACEHOLDER_UUID_2}",
         AccessTier.full,
     ),

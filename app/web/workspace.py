@@ -128,8 +128,7 @@ def render_workspace(
         "preferred_recording_mode"
     )
     context["telehealth_feature_enabled"] = (
-        active_section == WORKSPACE_SCRIBE
-        and os.getenv("TELEHEALTH_API_ENABLED", "false").lower() in ("1", "true", "yes")
+        os.getenv("TELEHEALTH_API_ENABLED", "false").lower() in ("1", "true", "yes")
         and not current_user.is_system_admin
     )
     # Shell authority wins over legacy section context.

@@ -227,7 +227,7 @@ This is **in scope for the overall feature roadmap**, but not required for brows
 
 ## 7b. Implementation checkpoint — 2026-11-04 (WP0 + WP2 foundations)
 
-**Implementation exists on this feature branch but is NOT enabled in the Scribe UI and is NOT yet an end-to-end telehealth feature.** The existing single-microphone paths are intentionally unchanged at this checkpoint.
+**Branch status (latest 2026-11-05):** the browser-client, source-isolated STT queue/merge and opt-in UI exist behind a default-off rollout flag, but are **not clinically released or proven end-to-end**. Ordinary microphone-only workflows remain unchanged when the flag is off.
 
 ### Implemented reusable foundations
 
@@ -265,19 +265,38 @@ The checked-in @ricky0123/vad-web 0.0.29 browser bundle exposes NonRealTimeVAD. 
   - **active → stopping:** Explicit Stop or an interrupted channel records only allowlisted content-free reason codes. New parts can still stage while the client flushes its already captured buffers.
   - **stopping → ready/interrupted:** The client supplies the expected per-channel part counts, and a locked server transaction refuses to seal until all expected parts are durably recorded. A clean stop can be escalated to interrupted if final audio flush fails later. Replays cannot downgrade a known error or overwrite the source.
   - Both-source audio-clock failure can be represented without fabricating which individual channel failed. Multiple runs in one consultation are possible after the previous run is sealed, without discarding its staged data.
-- The owner preferences contract now includes **show_telehealth_control** (default true) and **telehealth_guidance_acknowledged** (default false), with mono­tonic first-use acknowledgement and backward-compatible preservation of an explicitly hidden toggle when older clients submit full preferences. Updated app/schemas/preferences.py, app/services/preferences.py, app/web/presentation.py, app/static/js/transcribe/app.js and app/static/js/settings/controls.js. **The actual new toggle and modal are still not rendered or active.**
+- The owner preferences contract now includes **show_telehealth_control** (default true) and **telehealth_guidance_acknowledged** (default false), with mono­tonic first-use acknowledgement and backward-compatible preservation of an explicitly hidden toggle when older clients submit full preferences. Updated app/schemas/preferences.py, app/services/preferences.py, app/web/presentation.py, app/static/js/transcribe/app.js and app/static/js/settings/controls.js. **The new toggle and guidance modal now render only behind the default-off feature flag.**
 - Added tests/test_telehealth_preferences.py and expanded database lifecycle/replay tests for interruption, sealing and global clock-failure escalation. Test expectations inspect structured AppError attributes and not the exception's non-guaranteed string representation.
 - **CI observation:** The draft PR's earlier Docker smoke run 41937087836 passed. Other CI runs on subsequent commits may still be in progress. Docker build/smoke success is not evidence of the new pytest, browser E2E, quota/retry, or clinical-safety suites passing. The GitHub PR is draft #8.
-- **Outstanding integration risk:** staging a Vault source is only a recoverable acceptance receipt. No provider dispatch, post-stop transcription, merged encrypted transcript, actual timed VAD implementation or clinician-facing recording control is wired yet. Prevent user-visible activation until these are complete.
+- **Integration work since this earlier checkpoint:** dual provider dispatch, labelled transcript merging, default-off owner routes and feature-gated UI have now been implemented. Dedicated database and real browser verification remain outstanding; do not enable production capture.
 
-### Outstanding before any user-facing enablement
+### Latest integration checkpoint — 2026-11-05
 
-1. **Continue WP2:** Wire the new session/part models into a reviewed owner-authorized, CSRF/rate-limited API only after durable post-stop STT finalization exists. Add explicit interruption/gap state and aggregate quota handling; no public routes have been exposed yet.
-2. Wire the capture/controller/window producer to *bounded actual VAD* and the new durably acknowledged ingestion APIs. Do not directly connect the raw source tap to an unbounded queue or drop audio on an upload exception.
-3. Integrate server-owned timed/untimed ASR result normalization, transcript-version-safe aggregation, role projection through the existing redaction boundary and warned/acknowledged incomplete note generation. Pure merge function alone must not be used to bypass redaction or current structured-turn invariants.
-4. Implement the approved phone-icon toggle and owner preferences, one-time notice, two-channel audio verification/collapse, recording state and track-loss recovery in Scribe without changing normal microphone flows.
-5. Add and run focused database/route-audit/migration/browser E2E tests, supported Chrome/Edge Windows/macOS matrix and privacy/DCB0129 release review.
+**Backend implemented:**
 
+- app/services/telehealth_dispatch.py atomically transfers staged Vault audio parts to separate independently quota-reserved STT ingestion jobs for Clinician and Patient. Idempotent replay returns existing jobs; failure rolls the transaction back.
+- app/services/telehealth_apply.py assembles the two encrypted STT results under an owner-locked barrier; maps genuine provider timestamps back to the original pre-VAD clock, or uses explicitly labelled source blocks. Version and structured-turn projection remain aligned. A control-queue Celery task reconciles results after worker crash.
+- app/services/transcripts.py specializes telehealth job completion so an individual channel cannot append its text before both are ready. Owner-initiated retry retains the job/source role. app/services/stt.py adds provider timing extraction without enabling speaker diarisation.
+- app/schemas/telehealth.py, app/services/telehealth_api.py and app/routes/api_routes.py implement validated, owner-only capture/start/upload/stop/seal/acknowledge/transcribe routes with existing CSRF and audio upload rate limiting. Routes are listed in app/api_route_audit.py. Server start refuses to proceed until owner-persisted first-use guidance is acknowledged.
+
+**Browser/UI implemented, gated by TELEHEALTH_API_ENABLED (default false):**
+
+- telehealthWav.js preserves all audio samples, including silence, when encoding independent source WAV windows with common-clock offsets; 10-second windowed uploads use stable part identities for exact HTTP replay.
+- telehealthRecordingClient.js implements browser tab+mic start, independent uploads, stop/drain/seal/transcribe, explicit recoverable upload retry, and incomplete capture acknowledgement. The display picker request occurs directly in the user's recording click.
+- telehealthUI.js, telehealth.css, the Scribe templates, and a Settings switch implement a small phone icon, one-time guidance modal, five seconds of cumulative per-source *activity* before green confirmation/collapse, manual expansion, ongoing source health and clear source-loss messaging. The receipt indicator uses RMS activity only and **does not gate recording or discard silent audio**.
+- UI and server routes do not activate unless the operator explicitly enables the rollout flag. Normal microphone recording is still selected by default. Dedicated browser E2E is required before any clinical use.
+
+**Testing evidence:** synthetic in-isolate JS assertions passed for source timing/worklet backpressure, media cleanup, bounded windows, WAV 48k-to-16k encoding, and lost upload response exact-key replay through two-channel seal. GitHub Actions Docker runtime smoke run 41941812657 passed on an earlier branch commit. The newer branch-head CI, full pytest, PostgreSQL concurrency, Alembic migrations, real browser audio, and clinical-safety review were **not** completed in this environment.
+
+**Explicit residual risks:** browser-local buffered windows can be lost on crash before server acceptance; provider-specific timestamp extraction and overlapping speech require full integration testing; no real Chrome/Edge/Teams/WhatsApp Web capture validation; clinical note generation in incomplete recordings requires documented clinician review. Investigate durable private client recovery or an acceptable failure-warning contract before rollout.
+
+**Later phase remains mandatory:** application-specific native WhatsApp desktop audio on Windows/macOS, scoped separately from browser tab capture.
+### Outstanding before clinical release
+
+1. Run focused pytest and full database/worker/migration/route-audit tests in canonical PostgreSQL/Redis/Vault infrastructure, including concurrent channel commits, quota, retries, timed/untimed ASR, owner isolation and cleanup.
+2. Test real Chrome and Edge browser tab audio on Windows/macOS with Teams Web and WhatsApp Web, permission dropouts, multi-hour drift, dual voice activity, echo leakage and accessible UI.
+3. Prove source recovery on network/worker/browser interruption, including safe handling of audio not yet accepted by the server and incomplete-generation acknowledgement across refresh.
+4. Validate operator documentation, source retention/consent controls, privacy and DCB0129 clinical-safety review where applicable before enabling the feature flag in any clinical environment.
 **Safety gate:** Do not expose Telehealth as working until BOTH audio sources can be persisted and processed with recoverable failure outcomes, and all UI/clinical-safety contracts above are implemented. The presence of modules on the branch is not an activation flag.
 
 

@@ -198,3 +198,49 @@ def validate_next_telehealth_part(
     if incoming.sequence_no != expected_sequence_no:
         raise ValueError("Telehealth source part was submitted out of order.")
     return True
+
+
+
+def map_provider_turn_to_consultation(
+    part: TelehealthAudioPart,
+    *,
+    start_ms: int,
+    end_ms: int,
+) -> tuple[int, int] | None:
+    """Map ASR time relative to submitted audio back to ORIGINAL clock time.
+
+    If a provider segment straddles two disjoint VAD spans, the segment cannot
+    be located precisely. Return None so the whole merge can conservatively
+    fall back to source-labelled blocks. Never invent elapsed silence.
+    """
+    if (
+        type(start_ms) is not int
+        or type(end_ms) is not int
+        or start_ms < 0
+        or end_ms < start_ms
+        or end_ms > MAX_SOURCE_PART_SECONDS * 1000 + 25
+    ):
+        return None
+    file_start = round(start_ms * part.file_sample_rate / 1000)
+    file_end = round(end_ms * part.file_sample_rate / 1000)
+    for span in part.spans:
+        if (
+            span.file_start_sample <= file_start <= file_end <= span.file_end_sample
+        ):
+            frame_per_file_sample = (
+                (span.timeline_end_frame - span.timeline_start_frame)
+                / (span.file_end_sample - span.file_start_sample)
+            )
+            original_start = (
+                span.timeline_start_frame
+                + (file_start - span.file_start_sample) * frame_per_file_sample
+            )
+            original_end = (
+                span.timeline_start_frame
+                + (file_end - span.file_start_sample) * frame_per_file_sample
+            )
+            return (
+                round(original_start * 1000 / part.timeline_sample_rate),
+                round(original_end * 1000 / part.timeline_sample_rate),
+            )
+    return None

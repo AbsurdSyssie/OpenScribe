@@ -22,6 +22,7 @@ from app.models import (
     TranscriptCaptureSettings,
     TranscriptAudioCleanupJob,
     TelehealthCapturePart,
+    TelehealthCaptureSession,
     TranscriptIngestionJob,
     TranscriptIngestionJobKind,
     TranscriptIngestionJobStatus,
@@ -3102,6 +3103,24 @@ def _expire_ingestion_source_before_preparation(db: Session, *, job_id: UUID) ->
 
 
 def _mark_job_failed(db: Session, transcript: Transcript, job: TranscriptIngestionJob, *, code: str, message: str) -> None:
+    # Telehealth results cannot be applied one-sided. Mark a terminal source
+    # failure on its owning capture so the other job never appears complete
+    # and can still be retried from its existing Vault audio source.
+    capture_part = db.scalar(select(TelehealthCapturePart).where(
+        TelehealthCapturePart.ingestion_job_id == job.id,
+    ).with_for_update())
+    if capture_part is not None:
+        capture_part.status = "failed"
+        db.add(capture_part)
+        capture_session = db.scalar(select(TelehealthCaptureSession).where(
+            TelehealthCaptureSession.id == capture_part.session_id,
+        ).with_for_update())
+        if capture_session is not None and capture_session.status != "completed":
+            capture_session.status = "failed"
+            capture_session.failure_channel = capture_part.channel
+            capture_session.failure_code = "transcription_failed"
+            capture_session.updated_at = utcnow()
+            db.add(capture_session)
     job.status = TranscriptIngestionJobStatus.failed
     job.error_code = code
     job.error_message = message[:255]
@@ -3601,7 +3620,46 @@ def process_transcript_ingestion_job(
             outcome=AttemptOutcome.succeeded,
         )
 
-        if job.job_kind is TranscriptIngestionJobKind.audio_file:
+        # Telehealth audio_file jobs use the *same* measured quota and
+        # encrypted provider-result path, but must NOT append their text yet.
+        # Both source-labelled results are committed together only after the
+        # whole capture completes (see telehealth_apply).
+        telehealth_part = db.scalar(select(TelehealthCapturePart).where(
+            TelehealthCapturePart.ingestion_job_id == job.id,
+            TelehealthCapturePart.transcript_id == transcript.id,
+            TelehealthCapturePart.owner_user_id == transcript.owner_user_id,
+        ).with_for_update())
+        if telehealth_part is not None:
+            telehealth_part.status = "transcribed"
+            telehealth_part.updated_at = now
+            job.status = TranscriptIngestionJobStatus.completed
+            job.source_audio_blob = None
+            transcript.status = TranscriptStatus.transcribing
+            db.add(telehealth_part)
+            db.add(job)
+            db.add(transcript)
+            db.commit()  # Persist provider text even if final assembly fails.
+            try:
+                from app.services.telehealth_apply import apply_completed_telehealth_capture
+                apply_completed_telehealth_capture(
+                    db, capture_session_id=telehealth_part.session_id,
+                )
+            except Exception:
+                db.rollback()
+                # Never expose provider content/exception details to logs.
+                transcript_ingestion_logger.warning(
+                    "telehealth_capture_application_deferred",
+                    extra={"capture_session_id": str(telehealth_part.session_id)},
+                )
+            if job.source_audio_vault_ref:
+                try:
+                    clear_ingestion_retry_source(
+                        db, job_id=job.id, clear_storage=True,
+                        clear_accounting=False, delete_backing_secret=True,
+                    )
+                except AppError:
+                    pass
+        elif job.job_kind is TranscriptIngestionJobKind.audio_file:
             job.status = TranscriptIngestionJobStatus.applied
             job.applied_at = now
             job.source_audio_blob = None

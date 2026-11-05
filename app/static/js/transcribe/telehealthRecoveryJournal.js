@@ -56,14 +56,20 @@ export function createIndexedDbTelehealthStore({ indexedDB = globalThis.indexedD
   };
   const put = async (store, row, { onlyIfMissing = false } = {}) => {
     const db = await open();
-    const tx = db.transaction(store, 'readwrite');
+    // Request the strictest available disk-commit semantics. Browsers may
+    // still lose the final transaction on whole-device failure, hence the
+    // mandatory incomplete-recording warning after a crash.
+    const tx = db.transaction(store, 'readwrite', { durability: 'strict' });
     const finished = transactionDone(tx);
     tx.objectStore(store)[onlyIfMissing ? 'add' : 'put'](row);
     await finished; // Never claim persistence until the IndexedDB COMMIT.
   };
   const remove = async (store, id) => {
     const db = await open();
-    const tx = db.transaction(store, 'readwrite');
+    // Request the strictest available disk-commit semantics. Browsers may
+    // still lose the final transaction on whole-device failure, hence the
+    // mandatory incomplete-recording warning after a crash.
+    const tx = db.transaction(store, 'readwrite', { durability: 'strict' });
     const finished = transactionDone(tx);
     tx.objectStore(store).delete(id);
     await finished;

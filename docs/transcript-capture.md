@@ -52,6 +52,14 @@ The browser records locally and submits one or more whole-file parts. It rolls o
 
 Only one whole-file ingestion job is actively processed for a transcript at a time; capture restarts for the same transcript only after that part is accepted. If a rollover part cannot be accepted, its local audio stays available in the originating open tab for automatic or user-triggered re-upload; capture stops instead of recording later audio and creating an undetectable transcript gap.
 
+### Telehealth dual-source capture
+
+Telehealth records the clinician microphone and selected browser-tab audio as separate, owner-bound source parts on one transcript root. Stop uploads buffered audio, seals the exact part set, and queues one independently accounted ingestion job per source part. Stop interruption metadata is serialized in the API's channel/reason fields. If a capture track ends or becomes muted, recording follows the same flush-and-stop path and retains accepted audio; the incomplete warning remains until the clinician acknowledges it. Individual results remain encrypted until the capture can be assembled with server-owned source labels and validated consultation timing. Timed word segments are ordered by their validated consultation starts and adjacent words are grouped into readable same-source turns; a source switch, a gap over 1.5 seconds, or unsafe timing keeps turns separate. If any part lacks usable timing, the transcript retains source-labelled blocks with words joined into readable text and part order preserved; the system does not infer cross-source chronology. A Deepgram response with a present empty transcript and an explicit empty word list is accepted as silence for that part; malformed or missing response fields still fail. If every part is silent, the capture fails with `no_transcribed_speech` and does not create a transcript draft.
+
+If stop and sealing succeed but submission to `/transcribe` fails or its response is uncertain, consultation controls can retry submission with the same capture ID. This is separate from retrying a failed audio-part upload. Failed retained source jobs can also be retried without detaching their source role; an expired source cannot be retried, and expiry fails the linked part and capture while preserving any earlier interruption and acknowledgement. A late provider result or successful sibling job cannot revive or partially apply a failed capture.
+
+The encrypted browser recovery journal coordinates key and window updates across tabs with the Web Locks API. Web Locks support is required: capture fails closed when safe cross-tab coordination is unavailable. The journal keeps its existing limit of eight windows and six hours, and removes acknowledged windows and unused keys through its existing cleanup rules.
+
 ### Live chunked
 
 For selections other than eligible Deepgram streaming, the browser uses the pinned same-origin VAD runtime to create speech chunks. Pauses and a maximum chunk duration trigger upload. The backend validates sequence/duration metadata, stores a queued chunk job, and updates the encrypted current draft as worker results complete.
@@ -96,6 +104,7 @@ Transcript state is reconciled from durable ingestion work rather than trusted b
 - an owner can manually retry retained failed whole-file or live-chunk audio. A transcript-level retry selects the earliest retained live gap or a failed file; a job-level retry targets a retained failed job. Live retry reuses the original job and sequence so later chunks remain ordered;
 - retry transfers the original source reference and deadline; it cannot extend the source-audio lifetime;
 - queued, processing or failed work that reaches the deadline is terminalised safely, its dispatch/attempt state is reconciled, and Vault cleanup is durable and repeatable;
+- when a handed-off Telehealth source expires, its ingestion job and linked source part fail together, and the capture/transcript become failed; an earlier interruption and its acknowledgement remain visible, while a clean capture records `source_audio_expired`; the expired source cannot be retried, and a late provider result or successful sibling cannot revive or partially apply the capture;
 - the API and workspace report expiry in safe terms and require a fresh upload.
 
 A processing live chunk older than `LIVE_CHUNK_PROCESSING_STALE_AFTER_SECONDS` can be reconciled as stale. Provider-attempt and quota lifecycle deadlines are separate from Celery task delivery and are documented in [environment.md](environment.md).

@@ -208,6 +208,7 @@ def _source_timed_turns_from_segments(
     if not isinstance(raw_segments, list) or not 1 <= len(raw_segments) <= MAX_DIARIZATION_SEGMENTS:
         return None
     segments: list[SttSpeakerTurn] = []
+    previous_start_ms = -1
     for item in raw_segments:
         if not isinstance(item, dict):
             return None
@@ -218,13 +219,29 @@ def _source_timed_turns_from_segments(
             not isinstance(text, str) or not text.strip()
             or len(text) > MAX_DIARIZED_TURN_TEXT_CHARS
             or start_ms is None or end_ms is None or end_ms < start_ms
+            or start_ms < previous_start_ms
         ):
             return None
         segments.append(SttSpeakerTurn(
             text=text.strip(), speaker_id=None,
             start_ms=start_ms, end_ms=end_ms,
         ))
+        previous_start_ms = start_ms
     return tuple(segments)
+
+
+def _deepgram_has_explicit_empty_transcript(payload: dict[str, Any], *, response_text_path: str) -> bool:
+    """Recognize Deepgram's valid no-speech result for source-attributed capture.
+
+    Accept only a present string transcript and an explicit empty word list.
+    Other payloads retain normal response validation and segment handling.
+    """
+    try:
+        transcript = extract_json_path(payload, response_text_path)
+        words = extract_json_path(payload, "results.channels.0.alternatives.0.words")
+    except AppError:
+        return False
+    return isinstance(transcript, str) and not transcript.strip() and words == []
 
 
 def _turns_match_transcript(turns: tuple[SttSpeakerTurn, ...] | None, transcript: str) -> bool:
@@ -1917,15 +1934,24 @@ def _transcribe_via_deepgram(
         if not _turns_match_transcript(turns, transcript_text):
             turns = None
         return SttTranscriptResult(transcript_text, turns)
-    flat_text = _format_timestamped_transcript_payload_with_segments(
-        payload,
-        response_text_path=response_text_path,
-        segments_path=segments_path,
-        segment_text_field=segment_text_field,
-        segment_start_field=segment_start_field,
-        segment_end_field=segment_end_field,
-        segment_speaker_field=segment_speaker_field,
-    )
+    try:
+        flat_text = _format_timestamped_transcript_payload_with_segments(
+            payload,
+            response_text_path=response_text_path,
+            segments_path=segments_path,
+            segment_text_field=segment_text_field,
+            segment_start_field=segment_start_field,
+            segment_end_field=segment_end_field,
+            segment_speaker_field=segment_speaker_field,
+        )
+    except AppError as exc:
+        if (
+            exc.code != "stt_response_invalid"
+            or not telehealth_timing
+            or not _deepgram_has_explicit_empty_transcript(payload, response_text_path=response_text_path)
+        ):
+            raise
+        flat_text = ""
     if telehealth_timing:
         turns = _source_timed_turns_from_segments(
             payload,

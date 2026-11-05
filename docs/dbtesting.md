@@ -156,6 +156,7 @@ Designated fields must contain versioned ciphertext envelopes in PostgreSQL, not
 - job creation and task-dispatch outbox creation are transactional;
 - duplicate task delivery is idempotent/claim-safe;
 - processing stale/deadline reconciliation is deterministic;
+- handed-off Telehealth source expiry terminalises the linked part/capture with the ingestion job, preserves interruption acknowledgement and provider accounting, fences late results, and prevents a successful sibling from reviving the transcript;
 - result text appends in the expected sequence and is encrypted;
 - terminal cleanup clears/durably queues source-audio deletion;
 - a pre-dispatch credential failure does not consume provider quota.

@@ -63,6 +63,49 @@ def test_a_single_untimed_channel_demotes_whole_consultation_to_source_blocks():
     assert all(turn.start_ms is None for turn in result.turns)
 
 
+def test_source_blocks_join_word_segments_but_keep_source_part_boundaries():
+    result = merge_telehealth_source_turns([
+        TelehealthSourceTurn(P1, "patient", 0, 0, "Hello,"),
+        TelehealthSourceTurn(P1, "patient", 0, 1, "how are you?"),
+        TelehealthSourceTurn(P2, "patient", 1, 0, "I feel well."),
+    ])
+    assert result.mode == "source_blocks"
+    assert len(result.turns) == 1
+    assert result.turns[0].text == "Hello, how are you?\nI feel well."
+
+
+def test_timed_merge_groups_only_adjacent_source_words_and_respects_limits():
+    turns = [
+        TelehealthSourceTurn(P1, "clinician", 0, 0, "First", 0, 100),
+        TelehealthSourceTurn(P2, "patient", 0, 0, "Reply", 50, 80),
+        TelehealthSourceTurn(P1, "clinician", 0, 1, "later", 100, 200),
+        TelehealthSourceTurn(P3, "clinician", 1, 0, "after pause", 2_000, 2_500),
+    ]
+    result = merge_telehealth_source_turns(turns)
+    assert [(turn.speaker_id, turn.text) for turn in result.turns] == [
+        ("clinician", "First"), ("patient", "Reply"),
+        ("clinician", "later"), ("clinician", "after pause"),
+    ]
+
+    size_limited = merge_telehealth_source_turns([
+        TelehealthSourceTurn(P1, "clinician", 0, 0, "a" * 150_000, 0, 100),
+        TelehealthSourceTurn(P1, "clinician", 0, 1, "b" * 150_000, 100, 200),
+    ])
+    assert [len(turn.text) for turn in size_limited.turns] == [150_000, 150_000]
+
+
+def test_equal_starts_keep_source_word_order_and_overlapping_roles_separate():
+    result = merge_telehealth_source_turns([
+        TelehealthSourceTurn(P1, "clinician", 0, 1, "second", 100, 400),
+        TelehealthSourceTurn(P1, "clinician", 0, 0, "first", 100, 300),
+        TelehealthSourceTurn(P2, "patient", 0, 0, "overlap", 100, 200),
+    ])
+    assert [(turn.speaker_id, turn.text) for turn in result.turns] == [
+        ("clinician", "first"), ("clinician", "second"), ("patient", "overlap"),
+    ]
+    assert (result.turns[0].start_ms, result.turns[1].end_ms) == (100, 400)
+
+
 def test_identical_replayed_turn_deduplicates_but_conflict_is_rejected():
     turn = TelehealthSourceTurn(P1, "clinician", 1, 0, "Synthetic speech", 1000, 1200)
     result = merge_telehealth_source_turns([turn, turn])

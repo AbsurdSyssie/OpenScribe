@@ -321,4 +321,54 @@ assert.equal(badFlushCapture.state, 'stopped');
 assert.equal(flushPatient.stopped, true);
 assert.equal(flushMic.stopped, true);
 assert.equal(badFlushEvents[0].reason, 'audio_flush_failed');
+
+// A browser MediaStreamTrack mute means the source cannot supply data.
+// A mute/unmute cycle must keep the capture interrupted and stop with failure.
+const muteVideo = new FakeTrack('video', 'browser');
+const mutePatient = new FakeTrack('audio');
+const muteMic = new FakeTrack('audio');
+const muteEvents = [], muteStatuses = [];
+const muteCapture = createTelehealthCapture({
+  mediaDevices: {
+    getDisplayMedia: async () => ({
+      getTracks: () => [muteVideo, mutePatient],
+      getVideoTracks: () => [muteVideo], getAudioTracks: () => [mutePatient],
+    }),
+    getUserMedia: async () => ({ getTracks: () => [muteMic], getAudioTracks: () => [muteMic] }),
+  },
+  AudioContextCtor: FakeContext, AudioWorkletNodeCtor: FakeTap,
+  onFrames: () => true,
+  onInterrupted: (event) => muteEvents.push(event),
+  onSourceState: (event) => muteStatuses.push(event),
+});
+await muteCapture.start();
+mutePatient.emit('mute');
+mutePatient.emit('unmute');
+await assert.rejects(muteCapture.stop(), /incomplete audio/);
+assert.deepEqual(muteEvents, [{ channel: 'patient', reason: 'source_muted' }]);
+assert.deepEqual(muteStatuses.slice(-2), [
+  { channel: 'patient', status: 'muted' }, { channel: 'patient', status: 'live' },
+]);
+assert.equal(muteCapture.state, 'stopped');
+
+// A track already muted when it is attached also aborts startup safely.
+const startupVideo = new FakeTrack('video', 'browser');
+const startupPatient = new FakeTrack('audio');
+startupPatient.muted = true;
+const startupMic = new FakeTrack('audio');
+const startupEvents = [];
+const startupMutedCapture = createTelehealthCapture({
+  mediaDevices: {
+    getDisplayMedia: async () => ({
+      getTracks: () => [startupVideo, startupPatient],
+      getVideoTracks: () => [startupVideo], getAudioTracks: () => [startupPatient],
+    }),
+    getUserMedia: async () => ({ getTracks: () => [startupMic], getAudioTracks: () => [startupMic] }),
+  },
+  AudioContextCtor: FakeContext, AudioWorkletNodeCtor: FakeTap,
+  onFrames: () => true, onInterrupted: (event) => startupEvents.push(event),
+});
+await assert.rejects(startupMutedCapture.start(), /incomplete audio|cancelled/);
+assert.deepEqual(startupEvents, [{ channel: 'patient', reason: 'source_muted' }]);
+assert.equal(startupMutedCapture.state, 'stopped');
 """)

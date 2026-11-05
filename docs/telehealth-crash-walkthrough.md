@@ -9,7 +9,9 @@ Use desktop Chrome or Edge with a browser-tab Teams or WhatsApp Web call and
 a separate clinician microphone. **Native Teams/WhatsApp desktop application
 audio is not supported by this implementation.** Use headphones to reduce
 microphone echo leakage. OpenScribe must be on HTTPS (or localhost) and the
-browser must allow WebCrypto, IndexedDB, microphone and browser-tab sharing.
+browser must allow WebCrypto, IndexedDB, the Web Locks API, microphone and
+browser-tab sharing. Recording fails closed if encrypted, cross-tab recovery
+coordination is unavailable.
 
 ## 1. Baseline: two sources
 
@@ -21,7 +23,10 @@ browser must allow WebCrypto, IndexedDB, microphone and browser-tab sharing.
    indicators should independently show source activity; one silent indicator
    must not turn green merely because the other is loud.
 4. Record at least 25 seconds; press Stop. Confirm both sources upload and STT
-   completes with Clinician/Patient turns and plausible timestamps.
+   completes with Clinician/Patient turns and plausible timestamps. If stop and
+   sealing succeed but transcription submission fails, use the separate
+   **Retry transcription** action; it reuses the sealed capture and does not
+   upload the audio again.
 5. Check usage accounting: the same elapsed consultation time can generate two
    separately billed source durations. Check against your STT provider's own
    billing rules.
@@ -70,9 +75,9 @@ also prevent the final storage transaction from committing.
    this action.
 3. Start another recording. It should work once the unresolved capture is
    discarded, without carrying over the old phone-button state.
-4. With a clean test profile, deny IndexedDB/WebCrypto (or use a browser mode
-   that cannot persist non-extractable CryptoKeys). Recording should refuse
-   to start instead of proceeding with unprotected crash storage.
+4. With a clean test profile, deny IndexedDB/WebCrypto/Web Locks (or use a
+   browser mode that cannot persist non-extractable CryptoKeys). Recording
+   should refuse to start without encrypted, cross-tab-coordinated storage.
 
 **Pass:** there is no indefinite spinning Stop button, false completed
 receipt, unexpected source duplication or unexpected release of a blocked
@@ -86,6 +91,10 @@ clinical note.
 - Pending local windows expire **six hours after creation when the browser
   next opens the recovery store**. Expiry is not an automatic offline timer:
   encrypted material may remain on a dormant browser profile.
+- If a browser capture track reports `muted`, Telehealth stops and marks that
+  source interrupted, even if it later becomes live again. Verify that the
+  incomplete warning remains and clinician acknowledgement is required before
+  transcription.
 - Test network loss, unexpected call-tab close, mic permission revocation,
   laptop sleep/resume, low storage and browser process termination.
 - Test with a second account on the same device; it must not be able to fetch

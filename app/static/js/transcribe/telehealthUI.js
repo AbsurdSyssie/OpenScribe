@@ -1,9 +1,9 @@
-import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261105-crash-recovery-1';
+import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261105-submit-retry';
 import {
   createTelehealthRecoveryJournal,
   createTelehealthUploadPacer,
   replayTelehealthRecoveryWindows,
-} from './telehealthRecoveryJournal.js?v=20261105-crash-recovery-1';
+} from './telehealthRecoveryJournal.js?v=20261105-cross-tab-journal';
 
 // The recording bar is controlled only when Telehealth is explicitly selected.
 // Existing microphone/Deepgram recording flows remain untouched otherwise.
@@ -15,6 +15,7 @@ export function attachTelehealthControls({
   getTranscriptId,
   getIngestionMode,
   isOtherRecordingActive,
+  canUseRecording = () => true,
   getPreferences,
   persistPreferences,
   csrfFetch,
@@ -33,6 +34,7 @@ export function attachTelehealthControls({
   const actions = document.querySelector('[data-telehealth-actions]');
   const retry = document.querySelector('[data-telehealth-retry]');
   const partial = document.querySelector('[data-telehealth-transcribe]');
+  const submitRetry = document.querySelector('[data-telehealth-submit-retry]');
   const discard = document.querySelector('[data-telehealth-discard]');
   const guidance = document.querySelector('[data-telehealth-guidance]');
   const guidanceCancel = document.querySelector('[data-telehealth-guidance-cancel]');
@@ -52,6 +54,9 @@ export function attachTelehealthControls({
   let ownProcessingLastPollAt = 0;
   let boundTranscriptId = getTranscriptId?.() || null;
   let activating = false;
+  let submissionInFlight = false;
+  let discardInFlight = false;
+  let telehealthOwnsRecordLock = false;
   let sourceLoss = false;
   let collapsed = false;
   let collapseTimer = null;
@@ -112,9 +117,19 @@ export function attachTelehealthControls({
         recordIcon.dataset.lucide = recordingInProgress() ? 'square' : 'disc';
         window.refreshLucideIcons?.(recordIcon.parentElement || recordIcon);
       }
-      if (client?.state === 'transcribing' || restoredCapture) mainRecord.disabled = true;
+    }
+    const actionsInFlight = submissionInFlight || discardInFlight;
+    const recordBlocked = actionsInFlight || Boolean(restoredCapture)
+      || Boolean(client && ['recovery_required', 'incomplete', 'sealed', 'transcribing'].includes(client.state));
+    if (enabled && recordBlocked) {
+      mainRecord.disabled = true;
+      telehealthOwnsRecordLock = true;
+    } else if (telehealthOwnsRecordLock) {
+      mainRecord.disabled = !canUseRecording();
+      telehealthOwnsRecordLock = false;
     }
     if (retry) retry.hidden = client?.state !== 'recovery_required';
+    if (submitRetry) submitRetry.hidden = client?.state !== 'sealed';
     const hasRestoredJob = restoredCapture?.parts?.some((part) => part.ingestion_job_id);
     const canRestorePartial = restoredCapture
       && ['active', 'stopping', 'ready', 'interrupted'].includes(restoredCapture.status);
@@ -126,7 +141,22 @@ export function attachTelehealthControls({
       ['recovery_required', 'incomplete', 'sealed'].includes(client?.state)
       || (restoredCapture && !hasRestoredJob)
     );
-    if (actions) actions.hidden = [retry, partial, discard].every((item) => item?.hidden !== false);
+    if (actions) actions.hidden = [retry, partial, submitRetry, discard].every((item) => item?.hidden !== false);
+    for (const action of [retry, partial, submitRetry]) {
+      if (action) action.disabled = actionsInFlight;
+    }
+    if (discard) discard.disabled = actionsInFlight;
+  };
+  const withSubmission = async (action) => {
+    if (submissionInFlight) return;
+    submissionInFlight = true;
+    render();
+    try {
+      return await action();
+    } finally {
+      submissionInFlight = false;
+      render();
+    }
   };
 
   const postRecovery = async (capture, suffix, payload = {}) => {
@@ -323,6 +353,7 @@ export function attachTelehealthControls({
   };
 
   const startRecording = async () => {
+    if (submissionInFlight || discardInFlight) return;
     if (client?.state === 'transcribing') {
       notice('The consultation is still being transcribed.', 'info');
       return;
@@ -351,20 +382,21 @@ export function attachTelehealthControls({
   };
 
   const stopRecording = async () => {
-    if (!client) return;
+    if (!client || submissionInFlight || discardInFlight) return;
     try {
-      const result = await client.stop();
-      render();
-      if (result.status === 'interrupted') {
-        notice('Audio was interrupted. Review and acknowledge the incomplete recording before transcription.', 'warning');
-        return;
-      }
-      await client.transcribe();
-      notice('Both Telehealth audio sources were sent for transcription.', 'success');
-      await refreshWorkspace?.();
+      await withSubmission(async () => {
+        const result = await client.stop();
+        render();
+        if (result.status === 'interrupted') {
+          notice('Audio was interrupted. Review and acknowledge the incomplete recording before transcription.', 'warning');
+          return;
+        }
+        await client.transcribe();
+        notice('Both Telehealth audio sources were sent for transcription.', 'success');
+        await refreshWorkspace?.();
+      });
     } catch (error) {
       notice(error instanceof Error ? error.message : 'Telehealth audio needs recovery.', 'error');
-      render();
     }
   };
 
@@ -404,6 +436,7 @@ export function attachTelehealthControls({
     if (!enabled) return;
     event.preventDefault();
     event.stopImmediatePropagation();
+    if (submissionInFlight || discardInFlight) return;
     if (recordingInProgress()) {
       if (client?.state !== 'stopping') void stopRecording();
     } else if (!client || ['discarded'].includes(client.state)) {
@@ -412,8 +445,9 @@ export function attachTelehealthControls({
   }, true);
   combined?.addEventListener('click', () => expand(true));
   retry?.addEventListener('click', () => {
-    if (!client) return;
-    void client.retryPendingUploads().then(async (result) => {
+    if (!client || submissionInFlight || discardInFlight) return;
+    void withSubmission(async () => {
+      const result = await client.retryPendingUploads();
       render();
       if (result.status === 'interrupted') {
         notice('Review and acknowledge this incomplete recording before transcription.', 'warning');
@@ -424,14 +458,27 @@ export function attachTelehealthControls({
       await refreshWorkspace?.();
     }).catch((error) => {
       notice(error instanceof Error ? error.message : 'Audio recovery failed.', 'error');
+    });
+  });
+  submitRetry?.addEventListener('click', () => {
+    if (!client || client.state !== 'sealed' || submissionInFlight || discardInFlight) return;
+    const activeClient = client;
+    void withSubmission(async () => {
+      await activeClient.transcribe();
+      if (client !== activeClient) return;
+      notice('Telehealth transcription was submitted.', 'success');
+      await refreshWorkspace?.();
       render();
+    }).catch((error) => {
+      notice(error instanceof Error ? error.message : 'Telehealth transcription could not be submitted. Retry when ready.', 'error');
     });
   });
   discard?.addEventListener('click', () => {
-    if ((!client && !restoredCapture) || !window.confirm(
+    if (submissionInFlight || discardInFlight || (!client && !restoredCapture) || !window.confirm(
       'Permanently discard this unsubmitted recording? Clinician and patient audio staged so far will be queued for deletion. No transcription will be created.',
     )) return;
-    discard.disabled = true;
+    discardInFlight = true;
+    render();
     const saved = restoredCapture;
     const discardRequest = client ? client.discard() : postRecovery(saved, 'discard');
     void discardRequest.then(async (result) => {
@@ -446,13 +493,15 @@ export function attachTelehealthControls({
     }).catch((error) => {
       notice(error instanceof Error ? error.message : 'Could not discard the recording.', 'error');
       render();
-    }).finally(() => { discard.disabled = false; });
+    }).finally(() => {
+      discardInFlight = false;
+      render();
+    });
   });
   partial?.addEventListener('click', () => {
-    if ((!client && !restoredCapture) || !window.confirm(
+    if (submissionInFlight || discardInFlight || (!client && !restoredCapture) || !window.confirm(
       'This Telehealth recording may be incomplete after a browser crash. Encrypted local windows will be replayed with their original IDs where available. The final unflushed seconds may still be missing. Review the result before any clinical note. Continue?',
     )) return;
-    partial.disabled = true;
     const continueCapture = async () => {
       if (client) {
         await client.acknowledgeIncomplete();
@@ -499,14 +548,14 @@ export function attachTelehealthControls({
       enabled = false;
       return queued;
     };
-    void continueCapture().then(async () => {
+    void withSubmission(continueCapture).then(async () => {
       notice('Encrypted local windows were reconciled with saved Telehealth audio. Transcription is processing; review for missing final speech.', 'warning');
       await refreshWorkspace?.();
       render();
     }).catch((error) => {
       notice(error instanceof Error ? error.message : 'Could not recover the saved recording.', 'error');
       render();
-    }).finally(() => { partial.disabled = false; });
+    });
   });
   window.addEventListener('beforeunload', (event) => {
     if (!blockSwitch()) return;

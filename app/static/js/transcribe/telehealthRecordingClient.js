@@ -1,11 +1,11 @@
-import { createTelehealthCapture } from './telehealthCapture.js?v=20261104-telehealth-source';
+import { createTelehealthCapture } from './telehealthCapture.js?v=20261105-source-interruption';
 import { createTelehealthWindows } from './telehealthWindows.js?v=20261104-telehealth-windows';
 import { encodeTelehealthWavWindow } from './telehealthWav.js?v=20261105-telehealth-wav';
 import {
   createTelehealthRecoveryJournal,
   createTelehealthUploadPacer,
   submitTelehealthRecoveryWindow,
-} from './telehealthRecoveryJournal.js?v=20261105-crash-recovery-1';
+} from './telehealthRecoveryJournal.js?v=20261105-cross-tab-journal';
 
 // Telehealth recorded-upload v1. Each track is submitted independently;
 // silence is retained in the uploaded audio, while the original context-frame
@@ -23,6 +23,7 @@ function normalizeCaptureFailure(reason) {
     consumer_failed: 'audio_backpressure',
     audio_flush_timeout: 'upload_failed',
     audio_flush_failed: 'upload_failed',
+    source_muted: 'source_ended',
   };
   return mapped[reason] || 'browser_capture_failed';
 }
@@ -153,6 +154,10 @@ export function createTelehealthRecordingClient({
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   }), 'Could not update telehealth capture.');
+  const stopDetails = () => interruption ? {
+    interrupted_channel: interruption.channel,
+    failure_code: interruption.failure_code,
+  } : {};
 
   const start = async () => {
     if (state !== 'idle') throw new Error('Recording was already started.');
@@ -227,7 +232,7 @@ export function createTelehealthRecordingClient({
       }
       const stopUrl = base + '/' + encodeURIComponent(id) + '/stop';
       try {
-        await post(stopUrl, interruption || {});
+        await post(stopUrl, stopDetails());
       } catch (error) {
         setState('recovery_required');
         throw error;
@@ -264,7 +269,7 @@ export function createTelehealthRecordingClient({
     if (state !== 'recovery_required' || !windows || !captureId) {
       throw new Error('No pending telehealth audio upload can be retried.');
     }
-    await post(base + '/' + encodeURIComponent(captureId) + '/stop', interruption || {});
+    await post(base + '/' + encodeURIComponent(captureId) + '/stop', stopDetails());
     if (windows.status().finished) await windows.retryPending();
     else await windows.finish();
     const sealed = await post(base + '/' + encodeURIComponent(captureId) + '/seal', {

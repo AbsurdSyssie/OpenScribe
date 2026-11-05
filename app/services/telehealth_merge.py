@@ -19,6 +19,7 @@ MAX_TURNS = 100_000
 MAX_TEXT_CHARS = 8_000_000
 MAX_TURN_CHARS = 200_000
 CHANNEL_LABELS = {"clinician": "Clinician", "patient": "Patient"}
+MAX_WORD_GAP_MS = 1_500
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,23 +126,40 @@ def merge_telehealth_source_turns(
             items,
             key=lambda turn: (
                 turn.start_ms,
-                turn.end_ms,
                 0 if turn.channel == "clinician" else 1,
                 turn.source_sequence,
                 turn.segment_index,
                 str(turn.part_id),
             ),
         )
-        turns = tuple(
-            TelehealthDisplayTurn(
-                speaker_id=turn.channel,
-                speaker_label=CHANNEL_LABELS[turn.channel],
-                text=turn.text.strip(),
-                start_ms=turn.start_ms,
-                end_ms=turn.end_ms,
-            )
-            for turn in sorted_items
-        )
+        grouped: list[TelehealthDisplayTurn] = []
+        for turn in sorted_items:
+            previous = grouped[-1] if grouped else None
+            if (
+                previous is not None
+                and previous.speaker_id == turn.channel
+                and previous.end_ms is not None
+                and turn.start_ms is not None
+                and turn.start_ms >= previous.end_ms
+                and turn.start_ms - previous.end_ms <= MAX_WORD_GAP_MS
+                and len(previous.text) + 1 + len(turn.text.strip()) <= MAX_TURN_CHARS
+            ):
+                grouped[-1] = TelehealthDisplayTurn(
+                    speaker_id=turn.channel,
+                    speaker_label=CHANNEL_LABELS[turn.channel],
+                    text=f"{previous.text} {turn.text.strip()}",
+                    start_ms=previous.start_ms,
+                    end_ms=max(previous.end_ms, turn.end_ms),
+                )
+            else:
+                grouped.append(TelehealthDisplayTurn(
+                    speaker_id=turn.channel,
+                    speaker_label=CHANNEL_LABELS[turn.channel],
+                    text=turn.text.strip(),
+                    start_ms=turn.start_ms,
+                    end_ms=turn.end_ms,
+                ))
+        turns = tuple(grouped)
         return TelehealthMergeResult(
             mode="timed",
             turns=turns,
@@ -177,12 +195,32 @@ def merge_telehealth_source_turns(
                 chunk.clear()
                 chunk_length = 0
 
+        by_sequence: dict[int, list[TelehealthSourceTurn]] = {}
         for turn in ordered:
-            value = turn.text.strip()
-            if chunk and chunk_length + len(value) + 1 > MAX_TURN_CHARS:
-                append_block()
-            chunk.append(value)
-            chunk_length += len(value) + (1 if chunk_length else 0)
+            by_sequence.setdefault(turn.source_sequence, []).append(turn)
+        for sequence in sorted(by_sequence):
+            part_words = [turn.text.strip() for turn in sorted(
+                by_sequence[sequence], key=lambda item: item.segment_index,
+            )]
+            part_chunks: list[str] = []
+            part_words_chunk: list[str] = []
+            part_chunk_length = 0
+            for word in part_words:
+                extra = len(word) + (1 if part_chunk_length else 0)
+                if part_words_chunk and part_chunk_length + extra > MAX_TURN_CHARS:
+                    part_chunks.append(" ".join(part_words_chunk))
+                    part_words_chunk = []
+                    part_chunk_length = 0
+                    extra = len(word)
+                part_words_chunk.append(word)
+                part_chunk_length += extra
+            if part_words_chunk:
+                part_chunks.append(" ".join(part_words_chunk))
+            for value in part_chunks:
+                if chunk and chunk_length + len(value) + 1 > MAX_TURN_CHARS:
+                    append_block()
+                chunk.append(value)
+                chunk_length += len(value) + (1 if chunk_length else 0)
         append_block()
 
     result_turns = tuple(blocks)

@@ -7,6 +7,7 @@ const DB_NAME = 'openscribe-telehealth-recovery-v1';
 const DB_VERSION = 1;
 const WINDOWS = 'pending_windows';
 const KEYS = 'capture_keys';
+const STORAGE_LOCK = 'openscribe-telehealth-recovery-v1';
 const CHANNELS = ['clinician', 'patient'];
 const MAX_WINDOWS = 8;
 const MAX_AUDIO_BYTES = 1024 * 1024;
@@ -81,6 +82,7 @@ export function createTelehealthRecoveryJournal({
   store = createIndexedDbTelehealthStore(),
   cryptography = globalThis.crypto,
   now = () => Date.now(),
+  locks = globalThis.navigator?.locks,
 } = {}) {
   // The status-only recovery interface should still mount on unsupported
   // browsers; the recording START itself will fail closed in check().
@@ -93,6 +95,13 @@ export function createTelehealthRecoveryJournal({
     action = result.catch(() => {});
     return result;
   };
+  const coordinated = (fn) => {
+    if (!locks || typeof locks.request !== 'function') {
+      throw new Error('Encrypted Telehealth recovery requires cross-tab Web Locks support.');
+    }
+    return locks.request(STORAGE_LOCK, { mode: 'exclusive' }, fn);
+  };
+  const run = (fn) => serial(() => coordinated(fn));
   const partId = (captureId, channel, sequence) => captureId + ':' + channel + ':' + sequence;
   const keyFor = async (captureId, create = false) => {
     const existing = await store.get(KEYS, captureId);
@@ -129,7 +138,7 @@ export function createTelehealthRecoveryJournal({
       )) await store.remove(KEYS, item.id);
     }
   };
-  const persist = (part) => serial(async () => {
+  const persist = (part) => run(async () => {
     const { captureId, transcriptId, channel, sequence, key, bytes, spans } = part || {};
     if (!UUID.test(captureId) || !UUID.test(transcriptId) || !UUID.test(key)
       || !CHANNELS.includes(channel) || !Number.isSafeInteger(sequence)
@@ -189,7 +198,7 @@ export function createTelehealthRecoveryJournal({
       spans: structuredClone(spans), iv, ciphertext, createdAt: now(),
     }, { onlyIfMissing: true });
   });
-  const list = (captureId, transcriptId) => serial(async () => {
+  const list = (captureId, transcriptId) => run(async () => {
     if (!UUID.test(captureId) || !UUID.test(transcriptId)) {
       throw new Error('Invalid Telehealth recovery identity.');
     }
@@ -217,7 +226,7 @@ export function createTelehealthRecoveryJournal({
     }
     return recovered;
   });
-  const remove = (part) => serial(async () => {
+  const remove = (part) => run(async () => {
     const id = partId(part.captureId, part.channel, part.sequence);
     const existing = await store.get(WINDOWS, id);
     if (existing && (existing.transcriptId !== part.transcriptId || existing.key !== part.key)) {
@@ -227,7 +236,7 @@ export function createTelehealthRecoveryJournal({
     const remaining = (await store.list(WINDOWS)).some((entry) => entry.captureId === part.captureId);
     if (!remaining) await store.remove(KEYS, part.captureId);
   });
-  const clear = (captureId, transcriptId) => serial(async () => {
+  const clear = (captureId, transcriptId) => run(async () => {
     if (!UUID.test(captureId) || !UUID.test(transcriptId)) throw new Error('Invalid Telehealth identity.');
     const entries = (await store.list(WINDOWS)).filter((entry) =>
       entry.captureId === captureId && entry.transcriptId === transcriptId);
@@ -235,7 +244,7 @@ export function createTelehealthRecoveryJournal({
     const remaining = (await store.list(WINDOWS)).some((entry) => entry.captureId === captureId);
     if (!remaining) await store.remove(KEYS, captureId);
   });
-  const check = () => serial(async () => {
+  const check = () => run(async () => {
     if (!subtle || typeof cryptography?.getRandomValues !== 'function') {
       throw new Error('Encrypted Telehealth recovery requires WebCrypto on HTTPS or localhost.');
     }

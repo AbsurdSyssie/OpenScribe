@@ -72,6 +72,8 @@ def _mapped_turns(
     candidate = stored.get("turns") if isinstance(stored, dict) and stored.get("version") == 1 else None
     if isinstance(candidate, list) and candidate:
         segments = []
+        has_unmappable_timing = False
+        previous_start_ms = -1
         for index, turn in enumerate(candidate):
             if not isinstance(turn, dict) or not isinstance(turn.get("text"), str):
                 segments = []
@@ -82,6 +84,14 @@ def _mapped_turns(
                 if start is not None and end is not None
                 else None
             )
+            if position is None:
+                has_unmappable_timing = True
+            elif position[0] < previous_start_ms:
+                # Never sort provider words into a new text order. Preserve
+                # the canonical flat transcript when source time rewinds.
+                has_unmappable_timing = True
+            else:
+                previous_start_ms = position[0]
             segments.append(TelehealthSourceTurn(
                 part_id=part.id,
                 channel=part.channel,
@@ -91,7 +101,7 @@ def _mapped_turns(
                 start_ms=position[0] if position else None,
                 end_ms=position[1] if position else None,
             ))
-        if segments and all(item.text for item in segments):
+        if segments and not has_unmappable_timing and all(item.text for item in segments):
             # Source text must match its segmentation, not just be similar:
             # otherwise we would omit potentially clinically important words.
             compact = lambda value: "".join(ch for ch in value if not ch.isspace())

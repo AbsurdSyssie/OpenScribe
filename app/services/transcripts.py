@@ -553,6 +553,12 @@ def _expire_locked_ingestion_source(
                     now=comparison_now,
                 )
         delete_dispatches_for_sources(db, ingestion_job_ids=[job.id])
+        _mark_telehealth_ingestion_part_failed(
+            db,
+            job=job,
+            failure_code="source_audio_expired",
+            now=comparison_now,
+        )
         job.status = TranscriptIngestionJobStatus.failed
         job.error_code = "ingestion_source_expired"
         job.error_message = "Uploaded audio expired before transcription completed"
@@ -1331,6 +1337,12 @@ def _resolved_transcript_status(db: Session, *, transcript: Transcript) -> Trans
     ).limit(1))
     if failed_stream is not None:
         return TranscriptStatus.failed
+    failed_telehealth = db.scalar(select(TelehealthCaptureSession.id).where(
+        TelehealthCaptureSession.transcript_id == transcript.id,
+        TelehealthCaptureSession.status.in_(("interrupted", "failed")),
+    ).limit(1))
+    if failed_telehealth is not None:
+        return TranscriptStatus.failed
     if _has_pending_ingestion_jobs(db, transcript_id=transcript.id):
         return TranscriptStatus.transcribing
     active_telehealth = db.scalar(select(TelehealthCaptureSession.id).where(
@@ -1339,12 +1351,6 @@ def _resolved_transcript_status(db: Session, *, transcript: Transcript) -> Trans
     ).limit(1))
     if active_telehealth is not None:
         return TranscriptStatus.transcribing
-    failed_telehealth = db.scalar(select(TelehealthCaptureSession.id).where(
-        TelehealthCaptureSession.transcript_id == transcript.id,
-        TelehealthCaptureSession.status.in_(("interrupted", "failed")),
-    ).limit(1))
-    if failed_telehealth is not None:
-        return TranscriptStatus.failed
     latest_job = latest_ingestion_job_for_transcript(db, transcript_id=transcript.id)
     if latest_job is not None and latest_job.status is TranscriptIngestionJobStatus.failed:
         return TranscriptStatus.failed
@@ -3167,29 +3173,44 @@ def _expire_ingestion_source_before_preparation(db: Session, *, job_id: UUID) ->
     return True
 
 
-def _mark_job_failed(db: Session, transcript: Transcript, job: TranscriptIngestionJob, *, code: str, message: str) -> None:
-    # Telehealth results cannot be applied one-sided. Mark a terminal source
-    # failure on its owning capture so the other job never appears complete
-    # and can still be retried from its existing Vault audio source.
+def _mark_telehealth_ingestion_part_failed(
+    db: Session,
+    *,
+    job: TranscriptIngestionJob,
+    failure_code: str,
+    now: datetime,
+) -> None:
+    """Fail the Telehealth source and capture without erasing an earlier interruption."""
     capture_part = db.scalar(select(TelehealthCapturePart).where(
         TelehealthCapturePart.ingestion_job_id == job.id,
     ).with_for_update())
     if capture_part is not None:
         capture_part.status = "failed"
+        capture_part.updated_at = now
         db.add(capture_part)
         capture_session = db.scalar(select(TelehealthCaptureSession).where(
             TelehealthCaptureSession.id == capture_part.session_id,
         ).with_for_update())
         if capture_session is not None and capture_session.status != "completed":
             capture_session.status = "failed"
-            # Preserve any earlier audio-clock/permission/track interruption.
-            # STT failure is a retryable processing outcome, not evidence
-            # that previously lost consultation audio was recovered.
+            # Preserve any earlier audio-clock, permission, or track warning.
             if capture_session.failure_code is None:
                 capture_session.failure_channel = capture_part.channel
-                capture_session.failure_code = "transcription_failed"
-            capture_session.updated_at = utcnow()
+                capture_session.failure_code = failure_code
+            capture_session.updated_at = now
             db.add(capture_session)
+
+
+def _mark_job_failed(db: Session, transcript: Transcript, job: TranscriptIngestionJob, *, code: str, message: str) -> None:
+    # Telehealth results cannot be applied one-sided. Mark a terminal source
+    # failure on its owning capture so the other job never appears complete
+    # and can still be retried from its existing Vault audio source.
+    _mark_telehealth_ingestion_part_failed(
+        db,
+        job=job,
+        failure_code="transcription_failed",
+        now=utcnow(),
+    )
     job.status = TranscriptIngestionJobStatus.failed
     job.error_code = code
     job.error_message = message[:255]
@@ -3709,7 +3730,9 @@ def process_transcript_ingestion_job(
             telehealth_part.updated_at = now
             job.status = TranscriptIngestionJobStatus.completed
             job.source_audio_blob = None
-            transcript.status = TranscriptStatus.transcribing
+            # A sibling may finish after expiry/interruption terminalized its
+            # capture. Reconcile instead of resurrecting the transcript root.
+            transcript.status = _resolved_transcript_status(db, transcript=transcript)
             db.add(telehealth_part)
             db.add(job)
             db.add(transcript)

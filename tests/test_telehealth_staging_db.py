@@ -18,6 +18,14 @@ from app.models import (
     TelehealthCaptureSession,
     Transcript,
     TranscriptAudioCleanupJob,
+    ProviderAttempt,
+    AttemptKind,
+    AttemptOutcome,
+    AttemptStatus,
+    QuotaResource,
+    TranscriptIngestionJob,
+    TranscriptIngestionJobKind,
+    TranscriptIngestionJobStatus,
     TranscriptIngestionMode,
     TranscriptStatus,
     utcnow,
@@ -29,11 +37,15 @@ from app.services.telehealth_capture import (
     seal_telehealth_capture,
     stage_telehealth_audio_part,
 )
+from app.services.quotas import mark_provider_attempt_submitted, reserve_provider_attempt
 from app.services.transcripts import (
     delete_transcripts,
     expire_ingestion_source_audio,
+    process_transcript_ingestion_job,
     process_transcript_audio_cleanup_jobs,
     queue_transcript_audio_cleanup,
+    reconcile_transcript_status,
+    retry_failed_audio_ingestion,
 )
 
 
@@ -75,15 +87,15 @@ def _session(db, owner, transcript):
     return row
 
 
-def _part(db, owner, session, transcript, *, deadline):
+def _part(db, owner, session, transcript, *, deadline, channel="patient", sequence_no=0):
     row = TelehealthCapturePart(
         id=uuid4(),
         session_id=session.id,
         transcript_id=transcript.id,
         owner_user_id=owner.id,
         team_id=owner.team_id,
-        channel="patient",
-        sequence_no=0,
+        channel=channel,
+        sequence_no=sequence_no,
         idempotency_key=uuid4(),
         status="staged",
         timeline_start_frame=0,
@@ -229,6 +241,272 @@ def test_telehealth_staging_expiry_and_root_deletion_enqueue_vault_cleanup(
     assert held_ref in deleted
     # SQLAlchemy may expire a deleted mapped object after the root commit.
     assert db_session.get(TelehealthCapturePart, kept_id) is None
+
+
+@pytest.mark.parametrize("job_status", [TranscriptIngestionJobStatus.queued, TranscriptIngestionJobStatus.processing])
+@pytest.mark.parametrize("original_failure", [None, "source_ended"])
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_expired_handed_off_telehealth_source_fails_linked_capture(
+    db_session, make_team, make_user, monkeypatch,
+    job_status, original_failure, cleanup_fails,
+):
+    team = make_team(name="Telehealth Handed-off Expiry")
+    owner = make_user(email="telehealth-handoff-expiry@example.com", password="password-1", team=team)
+    now = utcnow()
+    transcript = _transcript(db_session, owner, expires_at=now + timedelta(days=1))
+    session = _session(db_session, owner, transcript)
+    session.failure_channel = "patient" if original_failure else None
+    session.failure_code = original_failure
+    session.incomplete_acknowledged_at = now - timedelta(minutes=1) if original_failure else None
+    job = TranscriptIngestionJob(
+        transcript_id=transcript.id,
+        owner_user_id=owner.id,
+        team_id=owner.team_id,
+        status=job_status,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="synthetic-patient.wav",
+        source_audio_vault_ref=f"secret:openscribe/transcript-ingestion/{uuid4()}/source-audio",
+        source_audio_size_bytes=3244,
+        source_audio_duration_seconds=0.1,
+        source_audio_expires_at=now - timedelta(seconds=1),
+    )
+    db_session.add(job)
+    db_session.flush()
+    part = _part(db_session, owner, session, transcript, deadline=job.source_audio_expires_at)
+    part.status = "processing"
+    part.ingestion_job_id = job.id
+    part.source_audio_vault_ref = None
+    part.source_audio_expires_at = job.source_audio_expires_at
+    expected_ref = job.source_audio_vault_ref
+    db_session.add(part)
+    session.status = "processing"
+    db_session.add(session)
+    db_session.commit()
+    attempt = reserve_provider_attempt(
+        db_session,
+        team_id=owner.team_id,
+        owner_user_id=owner.id,
+        resource=QuotaResource.audio_seconds,
+        attempt_kind=AttemptKind.stt_conversation,
+        correlation_id=job.id,
+        attempt_number=1,
+        reserved_units=1,
+        reservation_valid_until=now + timedelta(minutes=10),
+        transcript_id=transcript.id,
+        transcript_ingestion_job_id=job.id,
+        measured_audio_seconds=0.1,
+    )
+    if job_status is TranscriptIngestionJobStatus.processing:
+        mark_provider_attempt_submitted(
+            db_session, attempt_id=attempt.id, deadline_at=now + timedelta(minutes=5), now=now,
+        )
+    db_session.commit()
+    deleted = []
+    def delete_source(*, secret_ref):
+        if cleanup_fails:
+            raise AppError(502, "vault_unavailable", "Synthetic cleanup failure")
+        deleted.append(secret_ref)
+
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        delete_source,
+    )
+
+    assert expire_ingestion_source_audio(db_session, now=now) == 1
+    db_session.refresh(job)
+    db_session.refresh(part)
+    db_session.refresh(session)
+    db_session.refresh(transcript)
+    assert job.status is TranscriptIngestionJobStatus.failed
+    assert job.error_code == "ingestion_source_expired"
+    assert job.source_audio_vault_ref is None
+    assert part.status == "failed"
+    assert part.source_audio_vault_ref is None
+    assert session.status == "failed"
+    assert session.failure_channel == "patient"
+    assert session.failure_code == (original_failure or "source_audio_expired")
+    assert bool(session.incomplete_acknowledged_at) == bool(original_failure)
+    assert transcript.status is TranscriptStatus.failed
+    if cleanup_fails:
+        cleanup = db_session.scalar(select(TranscriptAudioCleanupJob).where(
+            TranscriptAudioCleanupJob.secret_ref == expected_ref,
+        ))
+        assert cleanup is not None and cleanup.attempt_count == 1
+        assert deleted == []
+    else:
+        assert deleted == [expected_ref]
+    db_session.refresh(attempt)
+    if job_status is TranscriptIngestionJobStatus.processing:
+        assert attempt.status is AttemptStatus.settled
+        assert attempt.outcome is AttemptOutcome.unknown
+    else:
+        assert attempt.status is AttemptStatus.cancelled
+    with pytest.raises(AppError) as error:
+        retry_failed_audio_ingestion(
+            db_session, owner, transcript_id=transcript.id, job_id=job.id,
+        )
+    assert error.value.code == "ingestion_retry_expired"
+
+
+@pytest.mark.parametrize("sibling_status", [
+    TranscriptIngestionJobStatus.queued,
+    TranscriptIngestionJobStatus.completed,
+])
+def test_failed_telehealth_capture_dominates_sibling_job_reconciliation(
+    db_session, make_team, make_user, sibling_status,
+):
+    team = make_team(name=f"Telehealth Expired Sibling {sibling_status.value}")
+    owner = make_user(email=f"telehealth-sibling-{sibling_status.value}@example.com", password="password-1", team=team)
+    transcript = _transcript(db_session, owner)
+    session = _session(db_session, owner, transcript)
+    session.status = "failed"
+    session.failure_channel = "patient"
+    session.failure_code = "source_audio_expired"
+    expired_job = TranscriptIngestionJob(
+        transcript_id=transcript.id, owner_user_id=owner.id, team_id=owner.team_id,
+        status=TranscriptIngestionJobStatus.failed,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="synthetic-expired.wav",
+        error_code="ingestion_source_expired",
+    )
+    sibling_job = TranscriptIngestionJob(
+        transcript_id=transcript.id, owner_user_id=owner.id, team_id=owner.team_id,
+        status=sibling_status,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="synthetic-sibling.wav",
+        result_text_encrypted="synthetic encrypted result" if sibling_status is TranscriptIngestionJobStatus.completed else None,
+    )
+    db_session.add_all([expired_job, sibling_job])
+    db_session.flush()
+    expired_part = _part(db_session, owner, session, transcript, deadline=utcnow())
+    expired_part.status = "failed"
+    expired_part.ingestion_job_id = expired_job.id
+    expired_part.source_audio_vault_ref = None
+    sibling_part = _part(
+        db_session, owner, session, transcript, deadline=utcnow(),
+        channel="clinician", sequence_no=0,
+    )
+    sibling_part.status = "transcribed" if sibling_status is TranscriptIngestionJobStatus.completed else "processing"
+    sibling_part.ingestion_job_id = sibling_job.id
+    sibling_part.source_audio_vault_ref = None
+    db_session.add_all([expired_part, sibling_part, session])
+    db_session.commit()
+
+    reconcile_transcript_status(db_session, transcript=transcript)
+
+    db_session.refresh(transcript)
+    assert transcript.status is TranscriptStatus.failed
+
+
+def test_provider_result_returning_after_telehealth_source_expiry_is_fenced(
+    db_session, make_team, make_user, monkeypatch,
+):
+    team = make_team(name="Telehealth Late Result Fence")
+    owner = make_user(email="telehealth-late-result@example.com", password="password-1", team=team)
+    now = utcnow()
+    transcript = _transcript(db_session, owner)
+    session = _session(db_session, owner, transcript)
+    deadline = now + timedelta(minutes=1)
+    job = TranscriptIngestionJob(
+        transcript_id=transcript.id, owner_user_id=owner.id, team_id=owner.team_id,
+        status=TranscriptIngestionJobStatus.queued,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="synthetic-patient.wav",
+        source_audio_vault_ref=f"secret:openscribe/transcript-ingestion/{uuid4()}/source-audio",
+        source_audio_size_bytes=3244, source_audio_duration_seconds=0.1,
+        source_audio_expires_at=deadline,
+    )
+    db_session.add(job)
+    db_session.flush()
+    part = _part(db_session, owner, session, transcript, deadline=deadline)
+    part.status = "processing"
+    part.ingestion_job_id = job.id
+    part.source_audio_vault_ref = None
+    part.source_audio_expires_at = deadline
+    db_session.add(part)
+    sibling_deadline = now + timedelta(minutes=5)
+    sibling_job = TranscriptIngestionJob(
+        transcript_id=transcript.id, owner_user_id=owner.id, team_id=owner.team_id,
+        status=TranscriptIngestionJobStatus.queued,
+        job_kind=TranscriptIngestionJobKind.audio_file,
+        source_filename="synthetic-clinician.wav",
+        source_audio_vault_ref=f"secret:openscribe/transcript-ingestion/{uuid4()}/source-audio",
+        source_audio_size_bytes=3244, source_audio_duration_seconds=0.1,
+        source_audio_expires_at=sibling_deadline,
+    )
+    db_session.add(sibling_job)
+    db_session.flush()
+    sibling_part = _part(
+        db_session, owner, session, transcript, deadline=sibling_deadline,
+        channel="clinician", sequence_no=0,
+    )
+    sibling_part.status = "processing"
+    sibling_part.ingestion_job_id = sibling_job.id
+    sibling_part.source_audio_vault_ref = None
+    sibling_part.source_audio_expires_at = sibling_deadline
+    db_session.add(sibling_part)
+    session.status = "processing"
+    transcript.status = TranscriptStatus.transcribing
+    db_session.add_all([part, session, transcript])
+    attempt = reserve_provider_attempt(
+        db_session, team_id=owner.team_id, owner_user_id=owner.id,
+        resource=QuotaResource.audio_seconds, attempt_kind=AttemptKind.stt_conversation,
+        correlation_id=job.id, attempt_number=1, reserved_units=1,
+        reservation_valid_until=now + timedelta(minutes=10), transcript_id=transcript.id,
+        transcript_ingestion_job_id=job.id, measured_audio_seconds=0.1,
+    )
+    sibling_attempt = reserve_provider_attempt(
+        db_session, team_id=owner.team_id, owner_user_id=owner.id,
+        resource=QuotaResource.audio_seconds, attempt_kind=AttemptKind.stt_conversation,
+        correlation_id=sibling_job.id, attempt_number=1, reserved_units=1,
+        reservation_valid_until=now + timedelta(minutes=10), transcript_id=transcript.id,
+        transcript_ingestion_job_id=sibling_job.id, measured_audio_seconds=0.1,
+    )
+    db_session.commit()
+    monkeypatch.setattr("app.services.transcripts._read_queued_source_audio", lambda *args, **kwargs: b"synthetic audio")
+    monkeypatch.setattr(
+        "app.services.transcripts.normalize_audio_to_wav_16k_mono",
+        lambda **kwargs: SimpleNamespace(data=b"synthetic normalized audio", filename="synthetic.wav", content_type="audio/wav"),
+    )
+    monkeypatch.setattr("app.services.transcripts.enforce_whole_file_duration_limit", lambda **kwargs: None)
+    monkeypatch.setattr("app.services.transcripts.resolve_stt_snapshot_bearer_token", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.services.transcripts.delete_transcript_ingestion_source_audio", lambda **kwargs: None)
+
+    provider_calls = 0
+    def provider_returns_after_expiry(db, **kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        assert kwargs["telehealth_timing"] is True
+        if provider_calls == 1:
+            expire_ingestion_source_audio(db, now=deadline + timedelta(seconds=1))
+            return "Synthetic late result must not persist"
+        return "Synthetic sibling result stays unapplied"
+
+    monkeypatch.setattr("app.services.transcripts.transcribe_with_stt_snapshot", provider_returns_after_expiry)
+
+    processed = process_transcript_ingestion_job(db_session, job_id=job.id)
+
+    assert processed is not None and processed.status is TranscriptIngestionJobStatus.failed
+    sibling_processed = process_transcript_ingestion_job(db_session, job_id=sibling_job.id)
+    assert sibling_processed is not None and sibling_processed.status is TranscriptIngestionJobStatus.completed
+    job = db_session.get(TranscriptIngestionJob, job.id)
+    part = db_session.get(TelehealthCapturePart, part.id)
+    sibling_job = db_session.get(TranscriptIngestionJob, sibling_job.id)
+    sibling_part = db_session.get(TelehealthCapturePart, sibling_part.id)
+    session = db_session.get(TelehealthCaptureSession, session.id)
+    transcript = db_session.get(Transcript, transcript.id)
+    attempt = db_session.get(ProviderAttempt, attempt.id)
+    sibling_attempt = db_session.get(ProviderAttempt, sibling_attempt.id)
+    assert job.result_text_encrypted is None
+    assert part.status == "failed"
+    assert sibling_part.status == "transcribed"
+    assert sibling_job.result_text_encrypted is not None
+    assert session.status == "failed"
+    assert transcript.status is TranscriptStatus.failed
+    assert attempt.status is AttemptStatus.settled
+    assert attempt.outcome is AttemptOutcome.unknown
+    assert sibling_attempt.status is AttemptStatus.settled
+    assert sibling_attempt.outcome is AttemptOutcome.succeeded
 
 
 def test_staged_audio_prevents_cleanup_when_source_reference_is_still_live(

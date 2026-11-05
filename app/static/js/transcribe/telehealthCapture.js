@@ -52,7 +52,10 @@ export function createTelehealthCapture({
 
   const setUpTrackEvents = (channel, track) => {
     const ended = () => interruptedCapture(channel, 'ended');
-    const muted = () => emitSourceState(channel, 'muted');
+    const muted = () => {
+      emitSourceState(channel, 'muted');
+      interruptedCapture(channel, 'source_muted');
+    };
     const unmuted = () => emitSourceState(channel, 'live');
     track.addEventListener('ended', ended);
     track.addEventListener('mute', muted);
@@ -62,7 +65,12 @@ export function createTelehealthCapture({
       track.removeEventListener('mute', muted);
       track.removeEventListener('unmute', unmuted);
     });
-    emitSourceState(channel, track.muted ? 'muted' : 'live');
+    if (track.muted) {
+      emitSourceState(channel, 'muted');
+      interruptedCapture(channel, 'source_muted');
+    } else {
+      emitSourceState(channel, 'live');
+    }
   };
 
   const makeTap = (channel, stream) => {

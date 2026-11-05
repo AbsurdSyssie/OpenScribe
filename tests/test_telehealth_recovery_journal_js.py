@@ -41,6 +41,22 @@ class FakeStore {
   }
   async remove(table, id) { this.tables[table].delete(id); }
 }
+class FakeLocks {
+  constructor() { this.tail = Promise.resolve(); }
+  request(name, options, callback) {
+    assert.equal(name, 'openscribe-telehealth-recovery-v1');
+    assert.equal(options.mode, 'exclusive');
+    const prior = this.tail;
+    let unlock;
+    const gate = new Promise((resolve) => { unlock = resolve; });
+    this.tail = prior.then(() => gate);
+    return prior.then(async () => {
+      try { return await callback({ name, mode: options.mode }); }
+      finally { unlock(); }
+    });
+  }
+}
+const locks = new FakeLocks();
 const C = '11111111-1111-4111-8111-111111111111';
 const T = '22222222-2222-4222-8222-222222222222';
 const K = '33333333-3333-4333-8333-333333333333';
@@ -48,7 +64,7 @@ const otherK = '44444444-4444-4444-8444-444444444444';
 const store = new FakeStore();
 let now = 1720000000000;
 const journal = createTelehealthRecoveryJournal({
-  store, cryptography: webcrypto, now: () => now,
+  store, cryptography: webcrypto, now: () => now, locks,
 });
 await journal.check();
 assert.equal(store.tables.capture_keys.size, 0, 'CryptoKey test leaves no key behind');
@@ -79,8 +95,72 @@ await assert.rejects(
   journal.persist({...clinician, bytes: alteredBytes}),
   /Conflicting Telehealth recovery window audio/,
 );
-const persisted = createTelehealthRecoveryJournal({store, cryptography:webcrypto, now:()=>now});
+const persisted = createTelehealthRecoveryJournal({store, cryptography:webcrypto, now:()=>now, locks});
 assert.deepEqual((await persisted.list(C,T)).map((v)=>v.channel), ['clinician', 'patient']);
+
+// Separate tabs share the origin lock across CryptoKey creation/encryption and
+// last-window key deletion. Pause the new write after key lookup; removing the
+// old final window must wait until the new ciphertext commits.
+const raceC = '55555555-5555-4555-8555-555555555555';
+const racePart = (channel, sequence, offset) => ({
+  ...part(channel, sequence, K, offset), captureId: raceC,
+});
+await journal.persist(racePart('clinician', 0, 0));
+let enteredEncrypt;
+const encryptEntered = new Promise((resolve) => { enteredEncrypt = resolve; });
+let releaseEncrypt;
+const encryptionGate = new Promise((resolve) => { releaseEncrypt = resolve; });
+let delayed = true;
+const slowCrypto = {
+  subtle: {
+    generateKey: (...args) => webcrypto.subtle.generateKey(...args),
+    decrypt: (...args) => webcrypto.subtle.decrypt(...args),
+    encrypt: async (...args) => {
+      if (delayed) {
+        delayed = false;
+        enteredEncrypt();
+        await encryptionGate;
+      }
+      return webcrypto.subtle.encrypt(...args);
+    },
+  },
+  getRandomValues: (bytes) => webcrypto.getRandomValues(bytes),
+  randomUUID: () => webcrypto.randomUUID(),
+};
+const writer = createTelehealthRecoveryJournal({store,cryptography:slowCrypto,now:()=>now,locks});
+const remover = createTelehealthRecoveryJournal({store,cryptography:webcrypto,now:()=>now,locks});
+const writing = writer.persist(racePart('patient', 0, 12));
+await encryptEntered;
+const removing = remover.remove(racePart('clinician', 0, 0));
+await Promise.resolve();
+assert.equal(store.tables.capture_keys.has(raceC), true,
+  'last-window deletion must wait while another tab encrypts');
+releaseEncrypt();
+await Promise.all([writing, removing]);
+assert.deepEqual((await remover.list(raceC,T)).map((v)=>v.channel), ['patient'],
+  'the window committed during the race remains decryptable');
+
+// A concurrent clear/prune-style read-modify-delete and another persist must
+// leave either no key/window or a decryptable surviving window.
+await Promise.all([
+  remover.clear(raceC,T),
+  writer.persist(racePart('clinician', 1, 24)),
+]);
+const afterClearRace = await remover.list(raceC,T);
+assert.equal(store.tables.capture_keys.has(raceC), afterClearRace.length > 0);
+
+// Concurrent first writes for one capture share the key created by the winner.
+const creationC = '66666666-6666-4666-8666-666666666666';
+const creationPart = (channel) => ({ ...part(channel,0,K), captureId:creationC });
+const creatorA = createTelehealthRecoveryJournal({store,cryptography:webcrypto,now:()=>now,locks});
+const creatorB = createTelehealthRecoveryJournal({store,cryptography:webcrypto,now:()=>now,locks});
+await Promise.all([
+  creatorA.persist(creationPart('clinician')),
+  creatorB.persist(creationPart('patient')),
+]);
+assert.deepEqual((await creatorA.list(creationC,T)).map((v)=>v.channel), ['clinician','patient']);
+await remover.clear(raceC,T);
+await creatorA.clear(creationC,T);
 
 const receipt = {
   capture_session_id: C, transcript_id: T, status: 'stopping',
@@ -114,7 +194,7 @@ await assert.rejects(replayTelehealthRecoveryWindows({
 // its exact stable identity, ready for another page load.
 assert.equal(store.tables.pending_windows.size, 1);
 assert.equal((await persisted.list(C,T))[0].key, otherK);
-const onReload = createTelehealthRecoveryJournal({store,cryptography:webcrypto,now:()=>now});
+const onReload = createTelehealthRecoveryJournal({store,cryptography:webcrypto,now:()=>now,locks});
 assert.deepEqual(await replayTelehealthRecoveryWindows({
   journal:onReload, capture:receipt, csrfFetch:fetcher, pace:async()=>{},
 }), {clinician:0,patient:1});
@@ -163,6 +243,7 @@ assert.equal(store.tables.capture_keys.size,0);
 store.failWrite = true;
 await assert.rejects(journal.persist(clinician), /Could not persist the Telehealth recovery key/);
 store.failWrite = false;
+await persisted.persist(part('patient',0,otherK,123)); // Rejection released the shared lock.
 
 const waits=[];
 let timer=1000;
@@ -174,9 +255,14 @@ await pace();
 assert.deepEqual(waits,[1100]);
 
 const unavailable = createTelehealthRecoveryJournal({
-  store, cryptography:{}, now:()=>now,
+  store, cryptography:{}, now:()=>now, locks,
 });
 await assert.rejects(unavailable.check(),/requires WebCrypto/);
+
+const unsupportedLocks = createTelehealthRecoveryJournal({
+  store, cryptography:webcrypto, now:()=>now, locks:null,
+});
+await assert.rejects(unsupportedLocks.check(), /cross-tab Web Locks support/);
 console.log('Encrypted Telehealth crash journal: passed');
 """, encoding="utf-8")
     result = subprocess.run(

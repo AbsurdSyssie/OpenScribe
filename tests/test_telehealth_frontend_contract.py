@@ -54,7 +54,9 @@ def test_dual_audio_never_uses_existing_microphone_handler_for_telehealth():
     assert "client.discard()" in ui
     assert "data-telehealth-discard" in ui
     assert "/telehealth/unresolved" in ui
-    assert "postRecovery(restoredCapture, 'discard')" in ui
+    assert "postRecovery(saved, 'discard')" in ui
+    assert "replayTelehealthRecoveryWindows({" in ui
+    assert "await recoveryJournal.clear(saved.capture_session_id, saved.transcript_id)" in ui
     assert "onStateChange: render" in ui
     assert "isUnresolved:" in ui
 

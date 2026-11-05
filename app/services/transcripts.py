@@ -2808,8 +2808,12 @@ def retry_failed_audio_ingestion(
             raise AppError(409, "ingestion_retry_unavailable", "Telehealth capture state prevents retry.")
         telehealth_part.status = "processing"
         capture_session.status = "processing"
-        capture_session.failure_code = None
-        capture_session.failure_channel = None
+        # Clearing a *transcription* failure is safe. Clearing an original
+        # capture interruption after an STT retry would silently suppress
+        # the persisted incomplete-recording warning in the clinical draft.
+        if capture_session.failure_code == "transcription_failed":
+            capture_session.failure_code = None
+            capture_session.failure_channel = None
         capture_session.updated_at = utcnow()
         db.add(telehealth_part)
         db.add(capture_session)
@@ -3178,8 +3182,12 @@ def _mark_job_failed(db: Session, transcript: Transcript, job: TranscriptIngesti
         ).with_for_update())
         if capture_session is not None and capture_session.status != "completed":
             capture_session.status = "failed"
-            capture_session.failure_channel = capture_part.channel
-            capture_session.failure_code = "transcription_failed"
+            # Preserve any earlier audio-clock/permission/track interruption.
+            # STT failure is a retryable processing outcome, not evidence
+            # that previously lost consultation audio was recovered.
+            if capture_session.failure_code is None:
+                capture_session.failure_channel = capture_part.channel
+                capture_session.failure_code = "transcription_failed"
             capture_session.updated_at = utcnow()
             db.add(capture_session)
     job.status = TranscriptIngestionJobStatus.failed

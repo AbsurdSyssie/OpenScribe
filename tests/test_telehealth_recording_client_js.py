@@ -110,6 +110,7 @@ const fetcher = async (path, opts = {}) => {
     }) };
   }
   if (path.endsWith('/audio-parts')) {
+    history.push('audio-window-upload');
     const identity = opts.headers?.['Idempotency-Key'];
     const channel = opts.body.get('channel');
     attempts.push([channel, identity]);
@@ -148,7 +149,7 @@ assert.deepEqual(client.uploadedParts, { clinician: 1, patient: 1 });
 assert.equal(durable.size, 0);
 assert.deepEqual(attempts.map(([channel]) => channel), ['clinician','clinician','patient']);
 assert.equal(attempts[0][1], attempts[1][1]);
-assert.equal(history.indexOf('journal-committed') < history.indexOf('POST'), true);
+assert.equal(history.indexOf('journal-committed') < history.indexOf('audio-window-upload'), true);
 assert.notEqual(attempts[1][1], attempts[2][1]);
 assert.equal(history.indexOf('capture-stop') < history.indexOf('stopped-on-server'), true);
 assert.equal(history.indexOf('sealed-on-server') > history.indexOf('stopped-on-server'), true);

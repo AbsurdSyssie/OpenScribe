@@ -27,6 +27,8 @@ def test_phone_toggle_and_first_use_notice_are_server_feature_gated():
         assert marker in html
     assert "Headphones are recommended" in html
     assert "Inform all participants before recording" in html
+    assert "temporarily encrypted in this browser profile" in html
+    assert "A crash can still lose the final unflushed audio" in html
     page = (ROOT / "app/templates/workspace.html").read_text(encoding="utf-8")
     assert "{% if telehealth_feature_enabled %}" in page
     assert "/static/css/telehealth.css" in page
@@ -49,6 +51,7 @@ def test_dual_audio_never_uses_existing_microphone_handler_for_telehealth():
     assert "await client.stop()" in ui
     assert "await client.transcribe()" in ui
     assert "onStateChange: render" in ui
+    assert "Show the current crash-buffer/privacy disclosure on every selection" in ui
     assert "toggle.hidden = getPreferences?.().show_telehealth_control === false" in ui
     assert "!restoredCapture && !enabled" in ui
     assert "client.discard()" in ui

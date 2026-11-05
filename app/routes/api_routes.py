@@ -2030,6 +2030,7 @@ from app.services.telehealth_api import telehealth_capture_detail
 from app.services.telehealth_capture import (
     acknowledge_incomplete_telehealth_capture,
     begin_telehealth_capture,
+    discard_unsubmitted_telehealth_capture,
     request_telehealth_capture_stop,
     seal_telehealth_capture,
     stage_telehealth_audio_part,
@@ -2214,6 +2215,30 @@ def acknowledge_incomplete_telehealth_capture_route(
     return telehealth_capture_detail(
         db, context.user,
         transcript_id=transcript_id, capture_session_id=capture_session_id,
+    )
+
+
+@api.post(
+    "/transcripts/{transcript_id}/telehealth/captures/{capture_session_id}/discard",
+    response_model=TelehealthCaptureDetail,
+    responses=error_responses,
+)
+def discard_telehealth_capture_route(
+    transcript_id: UUID,
+    capture_session_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    discard_unsubmitted_telehealth_capture(
+        db, context.user,
+        transcript_id=transcript_id,
+        capture_session_id=capture_session_id,
+    )
+    return telehealth_capture_detail(
+        db, context.user,
+        transcript_id=transcript_id,
+        capture_session_id=capture_session_id,
     )
 
 

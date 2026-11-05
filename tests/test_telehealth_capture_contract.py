@@ -48,8 +48,9 @@ def test_rejects_stereo_and_non_pcm16_format():
             wav.setsampwidth(2)
             wav.setframerate(16000)
             wav.writeframes(struct.pack("<hhhh", 1, 2, 3, 4))
-        with pytest.raises(AppError, match="mono PCM16"):
+        with pytest.raises(AppError) as error:
             _inspect_canonical_pcm16_wav(out.getvalue())
+        assert error.value.message == "Telehealth audio must be mono PCM16."
 
 
 def test_staged_session_tables_have_owner_root_and_cleanup_metadata():

@@ -2026,7 +2026,10 @@ from app.schemas.telehealth import (
     TelehealthTranscriptionQueued,
 )
 from app.services.telehealth_audio import TelehealthSourceSpan
-from app.services.telehealth_api import telehealth_capture_detail
+from app.services.telehealth_api import (
+    telehealth_capture_detail,
+    unresolved_telehealth_capture_detail,
+)
 from app.services.telehealth_capture import (
     acknowledge_incomplete_telehealth_capture,
     begin_telehealth_capture,
@@ -2074,6 +2077,22 @@ def start_telehealth_capture_route(
     return telehealth_capture_detail(
         db, context.user,
         transcript_id=transcript_id, capture_session_id=capture.id,
+    )
+
+
+@api.get(
+    "/transcripts/{transcript_id}/telehealth/unresolved",
+    response_model=TelehealthCaptureDetail | None,
+    responses=error_responses,
+)
+def unresolved_telehealth_capture_route(
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    return unresolved_telehealth_capture_detail(
+        db, context.user, transcript_id=transcript_id,
     )
 
 

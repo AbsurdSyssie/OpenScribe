@@ -1,4 +1,5 @@
 /* Small, opt-in Telehealth controls. Loaded only for the enabled rollout. */
+.telehealth-toggle[hidden] { display: none !important; }
 .telehealth-toggle {
   display: inline-flex;
   align-items: center;

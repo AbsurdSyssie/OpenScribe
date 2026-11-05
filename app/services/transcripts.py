@@ -3561,6 +3561,11 @@ def process_transcript_ingestion_job(
         # Successful queued -> processing claim is irreversible dispatch
         # boundary. Deletion after this point may discard only late results.
         stage = "stt_dispatch"
+        is_telehealth = db.scalar(select(TelehealthCapturePart.id).where(
+            TelehealthCapturePart.ingestion_job_id == job.id,
+            TelehealthCapturePart.transcript_id == transcript.id,
+            TelehealthCapturePart.owner_user_id == transcript.owner_user_id,
+        ).limit(1)) is not None
         transcription_result = transcribe_with_stt_snapshot(
             db,
             team_id=transcript.team_id,
@@ -3582,6 +3587,7 @@ def process_transcript_ingestion_job(
             segment_end_field=job.stt_segment_end_field,
             segment_speaker_field=job.stt_segment_speaker_field,
             stt_diarisation_enabled=job.stt_diarisation_enabled,
+            **({"telehealth_timing": True} if is_telehealth else {}),
             diarization_batch_enabled=job.stt_diarization_batch_enabled,
             diarization_field_name=job.stt_diarization_field_name,
             diarization_on_value=job.stt_diarization_on_value,

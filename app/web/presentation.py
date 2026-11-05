@@ -488,6 +488,8 @@ def user_app_preferences_response(preference) -> UserAppPreferencesDetail:
         preferred_transcribe_tab=payload.get("preferred_transcribe_tab"),
         diarization_enabled=payload.get("diarization_enabled") is True,
         diarization_warning_acknowledged=payload.get("diarization_warning_acknowledged") is True,
+        telehealth_button_visible=payload.get("telehealth_button_visible") is not False,
+        telehealth_first_use_acknowledged=payload.get("telehealth_first_use_acknowledged") is True,
         show_telehealth_control=payload.get("show_telehealth_control") is not False,
         telehealth_guidance_acknowledged=payload.get("telehealth_guidance_acknowledged") is True,
         created_at=preference.created_at,

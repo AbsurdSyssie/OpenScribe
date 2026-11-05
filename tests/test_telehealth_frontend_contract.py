@@ -21,6 +21,7 @@ def test_phone_toggle_and_first_use_notice_are_server_feature_gated():
         "data-telehealth-combined",
         "data-telehealth-retry",
         "data-telehealth-transcribe",
+        "data-telehealth-discard",
     ):
         assert marker in html
     assert "Headphones are recommended" in html
@@ -46,6 +47,9 @@ def test_dual_audio_never_uses_existing_microphone_handler_for_telehealth():
     assert "createTelehealthRecordingClient" in ui
     assert "await client.stop()" in ui
     assert "await client.transcribe()" in ui
+    assert "onStateChange: render" in ui
+    assert "client.discard()" in ui
+    assert "data-telehealth-discard" in ui
 
 
 def test_owner_only_telehealth_settings_are_independently_switchable():

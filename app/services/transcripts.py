@@ -1341,7 +1341,7 @@ def _resolved_transcript_status(db: Session, *, transcript: Transcript) -> Trans
         return TranscriptStatus.transcribing
     failed_telehealth = db.scalar(select(TelehealthCaptureSession.id).where(
         TelehealthCaptureSession.transcript_id == transcript.id,
-        TelehealthCaptureSession.status == "failed",
+        TelehealthCaptureSession.status.in_(("interrupted", "failed")),
     ).limit(1))
     if failed_telehealth is not None:
         return TranscriptStatus.failed
@@ -1487,6 +1487,22 @@ def assert_no_unresolved_stream_session(db: Session, *, transcript_id: UUID) -> 
     )
     if stream_id is not None:
         raise AppError(409, "stream_session_unresolved", "Resolve live transcription before continuing")
+    # Protect all existing call sites (file uploads, snapshot generation,
+    # consultation split and new recorder starts) from publishing stale notes
+    # while a two-source capture is still recording, unsealed, interrupted,
+    # transcribing or awaiting explicit failure recovery. This must be a
+    # SERVER-SIDE barrier; disabling a browser button is not sufficient.
+    capture_id = db.scalar(select(TelehealthCaptureSession.id).where(
+        TelehealthCaptureSession.transcript_id == transcript_id,
+        TelehealthCaptureSession.status.in_((
+            "active", "stopping", "ready", "interrupted", "processing", "failed",
+        )),
+    ).limit(1))
+    if capture_id is not None:
+        raise AppError(
+            409, "telehealth_capture_unresolved",
+            "Resolve the Telehealth recording before continuing.",
+        )
 
 
 def get_active_owner_transcript(db: Session, owner: User, *, transcript_id: UUID) -> Transcript:

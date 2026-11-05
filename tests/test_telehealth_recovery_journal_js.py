@@ -155,7 +155,7 @@ assert.equal(store.tables.capture_keys.size,0);
 
 // A browser storage error MUST fail closed before a window can be uploaded.
 store.failWrite = true;
-await assert.rejects(journal.persist(clinician), /Synthetic disk failure/);
+await assert.rejects(journal.persist(clinician), /Could not persist the Telehealth recovery key/);
 store.failWrite = false;
 
 const waits=[];

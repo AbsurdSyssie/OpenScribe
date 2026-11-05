@@ -40,7 +40,7 @@ class TelehealthCaptureSession(Base):
     __tablename__ = "telehealth_capture_sessions"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('active', 'stopping', 'interrupted', 'ready', 'processing', 'completed', 'failed')",
+            "status IN ('active', 'stopping', 'interrupted', 'ready', 'processing', 'completed', 'failed', 'discarded')",
             name="ck_telehealth_capture_sessions_status",
         ),
         CheckConstraint(

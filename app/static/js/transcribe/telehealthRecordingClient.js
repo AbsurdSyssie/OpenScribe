@@ -145,7 +145,11 @@ export function createTelehealthRecordingClient({
         sampleRate, windowSeconds: 10, maxPendingWindows: 4,
         onWindow: uploadWindow,
         onGap: (gap) => {
-          if (gap.endFrame - gap.startFrame > sampleRate / 2) {
+          // No time loss is acceptable to silently label as complete.
+          // Even a sub-second gap could omit a medication/dose/negation.
+          // Keep the already captured parts, stop, and require explicit
+          // clinician review of the incomplete audio before transcription.
+          if (gap.endFrame > gap.startFrame) {
             warn(gap.channel, 'audio_clock_interrupted');
             void stop().catch(() => {});
           }

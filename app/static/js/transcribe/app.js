@@ -1461,7 +1461,7 @@ let statusDetailsHideTimer = null;
 
       const isConsultationCaptureActive = () => {
         const label = String(recordToggleLabel?.textContent || '').toLowerCase();
-        return Boolean(captureController?.isCaptureUiActive?.() || label.includes('stop') || label.includes('stopping') || label.includes('uploading'));
+        return Boolean(telehealthUi?.isUnresolved?.() || captureController?.isCaptureUiActive?.() || label.includes('stop') || label.includes('stopping') || label.includes('uploading'));
       };
 
       const hasDictationContent = (dictation = null) => {
@@ -5824,7 +5824,7 @@ let statusDetailsHideTimer = null;
         getTranscriptText: () => currentDraftText,
         getActiveIngestionMode: () => activeIngestionMode,
         getIsLiveCaptureUiActive: () => isLiveCaptureUiActive(),
-        getIsRecordingSwitchBlocked: () => Boolean(captureController?.isLiveCaptureUiActive?.()) || currentTranscriptStatus === 'recording',
+        getIsRecordingSwitchBlocked: () => Boolean(telehealthUi?.isUnresolved?.()) || Boolean(captureController?.isLiveCaptureUiActive?.()) || currentTranscriptStatus === 'recording',
         selectDocumentFromUi,
         showFlash,
         showCopyToast,

@@ -1,4 +1,9 @@
-import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261105-telehealth-recording';
+import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261105-crash-recovery-1';
+import {
+  createTelehealthRecoveryJournal,
+  createTelehealthUploadPacer,
+  replayTelehealthRecoveryWindows,
+} from './telehealthRecoveryJournal.js?v=20261105-crash-recovery-1';
 
 // The recording bar is controlled only when Telehealth is explicitly selected.
 // Existing microphone/Deepgram recording flows remain untouched otherwise.
@@ -40,6 +45,7 @@ export function attachTelehealthControls({
   let enabled = false;
   let client = null;
   let restoredCapture = null;
+  const recoveryJournal = createTelehealthRecoveryJournal();
   let lastCheckedTranscriptId = null;
   let captureStatusCheckInFlight = false;
   let ownProcessingCheckInFlight = false;
@@ -111,11 +117,10 @@ export function attachTelehealthControls({
     if (retry) retry.hidden = client?.state !== 'recovery_required';
     const hasRestoredJob = restoredCapture?.parts?.some((part) => part.ingestion_job_id);
     const canRestorePartial = restoredCapture
-      && ['active', 'stopping', 'ready', 'interrupted'].includes(restoredCapture.status)
-      && restoredCapture.parts?.some((part) => part.status === 'staged');
+      && ['active', 'stopping', 'ready', 'interrupted'].includes(restoredCapture.status);
     if (partial) {
       partial.hidden = client?.state !== 'incomplete' && !canRestorePartial;
-      partial.textContent = canRestorePartial ? 'Recover stored audio' : 'Acknowledge and transcribe';
+      partial.textContent = canRestorePartial ? 'Recover audio and transcribe' : 'Acknowledge and transcribe';
     }
     if (discard) discard.hidden = !(
       ['recovery_required', 'incomplete', 'sealed'].includes(client?.state)
@@ -192,7 +197,7 @@ export function attachTelehealthControls({
             ? 'Sealed Telehealth audio is awaiting transcription. Review the stored parts and submit them.'
             : saved.parts?.some((part) => part.ingestion_job_id)
               ? 'A Telehealth transcription failed. Retry the retained source audio using the consultation recovery controls.'
-              : 'An earlier Telehealth recording is unresolved. Unuploaded browser audio cannot be recovered after a reload. Review retained parts or discard explicitly.';
+              : 'The Telehealth recording ended unexpectedly. Encrypted unacknowledged audio may be recoverable on this browser; the final unflushed seconds might be missing. Recover or discard explicitly.';
       }
       render();
     } catch (_) {
@@ -331,6 +336,7 @@ export function attachTelehealthControls({
     client = createTelehealthRecordingClient({
       transcriptId: getTranscriptId(),
       csrfFetch, onLevel, onSourceState, onWarning, onStateChange: render,
+      recoveryJournal,
     });
     const attempt = client.start(); // Direct user activation -> getDisplayMedia.
     render();
@@ -425,9 +431,11 @@ export function attachTelehealthControls({
       'Permanently discard this unsubmitted recording? Clinician and patient audio staged so far will be queued for deletion. No transcription will be created.',
     )) return;
     discard.disabled = true;
-    const discardRequest = client ? client.discard() : postRecovery(restoredCapture, 'discard');
+    const saved = restoredCapture;
+    const discardRequest = client ? client.discard() : postRecovery(saved, 'discard');
     void discardRequest.then(async (result) => {
       if (result.status !== 'discarded') throw new Error('Discard was not confirmed by the server.');
+      if (saved) await recoveryJournal.clear(saved.capture_session_id, saved.transcript_id);
       restoredCapture = null;
       resetMeters();
       enabled = false;
@@ -441,7 +449,7 @@ export function attachTelehealthControls({
   });
   partial?.addEventListener('click', () => {
     if ((!client && !restoredCapture) || !window.confirm(
-      'This recorded consultation may be incomplete. Unuploaded audio cannot be recovered after a browser reload. Review the transcript for missing clinical information before using generated notes. Continue?',
+      'This Telehealth recording may be incomplete after a browser crash. Encrypted local windows will be replayed with their original IDs where available. The final unflushed seconds may still be missing. Review the result before any clinical note. Continue?',
     )) return;
     partial.disabled = true;
     const continueCapture = async () => {
@@ -450,25 +458,48 @@ export function attachTelehealthControls({
         return client.transcribe();
       }
       const saved = restoredCapture;
+      let current = saved;
       if (['active', 'stopping'].includes(saved.status)) {
         const stopDetails = saved.failure_code
           ? { failure_code: saved.failure_code, interrupted_channel: saved.failure_channel }
           : { failure_code: 'browser_capture_failed' };
-        await postRecovery(saved, 'stop', stopDetails);
-        const counts = (channel) => saved.parts.filter((part) => part.channel === channel).length;
-        await postRecovery(saved, 'seal', {
+        current = await postRecovery(saved, 'stop', stopDetails);
+      }
+      // Reconstruct the server's accepted sequence ledger and replay ONLY
+      // encrypted, unacknowledged windows belonging to the owner-scoped
+      // session. An accepted response with mismatched identity is rejected.
+      // This cannot recover AudioWorklet frames not yet flushed to a WAV.
+      const replayed = await replayTelehealthRecoveryWindows({
+        journal: recoveryJournal, capture: current, csrfFetch,
+        pace: createTelehealthUploadPacer(),
+      });
+      const latestResponse = await csrfFetch(
+        '/api/v1/transcripts/' + encodeURIComponent(saved.transcript_id)
+          + '/telehealth/captures/' + encodeURIComponent(saved.capture_session_id),
+        { credentials: 'include' },
+      );
+      if (!latestResponse.ok) throw new Error('Could not verify the recovered source ledger.');
+      current = await latestResponse.json();
+      if (!['ready', 'interrupted'].includes(current.status)) {
+        const counts = (channel) => current.parts.filter((part) => part.channel === channel).length;
+        if (!counts('clinician') && !counts('patient')) {
+          throw new Error('No audio was durably retained. Discard this capture and record again.');
+        }
+        current = await postRecovery(saved, 'seal', {
           expected_clinician_parts: counts('clinician'),
           expected_patient_parts: counts('patient'),
         });
       }
-      if (saved.status !== 'ready') await postRecovery(saved, 'acknowledge-incomplete');
+      if (current.status === 'interrupted') {
+        await postRecovery(saved, 'acknowledge-incomplete');
+      }
       const queued = await postRecovery(saved, 'transcribe');
       restoredCapture = null;
       enabled = false;
       return queued;
     };
     void continueCapture().then(async () => {
-      notice('Recovered Telehealth audio was submitted for transcription. Review for omissions.', 'warning');
+      notice('Encrypted local windows were reconciled with saved Telehealth audio. Transcription is processing; review for missing final speech.', 'warning');
       await refreshWorkspace?.();
       render();
     }).catch((error) => {

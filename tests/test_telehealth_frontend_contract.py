@@ -7,7 +7,8 @@ STATIC = ROOT / "app/static/js/transcribe"
 
 def test_phone_toggle_and_first_use_notice_are_server_feature_gated():
     html = (ROOT / "app/templates/transcribe/_workspace.html").read_text(encoding="utf-8")
-    assert "{% if telehealth_feature_enabled and user_app_preferences_json.get('show_telehealth_control', true) %}" in html
+    assert "{% if telehealth_feature_enabled %}" in html
+    assert "{% if not user_app_preferences_json.get('show_telehealth_control', true) %}hidden{% endif %}" in html
     assert 'data-telehealth-toggle' in html
     assert 'data-lucide="phone"' in html
     assert 'aria-pressed="false"' in html
@@ -48,6 +49,8 @@ def test_dual_audio_never_uses_existing_microphone_handler_for_telehealth():
     assert "await client.stop()" in ui
     assert "await client.transcribe()" in ui
     assert "onStateChange: render" in ui
+    assert "toggle.hidden = getPreferences?.().show_telehealth_control === false" in ui
+    assert "!restoredCapture && !enabled" in ui
     assert "client.discard()" in ui
     assert "data-telehealth-discard" in ui
     assert "/telehealth/unresolved" in ui

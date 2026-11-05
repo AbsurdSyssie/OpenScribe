@@ -140,10 +140,30 @@ export function createTelehealthRecoveryJournal({
     const id = partId(captureId, channel, sequence);
     const prior = await store.get(WINDOWS, id);
     if (prior) {
-      if (prior.key !== key || prior.transcriptId !== transcriptId) {
+      if (prior.key !== key || prior.transcriptId !== transcriptId
+        || JSON.stringify(prior.spans) !== JSON.stringify(spans)) {
         throw new Error('Conflicting Telehealth recovery window identity.');
       }
-      return; // A replay must never silently replace encrypted clinical audio.
+      // The same idempotency key may NEVER be reused with different bytes,
+      // even if the original HTTP acceptance response was lost.
+      const priorKey = await keyFor(captureId);
+      let original;
+      try {
+        original = new Uint8Array(await subtle.decrypt(
+          { name: 'AES-GCM', iv: prior.iv }, priorKey, prior.ciphertext,
+        ));
+      } catch (_) {
+        throw new Error('Encrypted Telehealth recovery data failed authentication.');
+      }
+      let equal = original.length === bytes.length;
+      if (equal) {
+        for (let i = 0; i < original.length; i++) {
+          if (original[i] !== bytes[i]) { equal = false; break; }
+        }
+      }
+      original.fill(0);
+      if (!equal) throw new Error('Conflicting Telehealth recovery window audio.');
+      return;
     }
     const total = (await store.list(WINDOWS)).length;
     if (total >= MAX_WINDOWS) {

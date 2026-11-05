@@ -259,10 +259,23 @@ export async function submitTelehealthRecoveryWindow({
     'telehealth-' + part.channel + '-' + part.sequence + '.wav');
   const endpoint = '/api/v1/transcripts/' + encodeURIComponent(part.transcriptId)
     + '/telehealth/captures/' + encodeURIComponent(part.captureId) + '/audio-parts';
-  const response = await csrfFetch(endpoint, {
-    method: 'POST', credentials: 'include',
-    headers: { 'Idempotency-Key': part.key }, body: data,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  let response;
+  try {
+    response = await csrfFetch(endpoint, {
+      method: 'POST', credentials: 'include',
+      headers: { 'Idempotency-Key': part.key }, body: data,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error('Telehealth upload timed out. The encrypted audio is retained for exact replay.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!response.ok) {
     let reason = 'Could not securely store a Telehealth audio part.';
     try { reason = (await response.json())?.error?.message || reason; } catch (_) {}

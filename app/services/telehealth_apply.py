@@ -234,3 +234,40 @@ def apply_completed_telehealth_capture(
     _trigger_waiting_generation_dispatches(db, transcript_id=transcript.id)
     _attempt_preview_redaction(db, transcript_version=version)
     return True
+
+
+
+def reconcile_processing_telehealth_captures(
+    db: Session,
+    *,
+    batch_size: int = 50,
+) -> int:
+    """Recover a capture after the last STT worker committed but crashed.
+
+    A second worker may see the same completed result. The capture session row
+    lock and durable completed status make applying the clinical draft safe
+    under duplicate scheduling. No provider call is ever repeated by this task.
+    """
+    if not 1 <= batch_size <= 100:
+        raise ValueError("Invalid telehealth reconciliation batch size.")
+    ids = list(db.scalars(select(TelehealthCaptureSession.id).where(
+        TelehealthCaptureSession.status == "processing",
+    ).order_by(TelehealthCaptureSession.updated_at.asc()).limit(batch_size)))
+    db.rollback()
+    applied = 0
+    for capture_id in ids:
+        try:
+            if apply_completed_telehealth_capture(db, capture_session_id=capture_id):
+                applied += 1
+        except Exception:
+            db.rollback()
+            # Do not log clinical provider text, raw audio, or stack traces.
+            import logging
+            logging.getLogger("openscribe.telehealth").warning(
+                "telehealth_capture_reconciliation_deferred",
+                extra={"capture_session_id": str(capture_id)},
+            )
+        else:
+            if db.in_transaction():
+                db.rollback()
+    return applied

@@ -3,6 +3,7 @@ import { readTranscribeBootstrap } from './bootstrap.js?v=20261005-multiple-prob
 import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261103-working-note-revision';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
 import { createAudioCaptureController } from './media.js?v=20261027-live-dictation';
+import { attachTelehealthControls } from './telehealthUI.js?v=20261105-telehealth-toggle';
 import { DeepgramLiveStream, trimPinnedVadSpeechBuffer } from './deepgramLiveStream.js?v=20261027-dictation-live-preview';
 import { createOwnedMicStream, createVadCaptureOptions } from './vadCapture.js?v=20261027-shared-vad-capture';
 import { createMicVisualizer } from './micVisualizer.js?v=20261026-shared-mic-visualizer';
@@ -371,6 +372,7 @@ import {
 
       let currentTranscriptTitle = (renameTitleInput?.value || '').trim();
       let captureController = null;
+      let telehealthUi = null;
       let localStatusLabel = null;
       let micIssue = null;
       let dictationModalOpener = null;
@@ -3488,6 +3490,7 @@ let statusDetailsHideTimer = null;
           fileInput.title = (!isRecording && !canUseWholeFileInput() && !sttAvailable && sttStatusMessage) ? sttStatusMessage : '';
         }
         captureController?.syncDisplayedDuration?.();
+        telehealthUi?.sync?.();
       };
 
       const setNewSessionAvailability = (canCreate, message) => {
@@ -5941,6 +5944,24 @@ let statusDetailsHideTimer = null;
             workingNoteClearInFlight = null;
           }
         },
+      });
+
+      // This is entirely inert unless the default-off server rollout flag
+      // rendered an explicit phone toggle. The microphone recorder remains
+      // authoritative for every ordinary consultation.
+      telehealthUi = attachTelehealthControls({
+        getTranscriptId: () => transcriptId,
+        getIngestionMode: () => activeIngestionMode,
+        isOtherRecordingActive: () => Boolean(
+          captureController?.isLiveCaptureUiActive?.()
+          || currentTranscriptStatus === 'recording'
+          || ['recording', 'paused'].includes(dictationRecordingState)
+        ),
+        getPreferences: () => userAppPreferences,
+        persistPreferences: persistUserAppPreferences,
+        csrfFetch,
+        refreshWorkspace: async () => { await fetchWorkspace(); },
+        showNotice: showFlash,
       });
 
       createGuidedTour({

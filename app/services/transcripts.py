@@ -1333,6 +1333,18 @@ def _resolved_transcript_status(db: Session, *, transcript: Transcript) -> Trans
         return TranscriptStatus.failed
     if _has_pending_ingestion_jobs(db, transcript_id=transcript.id):
         return TranscriptStatus.transcribing
+    active_telehealth = db.scalar(select(TelehealthCaptureSession.id).where(
+        TelehealthCaptureSession.transcript_id == transcript.id,
+        TelehealthCaptureSession.status.in_(("active", "stopping", "ready", "processing")),
+    ).limit(1))
+    if active_telehealth is not None:
+        return TranscriptStatus.transcribing
+    failed_telehealth = db.scalar(select(TelehealthCaptureSession.id).where(
+        TelehealthCaptureSession.transcript_id == transcript.id,
+        TelehealthCaptureSession.status == "failed",
+    ).limit(1))
+    if failed_telehealth is not None:
+        return TranscriptStatus.failed
     latest_job = latest_ingestion_job_for_transcript(db, transcript_id=transcript.id)
     if latest_job is not None and latest_job.status is TranscriptIngestionJobStatus.failed:
         return TranscriptStatus.failed
@@ -1442,6 +1454,12 @@ def can_switch_transcript_ingestion_mode(
         return transcript, False, "Resolve live transcription before switching input mode"
     if _has_pending_ingestion_jobs(db, transcript_id=transcript.id):
         return transcript, False, "Wait for the current session transcription to finish before switching input mode"
+    unresolved_telehealth = db.scalar(select(TelehealthCaptureSession.id).where(
+        TelehealthCaptureSession.transcript_id == transcript.id,
+        TelehealthCaptureSession.status.in_(("active", "stopping", "ready", "interrupted", "processing", "failed")),
+    ).limit(1))
+    if unresolved_telehealth is not None:
+        return transcript, False, "Resolve the telehealth capture before switching input mode"
     return transcript, True, None
 
 
@@ -2672,6 +2690,13 @@ def retry_audio_file_ingestion(
     latest_job = latest_ingestion_job_for_transcript(db, transcript_id=transcript.id)
     if latest_job is None or latest_job.job_kind is not TranscriptIngestionJobKind.audio_file:
         raise AppError(409, "ingestion_retry_unavailable", "There is no failed uploaded audio available to retry for this session")
+    # Legacy file retry requeues a NEW ordinary job. A telehealth source must
+    # instead retry its original job so channel provenance and session finalization
+    # cannot be detached or applied as unlabelled audio.
+    if db.scalar(select(TelehealthCapturePart.id).where(
+        TelehealthCapturePart.ingestion_job_id == latest_job.id,
+    ).limit(1)) is not None:
+        raise AppError(409, "ingestion_retry_unavailable", "Retry the specific telehealth audio source job.")
     if latest_job.status is not TranscriptIngestionJobStatus.failed:
         raise AppError(409, "ingestion_retry_unavailable", "The latest uploaded audio is not in a retryable failed state")
     if not _retry_source_available(latest_job):
@@ -2752,6 +2777,26 @@ def retry_failed_audio_ingestion(
     job.error_message = None
     job.started_at = None
     job.completed_at = None
+    # Reenable the same source and capture session after owner-initiated retry.
+    # The existing job and Vault ref stay attached, unlike a new file upload.
+    telehealth_part = db.scalar(select(TelehealthCapturePart).where(
+        TelehealthCapturePart.ingestion_job_id == job.id,
+        TelehealthCapturePart.transcript_id == transcript.id,
+        TelehealthCapturePart.owner_user_id == owner.id,
+    ).with_for_update())
+    if telehealth_part is not None:
+        capture_session = db.scalar(select(TelehealthCaptureSession).where(
+            TelehealthCaptureSession.id == telehealth_part.session_id,
+        ).with_for_update())
+        if capture_session is None or capture_session.status not in ("failed", "processing"):
+            raise AppError(409, "ingestion_retry_unavailable", "Telehealth capture state prevents retry.")
+        telehealth_part.status = "processing"
+        capture_session.status = "processing"
+        capture_session.failure_code = None
+        capture_session.failure_channel = None
+        capture_session.updated_at = utcnow()
+        db.add(telehealth_part)
+        db.add(capture_session)
     transcript.status = TranscriptStatus.transcribing
     db.add(job)
     db.add(transcript)

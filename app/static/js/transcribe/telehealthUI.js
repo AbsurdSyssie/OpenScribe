@@ -28,6 +28,7 @@ export function attachTelehealthControls({
   const actions = document.querySelector('[data-telehealth-actions]');
   const retry = document.querySelector('[data-telehealth-retry]');
   const partial = document.querySelector('[data-telehealth-transcribe]');
+  const discard = document.querySelector('[data-telehealth-discard]');
   const guidance = document.querySelector('[data-telehealth-guidance]');
   const guidanceCancel = document.querySelector('[data-telehealth-guidance-cancel]');
   const guidanceContinue = document.querySelector('[data-telehealth-guidance-continue]');
@@ -58,7 +59,7 @@ export function attachTelehealthControls({
   };
   const recordingInProgress = () => client && ['starting', 'recording', 'stopping'].includes(client.state);
   const blockSwitch = () => recordingInProgress()
-    || (client && ['recovery_required', 'incomplete'].includes(client.state))
+    || (client && ['recovery_required', 'incomplete', 'sealed'].includes(client.state))
     || Boolean(isOtherRecordingActive?.());
 
   const expand = (forced = false) => {
@@ -96,7 +97,8 @@ export function attachTelehealthControls({
     }
     if (retry) retry.hidden = client?.state !== 'recovery_required';
     if (partial) partial.hidden = client?.state !== 'incomplete';
-    if (actions) actions.hidden = (retry?.hidden !== false) && (partial?.hidden !== false);
+    if (discard) discard.hidden = !['recovery_required', 'incomplete', 'sealed'].includes(client?.state);
+    if (actions) actions.hidden = [retry, partial, discard].every((item) => item?.hidden !== false);
   };
 
   const onSourceState = ({ channel, status: next }) => {
@@ -226,7 +228,7 @@ export function attachTelehealthControls({
     if (message) message.textContent = 'Checking both audio sources';
     client = createTelehealthRecordingClient({
       transcriptId: getTranscriptId(),
-      csrfFetch, onLevel, onSourceState, onWarning,
+      csrfFetch, onLevel, onSourceState, onWarning, onStateChange: render,
     });
     const attempt = client.start(); // Direct user activation -> getDisplayMedia.
     render();
@@ -295,7 +297,7 @@ export function attachTelehealthControls({
     event.stopImmediatePropagation();
     if (recordingInProgress()) {
       if (client?.state !== 'stopping') void stopRecording();
-    } else if (!client || client.state === 'sealed') {
+    } else if (!client || ['discarded'].includes(client.state)) {
       void startRecording();
     }
   }, true);
@@ -315,6 +317,22 @@ export function attachTelehealthControls({
       notice(error instanceof Error ? error.message : 'Audio recovery failed.', 'error');
       render();
     });
+  });
+  discard?.addEventListener('click', () => {
+    if (!client || !window.confirm(
+      'Permanently discard this unsubmitted recording? Clinician and patient audio staged so far will be queued for deletion. No transcription will be created.',
+    )) return;
+    discard.disabled = true;
+    void client.discard().then(async () => {
+      resetMeters();
+      enabled = false;
+      notice('Unsubmitted Telehealth audio was discarded.', 'info');
+      await refreshWorkspace?.();
+      render();
+    }).catch((error) => {
+      notice(error instanceof Error ? error.message : 'Could not discard the recording.', 'error');
+      render();
+    }).finally(() => { discard.disabled = false; });
   });
   partial?.addEventListener('click', () => {
     if (!client || !window.confirm(

@@ -28,6 +28,7 @@ from app.models import (
     TranscriptIngestionJob,
     TranscriptIngestionJobStatus,
     TranscriptIngestionMode,
+    TranscriptStatus,
     User,
     utcnow,
 )

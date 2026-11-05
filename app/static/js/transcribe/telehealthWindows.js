@@ -10,12 +10,13 @@ export function createTelehealthWindows({
   windowSeconds = 10,
   maxPendingWindows = 4,
   onWindow,
+  onEnqueue = () => {},
   onGap = () => {},
 } = {}) {
   if (!isFrame(sampleRate) || sampleRate === 0
     || !Number.isInteger(windowSeconds) || windowSeconds < 1 || windowSeconds > 30
     || !Number.isInteger(maxPendingWindows) || maxPendingWindows < 1 || maxPendingWindows > 16
-    || typeof onWindow !== 'function') {
+    || typeof onWindow !== 'function' || typeof onEnqueue !== 'function') {
     throw new RangeError('Invalid bounded telehealth window configuration.');
   }
   const maxFrames = sampleRate * windowSeconds;
@@ -53,6 +54,18 @@ export function createTelehealthWindows({
   const enqueue = (window) => {
     if (queue.length >= maxPendingWindows) {
       failure = new Error('Telehealth audio handoff is backpressured.');
+      return false;
+    }
+    // Start the encrypted write-ahead commit for EACH new window immediately,
+    // independent of the network backlog. The network drain still sends
+    // strictly in order and awaits each durable commit before uploading.
+    // At most maxPendingWindows commitments can be in flight.
+    try {
+      const durable = Promise.resolve(onEnqueue(window));
+      window._telehealthDurable = durable;
+      void durable.catch(() => {}); // onWindow awaits/propagates this error.
+    } catch (error) {
+      failure = error instanceof Error ? error : new Error('Local audio persistence failed.');
       return false;
     }
     queue.push(window);

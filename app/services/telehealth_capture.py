@@ -468,3 +468,35 @@ def seal_telehealth_capture(
         db.commit()
     db.refresh(session)
     return session
+
+
+
+def acknowledge_incomplete_telehealth_capture(
+    db: Session,
+    owner: User,
+    *,
+    transcript_id: UUID,
+    capture_session_id: UUID,
+) -> TelehealthCaptureSession:
+    """Persist explicit clinician acknowledgement before partial generation.
+
+    A consent/notice acknowledgement is NOT a claim that missing audio was
+    recovered or that unidentified speakers were verified. Every clinical
+    generation path must still display the incomplete-recording warning.
+    """
+    _, session = _owner_capture_session_locked(
+        db,
+        owner,
+        transcript_id=transcript_id,
+        capture_session_id=capture_session_id,
+    )
+    if session.status not in ("interrupted", "processing", "completed"):
+        raise AppError(409, "conflict", "Only interrupted recordings can be acknowledged.")
+    if not session.failure_code:
+        raise AppError(409, "conflict", "This recording has no documented interruption.")
+    if session.incomplete_acknowledged_at is None:
+        session.incomplete_acknowledged_at = utcnow()
+        session.updated_at = utcnow()
+        db.add(session)
+        db.commit()
+    return session

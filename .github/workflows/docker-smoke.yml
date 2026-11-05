@@ -66,6 +66,13 @@ jobs:
           bash -n .github/scripts/wait-for-openscribe-health.sh
           python -m py_compile scripts/security/xss_probe.py .github/scripts/check-operational-docs.py
 
+      - name: Validate Telehealth Python and browser module syntax
+        run: |
+          python -m py_compile app/models_telehealth.py app/services/telehealth_*.py app/schemas/telehealth.py tests/test_telehealth_*.py
+          for module in app/static/js/transcribe/telehealth*.js; do
+            node --input-type=module --check < "$module"
+          done
+
       - name: Audit Python runtime dependencies
         run: |
           python -m pip install pip-audit

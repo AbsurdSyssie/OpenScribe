@@ -89,3 +89,5 @@ def test_ui_cannot_render_while_feature_flag_is_disabled():
     assert 'os.getenv("TELEHEALTH_API_ENABLED", "false")' in api
     assert '"telehealth_guidance_required"' in api
     assert 'UserAppPreference.user_id == context.user.id' in api
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert 'TELEHEALTH_API_ENABLED: "${TELEHEALTH_API_ENABLED:-false}"' in compose

@@ -63,10 +63,15 @@ def queue_telehealth_transcription(
         if jobs:
             return session, jobs
         raise AppError(409, "conflict", "Telehealth capture has no submitted audio.")
-    if session.status != "ready":
+    incomplete = bool(session.failure_code)
+    if session.status not in ("ready", "interrupted"):
+        raise AppError(409, "conflict", "Seal the capture before transcription.")
+    if incomplete and (
+        session.status != "interrupted" or session.incomplete_acknowledged_at is None
+    ):
         raise AppError(
             409, "conflict",
-            "Seal an uninterrupted two-source capture before transcription.",
+            "Acknowledge the incomplete telehealth recording before transcription.",
         )
     parts = list(db.scalars(
         select(TelehealthCapturePart)
@@ -78,10 +83,12 @@ def queue_telehealth_transcription(
         .order_by(TelehealthCapturePart.channel.asc(), TelehealthCapturePart.sequence_no.asc())
         .with_for_update()
     ))
-    if not parts or {part.channel for part in parts} != {"clinician", "patient"}:
+    if not parts or (
+        not incomplete and {part.channel for part in parts} != {"clinician", "patient"}
+    ):
         raise AppError(
             409, "conflict",
-            "Both source channels must have recoverable audio before transcription.",
+            "Both sources must have recoverable audio, unless an interruption was acknowledged.",
         )
     if any(
         part.status != "staged"

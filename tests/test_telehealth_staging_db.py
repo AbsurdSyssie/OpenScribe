@@ -277,7 +277,7 @@ def test_capture_stop_salvages_pending_audio_then_seals_interrupted_run(
     assert stopped.failure_channel == "patient"
     assert stopped.recording_stopped_at is not None
 
-    with pytest.raises(AppError, match="not been safely uploaded"):
+    with pytest.raises(AppError) as error:
         seal_telehealth_capture(
             db_session, owner,
             transcript_id=transcript.id,
@@ -285,6 +285,7 @@ def test_capture_stop_salvages_pending_audio_then_seals_interrupted_run(
             expected_clinician_parts=0,
             expected_patient_parts=1,
         )
+    assert error.value.message == "Some recording parts have not been safely uploaded."
     db_session.rollback()
 
     # The original recording may have buffered source data when its tab

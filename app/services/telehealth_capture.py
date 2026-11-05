@@ -121,7 +121,9 @@ def begin_telehealth_capture(
         status="active",
         timeline_sample_rate=timeline_sample_rate,
     )
+    transcript.status = TranscriptStatus.recording
     db.add(session)
+    db.add(transcript)
     db.commit()
     db.refresh(session)
     return session
@@ -391,7 +393,7 @@ def request_telehealth_capture_stop(
         raise AppError(422, "validation_error", "Capture interruption channel is invalid.")
     if failure_code is not None and failure_code not in _TELEHEALTH_FAILURE_CODES:
         raise AppError(422, "validation_error", "Capture interruption reason is invalid.")
-    _, session = _owner_capture_session_locked(
+    transcript, session = _owner_capture_session_locked(
         db, owner, transcript_id=transcript_id, capture_session_id=capture_session_id,
     )
     if session.status not in ("active", "stopping"):
@@ -420,7 +422,9 @@ def request_telehealth_capture_stop(
         session.recording_stopped_at = utcnow()
         session.failure_channel = interrupted_channel
         session.failure_code = failure_code
+        transcript.status = TranscriptStatus.transcribing
         db.add(session)
+        db.add(transcript)
         db.commit()
     db.refresh(session)
     return session

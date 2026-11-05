@@ -41,6 +41,7 @@ export function attachTelehealthControls({
   let client = null;
   let restoredCapture = null;
   let lastCheckedTranscriptId = null;
+  let captureStatusCheckInFlight = false;
   let boundTranscriptId = getTranscriptId?.() || null;
   let activating = false;
   let sourceLoss = false;
@@ -91,6 +92,7 @@ export function attachTelehealthControls({
     toggle.disabled = activating || blockSwitch() || !getTranscriptId?.();
     if (enabled && recordLabel) {
       recordLabel.textContent = recordingInProgress() ? 'Stop' :
+        restoredCapture?.status === 'processing' ? 'Transcribing…' :
         restoredCapture ? 'Resolve telehealth' :
         client?.state === 'transcribing' ? 'Transcribing…' : 'Start telehealth';
       if (recordIcon) {
@@ -136,28 +138,55 @@ export function attachTelehealthControls({
 
   const checkPersistedCapture = async () => {
     const id = getTranscriptId?.();
-    if (!id || id === lastCheckedTranscriptId || enabled || client) return;
+    const recheckProcessing = Boolean(restoredCapture
+      && ['processing', 'failed'].includes(restoredCapture.status));
+    if (!id || captureStatusCheckInFlight || (id === lastCheckedTranscriptId && !recheckProcessing)
+      || (enabled && !restoredCapture) || client) return;
+    captureStatusCheckInFlight = true;
     lastCheckedTranscriptId = id;
     try {
       const response = await csrfFetch(
         '/api/v1/transcripts/' + encodeURIComponent(id) + '/telehealth/unresolved',
         { credentials: 'include' },
       );
-      if (!response.ok) return;
+      if (!response.ok) {
+        lastCheckedTranscriptId = null;
+        return;
+      }
       const saved = await response.json();
-      if (id !== getTranscriptId?.() || enabled || client || !saved) return;
-      if (!['active', 'stopping', 'ready', 'interrupted', 'failed'].includes(saved.status)) return;
+      if (id !== getTranscriptId?.() || client) return;
+      if (!saved) {
+        // The pending capture has completed/disappeared, so return to
+        // ordinary recording state rather than retaining a stale blocker.
+        if (restoredCapture) {
+          restoredCapture = null;
+          enabled = false;
+          resetMeters();
+          if (recordLabel) recordLabel.textContent = 'Start recording';
+          if (mainRecord) mainRecord.disabled = false;
+          render();
+        }
+        return;
+      }
+      if (!['active', 'stopping', 'ready', 'interrupted', 'failed', 'processing'].includes(saved.status)) return;
       restoredCapture = saved;
       enabled = true;
       sourceLoss = true;
       resetMeters();
       receipt.classList.add('is-interrupted');
-      if (message) message.textContent = saved.parts?.some((part) => part.ingestion_job_id)
-        ? 'A Telehealth transcription failed. Retry the retained source audio using the consultation recovery controls.'
-        : 'An earlier Telehealth recording is unresolved. Unuploaded browser audio cannot be recovered after a reload. Review retained parts or discard explicitly.';
+      if (message) {
+        message.textContent = saved.status === 'processing'
+          ? 'Both Telehealth sources are being transcribed. Wait for completion or retry a failed source if prompted.'
+          : saved.parts?.some((part) => part.ingestion_job_id)
+            ? 'A Telehealth transcription failed. Retry the retained source audio using the consultation recovery controls.'
+            : 'An earlier Telehealth recording is unresolved. Unuploaded browser audio cannot be recovered after a reload. Review retained parts or discard explicitly.';
+      }
       render();
     } catch (_) {
       // Do not infer that the remote source is complete from a failed check.
+      lastCheckedTranscriptId = null;
+    } finally {
+      captureStatusCheckInFlight = false;
     }
   };
 

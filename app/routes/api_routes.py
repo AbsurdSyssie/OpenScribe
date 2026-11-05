@@ -40,7 +40,7 @@ from ..main import (
     require_system_admin,
     require_user_manager,
 )
-from ..models import AttemptKind, GeneratedDocument, SessionAuthLevel, TemplateScope, Transcript, User
+from ..models import AttemptKind, GeneratedDocument, SessionAuthLevel, TemplateScope, Transcript, User, UserAppPreference
 from ..schemas import (
     AccountActivationConfirmRequest,
     AccountRequestApprove,
@@ -2054,6 +2054,15 @@ def start_telehealth_capture_route(
     db: Session = Depends(get_db),
 ):
     _require_telehealth_api_enabled()
+    # First-use notice acknowledgement is an owner-persisted precondition,
+    # not merely a front-end tooltip. Do not start capture if the client
+    # skipped the headphones/participant-notification guidance.
+    preference = db.get(UserAppPreference, context.user.id)
+    if preference is None or (preference.preferences_json or {}).get("telehealth_guidance_acknowledged") is not True:
+        raise AppError(
+            409, "telehealth_guidance_required",
+            "Read and acknowledge the Telehealth recording guidance before starting.",
+        )
     capture = begin_telehealth_capture(
         db,
         context.user,

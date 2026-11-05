@@ -742,6 +742,7 @@ def missing_route_specs() -> set[tuple[str, str]]:
             .replace("{smart_phrase_id}", "{id}")
             .replace("{user_id}", "{id}")
             .replace("{transcript_id}", "{id}")
+            .replace("{capture_session_id}", "{id}")
             .replace("{entity_id}", "{id}")
             .replace("{generated_document_id}", "{id}"),
         )

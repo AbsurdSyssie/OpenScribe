@@ -78,6 +78,14 @@ data-local-busy-protected
 <span class="mobile-capture-action__label">Upload audio</span>
 <span class="mobile-capture-action__copy">Choose a recording</span>
 </button>
+{% if telehealth_feature_enabled and user_app_preferences_json.get('show_telehealth_control', true) %}
+<button type="button" class="telehealth-toggle" data-telehealth-toggle
+  aria-label="Toggle Telehealth recording" aria-pressed="false"
+  title="Telehealth · microphone and call audio"
+  {% if not active_transcript or not stt_selection or not stt_available %}disabled{% endif %}>
+  <i data-lucide="phone" aria-hidden="true"></i>
+</button>
+{% endif %}
 <div class="record-split-button"
 data-record-split-button
 {% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value not in ['whole_file', 'live_chunked']) %}data-disabled{% endif %}>
@@ -125,6 +133,41 @@ aria-label="Recording mode"
 <option value="whole_file" {% if (active_transcript and active_transcript.ingestion_mode.value == 'whole_file') or (not active_transcript and preferred_recording_mode != 'live_chunked') %}selected{% endif %}>Recorded upload</option>
 <option value="live_chunked" {% if (active_transcript and active_transcript.ingestion_mode.value == 'live_chunked') or (not active_transcript and preferred_recording_mode == 'live_chunked') %}selected{% endif %}>Live capture</option>
 </select>
+{% if telehealth_feature_enabled %}
+<div class="telehealth-receipt" data-telehealth-receipt hidden aria-live="polite" aria-label="Telehealth source activity check">
+  <div class="telehealth-receipt__channels" data-telehealth-channels>
+    <div class="telehealth-receipt__source" data-telehealth-source="clinician">
+      <span>Clinician</span><div class="telehealth-receipt__track"><span data-telehealth-level="clinician"></span></div>
+      <span class="telehealth-receipt__state" data-telehealth-speech-status="clinician">Waiting for audio</span>
+    </div>
+    <div class="telehealth-receipt__source" data-telehealth-source="patient">
+      <span>Patient</span><div class="telehealth-receipt__track"><span data-telehealth-level="patient"></span></div>
+      <span class="telehealth-receipt__state" data-telehealth-speech-status="patient">Waiting for audio</span>
+    </div>
+  </div>
+  <button type="button" class="telehealth-receipt__combined" data-telehealth-combined hidden
+    aria-label="Expand individual clinician and patient audio indicators">
+    <span>Both sources</span><span class="telehealth-receipt__track"><span data-telehealth-combined-level></span></span>
+    <span class="telehealth-receipt__ready">Audio detected</span>
+  </button>
+  <p data-telehealth-receipt-message role="status">Checking both audio sources</p>
+  <div class="telehealth-receipt__actions" data-telehealth-actions hidden>
+    <button type="button" data-telehealth-retry class="btn-secondary--compact" hidden>Retry audio upload</button>
+    <button type="button" data-telehealth-transcribe class="btn-secondary--compact" hidden>Acknowledge and transcribe</button>
+  </div>
+</div>
+<dialog class="telehealth-guidance" data-telehealth-guidance aria-labelledby="telehealth-guidance-heading" aria-describedby="telehealth-guidance-detail">
+  <h2 id="telehealth-guidance-heading">Telehealth audio recording</h2>
+  <p id="telehealth-guidance-detail">The clinician microphone and audio from the selected browser call tab will both be recorded and transcribed.</p>
+  <p>Headphones are recommended to avoid echo and duplicate speech. Inform all participants before recording and follow your organisation's recording and consent policy.</p>
+  <p>When recording starts, select your call tab and enable <strong>Share tab audio</strong>.</p>
+  <div class="telehealth-guidance__actions">
+    <button type="button" data-telehealth-guidance-cancel>Cancel</button>
+    <button type="button" data-telehealth-guidance-continue>Continue</button>
+  </div>
+  <p data-telehealth-guidance-error role="alert" hidden></p>
+</dialog>
+{% endif %}
 <p class="text-sm text-slate" data-retry-ingestion-expired{% if not active_transcript_retry_expired %} hidden{% endif %}>The failed upload has expired. Upload the audio file again.</p>
 <form method="post" action="/transcribe/retry-file-ingestion" data-retry-ingestion-form{% if active_transcript_retry_expired or not active_transcript or not active_transcript_retry_job or not stt_selection or not stt_available %} hidden{% endif %}>
 <input type="hidden" name="transcript_id" value="{% if active_transcript %}{{ active_transcript.id }}{% endif %}" data-retry-transcript-id>

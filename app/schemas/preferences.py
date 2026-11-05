@@ -49,8 +49,6 @@ class UserAppPreferencesUpsert(BaseModel):
     preferred_transcribe_tab: Literal["output", "followups"] | None = None
     diarization_enabled: bool = False
     diarization_warning_acknowledged: bool = False
-    telehealth_button_visible: bool = True
-    telehealth_first_use_acknowledged: bool = False
     show_telehealth_control: bool = True
     telehealth_guidance_acknowledged: bool = False
 

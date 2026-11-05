@@ -564,7 +564,10 @@ def discard_unsubmitted_telehealth_capture(
     session.updated_at = now
     db.add(session)
     db.flush()
-    if transcript.status is TranscriptStatus.transcribing:
+    if transcript.status in (TranscriptStatus.recording, TranscriptStatus.transcribing):
+        # The old status cannot remain "recording" once an unsubmitted run
+        # has been discarded; recalculate in the absence of its barrier.
+        transcript.status = TranscriptStatus.transcribing
         transcript.status = _resolved_transcript_status(db, transcript=transcript)
         db.add(transcript)
     db.commit()

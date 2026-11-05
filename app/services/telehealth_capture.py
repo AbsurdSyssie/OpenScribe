@@ -83,6 +83,13 @@ def _owner_transcript_locked(db: Session, owner: User, *, transcript_id: UUID) -
 def _require_recorder_ready(db: Session, transcript: Transcript) -> None:
     if transcript.ingestion_mode is not TranscriptIngestionMode.whole_file:
         raise AppError(409, "business_rule_violation", "Telehealth requires recorded capture mode.")
+    if transcript.status in (
+        TranscriptStatus.recording, TranscriptStatus.transcribing, TranscriptStatus.failed,
+    ):
+        raise AppError(
+            409, "conflict",
+            "Stop or resolve the current consultation recording/transcription first.",
+        )
     assert_no_unresolved_stream_session(db, transcript_id=transcript.id)
     outstanding = db.scalar(select(TranscriptIngestionJob.id).where(
         TranscriptIngestionJob.transcript_id == transcript.id,

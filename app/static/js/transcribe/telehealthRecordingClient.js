@@ -194,10 +194,14 @@ export function createTelehealthRecordingClient({
       try {
         await windows.finish();
       } catch (error) {
-        warn(null, 'upload_failed');
-        try { await post(stopUrl, interruption); } catch (_) {}
+        // The original audio is still in the bounded retry queue. A transient
+        // HTTP failure is NOT a missing-audio interval. Do not make the server
+        // permanently mark the consultation incomplete if exact replay fixes it.
+        try {
+          onWarning({ channel: null, failure_code: 'upload_failed', recoverable: true });
+        } catch (_) {}
         state = 'recovery_required';
-        throw error; // Pending PCM remains in the bounded explicit retry queue.
+        throw error; // Pending PCM remains available for exact-key replay.
       }
       let sealed;
       try {

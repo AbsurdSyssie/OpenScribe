@@ -100,39 +100,52 @@ export function createTelehealthRecordingClient({
     return acceptedNow;
   };
 
-  const uploadWindow = async (window) => {
+  const prepareWindow = (window) => {
+    if (window._telehealthPrepared) return window._telehealthPrepared;
     if (!window._telehealthUpload) {
-      // Bind identity to the WINDOW, not the HTTP attempt. If the server
-      // accepted audio but a response was lost, retry uses the same key.
+      // Allocate once at WINDOW CREATION, never per HTTP attempt.
       window._telehealthUpload = {
         sequence: sequence[window.channel]++,
         key: globalThis.crypto.randomUUID(),
       };
     }
     const { sequence: partNo, key } = window._telehealthUpload;
-    const currentId = await ready;
-    if (!currentId) throw new Error('Recording session was not accepted.');
-    const encoded = encodeTelehealthWavWindow(window);
-    const part = {
-      captureId: currentId, transcriptId, channel: window.channel,
-      sequence: partNo, key, spans: encoded.spans, bytes: encoded.bytes,
-    };
-    // IndexedDB transaction MUST commit before any HTTP side effect.
-    // An ambiguous server response can then be replayed with identical
-    // per-channel sequence, WAV bytes and idempotency key after a crash.
-    try {
-      await journal.persist(part);
-    } catch (error) {
-      warn(null, 'browser_capture_failed');
-      void stop().catch(() => {});
-      throw error;
-    }
+    window._telehealthPrepared = (async () => {
+      const currentId = await ready;
+      if (!currentId) throw new Error('Recording session was not accepted.');
+      const encoded = encodeTelehealthWavWindow(window);
+      const part = {
+        captureId: currentId, transcriptId, channel: window.channel,
+        sequence: partNo, key, spans: encoded.spans, bytes: encoded.bytes,
+      };
+      // Every bounded window gets an encrypted IndexedDB transaction
+      // immediately, EVEN WHEN an earlier HTTP request is still pending.
+      // A lost response cannot change its bytes, role, sequence or identity.
+      try {
+        await journal.persist(part);
+      } catch (error) {
+        warn(null, 'browser_capture_failed');
+        void stop().catch(() => {});
+        throw error;
+      }
+      return part;
+    })();
+    // An independently queued durable promise can reject while a different
+    // window's HTTP request is pending. The upload queue awaits the same
+    // promise and surfaces the error at its original sequence position.
+    void window._telehealthPrepared.catch(() => {});
+    return window._telehealthPrepared;
+  };
+
+  const uploadWindow = async (window) => {
+    const part = await (window._telehealthPrepared || prepareWindow(window));
     await submitTelehealthRecoveryWindow({ part, csrfFetch, pace });
-    await journal.remove(part); // Do not retain the PHI after server acceptance.
-    if (!acknowledged[window.channel].has(partNo)) {
-      acknowledged[window.channel].add(partNo);
-      accepted[window.channel] += 1;
+    await journal.remove(part); // Only delete after matching server acceptance.
+    if (!acknowledged[part.channel].has(part.sequence)) {
+      acknowledged[part.channel].add(part.sequence);
+      accepted[part.channel] += 1;
     }
+    part.bytes.fill(0);
   };
 
   const post = async (url, payload) => safeJson(await csrfFetch(url, {
@@ -163,7 +176,7 @@ export function createTelehealthRecordingClient({
       ]);
       windows = createTelehealthWindows({
         sampleRate, windowSeconds: 10, maxPendingWindows: 4,
-        onWindow: uploadWindow,
+        onWindow: uploadWindow, onEnqueue: prepareWindow,
         onGap: (gap) => {
           // No time loss is acceptable to silently label as complete.
           // Even a sub-second gap could omit a medication/dose/negation.

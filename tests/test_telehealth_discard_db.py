@@ -15,6 +15,7 @@ from app.models import (
     TranscriptIngestionJobStatus, TranscriptIngestionMode, TranscriptStatus, utcnow,
 )
 from app.services.telehealth_capture import discard_unsubmitted_telehealth_capture
+from app.services.telehealth_api import unresolved_telehealth_capture_detail
 from app.services.transcripts import (
     _resolved_transcript_status, assert_no_unresolved_stream_session,
 )
@@ -81,6 +82,13 @@ def test_discard_unsubmitted_interruption_clears_barrier_and_queues_vault_delete
         email="telehealth-discard-stranger@example.com", password="password-1", team=team,
     )
     transcript, capture, part, audio_ref = _fixture(db_session, owner)
+    restored = unresolved_telehealth_capture_detail(
+        db_session, owner, transcript_id=transcript.id,
+    )
+    assert restored is not None
+    assert restored.capture_session_id == capture.id
+    assert restored.parts[0].id == part.id
+    assert "source_audio_vault_ref" not in restored.model_dump()
     assert _resolved_transcript_status(db_session, transcript=transcript) is TranscriptStatus.failed
     with pytest.raises(AppError) as error:
         assert_no_unresolved_stream_session(db_session, transcript_id=transcript.id)
@@ -111,6 +119,9 @@ def test_discard_unsubmitted_interruption_clears_barrier_and_queues_vault_delete
     assert deleted == [audio_ref]
     assert _resolved_transcript_status(db_session, transcript=transcript) is TranscriptStatus.ready
     assert_no_unresolved_stream_session(db_session, transcript_id=transcript.id)
+    assert unresolved_telehealth_capture_detail(
+        db_session, owner, transcript_id=transcript.id,
+    ) is None
 
     # A repeated response after an ambiguous HTTP result is idempotent.
     assert discard_unsubmitted_telehealth_capture(

@@ -267,10 +267,9 @@ export function attachTelehealthControls({
   };
 
   const confirmGuidance = () => new Promise((resolve) => {
-    if (getPreferences?.().telehealth_guidance_acknowledged === true) {
-      resolve(true);
-      return;
-    }
+    // Show the current crash-buffer/privacy disclosure on every selection,
+    // including for owners who acknowledged an older guidance version.
+    // The server-side first-use acknowledgement is still persisted once.
     let settled = false;
     const finish = (answer) => {
       if (settled) return;
@@ -287,7 +286,9 @@ export function attachTelehealthControls({
       guidanceContinue.disabled = true;
       guidanceError.hidden = true;
       try {
-        await persistPreferences({ telehealth_guidance_acknowledged: true });
+        if (getPreferences?.().telehealth_guidance_acknowledged !== true) {
+          await persistPreferences({ telehealth_guidance_acknowledged: true });
+        }
         finish(true);
       } catch (_) {
         guidanceError.textContent = 'Could not save your acknowledgement. Try again.';

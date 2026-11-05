@@ -259,6 +259,17 @@ The checked-in @ricky0123/vad-web 0.0.29 browser bundle exposes NonRealTimeVAD. 
 
 **Critical backend gap:** Post-stop finalization must transfer staged parts to provider-accounted STT work without dropping Vault references, waiting for both channels, retaining recoverable failed source data and merging into an owner-encrypted, versioned, redacted transcript. The existing ordinary whole-file worker immediately applies text and permits only one active file job per transcript. Do NOT publish staged-audio endpoints or enable UI capture until this gap is resolved.
 
+### Incremental WP2 lifecycle and preference work (latest checkpoint)
+
+- New internal capture session transitions in app/services/telehealth_capture.py:
+  - **active → stopping:** Explicit Stop or an interrupted channel records only allowlisted content-free reason codes. New parts can still stage while the client flushes its already captured buffers.
+  - **stopping → ready/interrupted:** The client supplies the expected per-channel part counts, and a locked server transaction refuses to seal until all expected parts are durably recorded. A clean stop can be escalated to interrupted if final audio flush fails later. Replays cannot downgrade a known error or overwrite the source.
+  - Both-source audio-clock failure can be represented without fabricating which individual channel failed. Multiple runs in one consultation are possible after the previous run is sealed, without discarding its staged data.
+- The owner preferences contract now includes **show_telehealth_control** (default true) and **telehealth_guidance_acknowledged** (default false), with mono­tonic first-use acknowledgement and backward-compatible preservation of an explicitly hidden toggle when older clients submit full preferences. Updated app/schemas/preferences.py, app/services/preferences.py, app/web/presentation.py, app/static/js/transcribe/app.js and app/static/js/settings/controls.js. **The actual new toggle and modal are still not rendered or active.**
+- Added tests/test_telehealth_preferences.py and expanded database lifecycle/replay tests for interruption, sealing and global clock-failure escalation. Test expectations inspect structured AppError attributes and not the exception's non-guaranteed string representation.
+- **CI observation:** The draft PR's earlier Docker smoke run 41937087836 passed. Other CI runs on subsequent commits may still be in progress. Docker build/smoke success is not evidence of the new pytest, browser E2E, quota/retry, or clinical-safety suites passing. The GitHub PR is draft #8.
+- **Outstanding integration risk:** staging a Vault source is only a recoverable acceptance receipt. No provider dispatch, post-stop transcription, merged encrypted transcript, actual timed VAD implementation or clinician-facing recording control is wired yet. Prevent user-visible activation until these are complete.
+
 ### Outstanding before any user-facing enablement
 
 1. **Continue WP2:** Wire the new session/part models into a reviewed owner-authorized, CSRF/rate-limited API only after durable post-stop STT finalization exists. Add explicit interruption/gap state and aggregate quota handling; no public routes have been exposed yet.

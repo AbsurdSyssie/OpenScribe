@@ -85,6 +85,44 @@ await assert.rejects(blocked.finish(), /backpressured/);
 assert.equal(blocked.status().pendingWindows, 0);
 assert.equal(blocked.status().bufferedFrames.clinician, 4);
 assert.equal(await blocked.retryPending(), true);
+
+// With an HTTP request stuck, later completed windows must reach their
+// independent local encrypted write-ahead stage BEFORE network dispatch.
+const durableWindows = [], uploadedWindows = [];
+let releaseStalledUpload;
+let firstUpload = true;
+const journalAhead = createTelehealthWindows({
+  sampleRate: 4, windowSeconds: 1, maxPendingWindows: 4,
+  onEnqueue: (win) => {
+    durableWindows.push([win.channel, win.startFrame, win.endFrame]);
+    return Promise.resolve();
+  },
+  onWindow: async (win) => {
+    if (firstUpload) {
+      firstUpload = false;
+      await new Promise((resolve) => { releaseStalledUpload = resolve; });
+    }
+    uploadedWindows.push(win.channel);
+  },
+});
+assert.equal(journalAhead.ingest({
+  channel:'clinician', startFrame:0, endFrame:4, samples:new Float32Array(4),
+}), true);
+assert.equal(journalAhead.ingest({
+  channel:'patient', startFrame:0, endFrame:4, samples:new Float32Array(4),
+}), true);
+assert.equal(journalAhead.ingest({
+  channel:'clinician', startFrame:4, endFrame:8, samples:new Float32Array(4),
+}), true);
+assert.deepEqual(durableWindows, [
+  ['clinician', 0, 4], ['patient', 0, 4], ['clinician', 4, 8],
+]);
+assert.deepEqual(uploadedWindows, []);
+await Promise.resolve();
+assert.equal(typeof releaseStalledUpload, 'function');
+releaseStalledUpload();
+await journalAhead.finish();
+assert.deepEqual(uploadedWindows, ['clinician','patient','clinician']);
 """,
         encoding="utf-8",
     )

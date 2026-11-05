@@ -50,6 +50,10 @@ def test_dual_audio_never_uses_existing_microphone_handler_for_telehealth():
     assert "onStateChange: render" in ui
     assert "client.discard()" in ui
     assert "data-telehealth-discard" in ui
+    assert "/telehealth/unresolved" in ui
+    assert "postRecovery(restoredCapture, 'discard')" in ui
+    assert "onStateChange: render" in ui
+    assert "isUnresolved:" in ui
 
 
 def test_owner_only_telehealth_settings_are_independently_switchable():

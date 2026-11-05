@@ -790,8 +790,6 @@ let statusDetailsHideTimer = null;
           preferred_transcribe_tab: userAppPreferences.preferred_transcribe_tab || null,
           diarization_enabled: userAppPreferences.diarization_enabled === true,
           diarization_warning_acknowledged: userAppPreferences.diarization_warning_acknowledged === true,
-          telehealth_button_visible: userAppPreferences.telehealth_button_visible !== false,
-          telehealth_first_use_acknowledged: userAppPreferences.telehealth_first_use_acknowledged === true,
           show_telehealth_control: userAppPreferences.show_telehealth_control !== false,
           telehealth_guidance_acknowledged: userAppPreferences.telehealth_guidance_acknowledged === true,
           ...patch,

@@ -143,6 +143,7 @@ export function createTelehealthRecordingClient({
         onGap: (gap) => {
           if (gap.endFrame - gap.startFrame > sampleRate / 2) {
             warn(gap.channel, 'audio_clock_interrupted');
+            void stop().catch(() => {});
           }
         },
       });
@@ -156,7 +157,9 @@ export function createTelehealthRecordingClient({
       const started = await post(base, { timeline_sample_rate: sampleRate });
       captureId = started.capture_session_id;
       resolveSession(captureId);
-      state = 'recording';
+      // A track may have ended while the start request was in flight. Never
+      // turn a stopped or interrupted capture back into a running one.
+      if (state === 'starting') state = 'recording';
       return started;
     } catch (error) {
       resolveSession(null);
@@ -182,19 +185,30 @@ export function createTelehealthRecordingClient({
         throw new Error('The recording could not be stored on the server.');
       }
       const stopUrl = base + '/' + encodeURIComponent(id) + '/stop';
-      await post(stopUrl, interruption || {});
+      try {
+        await post(stopUrl, interruption || {});
+      } catch (error) {
+        state = 'recovery_required';
+        throw error;
+      }
       try {
         await windows.finish();
       } catch (error) {
         warn(null, 'upload_failed');
-        await post(stopUrl, interruption);
+        try { await post(stopUrl, interruption); } catch (_) {}
         state = 'recovery_required';
         throw error; // Pending PCM remains in the bounded explicit retry queue.
       }
-      const sealed = await post(base + '/' + encodeURIComponent(id) + '/seal', {
-        expected_clinician_parts: accepted.clinician,
-        expected_patient_parts: accepted.patient,
-      });
+      let sealed;
+      try {
+        sealed = await post(base + '/' + encodeURIComponent(id) + '/seal', {
+          expected_clinician_parts: accepted.clinician,
+          expected_patient_parts: accepted.patient,
+        });
+      } catch (error) {
+        state = 'recovery_required';
+        throw error;
+      }
       state = sealed.status === 'interrupted' ? 'incomplete' : 'sealed';
       return sealed;
     })();
@@ -205,7 +219,9 @@ export function createTelehealthRecordingClient({
     if (state !== 'recovery_required' || !windows || !captureId) {
       throw new Error('No pending telehealth audio upload can be retried.');
     }
-    await windows.retryPending();
+    await post(base + '/' + encodeURIComponent(captureId) + '/stop', interruption || {});
+    if (windows.status().finished) await windows.retryPending();
+    else await windows.finish();
     const sealed = await post(base + '/' + encodeURIComponent(captureId) + '/seal', {
       expected_clinician_parts: accepted.clinician,
       expected_patient_parts: accepted.patient,

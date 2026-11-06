@@ -133,15 +133,19 @@ const journal = {
   async remove(part) { durable.delete(part.key); },
   async clear() { durable.clear(); },
 };
+const stopPhases = [];
 const client = createTelehealthRecordingClient({
   transcriptId: 'transcript-uuid',
   csrfFetch: fetcher, recoveryJournal: journal,
   pacedUpload: async () => {},
+  onStopProgress: phase => stopPhases.push(phase),
 });
 const started = await client.start();
 assert.equal(started.status, 'active');
 assert.equal(client.state, 'recording');
 await assert.rejects(client.stop(), /Synthetic lost upload response/);
+assert.deepEqual(stopPhases, ['flushing', 'uploading'],
+  'source upload failure is never misrepresented as finalised audio');
 assert.equal(client.state, 'recovery_required');
 assert.equal(attempts.length, 1);
 await client.retryPendingUploads();

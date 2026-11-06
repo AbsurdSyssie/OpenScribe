@@ -23,6 +23,7 @@ def test_phone_toggle_and_first_use_notice_are_server_feature_gated():
         "data-telehealth-retry",
         "data-telehealth-transcribe",
         "data-telehealth-discard",
+        "data-telehealth-diagnostics",
     ):
         assert marker in html
     assert "Headphones are recommended" in html
@@ -47,6 +48,9 @@ def test_dual_audio_never_uses_existing_microphone_handler_for_telehealth():
     assert "SPEECH_CONFIRM_MS = 5000" in ui
     assert "confirmed[channel]" in ui
     assert "onLevel" in ui
+    assert "onSpeechFrame" in ui
+    assert "createTelehealthDiagnostics" in ui
+    assert "AUDIO_ACTIVITY_THRESHOLD" not in ui
     assert "createTelehealthRecordingClient" in ui
     assert "await client.stop()" in ui
     assert "await client.transcribe()" in ui

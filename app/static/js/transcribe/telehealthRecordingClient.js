@@ -156,7 +156,12 @@ export function createTelehealthRecordingClient({
       log('upload_failed', { channel: part.channel, part: part.sequence, code: 'upload_failed' });
       throw error;
     }
-    await journal.remove(part);
+    try {
+      await journal.remove(part);
+    } catch (error) {
+      log('journal_failed', { code: 'journal_unavailable', channel: part.channel, part: part.sequence });
+      throw error;
+    }
     log('upload_accepted', { channel: part.channel, part: part.sequence }); // Only delete after matching server acceptance.
     if (!acknowledged[part.channel].has(part.sequence)) {
       acknowledged[part.channel].add(part.sequence);
@@ -194,8 +199,12 @@ export function createTelehealthRecordingClient({
       // Start the local storage preflight while the user chooses a call tab.
       // The display picker MUST be invoked first to preserve its user gesture.
       log('journal_check');
+      const journalCheck = journal.check().catch((error) => {
+        log('journal_failed', { code: 'journal_unavailable' });
+        throw error;
+      });
       const [{ sampleRate }] = await Promise.all([
-        startingCapture, journal.check(),
+        startingCapture, journalCheck,
       ]);
       windows = createTelehealthWindows({
         sampleRate, windowSeconds: 10, maxPendingWindows: 4,

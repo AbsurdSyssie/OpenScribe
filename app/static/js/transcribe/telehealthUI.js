@@ -1,5 +1,5 @@
 import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261106-window-vad-diagnostics';
-import { createTelehealthDiagnostics } from './telehealthDiagnostics.js?v=20261106-private-diagnostics';
+import { createTelehealthDiagnostics } from './telehealthDiagnostics.js?v=20261106-server-events';
 import {
   createTelehealthRecoveryJournal,
   createTelehealthUploadPacer,

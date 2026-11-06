@@ -223,6 +223,11 @@ const screen = devices('monitor');
 await assert.rejects(make(screen, true).capture.start(), /Full-screen/);
 assert.equal(screen.calls.microphone, 0);
 const browser = devices('browser');
-await make(browser, false).capture.start().then(() => {});
+const browserCapture = make(browser, false);
+await browserCapture.capture.start();
 assert.equal(browser.calls.microphone, 1);
+await browserCapture.capture.stop();
+const noTabAudio = devices('browser', false);
+await assert.rejects(make(noTabAudio, false).capture.start(), /No tab audio/);
+assert.equal(noTabAudio.calls.microphone, 0);
 """)

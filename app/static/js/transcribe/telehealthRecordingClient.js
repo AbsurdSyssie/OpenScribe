@@ -1,4 +1,4 @@
-import { createTelehealthCapture } from './telehealthCapture.js?v=20261105-source-interruption';
+import { createTelehealthCapture } from './telehealthCapture.js?v=20261106-window-vad';
 import { createTelehealthWindows } from './telehealthWindows.js?v=20261104-telehealth-windows';
 import { encodeTelehealthWavWindow } from './telehealthWav.js?v=20261105-telehealth-wav';
 import {
@@ -45,7 +45,9 @@ async function safeJson(response, fallback) {
 
 export function createTelehealthRecordingClient({
   transcriptId, csrfFetch, onLevel = () => {}, onSourceState = () => {},
-  onWarning = () => {}, onStateChange = () => {}, mediaDevices, AudioContextCtor, AudioWorkletNodeCtor,
+  onWarning = () => {}, onStateChange = () => {}, onSpeechFrame = () => {},
+  onVadState = () => {}, onDiagnostic = () => {}, confirmWindowAudio = () => false,
+  mediaDevices, AudioContextCtor, AudioWorkletNodeCtor,
   recoveryJournal = null, pacedUpload = null,
 } = {}) {
   if (!transcriptId || typeof csrfFetch !== 'function') {
@@ -54,10 +56,14 @@ export function createTelehealthRecordingClient({
   const base = '/api/v1/transcripts/' + encodeURIComponent(transcriptId) + '/telehealth/captures';
   const journal = recoveryJournal || createTelehealthRecoveryJournal();
   const pace = pacedUpload || createTelehealthUploadPacer();
+  const log = (event, fields = {}) => {
+    try { onDiagnostic({ event, ...fields }); } catch (_) {}
+  };
   const acknowledged = { clinician: new Set(), patient: new Set() };
   let state = 'idle', capture = null, windows = null, captureId = null;
   const setState = (next) => {
     state = next;
+    log('capture_state', { state: next });
     try { onStateChange(next); } catch (_) {}
   };
   let stopPromise = null, interruption = null, resolveSessionReady = null;
@@ -77,6 +83,7 @@ export function createTelehealthRecordingClient({
       channel: CHANNELS.includes(channel) ? channel : null,
       failure_code: normalizeCaptureFailure(reason),
     };
+    log('capture_interrupted', { channel: interruption.channel || 'none', code: interruption.failure_code });
     try { onWarning(interruption); } catch (_) {}
   };
   const acceptFrames = (packet) => {
@@ -124,7 +131,9 @@ export function createTelehealthRecordingClient({
       // A lost response cannot change its bytes, role, sequence or identity.
       try {
         await journal.persist(part);
+        log('window_prepared', { channel: part.channel, part: part.sequence });
       } catch (error) {
+        log('journal_failed', { code: 'journal_unavailable' });
         warn(null, 'browser_capture_failed');
         void stop().catch(() => {});
         throw error;
@@ -140,8 +149,15 @@ export function createTelehealthRecordingClient({
 
   const uploadWindow = async (window) => {
     const part = await (window._telehealthPrepared || prepareWindow(window));
-    await submitTelehealthRecoveryWindow({ part, csrfFetch, pace });
-    await journal.remove(part); // Only delete after matching server acceptance.
+    log('upload_started', { channel: part.channel, part: part.sequence });
+    try {
+      await submitTelehealthRecoveryWindow({ part, csrfFetch, pace });
+    } catch (error) {
+      log('upload_failed', { channel: part.channel, part: part.sequence, code: 'upload_failed' });
+      throw error;
+    }
+    await journal.remove(part);
+    log('upload_accepted', { channel: part.channel, part: part.sequence }); // Only delete after matching server acceptance.
     if (!acknowledged[part.channel].has(part.sequence)) {
       acknowledged[part.channel].add(part.sequence);
       accepted[part.channel] += 1;
@@ -164,7 +180,8 @@ export function createTelehealthRecordingClient({
     setState('starting');
     capture = createTelehealthCapture({
       mediaDevices, AudioContextCtor, AudioWorkletNodeCtor,
-      onFrames: acceptFrames, onSourceState,
+      onFrames: acceptFrames, onSourceState, onSpeechFrame, onVadState,
+      onDiagnostic, confirmWindowAudio,
       onInterrupted: ({ channel, reason }) => {
         warn(channel, reason);
         void stop().catch(() => {});
@@ -176,6 +193,7 @@ export function createTelehealthRecordingClient({
       const startingCapture = capture.start();
       // Start the local storage preflight while the user chooses a call tab.
       // The display picker MUST be invoked first to preserve its user gesture.
+      log('journal_check');
       const [{ sampleRate }] = await Promise.all([
         startingCapture, journal.check(),
       ]);
@@ -250,15 +268,18 @@ export function createTelehealthRecordingClient({
         throw error; // Pending PCM remains available for exact-key replay.
       }
       let sealed;
+      log('seal_started');
       try {
         sealed = await post(base + '/' + encodeURIComponent(id) + '/seal', {
           expected_clinician_parts: accepted.clinician,
           expected_patient_parts: accepted.patient,
         });
       } catch (error) {
+        log('seal_failed', { code: 'seal_failed' });
         setState('recovery_required');
         throw error;
       }
+      log('seal_completed');
       setState(sealed.status === 'interrupted' ? 'incomplete' : 'sealed');
       return sealed;
     })();
@@ -304,9 +325,15 @@ export function createTelehealthRecordingClient({
     if (!captureId || !['incomplete', 'sealed'].includes(state)) {
       throw new Error('Stop and seal the source audio before transcription.');
     }
-    const queued = await post(
-      base + '/' + encodeURIComponent(captureId) + '/transcribe', {},
-    );
+    log('transcribe_started');
+    let queued;
+    try {
+      queued = await post(base + '/' + encodeURIComponent(captureId) + '/transcribe', {});
+    } catch (error) {
+      log('transcribe_failed', { code: 'transcribe_failed' });
+      throw error;
+    }
+    log('transcribe_accepted');
     setState('transcribing');
     return queued;
   };

@@ -1,13 +1,15 @@
 # Telehealth crash-recovery physical walkthrough
 
 **Environment:** test-only consultation and synthetic audio. Do **not** use real patient
-content. Current implementation is a gated browser-tab capture preview, **not
-approved for clinical use**. Enable TELEHEALTH_API_ENABLED=true only on an
+content. Current implementation is a gated browser-tab and experimental desktop-window
+audio capture preview, **not approved for clinical use**. Enable TELEHEALTH_API_ENABLED=true only on an
 isolated test deployment, then restart the web service as usual.
 
 Use desktop Chrome or Edge with a browser-tab Teams or WhatsApp Web call and
-a separate clinician microphone. **Native Teams/WhatsApp desktop application
-audio is not supported by this implementation.** Use headphones to reduce
+a separate clinician microphone. A desktop application window (such as WhatsApp
+Desktop) may be selected only if the browser returns an audio track. Its playback
+may include other system audio; it is not yet validated as app-isolated capture.
+A native desktop capture bridge is not implemented. Use headphones to reduce
 microphone echo leakage. OpenScribe must be on HTTPS (or localhost) and the
 browser must allow WebCrypto, IndexedDB, the Web Locks API, microphone and
 browser-tab sharing. Recording fails closed if encrypted, cross-tab recovery
@@ -18,7 +20,9 @@ coordination is unavailable.
 1. Start a **new synthetic consultation**, select Recorded upload, enable the
    telephone control, and accept the first-use guidance.
 2. Press Start. Choose the **call tab** in the browser picker and tick **Share
-   tab audio**. Grant clinician microphone permission.
+   tab audio**, or select an application window with audio sharing enabled.
+   Window selection requires an extra acknowledgement warning that unrelated
+   system audio might also be recorded. Grant clinician microphone permission.
 3. Speak distinctly through the local mic and the remote browser tab. The two
    indicators should independently show source activity; one silent indicator
    must not turn green merely because the other is loud.
@@ -30,6 +34,21 @@ coordination is unavailable.
 5. Check usage accounting: the same elapsed consultation time can generate two
    separately billed source durations. Check against your STT provider's own
    billing rules.
+
+Use **Download diagnostics** during or after this capture. Inspect the JSON
+and confirm `picker_selected`, `microphone_ready`, `worklet_ready`,
+`capture_started`, independent `vad_ready`/speech events, upload/stop/seal
+states and any fixed failure codes. No diagnostic event may contain audio,
+transcript text, a window title, request URL, credentials or raw error text.
+The file is only created on explicit click; logs are memory-only and are lost
+on reload, not sent to the server or written to the browser console.
+
+For the experimental window path, test a synthetic WhatsApp Desktop call in a
+supported Windows or macOS browser. Confirm the microphone and remote audio
+separately, then create an unrelated synthetic OS sound to establish whether it
+is also captured. If window audio cannot be isolated, do not approve this
+platform for clinical use. Verify rejection of whole-screen selection, missing
+window audio, declined window acknowledgement and tab audio unchecked.
 
 **Pass:** no accidental audio playback/feedback; no unlabelled source merge;
 recording becomes ready only after both channels finish; existing mic-only

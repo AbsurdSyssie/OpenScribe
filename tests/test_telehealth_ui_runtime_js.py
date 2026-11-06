@@ -89,7 +89,8 @@ async function scenario(action){
     '[data-telehealth-combined]','[data-telehealth-combined-level]',
     '[data-telehealth-receipt-message]','[data-telehealth-actions]',
     '[data-telehealth-retry]','[data-telehealth-transcribe]','[data-telehealth-submit-retry]',
-    '[data-telehealth-discard]','[data-telehealth-diagnostics]','[data-telehealth-guidance]',
+    '[data-telehealth-discard]','[data-telehealth-debug-panel]','[data-telehealth-debug-reference]',
+    '[data-telehealth-debug-events]','[data-telehealth-guidance]',
     '[data-telehealth-guidance-cancel]','[data-telehealth-guidance-continue]',
     '[data-telehealth-guidance-error]',
   ];
@@ -101,22 +102,29 @@ async function scenario(action){
       receipt.children.set(selector,new Element(selector));
     }
   }
-  globalThis.document={querySelector:s=>els.get(s)||new Element(s),createElement:()=>({click(){}})};
-  const downloaded=[];
-  globalThis.URL={createObjectURL:blob=>{downloaded.push(blob);return 'blob:synthetic';},revokeObjectURL(){}};
+  globalThis.document={querySelector:s=>els.get(s)||new Element(s)};
+  if (!globalThis.crypto?.randomUUID) {
+    globalThis.crypto = { randomUUID:()=> '01234567-89ab-cdef-0123-456789abcdef' };
+  }
   globalThis.window={
     confirm:()=>true, addEventListener(){}, refreshLucideIcons(){},
     setTimeout:(fn)=>setTimeout(fn,0),clearTimeout,
   };
   const notices=[];
-  const fixture={transcribeAttempts:0,retryUploadAttempts:0,partialAttempts:0,firstTranscribeGate,startedTranscribe:()=>startedTranscribe(),
+  const fixture={transcribeAttempts:0,retryUploadAttempts:0,partialAttempts:0,diagnosticRequests:[],firstTranscribeGate,startedTranscribe:()=>startedTranscribe(),
     discardGate,startedDiscard:()=>startedDiscard()};
   globalThis.__uiFixture=fixture;
   const ui=attachTelehealthControls({
     getTranscriptId:()=> 'transcript-uuid', getIngestionMode:()=> 'whole_file',
     canUseRecording:()=>true, isOtherRecordingActive:()=>false,
     getPreferences:()=>({show_telehealth_control:true,telehealth_guidance_acknowledged:true}),
-    persistPreferences:async()=>{},csrfFetch:async()=>({ok:true,json:async()=>null}),
+    persistPreferences:async()=>{},csrfFetch:async(_url, options={})=>{
+      if (options.body && _url.includes('/telehealth/diagnostics')) {
+        const payload=JSON.parse(options.body);fixture.diagnosticRequests.push(payload);
+        return {ok:true,json:async()=>({accepted:payload.events.length})};
+      }
+      return {ok:true,json:async()=>null};
+    },
     refreshWorkspace:async()=>{},showNotice:(text,kind)=>notices.push([text,kind]),
   });
   await els.get('[data-telehealth-toggle]').click();
@@ -134,13 +142,14 @@ async function scenario(action){
   assert.equal(receipt.classList.contains('is-verified'),false);
   fixture.clientOptions.onSpeechFrame({channel:'clinician',speechMs:5000});
   assert.equal(receipt.classList.contains('is-verified'),true);
-  const diag=els.get('[data-telehealth-diagnostics]');
-  assert.equal(diag.hidden,false,'diagnostics appear for the current capture');
-  await diag.click();
-  assert.equal(downloaded.length,1);
-  const report=JSON.parse(await downloaded[0].text());
+  fixture.clientOptions.onDiagnostic({event:'capture_failed',code:'missing_audio'});
+  await waitFor(()=>fixture.diagnosticRequests.length>=1);
+  const report=fixture.diagnosticRequests[0];
+  assert.match(report.diagnostic_id,/^[0-9a-f]{32}$/);
   assert.ok(report.events.some(e=>e.event==='picker_selected'&&e.surface==='window'));
   assert.ok(!JSON.stringify(report).includes('PATIENT SECRET'));
+  assert.ok(els.get('[data-telehealth-debug-events]').textContent.includes('capture_failed'));
+  assert.ok(!document.querySelector('[data-telehealth-debug-events]').textContent.includes('PATIENT SECRET'));
   await els.get('[data-record-toggle]').click();
   await started;
   const retry=els.get('[data-telehealth-submit-retry]');

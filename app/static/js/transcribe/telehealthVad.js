@@ -14,8 +14,8 @@ export function createTelehealthVadMonitor({
   let generation = 0;
   const running = new Map();
   const clones = new Set();
-  const emit = (event, channel) => {
-    try { onDiagnostic({ event, channel }); } catch (_) {}
+  const emit = (event, channel, code) => {
+    try { onDiagnostic({ event, channel, ...(code ? { code } : {}) }); } catch (_) {}
   };
   const setState = (channel, status) => {
     try { onState({ channel, status }); } catch (_) {}
@@ -55,6 +55,7 @@ export function createTelehealthVadMonitor({
         emit('vad_unavailable', channel);
         continue;
       }
+      setState(channel, 'loading');
       emit('vad_loading', channel);
       // Startup is detached so model downloads never hold up recording.
       void (async () => {
@@ -89,7 +90,7 @@ export function createTelehealthVadMonitor({
           running.delete(channel);
           dispose(instance);
           setState(channel, 'unavailable');
-          emit('vad_unavailable', channel);
+          emit('vad_unavailable', channel, 'vad_initialization_failed');
         }
       })();
     }

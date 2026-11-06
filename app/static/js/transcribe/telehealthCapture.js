@@ -1,4 +1,5 @@
 import { createTelehealthTimeline } from './telehealthTimeline.js?v=20261104-telehealth-timing';
+import { createTelehealthVadMonitor } from './telehealthVad.js?v=20261106-speech-vad';
 
 // This is a capture transport, NOT a transcript uploader. The consumer must
 // immediately pass onFrames into a bounded VAD/ingestion pipeline. Raw PCM is
@@ -18,6 +19,10 @@ export function createTelehealthCapture({
   onFrames,
   onInterrupted = () => {},
   onSourceState = () => {},
+  onSpeechFrame = () => {},
+  onVadState = () => {},
+  onDiagnostic = () => {},
+  confirmWindowAudio = () => false,
   mediaDevices = navigator.mediaDevices,
   AudioContextCtor = window.AudioContext || window.webkitAudioContext,
   AudioWorkletNodeCtor = window.AudioWorkletNode,
@@ -33,6 +38,10 @@ export function createTelehealthCapture({
   let stopPromise = null;
   let interrupted = false;
   let terminalFailure = null;
+  let vadMonitor = null;
+  const log = (event, fields = {}) => {
+    try { onDiagnostic({ event, ...fields }); } catch (_) {}
+  };
   const nodes = [];
   const taps = [];
   const cleanups = [];
@@ -46,13 +55,15 @@ export function createTelehealthCapture({
     if (interrupted || state === 'stopped') return;
     interrupted = true;
     terminalFailure = { channel, reason };
+    log('capture_interrupted', { channel: channel || 'none', code: reason === 'ended' ? 'source_ended' : reason === 'source_muted' ? 'source_muted' : 'browser_capture_failed' });
     try { onInterrupted({ channel, reason }); } catch (_) {}
     if (state !== 'stopping') void stop().catch(() => {});
   };
 
   const setUpTrackEvents = (channel, track) => {
-    const ended = () => interruptedCapture(channel, 'ended');
+    const ended = () => { log('track_ended', { channel }); interruptedCapture(channel, 'ended'); };
     const muted = () => {
+      log('track_muted', { channel });
       emitSourceState(channel, 'muted');
       interruptedCapture(channel, 'source_muted');
     };
@@ -151,6 +162,9 @@ export function createTelehealthCapture({
     const shouldFlush = state === 'running';
     state = 'stopping';
     stopPromise = (async () => {
+      log('capture_stopping');
+      vadMonitor?.stop();
+      vadMonitor = null;
       if (shouldFlush) await Promise.all(taps.map(({ channel, tap }) => flushTap(channel, tap)));
       for (const cleanup of cleanups.splice(0)) {
         try { cleanup(); } catch (_) {}
@@ -167,6 +181,7 @@ export function createTelehealthCapture({
       context = null;
       timeline?.close();
       state = 'stopped';
+      log('capture_stopped');
       if (terminalFailure) throw new Error('Telehealth recording ended with incomplete audio.');
     })();
     return stopPromise;
@@ -183,9 +198,11 @@ export function createTelehealthCapture({
     try {
       // Trigger display-picker synchronously from a direct user gesture. The
       // selected tab MUST expose an actual audio track.
+      log('picker_requested');
       const acquiredDisplay = await mediaDevices.getDisplayMedia({
         video: true, audio: true, selfBrowserSurface: 'exclude',
-        surfaceSwitching: 'include',
+        surfaceSwitching: 'exclude', monitorTypeSurfaces: 'exclude',
+        windowAudio: 'window', systemAudio: 'exclude',
       });
       if (generation !== startGeneration) {
         stopTracks(acquiredDisplay);
@@ -194,15 +211,35 @@ export function createTelehealthCapture({
       displayStream = acquiredDisplay;
       const displayVideo = displayStream.getVideoTracks()[0];
       const patientAudio = displayStream.getAudioTracks()[0];
-      if (!isLive(displayVideo) || !isLive(patientAudio)) {
-        throw new Error('Select a browser tab and enable Share tab audio.');
+      const displaySurface = displayVideo?.getSettings?.().displaySurface || 'unknown';
+      const surface = ['browser', 'window', 'monitor'].includes(displaySurface) ? displaySurface : 'unknown';
+      log('picker_selected', { surface });
+      if (!isLive(displayVideo)) {
+        log('picker_rejected', { surface, code: 'missing_video' });
+        throw new Error('The selected sharing source has no live video track.');
       }
-      // Reject explicitly non-tab capture, even if system sharing produces
-      // audio; native WhatsApp app capture is a separately scoped later phase.
-      const displaySurface = displayVideo.getSettings?.().displaySurface;
-      if (displaySurface !== 'browser') {
-        throw new Error('Telehealth currently requires sharing a browser tab.');
+      if (surface !== 'browser' && surface !== 'window') {
+        log('picker_rejected', { surface, code: 'unsupported_surface' });
+        throw new Error('Choose a browser tab or application window. Full-screen sharing is not supported.');
       }
+      if (!isLive(patientAudio)) {
+        log('picker_rejected', { surface, code: 'missing_audio' });
+        throw new Error(surface === 'window'
+          ? 'No audio was shared with that window. Enable window audio in the picker, or use a browser call tab.'
+          : 'No tab audio was shared. Select the call tab and enable Share tab audio.');
+      }
+      if (surface === 'window') {
+        // Chromium may offer system audio as a fallback: the API does not
+        // expose trustworthy proof that audio belongs to this window alone.
+        const acknowledged = await Promise.resolve(confirmWindowAudio());
+        if (generation !== startGeneration) throw new Error('Telehealth capture was cancelled.');
+        if (!acknowledged) {
+          log('picker_rejected', { surface, code: 'window_declined' });
+          throw new Error('Window-audio capture was cancelled.');
+        }
+        log('window_acknowledged', { surface });
+      }
+      log('microphone_requested');
       const acquiredMic = await mediaDevices.getUserMedia({
         audio: { echoCancellation: true },
       });
@@ -211,6 +248,7 @@ export function createTelehealthCapture({
         throw new Error('Telehealth capture was cancelled.');
       }
       microphoneStream = acquiredMic;
+      log('microphone_ready');
       const microphoneAudio = microphoneStream.getAudioTracks()[0];
       if (!isLive(microphoneAudio) || !isLive(patientAudio)) {
         throw new Error('Both microphone and tab audio must be available.');
@@ -219,6 +257,7 @@ export function createTelehealthCapture({
       if (!context.audioWorklet?.addModule) throw new Error('AudioWorklet is unsupported.');
       await context.suspend();
       await context.audioWorklet.addModule(WORKLET_URL);
+      log('worklet_ready');
       if (generation !== startGeneration) throw new Error('Telehealth capture was cancelled.');
       timeline = createTelehealthTimeline({
         sampleRate: context.sampleRate,
@@ -226,6 +265,9 @@ export function createTelehealthCapture({
       });
       setUpTrackEvents('patient', patientAudio);
       setUpTrackEvents('clinician', microphoneAudio);
+      const videoEnded = () => interruptedCapture('patient', 'ended');
+      displayVideo.addEventListener('ended', videoEnded);
+      cleanups.push(() => displayVideo.removeEventListener('ended', videoEnded));
       makeTap('patient', displayStream);
       makeTap('clinician', microphoneStream);
       if (generation !== startGeneration) throw new Error('Telehealth capture was cancelled.');
@@ -233,6 +275,9 @@ export function createTelehealthCapture({
       await context.resume();
       if (generation !== startGeneration) throw new Error('Telehealth capture was cancelled.');
       if (context.state !== 'running') throw new Error('Audio capture clock did not start.');
+      log('capture_started', { surface: surface });
+      vadMonitor = createTelehealthVadMonitor({ onSpeechFrame, onState: onVadState, onDiagnostic });
+      vadMonitor.start({ patient: patientAudio, clinician: microphoneAudio });
       context.onstatechange = () => {
         if (state === 'running' && context?.state !== 'running') {
           interruptedCapture(null, 'audio_clock_interrupted');
@@ -240,6 +285,9 @@ export function createTelehealthCapture({
       };
       return { sampleRate: timeline.snapshot().sampleRate };
     } catch (error) {
+      const code = error?.name === 'NotAllowedError' ? 'permission_denied'
+        : error?.name === 'AbortError' ? 'user_cancelled' : 'browser_capture_failed';
+      log('capture_failed', { code });
       await stop();
       throw error;
     }

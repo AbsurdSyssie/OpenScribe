@@ -13,9 +13,15 @@ NODE = shutil.which("node")
 def test_failed_sealed_submission_retries_from_rendered_control_and_discard_unlocks(tmp_path):
     source = (ROOT / "app/static/js/transcribe/telehealthUI.js").read_text(encoding="utf-8")
     source = source.replace(
-        "./telehealthRecordingClient.js?v=20261105-submit-retry", "./fake.mjs"
+        "./telehealthRecordingClient.js?v=20261106-window-vad-diagnostics", "./fake.mjs"
     ).replace(
         "./telehealthRecoveryJournal.js?v=20261105-cross-tab-journal", "./fake.mjs"
+    ).replace(
+        "./telehealthDiagnostics.js?v=20261106-private-diagnostics", "./diagnostics.mjs"
+    )
+    (tmp_path / "diagnostics.mjs").write_text(
+        (ROOT / "app/static/js/transcribe/telehealthDiagnostics.js").read_text(encoding="utf-8"),
+        encoding="utf-8",
     )
     (tmp_path / "ui.mjs").write_text(source, encoding="utf-8")
     (tmp_path / "fake.mjs").write_text(r"""

@@ -177,7 +177,7 @@ assert.equal(transmitted.length, 1);
 assert.equal(transmitted[0].events.length, 2);
 assert.equal(transmitted[0].id, 'a'.repeat(32));
 assert.ok(!JSON.stringify(transmitted).includes('SENSITIVE'));
-assert.ok(!JSON.stringify(transmitted).includes('at'));
+assert.ok(transmitted[0].events.every(event => !Object.hasOwn(event, 'at')));
 reporter.clear();
 
 class Stream {

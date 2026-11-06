@@ -176,6 +176,7 @@ async function scenario(action){
   const label=els.get('[data-record-toggle-label]');
   assert.equal(label.textContent,'Stopping…','Stop click immediately acknowledges the stop request');
   assert.equal(button.disabled,true,'a second recording cannot start before the audio is sealed');
+  assert.equal(button.attrs['aria-busy'],'true','assistive technology sees that Stop is still saving');
   assert.equal(els.get('[data-record-toggle-icon]').dataset.lucide,'loader-circle');
   assert.equal(ui.isUnresolved(),true);
   await button.click({force:true});
@@ -201,6 +202,7 @@ async function scenario(action){
   releaseFirst();
   await waitFor(()=>retry.disabled===false);
   assert.equal(label.textContent,'Retry submission','failed submit returns to a truthful recovery label');
+  assert.equal(button.attrs['aria-busy'],'false','saving state ends after submission failure');
   assert.ok(notices.some(([text])=>text.includes('Synthetic lost /transcribe response')));
   assert.equal(retry.hidden,false,'failed submission keeps its retry action visible');
   if(action==='retry'){

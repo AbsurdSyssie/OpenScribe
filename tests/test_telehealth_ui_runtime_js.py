@@ -39,7 +39,18 @@ export function createTelehealthRecordingClient(options) {
       options.onDiagnostic({event:'picker_selected',surface:'window',windowTitle:'PATIENT SECRET'});
       state='recording'; options.onStateChange(state); return {status:'active'};
     },
-    async stop(){ state='sealed'; options.onStateChange(state); return {status:'ready'}; },
+    async stop(){
+      f.stopAttempts=(f.stopAttempts||0)+1;
+      state='stopping'; options.onStateChange(state);
+      options.onStopProgress('flushing');
+      f.startedStop();
+      await f.stopCaptureGate;
+      options.onStopProgress('uploading');
+      await f.stopUploadGate;
+      options.onStopProgress('sealing');
+      await f.stopSealGate;
+      state='sealed'; options.onStateChange(state); return {status:'ready'};
+    },
     async transcribe(){
       attempts += 1; f.transcribeAttempts=attempts;
       if (attempts === 1) {
@@ -79,6 +90,11 @@ const tick=()=>new Promise(r=>setTimeout(r,0));
 async function waitFor(predicate){for(let i=0;i<30;i++){if(predicate())return;await tick();}throw new Error('synthetic UI action did not reach expected state');}
 async function scenario(action){
   let releaseFirst, startedTranscribe, releaseDiscard, startedDiscard;
+  let startedStop, releaseStopCapture, releaseStopUpload, releaseStopSeal;
+  const stopStarted=new Promise(r=>startedStop=r);
+  const stopCaptureGate=new Promise(r=>releaseStopCapture=r);
+  const stopUploadGate=new Promise(r=>releaseStopUpload=r);
+  const stopSealGate=new Promise(r=>releaseStopSeal=r);
   const firstTranscribeGate=new Promise(r=>releaseFirst=r);
   const started=new Promise(r=>startedTranscribe=r);
   const discardGate=new Promise(r=>releaseDiscard=r);
@@ -111,8 +127,12 @@ async function scenario(action){
     setTimeout:(fn)=>setTimeout(fn,0),clearTimeout,
   };
   const notices=[];
-  const fixture={transcribeAttempts:0,retryUploadAttempts:0,partialAttempts:0,diagnosticRequests:[],firstTranscribeGate,startedTranscribe:()=>startedTranscribe(),
-    discardGate,startedDiscard:()=>startedDiscard()};
+  const fixture={
+    transcribeAttempts:0,retryUploadAttempts:0,partialAttempts:0,stopAttempts:0,
+    diagnosticRequests:[],firstTranscribeGate,startedTranscribe:()=>startedTranscribe(),
+    stopCaptureGate,stopUploadGate,stopSealGate,startedStop:()=>startedStop(),
+    discardGate,startedDiscard:()=>startedDiscard()
+  };
   globalThis.__uiFixture=fixture;
   const ui=attachTelehealthControls({
     getTranscriptId:()=> 'transcript-uuid', getIngestionMode:()=> 'whole_file',
@@ -151,7 +171,27 @@ async function scenario(action){
   assert.ok(els.get('[data-telehealth-debug-events]').textContent.includes('capture_failed'));
   assert.ok(!document.querySelector('[data-telehealth-debug-events]').textContent.includes('PATIENT SECRET'));
   await els.get('[data-record-toggle]').click();
+  await stopStarted;
+  const button=els.get('[data-record-toggle]');
+  const label=els.get('[data-record-toggle-label]');
+  assert.equal(label.textContent,'Stopping…','Stop click immediately acknowledges the stop request');
+  assert.equal(button.disabled,true,'a second recording cannot start before the audio is sealed');
+  assert.equal(els.get('[data-record-toggle-icon]').dataset.lucide,'loader-circle');
+  assert.equal(ui.isUnresolved(),true);
+  await button.click({force:true});
+  assert.equal(fixture.stopAttempts,1,'duplicate Stop clicks cannot start a second flush');
+  assert.equal(fixture.transcribeAttempts,0);
+
+  releaseStopCapture();
+  await waitFor(()=>label.textContent==='Saving audio…');
+  assert.equal(fixture.transcribeAttempts,0,'transcription cannot start before audio upload');
+  assert.ok(els.get('[data-telehealth-receipt-message]').textContent.includes('Recording stopped.'));
+  releaseStopUpload();
+  await waitFor(()=>label.textContent==='Finalising audio…');
+  assert.equal(button.disabled,true);
+  releaseStopSeal();
   await started;
+  assert.equal(label.textContent,'Submitting…','the button reports submission instead of recording');
   const retry=els.get('[data-telehealth-submit-retry]');
   assert.equal(retry.hidden,false,'sealed capture exposes a separate transcription retry action');
   assert.equal(retry.disabled,true,'the initial Stop submission remains in flight');
@@ -160,6 +200,7 @@ async function scenario(action){
   assert.equal(fixture.transcribeAttempts,1,'a duplicate click cannot submit a second request');
   releaseFirst();
   await waitFor(()=>retry.disabled===false);
+  assert.equal(label.textContent,'Retry submission','failed submit returns to a truthful recovery label');
   assert.ok(notices.some(([text])=>text.includes('Synthetic lost /transcribe response')));
   assert.equal(retry.hidden,false,'failed submission keeps its retry action visible');
   if(action==='retry'){

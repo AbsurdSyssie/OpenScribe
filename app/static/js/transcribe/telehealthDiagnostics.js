@@ -30,8 +30,64 @@ const FIELDS = {
 const MAX_EVENTS = 200;
 const MAX_PART = 1000000;
 
-export function createTelehealthDiagnostics({ now = () => new Date().toISOString() } = {}) {
-  let records = [];
+// The browser keeps a bounded local view for opted-in developers and
+// asynchronously forwards ONLY allowlisted metadata to the owner-scoped API.
+// The server assigns timestamps and writes private rotating files. No console,
+// localStorage, IndexedDB or user-triggered download is involved.
+export function createTelehealthDiagnostics({
+  now = () => new Date().toISOString(),
+  sendBatch = null,
+  generateId = () => globalThis.crypto?.randomUUID?.().replaceAll('-', '') || null,
+  schedule = (fn, ms) => setTimeout(fn, ms),
+  cancel = (id) => clearTimeout(id),
+} = {}) {
+  let records = [], pending = [], timer = null, inFlight = false;
+  let target = null, diagnosticId = null, generation = 0;
+  const MAX_PENDING = 200;
+  const flush = async () => {
+    if (!pending.length || inFlight || !target || !diagnosticId || !sendBatch) return;
+    if (timer !== null) { cancel(timer); timer = null; }
+    const current = generation;
+    const destination = target;
+    const id = diagnosticId;
+    const batch = pending.slice(0, 20);
+    inFlight = true;
+    try {
+      const response = await sendBatch(destination, id, batch);
+      if (current !== generation) return;
+      if (response?.accepted !== batch.length) throw new Error('Diagnostic storage unavailable');
+      pending.splice(0, batch.length);
+      if (pending.length) arm(5000);
+    } catch (_) {
+      // No raw exception messages in diagnostics, console or other storage.
+      if (current === generation) arm(15000);
+    } finally {
+      if (current === generation) inFlight = false;
+    }
+  };
+  const arm = (ms = 5000) => {
+    if (timer !== null || inFlight || !pending.length || !target) return;
+    timer = schedule(() => { timer = null; void flush(); }, ms);
+  };
+  const reset = () => {
+    ++generation;
+    if (timer !== null) { cancel(timer); timer = null; }
+    inFlight = false;
+    records = [];
+    pending = [];
+    target = null;
+    diagnosticId = null;
+  };
+  const begin = (transcriptId) => {
+    reset();
+    const id = typeof generateId === 'function' ? generateId() : null;
+    if (typeof id === 'string' && /^[0-9a-f]{32}$/.test(id)
+      && typeof transcriptId === 'string' && transcriptId) {
+      target = transcriptId;
+      diagnosticId = id;
+    }
+    return diagnosticId;
+  };
   const emit = (event, fields = {}) => {
     if (!EVENTS.has(event)) return;
     const record = { at: now(), event };
@@ -43,15 +99,21 @@ export function createTelehealthDiagnostics({ now = () => new Date().toISOString
     }
     records.push(record);
     if (records.length > MAX_EVENTS) records.shift();
+    if (target && sendBatch) {
+      const { at, ...safeFields } = record;
+      pending.push(safeFields);
+      if (pending.length > MAX_PENDING) pending.shift();
+      arm();
+    }
   };
   return {
-    emit,
-    clear: () => { records = []; },
+    emit, begin, flush, clear: reset,
     snapshot: () => ({
       schema: 'openscribe-telehealth-diagnostics-v1',
-      privacy: 'Event metadata only; no clinical content or audio.',
+      privacy: 'Fixed event metadata only; no clinical content or audio.',
       events: records.map((item) => ({ ...item })),
     }),
     get length() { return records.length; },
+    get diagnosticId() { return diagnosticId; },
   };
 }

@@ -1,8 +1,29 @@
 // Synthetic browser-source smoke test. No network, patient data, mic or provider calls.
 import assert from 'node:assert/strict';
-import { createTelehealthCapture } from '../app/static/js/transcribe/telehealthCapture.js';
-import { createTelehealthVadMonitor } from '../app/static/js/transcribe/telehealthVad.js';
-import { createTelehealthDiagnostics } from '../app/static/js/transcribe/telehealthDiagnostics.js';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+// Make isolated .mjs copies; this runs on CI Node versions that treat plain
+// .js files as CommonJS, without changing production module configuration.
+const sourceDir = join(dirname(fileURLToPath(import.meta.url)), '../app/static/js/transcribe');
+const directory = await mkdtemp(join(tmpdir(), 'openscribe-telehealth-smoke-'));
+for (const name of ['telehealthTimeline', 'telehealthVad', 'telehealthDiagnostics', 'telehealthCapture']) {
+  let source = await readFile(join(sourceDir, name + '.js'), 'utf-8');
+  if (name === 'telehealthCapture') {
+    source = source.replace(
+      './telehealthTimeline.js?v=20261104-telehealth-timing', './telehealthTimeline.mjs',
+    ).replace(
+      './telehealthVad.js?v=20261106-speech-vad', './telehealthVad.mjs',
+    );
+  }
+  await writeFile(join(directory, name + '.mjs'), source, 'utf-8');
+}
+const load = async name => import(pathToFileURL(join(directory, name + '.mjs')).href);
+const { createTelehealthCapture } = await load('telehealthCapture');
+const { createTelehealthVadMonitor } = await load('telehealthVad');
+const { createTelehealthDiagnostics } = await load('telehealthDiagnostics');
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
@@ -174,4 +195,5 @@ const count = heard.length;
 FakeVad.instances[0].options.onFrameProcessed({ isSpeech: 0.9 }, new Float32Array(512));
 assert.equal(heard.length, count);
 
+await rm(directory, { recursive: true, force: true });
 console.log('Synthetic Telehealth tab/window capture, VAD isolation and diagnostics passed');

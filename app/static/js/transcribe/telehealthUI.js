@@ -1,4 +1,5 @@
-import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261105-submit-retry';
+import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261106-window-vad-diagnostics';
+import { createTelehealthDiagnostics } from './telehealthDiagnostics.js?v=20261106-private-diagnostics';
 import {
   createTelehealthRecoveryJournal,
   createTelehealthUploadPacer,
@@ -9,7 +10,6 @@ import {
 // Existing microphone/Deepgram recording flows remain untouched otherwise.
 const SOURCES = ['clinician', 'patient'];
 const SPEECH_CONFIRM_MS = 5000;
-const AUDIO_ACTIVITY_THRESHOLD = 0.018;
 
 export function attachTelehealthControls({
   getTranscriptId,
@@ -36,6 +36,7 @@ export function attachTelehealthControls({
   const partial = document.querySelector('[data-telehealth-transcribe]');
   const submitRetry = document.querySelector('[data-telehealth-submit-retry]');
   const discard = document.querySelector('[data-telehealth-discard]');
+  const downloadDiagnostics = document.querySelector('[data-telehealth-diagnostics]');
   const guidance = document.querySelector('[data-telehealth-guidance]');
   const guidanceCancel = document.querySelector('[data-telehealth-guidance-cancel]');
   const guidanceContinue = document.querySelector('[data-telehealth-guidance-continue]');
@@ -48,6 +49,7 @@ export function attachTelehealthControls({
   let client = null;
   let restoredCapture = null;
   const recoveryJournal = createTelehealthRecoveryJournal();
+  const diagnostics = createTelehealthDiagnostics();
   let lastCheckedTranscriptId = null;
   let captureStatusCheckInFlight = false;
   let ownProcessingCheckInFlight = false;
@@ -142,6 +144,7 @@ export function attachTelehealthControls({
       || (restoredCapture && !hasRestoredJob)
     );
     if (actions) actions.hidden = [retry, partial, submitRetry, discard].every((item) => item?.hidden !== false);
+    if (downloadDiagnostics) downloadDiagnostics.hidden = diagnostics.length === 0;
     for (const action of [retry, partial, submitRetry]) {
       if (action) action.disabled = actionsInFlight;
     }
@@ -247,29 +250,33 @@ export function attachTelehealthControls({
       nodes[channel].status.textContent = 'Waiting for voice';
     }
   };
-  const onLevel = ({ channel, rms, startFrame, endFrame, sampleRate }) => {
+  const onDiagnostic = ({ event, ...fields }) => {
+    diagnostics.emit(event, fields);
+    if (downloadDiagnostics) downloadDiagnostics.hidden = diagnostics.length === 0;
+  };
+  const onVadState = ({ channel, status: next }) => {
     if (!SOURCES.includes(channel) || sourceLoss) return;
-    if (status[channel] === 'muted') return;
-    const level = Math.min(100, Math.max(3, Math.round(rms * 420)));
-    lastLevel[channel] = level;
-    if (nodes[channel].level) nodes[channel].level.style.width = level + '%';
-    if (combinedLevel) combinedLevel.style.width = Math.max(...SOURCES.map((id) => lastLevel[id])) + '%';
-    // An audio-level receipt is a UI heuristic, not clinical speaker proof or
-    // a signal to delete silence. Both PCM streams were recorded from Start.
-    if (rms > AUDIO_ACTIVITY_THRESHOLD && confirmed[channel] < SPEECH_CONFIRM_MS) {
-      const millis = (endFrame - startFrame) * 1000 / sampleRate;
-      if (Number.isFinite(millis) && millis > 0) confirmed[channel] = Math.min(
-        SPEECH_CONFIRM_MS, confirmed[channel] + millis,
-      );
+    if (next === 'loading') nodes[channel].status.textContent = 'Checking speech…';
+    if (next === 'ready' && confirmed[channel] < SPEECH_CONFIRM_MS) {
+      nodes[channel].status.textContent = 'Waiting for speech';
     }
-    if (confirmed[channel] >= SPEECH_CONFIRM_MS) {
-      nodes[channel].root?.classList.add('is-heard');
-      if (nodes[channel].status) nodes[channel].status.textContent = 'Audio detected';
+    if (next === 'unavailable') {
+      nodes[channel].status.textContent = 'Speech check unavailable — audio still recording';
     }
+  };
+  const onSpeechFrame = ({ channel, speechMs }) => {
+    if (!SOURCES.includes(channel) || sourceLoss || status[channel] === 'muted'
+      || !Number.isFinite(speechMs) || speechMs <= 0) return;
+    if (confirmed[channel] >= SPEECH_CONFIRM_MS) return;
+    confirmed[channel] = Math.min(SPEECH_CONFIRM_MS, confirmed[channel] + speechMs);
+    if (confirmed[channel] < SPEECH_CONFIRM_MS) return;
+    onDiagnostic({ event: 'vad_speech_confirmed', channel });
+    nodes[channel].root?.classList.add('is-heard');
+    if (nodes[channel].status) nodes[channel].status.textContent = 'Speech detected';
     if (SOURCES.every((id) => confirmed[id] >= SPEECH_CONFIRM_MS)
       && !receipt.classList.contains('is-verified')) {
       receipt.classList.add('is-verified', 'is-glowing');
-      if (message) message.textContent = 'Both audio sources detected';
+      if (message) message.textContent = 'Speech detected on both audio sources';
       collapseTimer = window.setTimeout(() => {
         if (!enabled || sourceLoss) return;
         receipt.classList.remove('is-glowing');
@@ -278,6 +285,14 @@ export function attachTelehealthControls({
         combined.hidden = false;
       }, 650);
     }
+  };
+  const onLevel = ({ channel, rms }) => {
+    if (!SOURCES.includes(channel) || sourceLoss || status[channel] === 'muted') return;
+    // RMS drives the animated meter ONLY. Speech confirmation uses Silero VAD.
+    const level = Math.min(100, Math.max(3, Math.round(rms * 420)));
+    lastLevel[channel] = level;
+    if (nodes[channel].level) nodes[channel].level.style.width = level + '%';
+    if (combinedLevel) combinedLevel.style.width = Math.max(...SOURCES.map((id) => lastLevel[id])) + '%';
   };
   const onWarning = ({ channel, failure_code: reason, recoverable = false }) => {
     if (!recoverable) {
@@ -363,11 +378,16 @@ export function attachTelehealthControls({
       return;
     }
     resetMeters();
+    diagnostics.clear();
     sourceLoss = false;
     if (message) message.textContent = 'Checking both audio sources';
     client = createTelehealthRecordingClient({
       transcriptId: getTranscriptId(),
       csrfFetch, onLevel, onSourceState, onWarning, onStateChange: render,
+      onSpeechFrame, onVadState, onDiagnostic,
+      confirmWindowAudio: () => window.confirm(
+        'Window audio is experimental. Depending on your browser and operating system, sharing a window can capture ALL system audio, not just the call. Continue only if other application sounds are safe to record. Continue?'
+      ),
       recoveryJournal,
     });
     const attempt = client.start(); // Direct user activation -> getDisplayMedia.
@@ -430,6 +450,21 @@ export function attachTelehealthControls({
   };
 
   toggle.addEventListener('click', () => { void toggleTelehealth(); });
+  downloadDiagnostics?.addEventListener('click', () => {
+    // Explicit user download only; never send logs to the server/console or
+    // persist them in unencrypted browser storage. Fixed-schema metadata only.
+    if (!diagnostics.length) return;
+    const json = JSON.stringify(diagnostics.snapshot(), null, 2);
+    const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+    try {
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'openscribe-telehealth-diagnostics.json';
+      link.click();
+    } finally {
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+  });
   // Capture phase: prevent the pre-existing microphone recorder from
   // responding to the SAME click while this separate capture is selected.
   mainRecord.addEventListener('click', (event) => {

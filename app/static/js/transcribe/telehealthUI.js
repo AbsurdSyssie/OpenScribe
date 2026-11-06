@@ -480,6 +480,10 @@ export function attachTelehealthControls({
         await refreshWorkspace?.();
       });
     } catch (error) {
+      // Stop/submission failed: render the retry or recovery action, never
+      // leave a disabled button stuck saying "Submitting…".
+      stopPhase = null;
+      render();
       notice((error instanceof Error ? error.message : 'Telehealth audio needs recovery.') + diagnosticSuffix(), 'error');
     }
   };

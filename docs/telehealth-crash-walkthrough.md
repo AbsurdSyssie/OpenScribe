@@ -35,13 +35,18 @@ coordination is unavailable.
    separately billed source durations. Check against your STT provider's own
    billing rules.
 
-Use **Download diagnostics** during or after this capture. Inspect the JSON
-and confirm `picker_selected`, `microphone_ready`, `worklet_ready`,
-`capture_started`, independent `vad_ready`/speech events, upload/stop/seal
-states and any fixed failure codes. No diagnostic event may contain audio,
-transcript text, a window title, request URL, credentials or raw error text.
-The file is only created on explicit click; logs are memory-only and are lost
-on reload, not sent to the server or written to the browser console.
+With `TELEHEALTH_DIAGNOSTICS_DEBUG_UI=true` on the isolated test deployment,
+expand **Capture diagnostics (developer view)** to observe recent validated
+browser events and copy the random correlation reference (not a file export).
+The authenticated and rate-limited diagnostics endpoint submits metadata to
+the private, size-bounded server file selected by `TELEHEALTH_DIAGNOSTICS_LOG_PATH`.
+Check that the corresponding server log contains `picker_selected`,
+`microphone_ready`, `worklet_ready`, `capture_started`,
+`vad_ready`, and relevant upload/stop/seal events. No record may contain
+audio, transcript text, a window title, request URL, credentials, or a raw
+exception message. The browser shows only recent events in memory and sends
+them asynchronously: a sudden crash may lose the final pending events.
+Do not download diagnostics or rely on terminal output.
 
 For the experimental window path, test a synthetic WhatsApp Desktop call in a
 supported Windows or macOS browser. Confirm the microphone and remote audio

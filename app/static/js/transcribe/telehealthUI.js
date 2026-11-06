@@ -154,6 +154,12 @@ export function attachTelehealthControls({
         window.refreshLucideIcons?.(recordIcon.parentElement || recordIcon);
       }
     }
+    // Native button accessibility state reflects the stop-save operation;
+    // the receipt's live region announces each phase separately.
+    mainRecord.setAttribute('aria-busy', String(Boolean(
+      client?.state === 'stopping'
+      || (client?.state === 'sealed' && stopPhase === 'submitting')
+    )));
     const actionsInFlight = submissionInFlight || discardInFlight;
     const recordBlocked = actionsInFlight || Boolean(restoredCapture)
       || Boolean(client && ['stopping', 'recovery_required', 'incomplete', 'sealed', 'transcribing'].includes(client.state));

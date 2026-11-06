@@ -52,17 +52,20 @@ export function createTelehealthDiagnostics({
     const id = diagnosticId;
     const batch = pending.slice(0, 20);
     inFlight = true;
+    let retryDelay = 5000;
     try {
       const response = await sendBatch(destination, id, batch);
       if (current !== generation) return;
       if (response?.accepted !== batch.length) throw new Error('Diagnostic storage unavailable');
       pending.splice(0, batch.length);
-      if (pending.length) arm(5000);
     } catch (_) {
       // No raw exception messages in diagnostics, console or other storage.
-      if (current === generation) arm(15000);
+      retryDelay = 15000;
     } finally {
-      if (current === generation) inFlight = false;
+      if (current === generation) {
+        inFlight = false;
+        if (pending.length) arm(retryDelay);
+      }
     }
   };
   const arm = (ms = 5000) => {

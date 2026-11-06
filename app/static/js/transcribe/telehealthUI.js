@@ -88,6 +88,8 @@ export function attachTelehealthControls({
     },
   ]));
 
+  const diagnosticSuffix = () => diagnostics.diagnosticId
+    ? ' (reference ' + diagnostics.diagnosticId.slice(0, 12) + ')' : '';
   const notice = (text, kind = 'info') => {
     if (typeof showNotice === 'function') showNotice(text, kind);
   };
@@ -424,7 +426,7 @@ export function attachTelehealthControls({
     try {
       await attempt;
     } catch (error) {
-      notice(error instanceof Error ? error.message : 'Telehealth recording could not start.', 'error');
+      notice((error instanceof Error ? error.message : 'Telehealth recording could not start.') + diagnosticSuffix(), 'error');
       client = null;
       render();
     }
@@ -445,7 +447,7 @@ export function attachTelehealthControls({
         await refreshWorkspace?.();
       });
     } catch (error) {
-      notice(error instanceof Error ? error.message : 'Telehealth audio needs recovery.', 'error');
+      notice((error instanceof Error ? error.message : 'Telehealth audio needs recovery.') + diagnosticSuffix(), 'error');
     }
   };
 

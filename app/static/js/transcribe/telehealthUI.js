@@ -640,6 +640,8 @@ export function attachTelehealthControls({
       client = null;
       restoredCapture = null;
       lastCheckedTranscriptId = null;
+      diagnostics.clear();
+      if (downloadDiagnostics) downloadDiagnostics.hidden = true;
       resetMeters();
       if (recordLabel) recordLabel.textContent = 'Start recording';
       if (mainRecord) mainRecord.disabled = false;

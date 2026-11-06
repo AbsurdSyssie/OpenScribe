@@ -25,7 +25,8 @@ COPY scripts ./scripts
 COPY docker ./docker
 
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin openscribe \
-    && mkdir -p /app/.local/vault \
+    && mkdir -p /app/.local/vault /app/.local/telehealth-diagnostics \
+    && chmod 700 /app/.local/telehealth-diagnostics \
     && chown -R openscribe:openscribe /app \
     && chmod +x /app/docker/entrypoint.sh
 

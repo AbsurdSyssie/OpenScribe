@@ -156,6 +156,30 @@ assert.equal(log.length, 200);
 assert.ok(!JSON.stringify(log.snapshot()).includes('SENSITIVE'));
 assert.equal(log.snapshot().events[0].part, 50);
 
+// Automatic reporting is content-free and does not depend on a download action.
+const transmitted = [];
+const reporter = createTelehealthDiagnostics({
+  generateId: () => 'a'.repeat(32),
+  sendBatch: async (target, id, events) => {
+    transmitted.push({ target, id, events });
+    return { accepted: events.length };
+  },
+});
+assert.equal(reporter.begin('synthetic-owner-root'), 'a'.repeat(32));
+reporter.emit('picker_selected', {
+  surface: 'window',
+  title: 'SENSITIVE WINDOW TITLE',
+  url: 'https://sensitive.example',
+});
+reporter.emit('capture_failed', { code: 'missing_audio' });
+await reporter.flush();
+assert.equal(transmitted.length, 1);
+assert.equal(transmitted[0].events.length, 2);
+assert.equal(transmitted[0].id, 'a'.repeat(32));
+assert.ok(!JSON.stringify(transmitted).includes('SENSITIVE'));
+assert.ok(!JSON.stringify(transmitted).includes('at'));
+reporter.clear();
+
 class Stream {
   constructor(tracks) { this.tracks = tracks; }
 }

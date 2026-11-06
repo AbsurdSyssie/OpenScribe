@@ -1214,6 +1214,11 @@ def resolve_transcribe_workspace(
             os.getenv("TELEHEALTH_API_ENABLED", "false").lower() in ("1", "true", "yes")
             and not current_user.is_system_admin
         ),
+        "telehealth_diagnostics_debug_ui": (
+            os.getenv("TELEHEALTH_API_ENABLED", "false").lower() in ("1", "true", "yes")
+            and os.getenv("TELEHEALTH_DIAGNOSTICS_DEBUG_UI", "false").lower() in ("1", "true", "yes")
+            and not current_user.is_system_admin
+        ),
         "consultation_splitting_enabled": consultation_splitting_enabled,
         "consultation_splitting_available": consultation_splitting_available,
         "available_quick_actions": available_quick_actions,

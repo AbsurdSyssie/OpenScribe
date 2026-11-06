@@ -1,4 +1,4 @@
-import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261106-window-vad-diagnostics';
+import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261106-stop-feedback';
 import { createTelehealthDiagnostics } from './telehealthDiagnostics.js?v=20261106-server-events';
 import {
   createTelehealthRecoveryJournal,

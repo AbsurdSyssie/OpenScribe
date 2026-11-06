@@ -5,7 +5,7 @@
   <link rel="stylesheet" href="/static/css/tokens.css?v=20260902-control-height">
   <link rel="stylesheet" href="/static/css/components.css?v=20260902-shared-fields">
   <link rel="stylesheet" href="/static/css/workspace.css?v=20261018-help-pointer-resize">
-  {% if active_workspace_section == 'scribe' %}{% include "transcribe/_head_assets.html" %}<link rel="stylesheet" href="/static/css/transcribe-mobile.css?v=20260930-detected-pii-override">{% if telehealth_feature_enabled %}<link rel="stylesheet" href="/static/css/telehealth.css?v=20261106-debug-panel">{% endif %}{% else %}<link rel="stylesheet" href="/static/css/settings.css?v=20260902-account-dialogs-4">{% endif %}
+  {% if active_workspace_section == 'scribe' %}{% include "transcribe/_head_assets.html" %}<link rel="stylesheet" href="/static/css/transcribe-mobile.css?v=20260930-detected-pii-override">{% if telehealth_feature_enabled %}<link rel="stylesheet" href="/static/css/telehealth.css?v=20261106-stop-feedback">{% endif %}{% else %}<link rel="stylesheet" href="/static/css/settings.css?v=20260902-account-dialogs-4">{% endif %}
   {% if active_workspace_section == 'smart-phrases' %}<link rel="stylesheet" href="/static/css/settings-smart-phrases.css?v=20260724-import-celebration">{% endif %}
   {% if active_workspace_section == 'help' %}<link rel="stylesheet" href="/static/css/workspace-help.css?v=20261018-help-responsive-diagram">{% endif %}
   <script src="/static/vendor/lucide/1.8.0/lucide.min.js"></script>

@@ -11,7 +11,6 @@ import os
 import re
 import threading
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from app.services.deepgram_diagnostics import _SafeRotatingHandler
@@ -105,14 +104,14 @@ def configure_file_sink(value: str | None) -> bool:
 
 def safe_event(event: dict[str, Any]) -> dict[str, Any] | None:
     """Reject unknown event schemas instead of stringifying arbitrary input."""
-    if not isinstance(event, dict) or event.get("event") not in EVENTS:
+    if not isinstance(event, dict) or not isinstance(event.get("event"), str) or event["event"] not in EVENTS:
         return None
     if set(event) - ({"event", "part"} | set(ENUM_FIELDS)):
         return None
     clean: dict[str, Any] = {"event": event["event"]}
     for name, allowed in ENUM_FIELDS.items():
         if name in event:
-            if event[name] not in allowed:
+            if not isinstance(event[name], str) or event[name] not in allowed:
                 return None
             clean[name] = event[name]
     if "part" in event:
@@ -126,6 +125,8 @@ def safe_event(event: dict[str, Any]) -> dict[str, Any] | None:
 def emit_many(diagnostic_id: str, events: list[dict[str, Any]]) -> int:
     """Server timestamps and emits only strictly validated metadata."""
     if not isinstance(diagnostic_id, str) or not _ID.fullmatch(diagnostic_id):
+        return 0
+    if _HANDLER is None:
         return 0
     accepted = 0
     for raw in events[:20]:

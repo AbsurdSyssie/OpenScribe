@@ -72,6 +72,7 @@ export function attachTelehealthControls({
   let boundTranscriptId = getTranscriptId?.() || null;
   let activating = false;
   let submissionInFlight = false;
+  let stopPhase = null;
   let discardInFlight = false;
   let telehealthOwnsRecordLock = false;
   let sourceLoss = false;
@@ -93,6 +94,8 @@ export function attachTelehealthControls({
   const notice = (text, kind = 'info') => {
     if (typeof showNotice === 'function') showNotice(text, kind);
   };
+  // Include the stop pipeline in lifecycle guards, even once the local mic
+  // and tab tracks have stopped: buffered audio is not durably sealed yet.
   const recordingInProgress = () => client && ['starting', 'recording', 'stopping'].includes(client.state);
   const blockSwitch = () => Boolean(restoredCapture) || recordingInProgress()
     || (client && ['recovery_required', 'incomplete', 'sealed'].includes(client.state))
@@ -128,18 +131,32 @@ export function attachTelehealthControls({
     receipt.hidden = !enabled;
     toggle.disabled = activating || blockSwitch() || !getTranscriptId?.();
     if (enabled && recordLabel) {
-      recordLabel.textContent = recordingInProgress() ? 'Stop' :
-        restoredCapture?.status === 'processing' ? 'Transcribing…' :
-        restoredCapture ? 'Resolve telehealth' :
-        client?.state === 'transcribing' ? 'Transcribing…' : 'Start telehealth';
+      const stoppedButSaving = client?.state === 'stopping';
+      const submitting = client?.state === 'sealed' && stopPhase === 'submitting';
+      const activelyRecording = client?.state === 'starting' || client?.state === 'recording';
+      // Never display 'Stop' once a stop was requested. The recorder can
+      // remain safely locked while flush, uploads, seal and submission finish.
+      recordLabel.textContent = stoppedButSaving
+        ? stopPhase === 'sealing' ? 'Finalising audio…'
+          : stopPhase === 'uploading' ? 'Saving audio…' : 'Stopping…'
+        : submitting ? 'Submitting…'
+        : activelyRecording ? 'Stop'
+        : restoredCapture?.status === 'processing' ? 'Transcribing…'
+        : restoredCapture ? 'Resolve telehealth'
+        : client?.state === 'transcribing' ? 'Transcribing…'
+        : client?.state === 'recovery_required' ? 'Recover audio'
+        : client?.state === 'incomplete' ? 'Review recording'
+        : client?.state === 'sealed' ? 'Retry submission'
+        : 'Start telehealth';
       if (recordIcon) {
-        recordIcon.dataset.lucide = recordingInProgress() ? 'square' : 'disc';
+        recordIcon.dataset.lucide = activelyRecording ? 'square'
+          : stoppedButSaving || submitting ? 'loader-circle' : 'disc';
         window.refreshLucideIcons?.(recordIcon.parentElement || recordIcon);
       }
     }
     const actionsInFlight = submissionInFlight || discardInFlight;
     const recordBlocked = actionsInFlight || Boolean(restoredCapture)
-      || Boolean(client && ['recovery_required', 'incomplete', 'sealed', 'transcribing'].includes(client.state));
+      || Boolean(client && ['stopping', 'recovery_required', 'incomplete', 'sealed', 'transcribing'].includes(client.state));
     if (enabled && recordBlocked) {
       mainRecord.disabled = true;
       telehealthOwnsRecordLock = true;
@@ -407,6 +424,7 @@ export function attachTelehealthControls({
       return;
     }
     resetMeters();
+    stopPhase = null;
     diagnostics.begin(getTranscriptId());
     if (debugReference) debugReference.textContent = diagnostics.diagnosticId || 'Unavailable';
     if (debugEvents) debugEvents.textContent = '';
@@ -416,6 +434,17 @@ export function attachTelehealthControls({
       transcriptId: getTranscriptId(),
       csrfFetch, onLevel, onSourceState, onWarning, onStateChange: render,
       onSpeechFrame, onVadState, onDiagnostic,
+      onStopProgress: (phase) => {
+        stopPhase = phase;
+        if (message && !sourceLoss) {
+          message.textContent = phase === 'uploading'
+            ? 'Recording stopped. Saving clinician and patient audio…'
+            : phase === 'sealing'
+              ? 'Audio uploaded. Finalising the recording…'
+              : 'Stopping recording and flushing the last audio frames…';
+        }
+        render();
+      },
       confirmWindowAudio: () => window.confirm(
         'Window audio is experimental. Depending on your browser and operating system, sharing a window can capture ALL system audio, not just the call. Continue only if other application sounds are safe to record. Continue?'
       ),
@@ -442,7 +471,11 @@ export function attachTelehealthControls({
           notice('Audio was interrupted. Review and acknowledge the incomplete recording before transcription.', 'warning');
           return;
         }
+        stopPhase = 'submitting';
+        if (message && !sourceLoss) message.textContent = 'Audio saved. Submitting for transcription…';
+        render();
         await client.transcribe();
+        if (message && !sourceLoss) message.textContent = 'Audio submitted. Transcription is processing…';
         notice('Both Telehealth audio sources were sent for transcription.', 'success');
         await refreshWorkspace?.();
       });
@@ -455,6 +488,7 @@ export function attachTelehealthControls({
     if (activating || blockSwitch()) return;
     if (enabled) {
       enabled = false;
+      stopPhase = null;
       resetMeters();
       render();
       return;
@@ -470,6 +504,7 @@ export function attachTelehealthControls({
       if (!await confirmGuidance()) return;
       enabled = true;
       client = null;
+      stopPhase = null;
       resetMeters();
       if (message) message.textContent = 'Recording starts immediately; both source indicators are informational.';
     } catch (error) {
@@ -656,6 +691,7 @@ export function attachTelehealthControls({
       client = null;
       restoredCapture = null;
       lastCheckedTranscriptId = null;
+      stopPhase = null;
       diagnostics.clear();
       resetMeters();
       if (recordLabel) recordLabel.textContent = 'Start recording';

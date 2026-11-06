@@ -131,6 +131,10 @@ def render_workspace(
         os.getenv("TELEHEALTH_API_ENABLED", "false").lower() in ("1", "true", "yes")
         and not current_user.is_system_admin
     )
+    context["telehealth_diagnostics_debug_ui"] = (
+        context["telehealth_feature_enabled"]
+        and os.getenv("TELEHEALTH_DIAGNOSTICS_DEBUG_UI", "false").lower() in ("1", "true", "yes")
+    )
     # Shell authority wins over legacy section context.
     context["active_workspace_section"] = active_section
     context["workspace_content_template"] = WORKSPACE_SECTION_TEMPLATES.get(active_section)

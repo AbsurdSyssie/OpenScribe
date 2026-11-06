@@ -130,6 +130,10 @@ def emit_many(diagnostic_id: str, events: list[dict[str, Any]]) -> int:
         return 0
     accepted = 0
     for raw in events[:20]:
+        # The handler is disabled after a write error; never report data that
+        # only passed through the NullHandler as successfully persisted.
+        if _HANDLER is None:
+            break
         event = safe_event(raw)
         if event is None:
             continue
@@ -143,7 +147,8 @@ def emit_many(diagnostic_id: str, events: list[dict[str, Any]]) -> int:
                 json.dumps(record, sort_keys=True, separators=(",", ":")),
                 extra={"telehealth_diagnostic": True},
             )
-            accepted += 1
+            if _HANDLER is not None:
+                accepted += 1
         except Exception:
             # Diagnostics are best-effort; the recording is never interrupted.
             pass

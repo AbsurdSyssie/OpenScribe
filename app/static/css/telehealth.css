@@ -122,3 +122,17 @@
   .telehealth-receipt { flex-basis: 100%; max-width: 100%; }
   .telehealth-receipt__source { grid-template-columns: 3.8rem minmax(2rem,1fr) 6rem; gap: .35rem; }
 }
+/* Only rendered when the server's developer diagnostics flag is enabled. */
+.telehealth-debug { margin-top: .5rem; font-size: .8rem; }
+.telehealth-debug summary { cursor: pointer; font-weight: 600; }
+.telehealth-debug pre {
+  margin: .35rem 0;
+  padding: .5rem;
+  max-height: 11rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: .7rem;
+  background: var(--surface-muted, #f4f5f4);
+  border-radius: .35rem;
+}

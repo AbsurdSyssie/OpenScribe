@@ -1,4 +1,4 @@
-// Ephemeral, content-free browser capture diagnostics. No console or server logging.
+// Ephemeral, content-free diagnostics forwarded only to a private server file.
 // Closed schemas prevent error messages, window titles, URLs or audio reaching reports.
 const EVENTS = new Set([
   'picker_requested', 'picker_selected', 'picker_rejected', 'window_acknowledged',

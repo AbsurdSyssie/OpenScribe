@@ -17,7 +17,7 @@ def test_failed_sealed_submission_retries_from_rendered_control_and_discard_unlo
     ).replace(
         "./telehealthRecoveryJournal.js?v=20261105-cross-tab-journal", "./fake.mjs"
     ).replace(
-        "./telehealthDiagnostics.js?v=20261106-private-diagnostics", "./diagnostics.mjs"
+        "./telehealthDiagnostics.js?v=20261106-server-events", "./diagnostics.mjs"
     )
     (tmp_path / "diagnostics.mjs").write_text(
         (ROOT / "app/static/js/transcribe/telehealthDiagnostics.js").read_text(encoding="utf-8"),

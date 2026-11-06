@@ -16,7 +16,7 @@ def test_capture_stop_drain_seal_and_retry_reuse_source_identity(tmp_path):
         encoding="utf-8"
     )
     source = source.replace(
-        "./telehealthCapture.js?v=20261105-source-interruption", "./fake.mjs"
+        "./telehealthCapture.js?v=20261106-window-vad", "./fake.mjs"
     ).replace(
         "./telehealthWindows.js?v=20261104-telehealth-windows", "./fake.mjs"
     ).replace(
@@ -176,7 +176,7 @@ def test_stop_and_audio_retry_serialize_schema_valid_interruption_metadata(tmp_p
         encoding="utf-8"
     )
     source = source.replace(
-        "./telehealthCapture.js?v=20261105-source-interruption", "./fake.mjs"
+        "./telehealthCapture.js?v=20261106-window-vad", "./fake.mjs"
     ).replace(
         "./telehealthWindows.js?v=20261104-telehealth-windows", "./fake.mjs"
     ).replace(

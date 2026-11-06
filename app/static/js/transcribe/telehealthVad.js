@@ -44,15 +44,17 @@ export function createTelehealthVadMonitor({
         continue;
       }
       let clone;
+      let stream;
       try {
         clone = track.clone();
+        stream = new MediaStreamCtor([clone]);
         clones.add(clone);
       } catch (_) {
+        try { clone?.stop(); } catch (_) {}
         setState(channel, 'unavailable');
         emit('vad_unavailable', channel);
         continue;
       }
-      const stream = new MediaStreamCtor([clone]);
       emit('vad_loading', channel);
       // Startup is detached so model downloads never hold up recording.
       void (async () => {

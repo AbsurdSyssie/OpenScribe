@@ -76,6 +76,9 @@ jobs:
       - name: Exercise Telehealth browser capture and diagnostics in Node
         run: node tests/telehealth-browser-smoke.mjs
 
+      - name: Exercise Telehealth Stop UI progress and recovery
+        run: python scripts/smoke_telehealth_stop_ui.py
+
       - name: Audit Python runtime dependencies
         run: |
           python -m pip install pip-audit

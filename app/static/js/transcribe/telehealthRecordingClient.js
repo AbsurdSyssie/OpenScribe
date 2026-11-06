@@ -46,7 +46,8 @@ async function safeJson(response, fallback) {
 export function createTelehealthRecordingClient({
   transcriptId, csrfFetch, onLevel = () => {}, onSourceState = () => {},
   onWarning = () => {}, onStateChange = () => {}, onSpeechFrame = () => {},
-  onVadState = () => {}, onDiagnostic = () => {}, confirmWindowAudio = () => false,
+  onVadState = () => {}, onStopProgress = () => {}, onDiagnostic = () => {},
+  confirmWindowAudio = () => false,
   mediaDevices, AudioContextCtor, AudioWorkletNodeCtor,
   recoveryJournal = null, pacedUpload = null,
 } = {}) {
@@ -65,6 +66,11 @@ export function createTelehealthRecordingClient({
     state = next;
     log('capture_state', { state: next });
     try { onStateChange(next); } catch (_) {}
+  };
+  // Only display progress. Recording safety and retryability stay governed by
+  // the existing authoritative state/stop promise.
+  const stopProgress = (phase) => {
+    try { onStopProgress(phase); } catch (_) {}
   };
   let stopPromise = null, interruption = null, resolveSessionReady = null;
   const ready = new Promise((resolve) => { resolveSessionReady = resolve; });
@@ -249,9 +255,12 @@ export function createTelehealthRecordingClient({
       return Promise.reject(new Error('No active telehealth recording.'));
     }
     setState('stopping');
+    stopProgress('flushing');
     stopPromise = (async () => {
       try { await capture.stop(); }
       catch (_) { warn(null, 'audio_flush_failed'); }
+      // Capture is now closed; uploads/seal continue independently.
+      stopProgress('uploading');
       const id = await ready;
       if (!id) {
         setState('failed');
@@ -276,6 +285,7 @@ export function createTelehealthRecordingClient({
         setState('recovery_required');
         throw error; // Pending PCM remains available for exact-key replay.
       }
+      stopProgress('sealing');
       let sealed;
       log('seal_started');
       try {

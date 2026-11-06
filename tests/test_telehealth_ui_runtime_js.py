@@ -32,9 +32,13 @@ export function createTelehealthUploadPacer() { return async()=>{}; }
 export async function replayTelehealthRecoveryWindows() { return {}; }
 export function createTelehealthRecordingClient(options) {
   const f=globalThis.__uiFixture;
+  f.clientOptions=options;
   let state='idle', attempts=0;
   return {
-    async start(){ state='recording'; options.onStateChange(state); return {status:'active'}; },
+    async start(){
+      options.onDiagnostic({event:'picker_selected',surface:'window',windowTitle:'PATIENT SECRET'});
+      state='recording'; options.onStateChange(state); return {status:'active'};
+    },
     async stop(){ state='sealed'; options.onStateChange(state); return {status:'ready'}; },
     async transcribe(){
       attempts += 1; f.transcribeAttempts=attempts;
@@ -85,7 +89,7 @@ async function scenario(action){
     '[data-telehealth-combined]','[data-telehealth-combined-level]',
     '[data-telehealth-receipt-message]','[data-telehealth-actions]',
     '[data-telehealth-retry]','[data-telehealth-transcribe]','[data-telehealth-submit-retry]',
-    '[data-telehealth-discard]','[data-telehealth-guidance]',
+    '[data-telehealth-discard]','[data-telehealth-diagnostics]','[data-telehealth-guidance]',
     '[data-telehealth-guidance-cancel]','[data-telehealth-guidance-continue]',
     '[data-telehealth-guidance-error]',
   ];
@@ -97,7 +101,9 @@ async function scenario(action){
       receipt.children.set(selector,new Element(selector));
     }
   }
-  globalThis.document={querySelector:s=>els.get(s)||new Element(s)};
+  globalThis.document={querySelector:s=>els.get(s)||new Element(s),createElement:()=>({click(){}})};
+  const downloaded=[];
+  globalThis.URL={createObjectURL:blob=>{downloaded.push(blob);return 'blob:synthetic';},revokeObjectURL(){}};
   globalThis.window={
     confirm:()=>true, addEventListener(){}, refreshLucideIcons(){},
     setTimeout:(fn)=>setTimeout(fn,0),clearTimeout,
@@ -119,6 +125,22 @@ async function scenario(action){
   await waitFor(()=>ui.isActive());
   await els.get('[data-record-toggle]').click();
   await waitFor(()=>ui.isRecording());
+  // Louder audio alone must not be treated as speech.
+  for(let i=0;i<20;i++) fixture.clientOptions.onLevel({
+    channel:'patient', rms:0.9, startFrame:i*48000, endFrame:(i+1)*48000, sampleRate:48000,
+  });
+  assert.equal(receipt.classList.contains('is-verified'),false);
+  fixture.clientOptions.onSpeechFrame({channel:'patient',speechMs:5000});
+  assert.equal(receipt.classList.contains('is-verified'),false);
+  fixture.clientOptions.onSpeechFrame({channel:'clinician',speechMs:5000});
+  assert.equal(receipt.classList.contains('is-verified'),true);
+  const diag=els.get('[data-telehealth-diagnostics]');
+  assert.equal(diag.hidden,false,'diagnostics appear for the current capture');
+  await diag.click();
+  assert.equal(downloaded.length,1);
+  const report=JSON.parse(await downloaded[0].text());
+  assert.ok(report.events.some(e=>e.event==='picker_selected'&&e.surface==='window'));
+  assert.ok(!JSON.stringify(report).includes('PATIENT SECRET'));
   await els.get('[data-record-toggle]').click();
   await started;
   const retry=els.get('[data-telehealth-submit-retry]');

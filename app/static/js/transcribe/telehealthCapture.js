@@ -251,7 +251,7 @@ export function createTelehealthCapture({
       log('microphone_ready');
       const microphoneAudio = microphoneStream.getAudioTracks()[0];
       if (!isLive(microphoneAudio) || !isLive(patientAudio)) {
-        throw new Error('Both microphone and tab audio must be available.');
+        throw new Error('Both microphone and shared call audio must be available.');
       }
       context = new AudioContextCtor();
       if (!context.audioWorklet?.addModule) throw new Error('AudioWorklet is unsupported.');

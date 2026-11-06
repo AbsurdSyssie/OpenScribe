@@ -17,6 +17,7 @@ from ..main import (
     ACCOUNT_REQUEST_RATE_LIMIT,
     AuthenticatedContext,
     LIVE_CHUNK_UPLOAD_RATE_LIMIT,
+    TELEHEALTH_DIAGNOSTICS_RATE_LIMIT,
     LLM_GENERATION_BURST_RATE_LIMIT,
     LLM_GENERATION_DAILY_RATE_LIMIT,
     LOGIN_RATE_LIMIT,
@@ -2024,7 +2025,10 @@ from app.schemas.telehealth import (
     TelehealthCaptureStart,
     TelehealthCaptureStop,
     TelehealthTranscriptionQueued,
+    TelehealthBrowserDiagnosticsBatch,
+    TelehealthBrowserDiagnosticsAccepted,
 )
+from app.services import telehealth_diagnostics
 from app.services.telehealth_audio import TelehealthSourceSpan
 from app.services.telehealth_api import (
     telehealth_capture_detail,
@@ -2040,10 +2044,37 @@ from app.services.telehealth_capture import (
 )
 from app.services.telehealth_dispatch import queue_telehealth_transcription
 
+# Dedicated private rotating file; never forward browser errors to stdout.
+telehealth_diagnostics.configure_file_sink(os.getenv("TELEHEALTH_DIAGNOSTICS_LOG_PATH"))
+
 
 def _require_telehealth_api_enabled() -> None:
     if os.getenv("TELEHEALTH_API_ENABLED", "false").lower() not in ("1", "true", "yes"):
         raise AppError(404, "not_found", "Telehealth recording is not enabled.")
+
+
+@api.post(
+    "/transcripts/{transcript_id}/telehealth/diagnostics",
+    response_model=TelehealthBrowserDiagnosticsAccepted,
+    responses=error_responses,
+)
+@TELEHEALTH_DIAGNOSTICS_RATE_LIMIT
+def collect_telehealth_browser_diagnostics(
+    request: Request,
+    transcript_id: UUID,
+    payload: TelehealthBrowserDiagnosticsBatch,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    # The full-authenticated owner check is compulsory even for content-free
+    # metadata, so callers cannot use another owner's root as a log sink.
+    get_active_owner_transcript(db, context.user, transcript_id=transcript_id)
+    accepted = telehealth_diagnostics.emit_many(
+        payload.diagnostic_id,
+        [event.model_dump(exclude_none=True) for event in payload.events],
+    )
+    return TelehealthBrowserDiagnosticsAccepted(accepted=accepted)
 
 
 @api.post(

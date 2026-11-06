@@ -477,6 +477,15 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         AccessTier.full,
         files=_file("audio.wav"),
     ),
+    # Telehealth diagnostics are owner-scoped, feature-gated, and metadata only.
+    AuditCase(
+        "POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/diagnostics",
+        AccessTier.full,
+        json_body=_json(
+            diagnostic_id="0123456789abcdef0123456789abcdef",
+            events=[{"event": "picker_requested", "surface": "browser"}],
+        ),
+    ),
     # All Telehealth endpoints are full-owner-only and feature-gated by default.
     AuditCase(
         "POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/captures",

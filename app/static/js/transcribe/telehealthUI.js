@@ -36,7 +36,9 @@ export function attachTelehealthControls({
   const partial = document.querySelector('[data-telehealth-transcribe]');
   const submitRetry = document.querySelector('[data-telehealth-submit-retry]');
   const discard = document.querySelector('[data-telehealth-discard]');
-  const downloadDiagnostics = document.querySelector('[data-telehealth-diagnostics]');
+  const debugPanel = document.querySelector('[data-telehealth-debug-panel]');
+  const debugReference = document.querySelector('[data-telehealth-debug-reference]');
+  const debugEvents = document.querySelector('[data-telehealth-debug-events]');
   const guidance = document.querySelector('[data-telehealth-guidance]');
   const guidanceCancel = document.querySelector('[data-telehealth-guidance-cancel]');
   const guidanceContinue = document.querySelector('[data-telehealth-guidance-continue]');
@@ -49,7 +51,20 @@ export function attachTelehealthControls({
   let client = null;
   let restoredCapture = null;
   const recoveryJournal = createTelehealthRecoveryJournal();
-  const diagnostics = createTelehealthDiagnostics();
+  const diagnostics = createTelehealthDiagnostics({
+    sendBatch: async (targetTranscriptId, diagnosticId, events) => {
+      const response = await csrfFetch(
+        '/api/v1/transcripts/' + encodeURIComponent(targetTranscriptId) + '/telehealth/diagnostics',
+        {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ diagnostic_id: diagnosticId, events }),
+        },
+      );
+      if (!response.ok) throw new Error('Capture diagnostics delivery failed.');
+      return response.json();
+    },
+  });
   let lastCheckedTranscriptId = null;
   let captureStatusCheckInFlight = false;
   let ownProcessingCheckInFlight = false;
@@ -144,7 +159,7 @@ export function attachTelehealthControls({
       || (restoredCapture && !hasRestoredJob)
     );
     if (actions) actions.hidden = [retry, partial, submitRetry, discard].every((item) => item?.hidden !== false);
-    if (downloadDiagnostics) downloadDiagnostics.hidden = diagnostics.length === 0;
+
     for (const action of [retry, partial, submitRetry]) {
       if (action) action.disabled = actionsInFlight;
     }
@@ -252,7 +267,19 @@ export function attachTelehealthControls({
   };
   const onDiagnostic = ({ event, ...fields }) => {
     diagnostics.emit(event, fields);
-    if (downloadDiagnostics) downloadDiagnostics.hidden = diagnostics.length === 0;
+    if (debugPanel && !debugPanel.hidden) {
+      if (debugReference) debugReference.textContent = diagnostics.diagnosticId || 'Unavailable';
+      if (debugEvents) {
+        // textContent only: predefined metadata, never HTML, URLs or raw errors.
+        debugEvents.textContent = diagnostics.snapshot().events.slice(-12)
+          .map((item) => [item.at, item.event, item.channel, item.surface, item.state, item.code]
+            .filter(Boolean).join(' · '))
+          .join('\n');
+      }
+    }
+    if (['picker_rejected', 'capture_failed', 'capture_stopped', 'capture_interrupted'].includes(event)) {
+      void diagnostics.flush();
+    }
   };
   const onVadState = ({ channel, status: next }) => {
     if (!SOURCES.includes(channel) || sourceLoss) return;
@@ -378,7 +405,9 @@ export function attachTelehealthControls({
       return;
     }
     resetMeters();
-    diagnostics.clear();
+    diagnostics.begin(getTranscriptId());
+    if (debugReference) debugReference.textContent = diagnostics.diagnosticId || 'Unavailable';
+    if (debugEvents) debugEvents.textContent = '';
     sourceLoss = false;
     if (message) message.textContent = 'Checking both audio sources';
     client = createTelehealthRecordingClient({
@@ -450,21 +479,6 @@ export function attachTelehealthControls({
   };
 
   toggle.addEventListener('click', () => { void toggleTelehealth(); });
-  downloadDiagnostics?.addEventListener('click', () => {
-    // Explicit user download only; never send logs to the server/console or
-    // persist them in unencrypted browser storage. Fixed-schema metadata only.
-    if (!diagnostics.length) return;
-    const json = JSON.stringify(diagnostics.snapshot(), null, 2);
-    const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
-    try {
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'openscribe-telehealth-diagnostics.json';
-      link.click();
-    } finally {
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
-  });
   // Capture phase: prevent the pre-existing microphone recorder from
   // responding to the SAME click while this separate capture is selected.
   mainRecord.addEventListener('click', (event) => {
@@ -641,7 +655,6 @@ export function attachTelehealthControls({
       restoredCapture = null;
       lastCheckedTranscriptId = null;
       diagnostics.clear();
-      if (downloadDiagnostics) downloadDiagnostics.hidden = true;
       resetMeters();
       if (recordLabel) recordLabel.textContent = 'Start recording';
       if (mainRecord) mainRecord.disabled = false;

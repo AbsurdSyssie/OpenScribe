@@ -22,6 +22,12 @@ def _prepare_modules(tmp_path: Path) -> None:
     capture = capture.replace(
         "./telehealthTimeline.js?v=20261104-telehealth-timing",
         "./telehealthTimeline.mjs",
+    ).replace(
+        "./telehealthVad.js?v=20261106-speech-vad",
+        "./telehealthVad.mjs",
+    )
+    (tmp_path / "telehealthVad.mjs").write_text(
+        (js / "telehealthVad.js").read_text(encoding="utf-8"), encoding="utf-8"
     )
     (tmp_path / "telehealthCapture.mjs").write_text(capture, encoding="utf-8")
     (tmp_path / "telehealthSourceWorklet.js").write_text(

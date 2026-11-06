@@ -2045,7 +2045,9 @@ from app.services.telehealth_capture import (
 from app.services.telehealth_dispatch import queue_telehealth_transcription
 
 # Dedicated private rotating file; never forward browser errors to stdout.
-telehealth_diagnostics.configure_file_sink(os.getenv("TELEHEALTH_DIAGNOSTICS_LOG_PATH"))
+telehealth_diagnostics.configure_file_sink(
+    os.getenv("TELEHEALTH_DIAGNOSTICS_LOG_PATH", ".local/logs/telehealth-capture.jsonl")
+)
 
 
 def _require_telehealth_api_enabled() -> None:

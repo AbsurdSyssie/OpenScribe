@@ -25,6 +25,7 @@ Channel = Literal["clinician", "patient"]
 CHANNELS = frozenset(("clinician", "patient"))
 
 MAX_SOURCE_PART_SECONDS = 30
+MAX_PROVIDER_SEGMENT_END_OVERRUN_MS = 2_000
 MAX_SPANS_PER_PART = 128
 MAX_SESSION_SECONDS = 8 * 60 * 60
 MAX_SOURCE_SEQUENCE = 100_000
@@ -209,20 +210,38 @@ def map_provider_turn_to_consultation(
 ) -> tuple[int, int] | None:
     """Map ASR time relative to submitted audio back to ORIGINAL clock time.
 
-    If a provider segment straddles two disjoint VAD spans, the segment cannot
-    be located precisely. Return None so the whole merge can conservatively
-    fall back to source-labelled blocks. Never invent elapsed silence.
+    Starts must lie inside the inspected file. An end up to two seconds past
+    its actual duration is clipped to EOF for minor provider timing overrun.
+    If a segment straddles disjoint VAD spans, it cannot be located precisely;
+    return None. Never invent elapsed silence.
     """
     if (
         type(start_ms) is not int
         or type(end_ms) is not int
         or start_ms < 0
         or end_ms < start_ms
-        or end_ms > MAX_SOURCE_PART_SECONDS * 1000 + 25
+    ):
+        return None
+    # Provider timestamps can run slightly beyond a short final audio part.
+    # Bound this against the inspected file sample count (not the 30s maximum)
+    # and clip only its end. Compare in integer sample-rate units so rounding
+    # cannot admit a segment more than the inclusive 2s allowance.
+    file_duration_ms_numerator = part.file_samples * 1000
+    start_ms_numerator = start_ms * part.file_sample_rate
+    end_ms_numerator = end_ms * part.file_sample_rate
+    overrun_ms_numerator = (
+        end_ms_numerator - file_duration_ms_numerator
+    )
+    if (
+        start_ms_numerator >= file_duration_ms_numerator
+        or overrun_ms_numerator > MAX_PROVIDER_SEGMENT_END_OVERRUN_MS * part.file_sample_rate
     ):
         return None
     file_start = round(start_ms * part.file_sample_rate / 1000)
-    file_end = round(end_ms * part.file_sample_rate / 1000)
+    file_end = min(
+        part.file_samples,
+        round(end_ms * part.file_sample_rate / 1000),
+    )
     for span in part.spans:
         if (
             span.file_start_sample <= file_start <= file_end <= span.file_end_sample

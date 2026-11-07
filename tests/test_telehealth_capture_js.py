@@ -4,6 +4,7 @@ No microphone, clinical content, network, STT provider or database is required.
 """
 import shutil
 import subprocess
+import re
 from pathlib import Path
 
 import pytest
@@ -19,13 +20,8 @@ def _prepare_modules(tmp_path: Path) -> None:
         (js / "telehealthTimeline.js").read_text(encoding="utf-8"), encoding="utf-8"
     )
     capture = (js / "telehealthCapture.js").read_text(encoding="utf-8")
-    capture = capture.replace(
-        "./telehealthTimeline.js?v=20261104-telehealth-timing",
-        "./telehealthTimeline.mjs",
-    ).replace(
-        "./telehealthVad.js?v=20261106-speech-vad",
-        "./telehealthVad.mjs",
-    )
+    capture = re.sub(r"['\"]\./telehealthTimeline\.js(?:\?[^'\"]*)?['\"]", "'./telehealthTimeline.mjs'", capture)
+    capture = re.sub(r"['\"]\./telehealthVad\.js(?:\?[^'\"]*)?['\"]", "'./telehealthVad.mjs'", capture)
     (tmp_path / "telehealthVad.mjs").write_text(
         (js / "telehealthVad.js").read_text(encoding="utf-8"), encoding="utf-8"
     )
@@ -123,7 +119,7 @@ def test_telehealth_worklet_offsets_backpressure_and_capture_lifecycle(tmp_path)
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { createTelehealthCapture } from './telehealthCapture.mjs';
+import { createTelehealthCapture, prepareTelehealthDisplaySource } from './telehealthCapture.mjs';
 
 class FakeProcessor {
   constructor() { this.port = { onmessage: null, postMessage() {} }; }
@@ -243,6 +239,7 @@ globalThis.window = { AudioContext: FakeContext, AudioWorkletNode: FakeTap, setT
 const frames = [], interruptions = [], statuses = [];
 const capture = createTelehealthCapture({
   mediaDevices: devices,
+  preparedSource: await prepareTelehealthDisplaySource({ mediaDevices: devices }),
   AudioContextCtor: FakeContext,
   AudioWorkletNodeCtor: FakeTap,
   onFrames: (event) => { frames.push(event); },
@@ -262,6 +259,8 @@ assert.deepEqual(frames.map((f) => [f.channel, f.startFrame, f.skippedFrames]), 
   ['patient', 48000, 48000], ['clinician', 0, 0],
 ]);
 assert.equal(patientTap.port.sent.some((m) => m.type === 'ack'), true);
+video.emit('mute'); // Video muting does not interrupt a live audio source.
+assert.deepEqual(interruptions, []);
 patient.emit('ended');
 await new Promise((resolve) => setTimeout(resolve, 10));
 assert.deepEqual(interruptions, [{ channel: 'patient', reason: 'ended' }]);
@@ -279,21 +278,20 @@ const lateStream = {
   getAudioTracks: () => [lateAudio],
 };
 let releasePermission;
-const delayed = createTelehealthCapture({
+let micCalls = 0;
+const pendingPreparation = prepareTelehealthDisplaySource({
   mediaDevices: {
     getDisplayMedia: () => new Promise((resolve) => { releasePermission = resolve; }),
-    getUserMedia: async () => { throw new Error('Must not acquire mic after cancellation'); },
+    getUserMedia: async () => { micCalls += 1; throw new Error('Must wait for Start'); },
   },
-  AudioContextCtor: FakeContext, AudioWorkletNodeCtor: FakeTap,
-  onFrames: () => {},
 });
-const pending = delayed.start();
-await delayed.stop();
+assert.equal(micCalls, 0);
 releasePermission(lateStream);
-await assert.rejects(pending, /cancelled/);
+const prepared = await pendingPreparation;
+assert.equal(micCalls, 0);
+prepared.release();
 assert.equal(lateVideo.stopped, true);
 assert.equal(lateAudio.stopped, true);
-assert.equal(delayed.state, 'stopped');
 
 // If final PCM flush cannot be acknowledged, do not present the recording as
 // safely complete: warn and reject stop(), while releasing both source tracks.
@@ -301,8 +299,7 @@ const flushVideo = new FakeTrack('video', 'browser');
 const flushPatient = new FakeTrack('audio');
 const flushMic = new FakeTrack('audio');
 const badFlushEvents = [];
-const badFlushCapture = createTelehealthCapture({
-  mediaDevices: {
+const flushDevices = {
     getDisplayMedia: async () => ({
       getTracks: () => [flushVideo, flushPatient],
       getVideoTracks: () => [flushVideo],
@@ -312,7 +309,10 @@ const badFlushCapture = createTelehealthCapture({
       getTracks: () => [flushMic],
       getAudioTracks: () => [flushMic],
     }),
-  },
+};
+const badFlushCapture = createTelehealthCapture({
+  mediaDevices: flushDevices,
+  preparedSource: await prepareTelehealthDisplaySource({ mediaDevices: flushDevices }),
   AudioContextCtor: FakeContext, AudioWorkletNodeCtor: FakeTap,
   onFrames: () => {},
   onInterrupted: (event) => badFlushEvents.push(event),
@@ -334,14 +334,16 @@ const muteVideo = new FakeTrack('video', 'browser');
 const mutePatient = new FakeTrack('audio');
 const muteMic = new FakeTrack('audio');
 const muteEvents = [], muteStatuses = [];
-const muteCapture = createTelehealthCapture({
-  mediaDevices: {
+const muteDevices = {
     getDisplayMedia: async () => ({
       getTracks: () => [muteVideo, mutePatient],
       getVideoTracks: () => [muteVideo], getAudioTracks: () => [mutePatient],
     }),
     getUserMedia: async () => ({ getTracks: () => [muteMic], getAudioTracks: () => [muteMic] }),
-  },
+};
+const muteCapture = createTelehealthCapture({
+  mediaDevices: muteDevices,
+  preparedSource: await prepareTelehealthDisplaySource({ mediaDevices: muteDevices }),
   AudioContextCtor: FakeContext, AudioWorkletNodeCtor: FakeTap,
   onFrames: () => true,
   onInterrupted: (event) => muteEvents.push(event),
@@ -363,18 +365,20 @@ const startupPatient = new FakeTrack('audio');
 startupPatient.muted = true;
 const startupMic = new FakeTrack('audio');
 const startupEvents = [];
-const startupMutedCapture = createTelehealthCapture({
-  mediaDevices: {
+const startupDevices = {
     getDisplayMedia: async () => ({
       getTracks: () => [startupVideo, startupPatient],
       getVideoTracks: () => [startupVideo], getAudioTracks: () => [startupPatient],
     }),
     getUserMedia: async () => ({ getTracks: () => [startupMic], getAudioTracks: () => [startupMic] }),
-  },
+};
+const startupMutedCapture = createTelehealthCapture({
+  mediaDevices: startupDevices,
+  preparedSource: await prepareTelehealthDisplaySource({ mediaDevices: startupDevices }),
   AudioContextCtor: FakeContext, AudioWorkletNodeCtor: FakeTap,
   onFrames: () => true, onInterrupted: (event) => startupEvents.push(event),
 });
-await assert.rejects(startupMutedCapture.start(), /incomplete audio|cancelled/);
-assert.deepEqual(startupEvents, [{ channel: 'patient', reason: 'source_muted' }]);
+await assert.rejects(startupMutedCapture.start(), /selected source ended|cancelled|both microphone and shared call audio/);
+assert.deepEqual(startupEvents, []); // Startup reports through the rejected Start action.
 assert.equal(startupMutedCapture.state, 'stopped');
 """)

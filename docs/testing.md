@@ -145,6 +145,20 @@ Transcript ingestion/generation lifecycle:
 pytest -q tests/test_api.py tests/test_transcript_streaming.py tests/test_retention.py tests/test_task_outbox.py tests/test_quota_lifecycle.py
 ```
 
+Telehealth capture and input exclusion:
+
+```bash
+pytest -q tests/test_telehealth_*.py tests/test_mic_visualizer.py tests/test_stt_diarization.py tests/test_consultation_split_writer_locks.py tests/test_batch_capture_startup.py
+```
+
+These checks use synthetic audio, provider responses, and Node DOM/media harnesses.
+They cover tab preparation without recording, cancellation and source cleanup,
+three-second speech confirmation, shared microphone meters, exclusive input
+controls, timestamp tolerance, and overlapping speaker turns. Database checks
+cover unresolved-capture admission barriers, idempotent uploads, and concurrent
+capture/upload locking. They do not establish browser or live-provider behavior;
+use [the telehealth walkthrough](telehealth-crash-walkthrough.md) for manual checks.
+
 Provider configuration:
 
 ```bash

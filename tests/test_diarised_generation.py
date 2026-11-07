@@ -1,15 +1,57 @@
 from datetime import timedelta
 from uuid import uuid4
 
+import pytest
+
 from app.models import RedactionEntity, RedactionRun, RedactionRunStatus, Transcript, TranscriptStatus, utcnow
 from app.services.content_crypto import encrypt_text_for_owner
 from app.services.structured_transcripts import append_transcript_turns, canonical_transcript_projection, edit_transcript_turn, store_turns_on_version
-from app.services.templates import process_generated_document, queue_document_generation_from_template
+from app.services.templates import (
+    _build_followup_generation_messages,
+    _build_quick_action_generation_messages,
+    _build_template_generation_messages,
+    process_generated_document,
+    queue_document_generation_from_template,
+)
 from app.services.transcripts import _create_transcript_version_from_text
 
 
+def test_diarised_generation_guidance_distinguishes_source_roles_from_speaker_numbers():
+    transcript = (
+        "Clinician: What brought you in?\n"
+        "Patient: I have had a cough.\nSpeaker 1: An unidentified additional voice."
+    )
+    builders = (
+        lambda: _build_template_generation_messages(
+            template_name="Synthetic", prompt_text="Use supported facts only.",
+            transcript_text=transcript, diarised_transcript=True,
+        ),
+        lambda: _build_followup_generation_messages(
+            transcript_text=transcript, follow_up_prompt_text="Write a synthetic follow-up.",
+            diarised_transcript=True,
+        ),
+        lambda: _build_quick_action_generation_messages(
+            transcript_text=transcript, quick_action_text="Write a synthetic summary.",
+            diarised_transcript=True,
+        ),
+    )
+
+    for build in builders:
+        system_message, user_message = build()
+        guidance = system_message.lower()
+        assert "explicit clinician: or patient: channel label" in guidance
+        assert "source-provided role attribution" in guidance
+        assert "do not rename the speaker" in guidance
+        assert "speaker n labels are automated speaker labels that may be inaccurate" in guidance
+        assert "infer clinical roles from context for those labels" in guidance
+        assert "preserve uncertainty" in guidance
+        assert "do not assume there are only two speakers" in guidance
+        assert transcript in user_message
+
+
+@pytest.mark.parametrize("telehealth", [False, True])
 def test_worker_uses_frozen_speakers_and_redacted_source_after_transcript_edit(
-    db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch,
+    db_session, make_user, make_llm_config, make_llm_selection, make_template, monkeypatch, telehealth,
 ):
     owner = make_user()
     config = make_llm_config(team=owner.team, has_secret=False)
@@ -23,7 +65,10 @@ def test_worker_uses_frozen_speakers_and_redacted_source_after_transcript_edit(
     db_session.flush()
     turns = append_transcript_turns(
         db_session, transcript=transcript, scope_id=uuid4(),
-        turns=[{"speaker_id": "0", "text": "Alice Smith reports cough."}, {"speaker_id": "1", "text": "When did it start?"}],
+        turns=[
+            {"speaker_id": "patient" if telehealth else "0", "speaker_role": "patient" if telehealth else None, "text": "Alice Smith reports cough."},
+            {"speaker_id": "clinician" if telehealth else "1", "speaker_role": "clinician" if telehealth else None, "text": "When did it start?"},
+        ],
     )
     version = _create_transcript_version_from_text(
         db_session, transcript=transcript, owner_user_id=owner.id,
@@ -71,8 +116,11 @@ def test_worker_uses_frozen_speakers_and_redacted_source_after_transcript_edit(
     processed = process_generated_document(db_session, document_id=document.id)
     assert processed.status.value == "ready"
     source = captured["messages"][1]["content"]
-    assert "Speaker 1: [PHI-1] reports cough." in source
-    assert "Speaker 2: When did it start?" in source
+    assert ("Patient: [PHI-1] reports cough." if telehealth else "Speaker 1: [PHI-1] reports cough.") in source
+    assert ("Clinician: When did it start?" if telehealth else "Speaker 2: When did it start?") in source
+    if telehealth:
+        assert "Speaker 1:" not in source
+        assert "Patient: Patient:" not in source
     assert "Alice Smith" not in source
     assert "Later synthetic correction" not in source
     assert "automated speaker labels" in captured["messages"][0]["content"].lower()

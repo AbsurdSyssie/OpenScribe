@@ -1,6 +1,7 @@
 """Content-free Node regression tests for window capture, VAD and diagnostics."""
 import shutil
 import subprocess
+import re
 from pathlib import Path
 
 import pytest
@@ -119,17 +120,12 @@ def test_window_audio_requires_explicit_approval_and_audio_track(tmp_path):
         (JS / "telehealthVad.js").read_text(encoding="utf-8"), encoding="utf-8"
     )
     src = (JS / "telehealthCapture.js").read_text(encoding="utf-8")
-    src = src.replace(
-        "./telehealthTimeline.js?v=20261104-telehealth-timing",
-        "./telehealthTimeline.mjs",
-    ).replace(
-        "./telehealthVad.js?v=20261106-speech-vad",
-        "./telehealthVad.mjs",
-    )
+    src = re.sub(r"['\"]\./telehealthTimeline\.js(?:\?[^'\"]*)?['\"]", "'./telehealthTimeline.mjs'", src)
+    src = re.sub(r"['\"]\./telehealthVad\.js(?:\?[^'\"]*)?['\"]", "'./telehealthVad.mjs'", src)
     (tmp_path / "capture.mjs").write_text(src, encoding="utf-8")
     run_js(tmp_path, r"""
 import assert from 'node:assert/strict';
-import { createTelehealthCapture } from './capture.mjs';
+import { createTelehealthCapture, prepareTelehealthDisplaySource } from './capture.mjs';
 class Track {
   constructor(kind, surface) {
     this.kind = kind; this.surface = surface; this.readyState = 'live';
@@ -190,44 +186,111 @@ function devices(surface, hasAudio = true) {
     },
   };
 }
-function make(env, approved) {
+async function make(env, approved, onState = () => {}) {
   const events = [];
+  const source = await prepareTelehealthDisplaySource({
+    mediaDevices: env.mediaDevices, confirmWindowAudio: () => approved,
+    onDiagnostic: event => events.push(event),
+    onState,
+  });
   const capture = createTelehealthCapture({
-    mediaDevices: env.mediaDevices, AudioContextCtor: Context, AudioWorkletNodeCtor: Tap,
-    onFrames: () => true, confirmWindowAudio: () => approved,
+    mediaDevices: env.mediaDevices, preparedSource: source, AudioContextCtor: Context, AudioWorkletNodeCtor: Tap,
+    onFrames: () => true,
     onDiagnostic: event => events.push(event),
   });
-  return { capture, events };
+  return { capture, events, source };
 }
 const window = devices('window');
-const allowed = make(window, true);
-await allowed.capture.start();
-assert.equal(window.calls.microphone, 1);
-assert.equal(window.calls.options.video, true);
+const synchronousSelection = devices('browser');
+const pendingSelection = prepareTelehealthDisplaySource({ mediaDevices: synchronousSelection.mediaDevices });
+assert.equal(synchronousSelection.calls.options.video, true); // Picker invocation is synchronous with consent.
+assert.equal(synchronousSelection.calls.microphone, 0);
+(await pendingSelection).release();
+const allowed = await make(window, true);
+assert.equal(window.calls.microphone, 0); // Selection does not request the microphone.
+assert.equal(allowed.source.isLive(), true); // A live source may be silent until Start.
 assert.equal(window.calls.options.windowAudio, 'window');
 assert.equal(window.calls.options.systemAudio, 'exclude');
+await allowed.capture.start();
+assert.equal(window.calls.microphone, 1);
 assert.equal(window.calls.options.surfaceSwitching, 'exclude');
 assert.equal(allowed.events.some(e => e.event === 'window_acknowledged'), true);
 await allowed.capture.stop();
 assert.equal(window.video.stopped, true);
 const noConsent = devices('window');
-await assert.rejects(make(noConsent, false).capture.start(), /cancelled/);
+await assert.rejects(make(noConsent, false), /cancelled/);
 assert.equal(noConsent.calls.microphone, 0);
 assert.equal(noConsent.video.stopped, true);
+const failedAcknowledgement = devices('window');
+await assert.rejects(make(failedAcknowledgement, Promise.reject(new Error('Synthetic acknowledgement failure'))), /Synthetic acknowledgement failure/);
+assert.equal(failedAcknowledgement.video.stopped, true);
+assert.equal(failedAcknowledgement.audio.stopped, true);
 const withoutAudio = devices('window', false);
-const rejected = make(withoutAudio, true);
-await assert.rejects(rejected.capture.start(), /No audio/);
+await assert.rejects(make(withoutAudio, true), /No audio/);
 assert.equal(withoutAudio.calls.microphone, 0);
-assert.equal(rejected.events.some(e => e.event === 'picker_rejected' && e.code === 'missing_audio'), true);
 const screen = devices('monitor');
-await assert.rejects(make(screen, true).capture.start(), /Full-screen/);
+await assert.rejects(make(screen, true), /Full-screen/);
 assert.equal(screen.calls.microphone, 0);
 const browser = devices('browser');
-const browserCapture = make(browser, false);
+const browserCapture = await make(browser, false);
+assert.equal(browser.calls.microphone, 0);
 await browserCapture.capture.start();
 assert.equal(browser.calls.microphone, 1);
 await browserCapture.capture.stop();
 const noTabAudio = devices('browser', false);
-await assert.rejects(make(noTabAudio, false).capture.start(), /No tab audio/);
+await assert.rejects(make(noTabAudio, false), /No tab audio/);
 assert.equal(noTabAudio.calls.microphone, 0);
+
+// A prepared source owns its tracks before Start, rejects reuse, and releases
+// the entire selection if either display track ends while waiting.
+const transferredDevices = devices('browser');
+const preparedStatuses = [];
+const transferInterruptions = [];
+const oneShot = await make(transferredDevices, false, state => preparedStatuses.push(state));
+oneShot.source.transfer(event => transferInterruptions.push(event));
+assert.throws(() => oneShot.source.transfer(() => {}), /no longer available/);
+transferredDevices.audio.listeners.mute[0]();
+assert.deepEqual(transferInterruptions, [{ channel: 'patient', reason: 'source_muted' }]);
+assert.deepEqual(preparedStatuses, ['connected']);
+oneShot.source.release();
+const waiting = devices('browser');
+const waitingStates = [];
+const waitingSource = await prepareTelehealthDisplaySource({
+  mediaDevices: waiting.mediaDevices, onState: state => waitingStates.push(state),
+});
+assert.equal(waiting.calls.microphone, 0);
+waiting.audio.listeners.ended[0]();
+assert.equal(waitingSource.isLive(), false);
+assert.equal(waiting.video.stopped, true);
+assert.equal(waiting.audio.stopped, true);
+assert.deepEqual(waitingStates, ['connected', 'ended']);
+
+// The selected surface is checked again at Start, before microphone access.
+const changedSurface = devices('browser');
+const changedSource = await make(changedSurface, false);
+changedSurface.video.surface = 'window';
+await assert.rejects(changedSource.capture.start(), /source changed/);
+assert.equal(changedSurface.calls.microphone, 0);
+assert.equal(changedSurface.video.stopped, true);
+
+// Transfer arms source monitoring before a pending microphone permission
+// resolves, so ending the call source cancels startup and releases the late mic.
+const pendingSourceDevices = devices('browser');
+const pendingSource = await make(pendingSourceDevices, false);
+let grantMicrophone;
+pendingSourceDevices.mediaDevices.getUserMedia = () => new Promise(resolve => { grantMicrophone = resolve; });
+const pendingCapture = createTelehealthCapture({
+  mediaDevices: pendingSourceDevices.mediaDevices, preparedSource: pendingSource.source,
+  AudioContextCtor: Context, AudioWorkletNodeCtor: Tap, onFrames: () => true,
+});
+const pendingStart = pendingCapture.start();
+await Promise.resolve();
+assert.equal(typeof grantMicrophone, 'function');
+pendingSourceDevices.audio.listeners.ended[0]();
+const lateMic = new Track('audio');
+grantMicrophone({ getTracks: () => [lateMic], getAudioTracks: () => [lateMic] });
+await assert.rejects(pendingStart, /selected source ended|cancelled/);
+assert.equal(pendingSourceDevices.video.stopped, true);
+assert.equal(pendingSourceDevices.audio.stopped, true);
+assert.equal(lateMic.stopped, true);
 """)

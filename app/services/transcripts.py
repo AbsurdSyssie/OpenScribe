@@ -2025,7 +2025,7 @@ def update_transcript(
 ) -> Transcript:
     transcript = (
         _lock_split_source_writer_transcript(db, owner, transcript_id=transcript_id)
-        if structured_context_json is not None
+        if structured_context_json is not None or ingestion_mode is not None
         else _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
     )
     if title is not None:
@@ -2501,7 +2501,7 @@ def queue_audio_file_ingestion(
     capture_settings_id: UUID | None = None,
     _diarisation_snapshot_job: TranscriptIngestionJob | None = None,
 ) -> tuple[Transcript, TranscriptIngestionJob]:
-    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    transcript = _lock_split_source_writer_transcript(db, owner, transcript_id=transcript_id)
     if transcript.ingestion_mode is not TranscriptIngestionMode.whole_file:
         raise AppError(
             409,
@@ -2509,6 +2509,8 @@ def queue_audio_file_ingestion(
             "Transcript ingestion mode does not accept file ingestion",
             {"ingestion_mode": transcript.ingestion_mode.value},
         )
+    # Exact idempotent replays only return an already admitted job, so preserve
+    # replay behavior even if a capture started after the original request.
     if request_idempotency_key:
         existing_request = db.scalar(select(TranscriptIngestionJob).where(
             TranscriptIngestionJob.transcript_id == transcript.id,
@@ -2521,6 +2523,11 @@ def queue_audio_file_ingestion(
             ):
                 raise AppError(409, "idempotency_conflict", "Upload request conflicts with an existing audio job")
             return transcript, existing_request
+
+    # Replays are safe under the lock and return only the already admitted job.
+    # New jobs must pass the unresolved-capture barrier before credentials,
+    # quota checks, or Vault writes.
+    assert_no_unresolved_stream_session(db, transcript_id=transcript.id)
     existing_in_progress = db.scalar(
         select(TranscriptIngestionJob).where(
             TranscriptIngestionJob.transcript_id == transcript.id,

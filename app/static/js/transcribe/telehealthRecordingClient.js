@@ -1,4 +1,4 @@
-import { createTelehealthCapture } from './telehealthCapture.js?v=20261106-window-vad';
+import { createTelehealthCapture } from './telehealthCapture.js?v=20261106-preselected-source';
 import { createTelehealthWindows } from './telehealthWindows.js?v=20261104-telehealth-windows';
 import { encodeTelehealthWavWindow } from './telehealthWav.js?v=20261105-telehealth-wav';
 import {
@@ -47,7 +47,7 @@ export function createTelehealthRecordingClient({
   transcriptId, csrfFetch, onLevel = () => {}, onSourceState = () => {},
   onWarning = () => {}, onStateChange = () => {}, onSpeechFrame = () => {},
   onVadState = () => {}, onStopProgress = () => {}, onDiagnostic = () => {},
-  confirmWindowAudio = () => false,
+  preparedSource = null,
   mediaDevices, AudioContextCtor, AudioWorkletNodeCtor,
   recoveryJournal = null, pacedUpload = null,
 } = {}) {
@@ -191,19 +191,19 @@ export function createTelehealthRecordingClient({
     setState('starting');
     capture = createTelehealthCapture({
       mediaDevices, AudioContextCtor, AudioWorkletNodeCtor,
+      preparedSource,
       onFrames: acceptFrames, onSourceState, onSpeechFrame, onVadState,
-      onDiagnostic, confirmWindowAudio,
+      onDiagnostic,
       onInterrupted: ({ channel, reason }) => {
         warn(channel, reason);
         void stop().catch(() => {});
       },
     });
     try {
-      // This MUST be called directly in the Start click; display capture
-      // consumes transient user activation before any awaiting server work.
+      // The selected display source is transferred here; the picker already
+      // ran from the consent button's direct click. Start alone begins audio.
       const startingCapture = capture.start();
-      // Start the local storage preflight while the user chooses a call tab.
-      // The display picker MUST be invoked first to preserve its user gesture.
+      // Local recovery readiness is checked only after explicit Start.
       log('journal_check');
       const journalCheck = journal.check().catch((error) => {
         log('journal_failed', { code: 'journal_unavailable' });
@@ -243,7 +243,10 @@ export function createTelehealthRecordingClient({
     } catch (error) {
       resolveSession(null);
       setState('failed');
-      warn(null, 'browser_capture_failed');
+      // No server capture exists until after the local clock starts. A source
+      // or device startup failure before that point is a selection/start error,
+      // not an incomplete clinical recording requiring recovery.
+      if (captureId || capture.hasStarted) warn(null, 'browser_capture_failed');
       try { await capture.stop(); } catch (_) {}
       throw error;
     }

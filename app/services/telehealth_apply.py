@@ -204,15 +204,16 @@ def apply_completed_telehealth_capture(
         _create_transcript_version_from_text,
         _trigger_waiting_generation_dispatches,
     )
-    # Labels are included in *source text*, not injected after redaction.
-    # This preserves speaker provenance for the LLM through the existing
-    # owner-encrypted transcript -> redaction -> generation pipeline.
+    # Role provenance comes from the server-owned capture channel and is stored
+    # in the existing owner-encrypted structured turn snapshot. Spoken source
+    # text remains unchanged; the renderer adds the role label after redaction.
     formatted = [
         {
             "speaker_id": turn.speaker_id,
+            "speaker_role": turn.speaker_id,
             "start_ms": turn.start_ms,
             "end_ms": turn.end_ms,
-            "text": f"{turn.speaker_label}: {turn.text}",
+            "text": turn.text,
         }
         for turn in merged.turns
     ]

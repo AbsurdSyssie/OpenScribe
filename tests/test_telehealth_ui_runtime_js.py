@@ -1,4 +1,4 @@
-"""Rendered Telehealth retry actions use synthetic DOM and client responses."""
+"""Rendered Telehealth capture and retry actions use synthetic DOM and responses."""
 import shutil
 import subprocess
 from pathlib import Path
@@ -13,7 +13,9 @@ NODE = shutil.which("node")
 def test_failed_sealed_submission_retries_from_rendered_control_and_discard_unlocks(tmp_path):
     source = (ROOT / "app/static/js/transcribe/telehealthUI.js").read_text(encoding="utf-8")
     source = source.replace(
-        "./telehealthRecordingClient.js?v=20261106-stop-feedback", "./fake.mjs"
+        "./telehealthRecordingClient.js?v=20261106-preselected-source", "./fake.mjs"
+    ).replace(
+        "./telehealthCapture.js?v=20261106-preselected-source", "./capture.mjs"
     ).replace(
         "./telehealthRecoveryJournal.js?v=20261105-cross-tab-journal", "./fake.mjs"
     ).replace(
@@ -23,6 +25,22 @@ def test_failed_sealed_submission_retries_from_rendered_control_and_discard_unlo
         (ROOT / "app/static/js/transcribe/telehealthDiagnostics.js").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    (tmp_path / "capture.mjs").write_text(r"""
+export function prepareTelehealthDisplaySource() {
+  const f = globalThis.__uiFixture;
+  f.pickerCalls += 1;
+  f.events.push('picker');
+  const source = {
+    surface: 'browser',
+    live: true,
+    releases: 0,
+    isLive() { return this.live; },
+    release() { this.live = false; this.releases += 1; f.sourceReleases += 1; },
+  };
+  f.preparedSources.push(source);
+  return f.selectionGate ? f.selectionGate.then(() => source) : Promise.resolve(source);
+}
+""", encoding="utf-8")
     (tmp_path / "ui.mjs").write_text(source, encoding="utf-8")
     (tmp_path / "fake.mjs").write_text(r"""
 export function createTelehealthRecoveryJournal() {
@@ -36,6 +54,9 @@ export function createTelehealthRecordingClient(options) {
   let state='idle', attempts=0;
   return {
     async start(){
+      f.startedWithSource = options.preparedSource;
+      f.events.push('client-start');
+      f.clientStarts += 1;
       options.onDiagnostic({event:'picker_selected',surface:'window',windowTitle:'PATIENT SECRET'});
       state='recording'; options.onStateChange(state); return {status:'active'};
     },
@@ -79,9 +100,9 @@ class Element {
     this.classList={add:(...xs)=>xs.forEach(x=>this.classes.add(x)),remove:(...xs)=>xs.forEach(x=>this.classes.delete(x)),contains:x=>this.classes.has(x)};}
   addEventListener(type,fn){(this.listeners[type] ||= []).push(fn);}
   removeEventListener(type,fn){this.listeners[type]=(this.listeners[type]||[]).filter(x=>x!==fn);}
-  async click({force=false}={}){if(this.disabled&&!force)return;const event={preventDefault(){},stopImmediatePropagation(){}};for(const fn of this.listeners.click||[])await fn(event);}
+  async click({force=false}={}){if(this.disabled&&!force)return;const event={prevented:false,stopped:false,preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;}};for(const fn of this.listeners.click||[]){await fn(event);if(event.stopped)break;}return event;}
   setAttribute(k,v){this.attrs[k]=v;}
-  querySelector(selector){return this.children?.get(selector)||new Element(this.name+selector);}
+  querySelector(selector){return this.children instanceof Map?(this.children.get(selector)||null):new Element(this.name+selector);}
   showModal(){this.open=true;}
   close(){this.open=false;for(const fn of this.listeners.close||[])fn();}
   focus(){}
@@ -89,6 +110,14 @@ class Element {
 const tick=()=>new Promise(r=>setTimeout(r,0));
 async function waitFor(predicate){for(let i=0;i<30;i++){if(predicate())return;await tick();}throw new Error('synthetic UI action did not reach expected state');}
 async function scenario(action){
+  let resolveSelection, resolveAcknowledgement;
+  const selectionGate=new Promise(r=>resolveSelection=r);
+  const acknowledgementGate=new Promise(r=>resolveAcknowledgement=r);
+  let transcriptId='transcript-uuid';
+  const windowListeners={};
+  let releaseModeSwitch, modeSwitchStarted;
+  const modeSwitchGate=new Promise(r=>releaseModeSwitch=r);
+  const modeSwitchRequested=new Promise(r=>modeSwitchStarted=r);
   let releaseFirst, startedTranscribe, releaseDiscard, startedDiscard;
   let startedStop, releaseStopCapture, releaseStopUpload, releaseStopSeal;
   const stopStarted=new Promise(r=>startedStop=r);
@@ -102,65 +131,153 @@ async function scenario(action){
   const selectors=[
     '[data-telehealth-toggle]','[data-record-toggle]','[data-record-toggle-label]',
     '[data-record-toggle-icon]','[data-telehealth-receipt]','[data-telehealth-channels]',
-    '[data-telehealth-combined]','[data-telehealth-combined-level]',
     '[data-telehealth-receipt-message]','[data-telehealth-actions]',
     '[data-telehealth-retry]','[data-telehealth-transcribe]','[data-telehealth-submit-retry]',
     '[data-telehealth-discard]','[data-telehealth-debug-panel]','[data-telehealth-debug-reference]',
     '[data-telehealth-debug-events]','[data-telehealth-guidance]',
     '[data-telehealth-guidance-cancel]','[data-telehealth-guidance-continue]',
     '[data-telehealth-guidance-error]',
+    '[data-recording-mode-select]','[data-record-mode-dropdown]',
+    '[data-record-mode-menu]','[data-mode=whole_file]','[data-mode=live_chunked]',
+    '[data-audio-file-input]','[data-audio-action-trigger]','[data-upload-form]',
   ];
   const els=new Map(selectors.map(s=>[s,new Element(s)]));
+  els.get('[data-recording-mode-select]').dataset.modeChangeInFlight='false';
+  els.get('[data-record-mode-menu]').hidden=false;
+  const modeOptions=[els.get('[data-mode=whole_file]'),els.get('[data-mode=live_chunked]')];
   const receipt=els.get('[data-telehealth-receipt]'); receipt.children=new Map();
-  for(const channel of ['clinician','patient']){
-    for(const suffix of ['source=','level=','speech-status=']){
-      const selector=`[data-telehealth-${suffix}${channel}"]`;
-      receipt.children.set(selector,new Element(selector));
-    }
+  for(const suffix of ['source=','level=','speech-status=']){
+    const selector=`[data-telehealth-${suffix}"patient"]`;
+    receipt.children.set(selector,new Element(selector));
   }
-  globalThis.document={querySelector:s=>els.get(s)||new Element(s)};
+  assert.equal(receipt.querySelector('[data-telehealth-source="clinician"]'),null,
+    'the Telehealth receipt contains no invented clinician row');
+  globalThis.document={
+    querySelector:s=>els.get(s)||new Element(s),
+    querySelectorAll:s=>s==='[data-record-mode-menu] [data-mode]'?modeOptions:[],
+  };
   if (!globalThis.crypto?.randomUUID) {
     globalThis.crypto = { randomUUID:()=> '01234567-89ab-cdef-0123-456789abcdef' };
   }
   globalThis.window={
-    confirm:()=>true, addEventListener(){}, refreshLucideIcons(){},
+    confirm:()=>true, addEventListener(type,fn){(windowListeners[type] ||= []).push(fn);}, refreshLucideIcons(){},
     setTimeout:(fn)=>setTimeout(fn,0),clearTimeout,
   };
   const notices=[];
   const fixture={
     transcribeAttempts:0,retryUploadAttempts:0,partialAttempts:0,stopAttempts:0,
+    pickerCalls:0,clientStarts:0,sourceReleases:0,preparedSources:[],events:[],
     diagnosticRequests:[],firstTranscribeGate,startedTranscribe:()=>startedTranscribe(),
     stopCaptureGate,stopUploadGate,stopSealGate,startedStop:()=>startedStop(),
     discardGate,startedDiscard:()=>startedDiscard()
+    ,modeSwitchGate,modeSwitchRequested:()=>modeSwitchStarted(),micLevelCalls:[],micResetCalls:0
   };
+  fixture.ingestionMode='live_chunked';
+  if(action==='late-picker') fixture.selectionGate=selectionGate;
   globalThis.__uiFixture=fixture;
-  const ui=attachTelehealthControls({
-    getTranscriptId:()=> 'transcript-uuid', getIngestionMode:()=> 'whole_file',
+  let ui;
+  ui=attachTelehealthControls({
+    getTranscriptId:()=> transcriptId, getIngestionMode:()=> fixture.ingestionMode,
     canUseRecording:()=>true, isOtherRecordingActive:()=>false,
-    getPreferences:()=>({show_telehealth_control:true,telehealth_guidance_acknowledged:true}),
-    persistPreferences:async()=>{},csrfFetch:async(_url, options={})=>{
+    getPreferences:()=>({show_telehealth_control:true,telehealth_guidance_acknowledged:action!=='late-ack'}),
+    persistPreferences:async(patch)=>{if(patch.telehealth_guidance_acknowledged) await acknowledgementGate;},csrfFetch:async(_url, options={})=>{
       if (options.body && _url.includes('/telehealth/diagnostics')) {
         const payload=JSON.parse(options.body);fixture.diagnosticRequests.push(payload);
         return {ok:true,json:async()=>({accepted:payload.events.length})};
       }
+      if (_url === '/api/v1/transcripts/transcript-uuid' && options.method === 'PATCH') {
+        modeSwitchStarted();
+        await modeSwitchGate;
+        fixture.ingestionMode='whole_file';
+      }
       return {ok:true,json:async()=>null};
     },
     refreshWorkspace:async()=>{},showNotice:(text,kind)=>notices.push([text,kind]),
+    setClinicianMicLevel:(rms, speech)=>fixture.micLevelCalls.push([rms,speech]),
+    resetClinicianMicLevel:()=>{fixture.micResetCalls+=1;},
   });
+  ui.setOrdinaryControlsSync(()=>{
+    if(ui.isActive()) return;
+    els.get('[data-recording-mode-select]').disabled=false;
+    els.get('[data-record-mode-dropdown]').disabled=false;
+    for(const option of modeOptions) option.disabled=false;
+    els.get('[data-audio-file-input]').disabled=false;
+    els.get('[data-audio-action-trigger]').disabled=false;
+  });
+  fixture.ordinaryRecordStarts=0;
+  els.get('[data-record-toggle]').addEventListener('click',()=>{fixture.ordinaryRecordStarts+=1;});
   await els.get('[data-telehealth-toggle]').click();
+  await modeSwitchRequested;
+  assert.equal(els.get('[data-record-toggle]').disabled,true,
+    'ordinary recording is disabled while Telehealth waits for recorded-upload mode');
+  await els.get('[data-record-toggle]').click({force:true});
+  assert.equal(fixture.ordinaryRecordStarts,0,
+    'the capture-phase Telehealth guard also consumes a forced main-record click during activation');
+  assert.equal(fixture.clientStarts,0,'activation cannot start either recorder while the mode change is pending');
+  releaseModeSwitch();
   await waitFor(()=>els.get('[data-telehealth-guidance]').open===true);
+  if(action==='cancel') {
+    await els.get('[data-telehealth-guidance-cancel]').click();
+    await waitFor(()=>!ui.isSelectedOrUnresolved());
+    assert.equal(fixture.pickerCalls,0);
+    assert.equal(fixture.clientStarts,0);
+    assert.equal(els.get('[data-record-toggle]').disabled,false);
+    return;
+  }
   await els.get('[data-telehealth-guidance-continue]').click();
+  if(['late-picker','late-ack','switch-root','pagehide'].includes(action)) {
+    await waitFor(()=>fixture.pickerCalls===1);
+    if(action==='switch-root') { transcriptId='another-synthetic-transcript'; ui.sync(); }
+    else if(action==='pagehide') { for(const fn of windowListeners.pagehide||[]) fn(); }
+    else await els.get('[data-telehealth-guidance-cancel]').click();
+    resolveSelection();
+    resolveAcknowledgement();
+    await waitFor(()=>fixture.sourceReleases>0);
+    await waitFor(()=>!ui.isSelectedOrUnresolved());
+    assert.equal(ui.isActive(),false);
+    assert.equal(fixture.clientStarts,0,'cancelled or stale preparation never starts recording');
+    assert.equal(fixture.preparedSources[0].live,false,'late selected source is released');
+    assert.equal(els.get('[data-record-toggle]').disabled,false);
+    return;
+  }
   await waitFor(()=>ui.isActive());
+  assert.equal(els.get('[data-telehealth-receipt-message]').hidden,true,'normal preparation needs no extra paragraph');
+  assert.deepEqual(fixture.events,['picker'],'selection preparation precedes recording start');
+  assert.equal(fixture.clientStarts,0,'enabling only prepares a source; it does not start capture');
+  assert.equal(els.get('[data-recording-mode-select]').disabled,true);
+  assert.equal(els.get('[data-record-mode-dropdown]').disabled,true);
+  assert.ok(modeOptions.every((option)=>option.disabled));
+  assert.equal(els.get('[data-audio-file-input]').disabled,true);
+  assert.equal(els.get('[data-audio-action-trigger]').disabled,true);
+  const attemptedFileSelection={prevented:false,stopped:false,preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;}};
+  els.get('[data-audio-file-input]').value='synthetic.wav';
+  for(const fn of els.get('[data-audio-file-input]').listeners.change||[]) fn(attemptedFileSelection);
+  assert.equal(attemptedFileSelection.prevented,true,'late file-picker changes are fenced by the UI capture handler');
+  assert.equal(attemptedFileSelection.stopped,true);
+  assert.equal(els.get('[data-audio-file-input]').value,'');
   await els.get('[data-record-toggle]').click();
   await waitFor(()=>ui.isRecording());
+  assert.deepEqual(fixture.events,['picker','client-start']);
+  assert.equal(fixture.startedWithSource,fixture.preparedSources[0], 'Start consumes the source prepared by Continue');
+  assert.equal(fixture.clientStarts,1);
+  fixture.clientOptions.onLevel({channel:'clinician',rms:0.31});
+  assert.deepEqual(fixture.micLevelCalls.at(-1),[0.31,false],
+    'clinician RMS reuses the consultation microphone visualizer while remaining speech-unconfirmed');
   // Louder audio alone must not be treated as speech.
   for(let i=0;i<20;i++) fixture.clientOptions.onLevel({
     channel:'patient', rms:0.9, startFrame:i*48000, endFrame:(i+1)*48000, sampleRate:48000,
   });
   assert.equal(receipt.classList.contains('is-verified'),false);
-  fixture.clientOptions.onSpeechFrame({channel:'patient',speechMs:5000});
+  fixture.clientOptions.onSpeechFrame({channel:'patient',speechMs:2999});
+  fixture.clientOptions.onSpeechFrame({channel:'clinician',speechMs:2999});
   assert.equal(receipt.classList.contains('is-verified'),false);
-  fixture.clientOptions.onSpeechFrame({channel:'clinician',speechMs:5000});
+  assert.notEqual(receipt.children.get('[data-telehealth-speech-status="patient"]').textContent,'Speech detected');
+  fixture.clientOptions.onSpeechFrame({channel:'patient',speechMs:1});
+  assert.equal(receipt.children.get('[data-telehealth-speech-status="patient"]').textContent,'Speech detected');
+  assert.equal(receipt.classList.contains('is-verified'),true,'patient speech confirms the patient-only receipt independently');
+  fixture.clientOptions.onSpeechFrame({channel:'clinician',speechMs:1});
+  assert.deepEqual(fixture.micLevelCalls.at(-1),[0.31,true],
+    'the shared clinician meter receives the independent VAD confirmation state');
   assert.equal(receipt.classList.contains('is-verified'),true);
   fixture.clientOptions.onDiagnostic({event:'capture_failed',code:'missing_audio'});
   await waitFor(()=>fixture.diagnosticRequests.length>=1);
@@ -172,6 +289,11 @@ async function scenario(action){
   assert.ok(!document.querySelector('[data-telehealth-debug-events]').textContent.includes('PATIENT SECRET'));
   await els.get('[data-record-toggle]').click();
   await stopStarted;
+  assert.ok(fixture.micResetCalls>0,'the shared clinician meter resets as soon as stopping begins');
+  const meterUpdatesAtStop=fixture.micLevelCalls.length;
+  fixture.clientOptions.onLevel({channel:'clinician',rms:0.8});
+  fixture.clientOptions.onSpeechFrame({channel:'clinician',speechMs:3000});
+  assert.equal(fixture.micLevelCalls.length,meterUpdatesAtStop,'late frames cannot reactivate the stopped clinician meter');
   const button=els.get('[data-record-toggle]');
   const label=els.get('[data-record-toggle-label]');
   assert.equal(label.textContent,'Stopping…','Stop click immediately acknowledges the stop request');
@@ -186,7 +308,7 @@ async function scenario(action){
   releaseStopCapture();
   await waitFor(()=>label.textContent==='Saving audio…');
   assert.equal(fixture.transcribeAttempts,0,'transcription cannot start before audio upload');
-  assert.ok(els.get('[data-telehealth-receipt-message]').textContent.includes('Recording stopped.'));
+  assert.equal(els.get('[data-telehealth-receipt-message]').hidden,true,'saving progress stays in the record button without a routine paragraph');
   releaseStopUpload();
   await waitFor(()=>label.textContent==='Finalising audio…');
   assert.equal(button.disabled,true);
@@ -210,6 +332,14 @@ async function scenario(action){
     await waitFor(()=>fixture.transcribeAttempts===2);
     await waitFor(()=>retry.hidden===true);
     assert.equal(els.get('[data-record-toggle]').disabled,true,'processing continues to block a new recording');
+    assert.equal(ui.isSelectedOrUnresolved(),true,'processing locks input on the current consultation');
+    assert.equal(ui.isUnresolved(),false,'processing permits opening another consultation after Stop');
+    transcriptId='another-synthetic-transcript';
+    ui.sync();
+    assert.equal(ui.isActive(),false);
+    assert.equal(els.get('[data-record-toggle]').disabled,false,'the next consultation gets its ordinary Record button');
+    assert.equal(els.get('[data-recording-mode-select]').disabled,false);
+
   }else{
     await els.get('[data-telehealth-discard]').click();
     await discarding;
@@ -225,13 +355,17 @@ async function scenario(action){
     await waitFor(()=>els.get('[data-record-toggle]').disabled===false
       && els.get('[data-telehealth-discard]').disabled===false);
     assert.equal(els.get('[data-telehealth-discard]').disabled,false);
+    assert.equal(els.get('[data-recording-mode-select]').disabled,false);
+    assert.equal(els.get('[data-audio-file-input]').disabled,false);
   }
 }
+for(const action of ['cancel','late-picker','late-ack','switch-root','pagehide']) await scenario(action);
 await scenario('retry');
 await scenario('discard');
 console.log('Telehealth rendered submission retry and discard controls: passed');
 """, encoding="utf-8")
-    subprocess.run(
+    completed = subprocess.run(
         [NODE, str(tmp_path / "test.mjs")], cwd=tmp_path,
-        check=True, capture_output=True, text=True, timeout=30,
+        check=False, capture_output=True, text=True, timeout=30,
     )
+    assert completed.returncode == 0, completed.stdout + completed.stderr

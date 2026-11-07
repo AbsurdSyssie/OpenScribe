@@ -2,11 +2,15 @@
 .telehealth-toggle[hidden] { display: none !important; }
 .telehealth-toggle {
   display: inline-flex;
+  flex: 0 0 2.75rem;
   align-items: center;
   justify-content: center;
-  align-self: stretch;
-  width: 2.5rem;
+  align-self: center;
+  box-sizing: border-box;
+  width: 2.75rem;
+  height: 2.75rem;
   min-height: 2.75rem;
+  padding: 0;
   border: 1px solid var(--stone, #c7c8c6);
   border-radius: .7rem;
   background: var(--white, #fff);
@@ -70,22 +74,9 @@
   background: #cd5555;
   transition: width .1s ease, background-color .2s ease;
 }
-.telehealth-receipt__source.is-heard .telehealth-receipt__track > span,
-.telehealth-receipt__combined .telehealth-receipt__track > span {
+.telehealth-receipt__source.is-heard .telehealth-receipt__track > span {
   background: #198a63;
 }
-.telehealth-receipt__combined {
-  display: grid;
-  grid-template-columns: 6.6rem minmax(4rem,1fr) 6.5rem;
-  gap: .5rem;
-  align-items: center;
-  border: 0;
-  text-align: left;
-  background: transparent;
-  font-size: .73rem;
-  cursor: pointer;
-}
-.telehealth-receipt__ready { text-align: right; color: #187557; }
 .telehealth-receipt__actions { display: flex; flex-wrap: wrap; gap: .4rem; }
 .telehealth-receipt p {
   margin: 0;

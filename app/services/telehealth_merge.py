@@ -122,43 +122,49 @@ def merge_telehealth_source_turns(
     # turns would invent chronology. Fall back for the entire combined draft.
     timed = all(turn.start_ms is not None for turn in items)
     if timed:
-        sorted_items = sorted(
-            items,
-            key=lambda turn: (
-                turn.start_ms,
-                0 if turn.channel == "clinician" else 1,
-                turn.source_sequence,
-                turn.segment_index,
-                str(turn.part_id),
-            ),
-        )
+        # Rebuild readable turns within each known capture source first. If
+        # we sort individual words across channels before grouping, an
+        # interruption splits an otherwise continuous utterance into many
+        # tiny alternating turns.
         grouped: list[TelehealthDisplayTurn] = []
-        for turn in sorted_items:
-            previous = grouped[-1] if grouped else None
-            if (
-                previous is not None
-                and previous.speaker_id == turn.channel
-                and previous.end_ms is not None
-                and turn.start_ms is not None
-                and turn.start_ms >= previous.end_ms
-                and turn.start_ms - previous.end_ms <= MAX_WORD_GAP_MS
-                and len(previous.text) + 1 + len(turn.text.strip()) <= MAX_TURN_CHARS
-            ):
-                grouped[-1] = TelehealthDisplayTurn(
-                    speaker_id=turn.channel,
-                    speaker_label=CHANNEL_LABELS[turn.channel],
-                    text=f"{previous.text} {turn.text.strip()}",
-                    start_ms=previous.start_ms,
-                    end_ms=max(previous.end_ms, turn.end_ms),
-                )
-            else:
-                grouped.append(TelehealthDisplayTurn(
-                    speaker_id=turn.channel,
-                    speaker_label=CHANNEL_LABELS[turn.channel],
-                    text=turn.text.strip(),
-                    start_ms=turn.start_ms,
-                    end_ms=turn.end_ms,
-                ))
+        for channel in ("clinician", "patient"):
+            source_words = sorted(
+                (turn for turn in items if turn.channel == channel),
+                key=lambda turn: (
+                    turn.source_sequence, turn.segment_index, str(turn.part_id),
+                ),
+            )
+            channel_turns: list[TelehealthDisplayTurn] = []
+            for turn in source_words:
+                previous = channel_turns[-1] if channel_turns else None
+                if (
+                    previous is not None
+                    and previous.end_ms is not None
+                    and turn.start_ms is not None
+                    and turn.start_ms >= previous.end_ms
+                    and turn.start_ms - previous.end_ms <= MAX_WORD_GAP_MS
+                    and len(previous.text) + 1 + len(turn.text.strip()) <= MAX_TURN_CHARS
+                ):
+                    channel_turns[-1] = TelehealthDisplayTurn(
+                        speaker_id=channel,
+                        speaker_label=CHANNEL_LABELS[channel],
+                        text=f"{previous.text} {turn.text.strip()}",
+                        start_ms=previous.start_ms,
+                        end_ms=max(previous.end_ms, turn.end_ms),
+                    )
+                else:
+                    channel_turns.append(TelehealthDisplayTurn(
+                        speaker_id=channel,
+                        speaker_label=CHANNEL_LABELS[channel],
+                        text=turn.text.strip(),
+                        start_ms=turn.start_ms,
+                        end_ms=turn.end_ms,
+                    ))
+            grouped.extend(channel_turns)
+        grouped.sort(key=lambda turn: (
+            turn.start_ms,
+            0 if turn.speaker_id == "clinician" else 1,
+        ))
         turns = tuple(grouped)
         return TelehealthMergeResult(
             mode="timed",

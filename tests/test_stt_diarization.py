@@ -628,7 +628,10 @@ def test_audio_queue_uses_capture_snapshot_only_for_same_selected_config(monkeyp
         def refresh(self, _item):
             return None
 
-    monkeypatch.setattr(transcript_service, "_get_owner_transcript_for_ingestion", lambda *_a, **_kw: transcript)
+    # Admission locking/barriers have committed-connection coverage; this fake
+    # isolates the provider snapshot contract from database coordination.
+    monkeypatch.setattr(transcript_service, "_lock_split_source_writer_transcript", lambda *_a, **_kw: transcript)
+    monkeypatch.setattr(transcript_service, "assert_no_unresolved_stream_session", lambda *_a, **_kw: None)
     monkeypatch.setattr(transcript_service, "resolve_selected_team_stt", lambda *_a, **_kw: (None, config, "synthetic", None))
     monkeypatch.setattr(transcript_service, "ensure_stt_config_credential_ready", lambda **_kw: None)
     monkeypatch.setattr(transcript_service, "inspect_audio_duration_seconds", lambda **_kw: 1.0)
@@ -715,7 +718,10 @@ def _queue_retry_snapshot(monkeypatch, config, failed_job):
         def refresh(self, _item):
             return None
 
-    monkeypatch.setattr(transcript_service, "_get_owner_transcript_for_ingestion", lambda *_a, **_kw: transcript)
+    # Admission locking/barriers have committed-connection coverage; this fake
+    # isolates the provider snapshot contract from database coordination.
+    monkeypatch.setattr(transcript_service, "_lock_split_source_writer_transcript", lambda *_a, **_kw: transcript)
+    monkeypatch.setattr(transcript_service, "assert_no_unresolved_stream_session", lambda *_a, **_kw: None)
     monkeypatch.setattr(transcript_service, "resolve_selected_team_stt", lambda *_a, **_kw: (None, config, "model-a", None))
     monkeypatch.setattr(transcript_service, "ensure_stt_config_credential_ready", lambda **_kw: None)
     monkeypatch.setattr(transcript_service, "inspect_audio_duration_seconds", lambda **_kw: 1.0)

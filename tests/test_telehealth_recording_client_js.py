@@ -2,6 +2,7 @@
 import shutil
 import subprocess
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -15,15 +16,8 @@ def test_capture_stop_drain_seal_and_retry_reuse_source_identity(tmp_path):
     source = (ROOT / "app/static/js/transcribe/telehealthRecordingClient.js").read_text(
         encoding="utf-8"
     )
-    source = source.replace(
-        "./telehealthCapture.js?v=20261106-window-vad", "./fake.mjs"
-    ).replace(
-        "./telehealthWindows.js?v=20261104-telehealth-windows", "./fake.mjs"
-    ).replace(
-        "./telehealthWav.js?v=20261105-telehealth-wav", "./fake.mjs"
-    ).replace(
-        "./telehealthRecoveryJournal.js?v=20261105-cross-tab-journal", "./journal.mjs"
-    )
+    source = re.sub(r"['\"]\./telehealth(?:Capture|Windows|Wav)\.js(?:\?[^'\"]*)?['\"]", "'./fake.mjs'", source)
+    source = re.sub(r"['\"]\./telehealthRecoveryJournal\.js(?:\?[^'\"]*)?['\"]", "'./journal.mjs'", source)
     (tmp_path / "journal.mjs").write_text(
         (ROOT / "app/static/js/transcribe/telehealthRecoveryJournal.js").read_text(encoding="utf-8"),
         encoding="utf-8",
@@ -33,7 +27,8 @@ def test_capture_stop_drain_seal_and_retry_reuse_source_identity(tmp_path):
         r"""
 const fixture = () => globalThis.__telehealthFake;
 export function createTelehealthCapture(options) {
-  fixture().events.push('display-picker-first');
+  if (!options.preparedSource) throw new Error('Start requires a prepared source');
+  fixture().events.push('capture-created-after-selection');
   return {
     start: async () => ({ sampleRate: 48000 }),
     stop: async () => { fixture().events.push('capture-stop'); },
@@ -93,7 +88,7 @@ let failFirst = true;
 const fetcher = async (path, opts = {}) => {
   history.push(opts.method || 'GET');
   if (path.endsWith('/telehealth/captures')) {
-    assert.equal(history[0], 'display-picker-first');
+    assert.equal(history[0], 'capture-created-after-selection');
     return { ok: true, json: async () => ({ capture_session_id: 'session-uuid', status: 'active' }) };
   }
   if (path.endsWith('/stop')) {
@@ -136,6 +131,7 @@ const journal = {
 const stopPhases = [];
 const client = createTelehealthRecordingClient({
   transcriptId: 'transcript-uuid',
+  preparedSource: { isLive: () => true, transfer() {}, release() {} },
   csrfFetch: fetcher, recoveryJournal: journal,
   pacedUpload: async () => {},
   onStopProgress: phase => stopPhases.push(phase),
@@ -179,15 +175,8 @@ def test_stop_and_audio_retry_serialize_schema_valid_interruption_metadata(tmp_p
     source = (ROOT / "app/static/js/transcribe/telehealthRecordingClient.js").read_text(
         encoding="utf-8"
     )
-    source = source.replace(
-        "./telehealthCapture.js?v=20261106-window-vad", "./fake.mjs"
-    ).replace(
-        "./telehealthWindows.js?v=20261104-telehealth-windows", "./fake.mjs"
-    ).replace(
-        "./telehealthWav.js?v=20261105-telehealth-wav", "./fake.mjs"
-    ).replace(
-        "./telehealthRecoveryJournal.js?v=20261105-cross-tab-journal", "./journal.mjs"
-    )
+    source = re.sub(r"['\"]\./telehealth(?:Capture|Windows|Wav)\.js(?:\?[^'\"]*)?['\"]", "'./fake.mjs'", source)
+    source = re.sub(r"['\"]\./telehealthRecoveryJournal\.js(?:\?[^'\"]*)?['\"]", "'./journal.mjs'", source)
     (tmp_path / "journal.mjs").write_text(
         (ROOT / "app/static/js/transcribe/telehealthRecoveryJournal.js").read_text(encoding="utf-8"),
         encoding="utf-8",
@@ -256,7 +245,7 @@ async function scenario(channel, reason, expected) {
     async check(){}, async persist(){}, async remove(){}, async clear(){},
   };
   const client = createTelehealthRecordingClient({
-    transcriptId:'transcript-uuid',csrfFetch:fetcher,recoveryJournal:journal,
+    transcriptId:'transcript-uuid',preparedSource:{isLive:()=>true,transfer(){},release(){}},csrfFetch:fetcher,recoveryJournal:journal,
     pacedUpload:async()=>{},
   });
   await client.start();

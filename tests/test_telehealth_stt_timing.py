@@ -76,6 +76,99 @@ def test_provider_relative_offset_maps_through_separate_vad_gaps():
     assert map_provider_turn_to_consultation(part, start_ms=3000, end_ms=3050) is None
 
 
+def _single_span_part(*, channel="patient", duration_seconds=10, timeline_start_ms=0):
+    rate = 16_000
+    samples = duration_seconds * rate
+    start_frame = timeline_start_ms * 48
+    end_frame = start_frame + duration_seconds * 48_000
+    return TelehealthAudioPart(
+        session_id=UUID("11111111-1111-4111-8111-111111111111"),
+        channel=channel, sequence_no=0,
+        idempotency_key=UUID("22222222-2222-4222-8222-222222222222"),
+        timeline_sample_rate=48_000, file_sample_rate=rate,
+        file_samples=samples,
+        spans=(TelehealthSourceSpan(0, samples, start_frame, end_frame),),
+        timeline_start_frame=start_frame, timeline_end_frame=end_frame,
+    )
+
+
+@pytest.mark.parametrize("overrun_ms", [1_600, 2_000])
+def test_small_provider_end_overrun_clips_to_actual_file_end(overrun_ms):
+    part = _single_span_part()
+    assert map_provider_turn_to_consultation(
+        part, start_ms=9_500, end_ms=10_000 + overrun_ms,
+    ) == (9_500, 10_000)
+
+
+@pytest.mark.parametrize("start_ms,end_ms", [
+    (9_500, 12_001),       # More than 2s beyond this 10s file.
+    (10_000, 10_000),      # Starts exactly at EOF: no audio evidence.
+    (10_001, 10_100),      # Entire segment is outside the file.
+])
+def test_provider_segments_outside_bounded_file_tail_remain_unmappable(start_ms, end_ms):
+    assert map_provider_turn_to_consultation(
+        _single_span_part(), start_ms=start_ms, end_ms=end_ms,
+    ) is None
+
+
+@pytest.mark.parametrize("start_ms,end_ms", [
+    (-1, 0), (0, -1), (10, 9), (True, 1), (0, 1.0),
+])
+def test_provider_segment_timing_must_be_nonnegative_integer_and_forward(start_ms, end_ms):
+    assert map_provider_turn_to_consultation(
+        _single_span_part(), start_ms=start_ms, end_ms=end_ms,
+    ) is None
+
+
+def test_two_second_tolerance_is_relative_to_short_final_part_and_30s_maximum():
+    short_part = _single_span_part(duration_seconds=3)
+    assert map_provider_turn_to_consultation(
+        short_part, start_ms=2_500, end_ms=5_000,
+    ) == (2_500, 3_000)
+    assert map_provider_turn_to_consultation(
+        short_part, start_ms=2_500, end_ms=5_001,
+    ) is None
+
+    max_part = _single_span_part(duration_seconds=30)
+    assert map_provider_turn_to_consultation(
+        max_part, start_ms=29_500, end_ms=32_000,
+    ) == (29_500, 30_000)
+
+
+def test_tail_tolerance_does_not_bridge_internal_vad_gap_or_remove_role_overlap():
+    gapped = TelehealthAudioPart(
+        session_id=UUID("11111111-1111-4111-8111-111111111111"),
+        channel="patient", sequence_no=0,
+        idempotency_key=UUID("22222222-2222-4222-8222-222222222222"),
+        timeline_sample_rate=48_000, file_sample_rate=16_000,
+        file_samples=32_000,
+        spans=(
+            TelehealthSourceSpan(0, 16_000, 0, 48_000),
+            TelehealthSourceSpan(16_000, 32_000, 480_000, 528_000),
+        ),
+        timeline_start_frame=0, timeline_end_frame=528_000,
+    )
+    assert map_provider_turn_to_consultation(gapped, start_ms=900, end_ms=1_100) is None
+
+    clinician = _single_span_part(channel="clinician", duration_seconds=10)
+    patient_position = map_provider_turn_to_consultation(
+        _single_span_part(channel="patient", duration_seconds=10),
+        start_ms=9_500, end_ms=11_600,
+    )
+    clinician_position = map_provider_turn_to_consultation(
+        clinician, start_ms=9_800, end_ms=10_000,
+    )
+    result = merge_telehealth_source_turns([
+        TelehealthSourceTurn(clinician.idempotency_key, "clinician", 0, 0,
+                             "Synthetic clinician word", *clinician_position),
+        TelehealthSourceTurn(UUID("33333333-3333-4333-8333-333333333333"),
+                             "patient", 0, 0, "Synthetic patient word", *patient_position),
+    ])
+    assert result.mode == "timed"
+    assert [turn.speaker_id for turn in result.turns] == ["patient", "clinician"]
+    assert result.turns[0].end_ms == 10_000
+
+
 def _synthetic_deepgram_word_payload(words, transcript):
     return {"results": {"channels": [{"alternatives": [{
         "transcript": transcript,
@@ -126,11 +219,11 @@ def _mapped_synthetic_deepgram_words(words, transcript, *, part):
 
 
 def test_unmappable_word_falls_back_without_newline_per_word():
-    # One word ending just outside the uploaded source boundary forces the
+    # More than two seconds beyond the uploaded source boundary forces the
     # conservative source-block mode while preserving the complete utterance.
     result = _mapped_synthetic_deepgram_words(
         [("Hello,", 0.00, 0.02), ("how", 0.02, 0.04),
-         ("are", 0.04, 0.07), ("you?", 0.09, 0.11)],
+         ("are", 0.04, 0.07), ("you?", 0.09, 2.11)],
         "Hello, how are you?", part=_synthetic_part(),
     )
     assert result.mode == "source_blocks"

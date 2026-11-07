@@ -18,20 +18,27 @@ coordination is unavailable.
 ## 1. Baseline: two sources
 
 1. Start a **new synthetic consultation**, select Recorded upload, enable the
-   telephone control, and accept the first-use guidance.
-2. Press Start. Choose the **call tab** in the browser picker and tick **Share
-   tab audio**, or select an application window with audio sharing enabled.
-   Window selection requires an extra acknowledgement warning that unrelated
-   system audio might also be recorded. Grant clinician microphone permission.
-3. Speak distinctly through the local mic and the remote browser tab. The two
-   indicators should independently show source activity; one silent indicator
-   must not turn green merely because the other is loud.
-4. Record at least 25 seconds; press Stop. Confirm both sources upload and STT
+   telephone control, and accept the privacy guidance.
+2. In the browser picker, choose the **call tab** and tick **Share tab audio**,
+   or select an application window with audio sharing enabled. Window selection
+   requires an extra acknowledgement warning that unrelated system audio might
+   also be recorded. The Patient row should show **Tab connected**. At this
+   point no microphone permission, audio worklet, timeline, capture session,
+   recovery journal entry, upload, or audio quota use should exist. Close the
+   picker or stop sharing before Start; the source should be released and must
+   be selected again by turning Telehealth off and on.
+3. Press Start. Grant clinician microphone permission when prompted. Recording
+   begins only after this action; Start must not open another source picker.
+4. Speak distinctly through the local mic and the remote browser tab. The
+   clinician microphone meter and Patient row should independently show source
+   activity; one silent source must not show activity merely because the other
+   is loud.
+5. Record at least 25 seconds; press Stop. Confirm both sources upload and STT
    completes with Clinician/Patient turns and plausible timestamps. If stop and
    sealing succeed but transcription submission fails, use the separate
    **Retry transcription** action; it reuses the sealed capture and does not
    upload the audio again.
-5. Check usage accounting: the same elapsed consultation time can generate two
+6. Check usage accounting: the same elapsed consultation time can generate two
    separately billed source durations. Check against your STT provider's own
    billing rules.
 

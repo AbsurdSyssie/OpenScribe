@@ -477,6 +477,57 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         AccessTier.full,
         files=_file("audio.wav"),
     ),
+    # Telehealth diagnostics are owner-scoped, feature-gated, and metadata only.
+    AuditCase(
+        "POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/diagnostics",
+        AccessTier.full,
+        json_body=_json(
+            diagnostic_id="0123456789abcdef0123456789abcdef",
+            events=[{"event": "picker_requested", "surface": "browser"}],
+        ),
+    ),
+    # All Telehealth endpoints are full-owner-only and feature-gated by default.
+    AuditCase(
+        "POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/captures",
+        AccessTier.full, json_body=_json(timeline_sample_rate=48000),
+    ),
+    AuditCase(
+        "GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/unresolved",
+        AccessTier.full,
+    ),
+    AuditCase(
+        "GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/captures/{PLACEHOLDER_UUID_2}",
+        AccessTier.full,
+    ),
+    AuditCase(
+        "POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/captures/{PLACEHOLDER_UUID_2}/audio-parts",
+        AccessTier.full,
+        form_data=_json(
+            channel="clinician", sequence_no="0",
+            spans_json='[{"file_start_sample":0,"file_end_sample":1600,"timeline_start_frame":0,"timeline_end_frame":4800}]',
+        ),
+        files=_file(),
+    ),
+    AuditCase(
+        "POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/captures/{PLACEHOLDER_UUID_2}/stop",
+        AccessTier.full, json_body=_json(),
+    ),
+    AuditCase(
+        "POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/captures/{PLACEHOLDER_UUID_2}/seal",
+        AccessTier.full, json_body=_json(expected_clinician_parts=0, expected_patient_parts=0),
+    ),
+    AuditCase(
+        "POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/captures/{PLACEHOLDER_UUID_2}/acknowledge-incomplete",
+        AccessTier.full,
+    ),
+    AuditCase(
+        "POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/captures/{PLACEHOLDER_UUID_2}/discard",
+        AccessTier.full,
+    ),
+    AuditCase(
+        "POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/captures/{PLACEHOLDER_UUID_2}/transcribe",
+        AccessTier.full,
+    ),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/capture-settings", AccessTier.full),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/retry-audio-file", AccessTier.full),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/retry-audio", AccessTier.full),
@@ -708,6 +759,7 @@ def missing_route_specs() -> set[tuple[str, str]]:
             .replace("{smart_phrase_id}", "{id}")
             .replace("{user_id}", "{id}")
             .replace("{transcript_id}", "{id}")
+            .replace("{capture_session_id}", "{id}")
             .replace("{entity_id}", "{id}")
             .replace("{generated_document_id}", "{id}"),
         )

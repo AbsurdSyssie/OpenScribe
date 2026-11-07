@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
-from app.models import Transcript, TranscriptStatus, TranscriptVersion, User
+from app.models import TelehealthCapturePart, TelehealthCaptureSession, Transcript, TranscriptStatus, TranscriptVersion, User
 from app.schemas.transcripts import MAX_TRANSCRIPT_TURN_CHARS
 from app.services.content_crypto import (
     decrypt_json_for_owner,
@@ -42,6 +42,18 @@ def _normalize_turn(turn: dict[str, Any], *, scope_id: UUID | None = None) -> di
         speaker_id = str(speaker_id)
         if len(speaker_id) > 64:
             raise AppError(422, "validation_error", "Transcript speaker identifier is invalid")
+    speaker_role = turn.get("speaker_role")
+    if speaker_role is not None and (not isinstance(speaker_role, str) or speaker_role not in {"clinician", "patient"}):
+        raise AppError(422, "validation_error", "Transcript speaker role is invalid")
+    if speaker_role is not None and speaker_id != speaker_role:
+        raise AppError(422, "validation_error", "Transcript speaker role is inconsistent")
+    speaker_text_prefix = turn.get("speaker_text_prefix", "")
+    if not isinstance(speaker_text_prefix, str) or speaker_text_prefix not in {"", "Clinician: ", "Patient: "}:
+        raise AppError(422, "validation_error", "Transcript speaker text prefix is invalid")
+    if speaker_text_prefix and (
+        speaker_role is None or speaker_text_prefix != f"{speaker_role.title()}: "
+    ):
+        raise AppError(422, "validation_error", "Transcript speaker text prefix is inconsistent")
     speaker_number = turn.get("speaker_number")
     if speaker_number is not None and (type(speaker_number) is not int or speaker_number < 1):
         raise AppError(422, "validation_error", "Transcript speaker number is invalid")
@@ -60,6 +72,8 @@ def _normalize_turn(turn: dict[str, Any], *, scope_id: UUID | None = None) -> di
         "id": str(turn_id),
         "scope_id": str(actual_scope),
         "speaker_id": speaker_id,
+        "speaker_role": speaker_role,
+        "speaker_text_prefix": speaker_text_prefix,
         "speaker_number": speaker_number if speaker_id is not None else None,
         "start_ms": start_ms,
         "end_ms": end_ms,
@@ -91,6 +105,45 @@ def _assign_speaker_numbers(turns: list[dict[str, Any]]) -> list[dict[str, Any]]
     return turns
 
 
+def _restore_legacy_telehealth_roles(
+    db: Session, *, transcript: Transcript, turns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Derive presentation metadata for old telehealth turns without rewriting source."""
+    scope_ids = {
+        turn["scope_id"] for turn in turns
+        if turn.get("speaker_role") is None and turn.get("speaker_id") in {"clinician", "patient"}
+    }
+    if not scope_ids:
+        return turns
+    sessions = db.scalars(select(TelehealthCaptureSession).where(
+        TelehealthCaptureSession.id.in_([UUID(scope_id) for scope_id in scope_ids]),
+        TelehealthCaptureSession.transcript_id == transcript.id,
+        TelehealthCaptureSession.owner_user_id == transcript.owner_user_id,
+    )).all()
+    valid_channels: dict[str, set[str]] = {str(session.id): set() for session in sessions}
+    if sessions:
+        parts = db.scalars(select(TelehealthCapturePart).where(
+            TelehealthCapturePart.session_id.in_([session.id for session in sessions]),
+            TelehealthCapturePart.transcript_id == transcript.id,
+            TelehealthCapturePart.owner_user_id == transcript.owner_user_id,
+        )).all()
+        for part in parts:
+            if part.channel in {"clinician", "patient"}:
+                valid_channels[str(part.session_id)].add(part.channel)
+    for turn in turns:
+        if turn.get("speaker_role") is not None:
+            continue
+        role = turn.get("speaker_id")
+        if role not in valid_channels.get(turn["scope_id"], set()):
+            continue
+        label = "Clinician" if role == "clinician" else "Patient"
+        turn["speaker_role"] = role
+        prefix = f"{label}: "
+        if turn["text"].startswith(prefix):
+            turn["speaker_text_prefix"] = prefix
+    return turns
+
+
 def load_current_turns(db: Session, *, transcript: Transcript) -> list[dict[str, Any]] | None:
     value = decrypt_json_for_owner(
         db, owner_user_id=transcript.owner_user_id, table="transcripts",
@@ -105,7 +158,9 @@ def load_current_turns(db: Session, *, transcript: Transcript) -> list[dict[str,
         turns = [_normalize_turn(turn) for turn in value["turns"]]
         if len({turn["id"] for turn in turns}) != len(turns):
             raise ValueError("duplicate turn IDs")
-        return _assign_speaker_numbers(turns)
+        return _restore_legacy_telehealth_roles(
+            db, transcript=transcript, turns=_assign_speaker_numbers(turns),
+        )
     except (TypeError, KeyError, ValueError):
         raise AppError(500, "transcript_turns_unavailable", "Structured transcript data is unavailable")
 
@@ -124,7 +179,9 @@ def turns_for_version(db: Session, *, version: TranscriptVersion) -> list[dict[s
         turns = [_normalize_turn(turn) for turn in value["turns"]]
         if len({turn["id"] for turn in turns}) != len(turns):
             raise ValueError("duplicate turn IDs")
-        return _assign_speaker_numbers(turns)
+        return _restore_legacy_telehealth_roles(
+            db, transcript=version.transcript, turns=_assign_speaker_numbers(turns),
+        )
     except (TypeError, KeyError, ValueError):
         raise AppError(500, "transcript_turns_unavailable", "Structured transcript data is unavailable")
 
@@ -210,6 +267,15 @@ def _version_for_transcript(db: Session, transcript: Transcript) -> TranscriptVe
     ).order_by(TranscriptVersion.version_no.desc(), TranscriptVersion.created_at.desc(), TranscriptVersion.id.desc()))
 
 
+def _turn_label(turn: dict[str, Any]) -> str:
+    role = turn.get("speaker_role")
+    if role == "clinician":
+        return "Clinician"
+    if role == "patient":
+        return "Patient"
+    return f"Speaker {turn['speaker_number']}" if turn["speaker_id"] is not None else "?"
+
+
 def current_turns_for_response(db: Session, *, transcript: Transcript) -> tuple[UUID | None, list[dict[str, Any]] | None]:
     version = _version_for_transcript(db, transcript)
     turns = load_current_turns(db, transcript=transcript)
@@ -219,7 +285,7 @@ def current_turns_for_response(db: Session, *, transcript: Transcript) -> tuple[
         cursor = 0
         for turn in turns:
             text = turn["text"]
-            label = f"Speaker {turn['speaker_number']}" if turn["speaker_id"] is not None else "?"
+            label = _turn_label(turn)
             ranges.append({**turn, "speaker_label": label, "start_index": cursor, "end_index": cursor + len(text)})
             cursor += len(text) + 1
         return revision_id, ranges
@@ -427,9 +493,21 @@ def render_redacted_turn_snapshot(
             number = scope_order[scope]
             suffix = "" if number == 1 else " (speaker labels are independent of earlier recordings)"
             output_lines.append(f"Recording {number}{suffix}")
-        label = f"Speaker {turn['speaker_number']}" if turn["speaker_id"] is not None else "?"
+        label = _turn_label(turn)
         output_start, output_end = mapped[start], mapped[end]
         if output_start > output_end or output_end > len(redacted_text):
             return None
-        output_lines.append(f"{label}: {redacted_text[output_start:output_end]}")
+        body = redacted_text[output_start:output_end]
+        legacy_prefix = turn.get("speaker_text_prefix", "")
+        expected_prefix = f"{turn.get('speaker_role', '').title()}: " if turn.get("speaker_role") else ""
+        if legacy_prefix and legacy_prefix == expected_prefix and body.startswith(legacy_prefix):
+            body = body[len(legacy_prefix):]
+        elif (
+            legacy_prefix and legacy_prefix == expected_prefix and body == turn["text"]
+            and len(body) <= len(legacy_prefix) and legacy_prefix.startswith(body)
+        ):
+            # Frozen excerpts can end inside an old literal prefix. Strip only
+            # when the entire mapped turn is that exact prefix fragment.
+            body = ""
+        output_lines.append(f"{label}: {body}")
     return "\n".join(output_lines)

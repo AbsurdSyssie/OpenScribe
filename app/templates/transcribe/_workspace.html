@@ -78,6 +78,15 @@ data-local-busy-protected
 <span class="mobile-capture-action__label">Upload audio</span>
 <span class="mobile-capture-action__copy">Choose a recording</span>
 </button>
+{% if telehealth_feature_enabled %}
+<button type="button" class="telehealth-toggle" data-telehealth-toggle
+  aria-label="Toggle Telehealth recording" aria-pressed="false"
+  title="Telehealth · microphone and call audio"
+  {% if not user_app_preferences_json.get('show_telehealth_control', true) %}hidden{% endif %}
+  {% if not active_transcript or not stt_selection or not stt_available %}disabled{% endif %}>
+  <i data-lucide="phone" aria-hidden="true"></i>
+</button>
+{% endif %}
 <div class="record-split-button"
 data-record-split-button
 {% if not active_transcript or not stt_selection or not stt_available or (active_transcript and active_transcript.ingestion_mode.value not in ['whole_file', 'live_chunked']) %}data-disabled{% endif %}>
@@ -125,6 +134,45 @@ aria-label="Recording mode"
 <option value="whole_file" {% if (active_transcript and active_transcript.ingestion_mode.value == 'whole_file') or (not active_transcript and preferred_recording_mode != 'live_chunked') %}selected{% endif %}>Recorded upload</option>
 <option value="live_chunked" {% if (active_transcript and active_transcript.ingestion_mode.value == 'live_chunked') or (not active_transcript and preferred_recording_mode == 'live_chunked') %}selected{% endif %}>Live capture</option>
 </select>
+{% if telehealth_feature_enabled %}
+<div class="telehealth-receipt" data-telehealth-receipt hidden aria-live="polite" aria-label="Patient audio activity check">
+  <div class="telehealth-receipt__channels" data-telehealth-channels>
+    <div class="telehealth-receipt__source" data-telehealth-source="patient">
+      <span>Patient</span><div class="telehealth-receipt__track"><span data-telehealth-level="patient"></span></div>
+      <span class="telehealth-receipt__state" data-telehealth-speech-status="patient">Waiting for audio</span>
+    </div>
+  </div>
+  <p data-telehealth-receipt-message role="status" hidden></p>
+  <div class="telehealth-receipt__actions" data-telehealth-actions hidden>
+    <button type="button" data-telehealth-retry class="btn-secondary--compact" hidden>Retry audio upload</button>
+    <button type="button" data-telehealth-submit-retry class="btn-secondary--compact" hidden>Retry transcription</button>
+    <button type="button" data-telehealth-transcribe class="btn-secondary--compact" hidden>Acknowledge and transcribe</button>
+    <button type="button" data-telehealth-discard class="btn-ghost-sm" hidden>Discard unsubmitted audio</button>
+  </div>
+  {% if telehealth_diagnostics_debug_ui|default(false) %}
+  <details class="telehealth-debug" data-telehealth-debug-panel>
+    <summary>Capture diagnostics (developer view)</summary>
+    <p>Reference: <code data-telehealth-debug-reference>Unavailable</code></p>
+    <pre data-telehealth-debug-events aria-live="off">No capture events yet.</pre>
+    <p>Safe event metadata is sent to the private rotating server log. No audio or transcript text is logged.</p>
+  </details>
+  {% endif %}
+</div>
+<dialog class="telehealth-guidance" data-telehealth-guidance aria-labelledby="telehealth-guidance-heading" aria-describedby="telehealth-guidance-detail">
+  <h2 id="telehealth-guidance-heading">Telehealth audio recording</h2>
+  <p id="telehealth-guidance-detail">When you continue, select the browser call tab or desktop application window to prepare it. Recording does not begin until you press Start recording. The clinician microphone and selected source audio are then recorded and transcribed.</p>
+  <p>Headphones are recommended to avoid echo and duplicate speech. Inform all participants before recording and follow your organisation's recording and consent policy.</p>
+  <p>Unacknowledged audio windows are temporarily encrypted in this browser profile to allow recovery after a crash. Use a trusted device. These local windows are removed when accepted by the server or explicitly discarded. They expire when OpenScribe next opens this recovery store; clearing browser data can remove them sooner.</p>
+  <p>A crash can still lose the final unflushed audio. Any recovered recording is marked incomplete and must be checked by the clinician before using a clinical note.</p>
+  <p>When selecting a source, choose your call tab and enable <strong>Share tab audio</strong>, or choose a desktop application window and enable audio sharing if available. The Patient row shows when the source is connected. If it ends before recording starts, turn Telehealth off and on to select it again.</p>
+  <p><strong>Window sharing is experimental:</strong> some browsers or operating systems may capture all system audio instead of only the selected application. Confirm the warning before recording a window and prevent unrelated sounds from being captured.</p>
+  <div class="telehealth-guidance__actions">
+    <button type="button" data-telehealth-guidance-cancel>Cancel</button>
+    <button type="button" data-telehealth-guidance-continue>Continue</button>
+  </div>
+  <p data-telehealth-guidance-error role="alert" hidden></p>
+</dialog>
+{% endif %}
 <p class="text-sm text-slate" data-retry-ingestion-expired{% if not active_transcript_retry_expired %} hidden{% endif %}>The failed upload has expired. Upload the audio file again.</p>
 <form method="post" action="/transcribe/retry-file-ingestion" data-retry-ingestion-form{% if active_transcript_retry_expired or not active_transcript or not active_transcript_retry_job or not stt_selection or not stt_available %} hidden{% endif %}>
 <input type="hidden" name="transcript_id" value="{% if active_transcript %}{{ active_transcript.id }}{% endif %}" data-retry-transcript-id>

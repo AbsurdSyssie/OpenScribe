@@ -375,6 +375,7 @@ Full-user owner-scoped routes include:
 - `POST /api/v1/transcripts/{transcript_id}/deepgram-stream/{session_id}/retry`
 - `POST /api/v1/transcripts/{transcript_id}/deepgram-stream/{session_id}/discard`
 - `POST /api/v1/transcripts/{transcript_id}/audio-file`
+- `POST /api/v1/transcripts/{transcript_id}/telehealth/diagnostics` (feature-gated, owner-only, CSRF-protected, rate-limited; bounded metadata-only event batch)
 - `POST /api/v1/transcripts/{transcript_id}/retry-audio-file`
 - `POST /api/v1/transcripts/{transcript_id}/retry-audio`
 - `POST /api/v1/transcripts/{transcript_id}/ingestion-jobs/{job_id}/retry-audio`
@@ -430,6 +431,8 @@ Cross-cutting transcript rules:
 See [transcript-capture.md](transcript-capture.md), [live_stt.md](live_stt.md), and [workspace.md](workspace.md).
 
 The owner-only dictation Deepgram WebSocket is `/api/v1/transcripts/{transcript_id}/post-consultation-dictation/deepgram-stream`; it uses the dictation provider selection and the same owner, origin, session, and CSRF checks. Its `dictation_preview` messages contain confirmed and provisional text, and each `window_committed` includes the finalized window text. The server stores no preview text or recovery audio; the existing dictation PATCH is the explicit save boundary. Failed dictation sessions are discarded and cannot use conversation retry or discard routes. Provider audio usage remains metered.
+
+Telehealth browser diagnostics accept `{ diagnostic_id: <32 lowercase hex characters>, events: [<1..20 closed-schema event objects>] }`. Each event includes a predefined `event` name and optional allowlisted `channel`, `surface`, `state`, `code`, and bounded `part` index. Unknown fields, raw errors, URLs, clinical text and titles are rejected. The server timestamps events and responds with `{ accepted: N }` after sending them to the private rotating sink; `N=0` means diagnostic storage is unavailable. Events are best-effort and never change capture or clinical workflow. This endpoint requires the owner's full session and an active, unexpired transcript root; the default-off Telehealth feature flag remains enforced. See [transcript-capture.md](transcript-capture.md) and [environment.md](environment.md) for sink configuration.
 
 The owner-only Deepgram WebSocket is `/api/v1/transcripts/{transcript_id}/deepgram-stream`. It checks the session cookie, same-origin `Origin`, and a session-bound CSRF token in the initial WebSocket message. Its `retry` and `discard` HTTP routes require a full session and use the normal API CSRF checks. These routes apply only to the Deepgram stream lifecycle; the chunk-upload routes above remain a separate live-capture path.
 

@@ -49,6 +49,8 @@ class UserAppPreferencesUpsert(BaseModel):
     preferred_transcribe_tab: Literal["output", "followups"] | None = None
     diarization_enabled: bool = False
     diarization_warning_acknowledged: bool = False
+    show_telehealth_control: bool = True
+    telehealth_guidance_acknowledged: bool = False
 
     @field_validator("favorite_quick_action_ids", "favorite_template_ids")
     @classmethod
@@ -76,5 +78,7 @@ class UserAppPreferencesDetail(BaseModel):
     preferred_transcribe_tab: Literal["output", "followups"] | None
     diarization_enabled: bool = False
     diarization_warning_acknowledged: bool = False
+    show_telehealth_control: bool = True
+    telehealth_guidance_acknowledged: bool = False
     created_at: datetime
     updated_at: datetime

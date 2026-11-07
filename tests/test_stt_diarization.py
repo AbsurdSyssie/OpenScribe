@@ -1,3 +1,6 @@
+import pytest
+
+from app.errors import AppError
 from app.services.deepgram_streaming import (
     DeepgramResultEvent,
     DeepgramWordEvent,
@@ -267,6 +270,78 @@ def test_deepgram_batch_transport_returns_typed_turns_and_freezes_diarize_true(m
     assert result.text == "Hello there."
     assert [(turn.text, turn.speaker_id) for turn in result.turns] == [("Hello there.", "0")]
     assert captured["params"]["diarize"] == "true"
+
+
+def test_deepgram_empty_result_is_accepted_only_for_telehealth_silence(monkeypatch):
+    from contextlib import contextmanager
+    import httpx
+
+    response = httpx.Response(200, json={"results": {"channels": [{"alternatives": [{
+        "transcript": "",
+        "words": [],
+    }]}]}}, request=httpx.Request("POST", "https://api.deepgram.com/v1/listen"))
+
+    @contextmanager
+    def fake_stream(*_args, **_kwargs):
+        try:
+            yield response
+        finally:
+            response.close()
+
+    monkeypatch.setattr(stt.httpx, "stream", fake_stream)
+    kwargs = dict(
+        url="https://api.deepgram.com/v1/listen", bearer_token="synthetic",
+        audio_bytes=b"synthetic audio", content_type="audio/wav", model_name="nova-3",
+        language=None, extra_query_params={},
+        response_text_path="results.channels.0.alternatives.0.transcript",
+        segments_path=None, segment_text_field=None, segment_start_field="start",
+        segment_end_field="end", segment_speaker_field=None, diarization_enabled=False,
+    )
+
+    with pytest.raises(AppError) as error:
+        stt._transcribe_via_deepgram(**kwargs)
+    assert error.value.code == "stt_response_invalid"
+
+    response = httpx.Response(200, json={"results": {"channels": [{"alternatives": [{
+        "transcript": "",
+        "words": [],
+    }]}]}}, request=httpx.Request("POST", "https://api.deepgram.com/v1/listen"))
+    result = stt._transcribe_via_deepgram(**kwargs, telehealth_timing=True)
+    assert isinstance(result, stt.SttTranscriptResult)
+    assert result.text == ""
+    assert result.turns is None
+
+    response = httpx.Response(200, json={"results": {"channels": [{"alternatives": [{
+        "transcript": "",
+        "words": [],
+    }]}]}, "segments": [{"text": "Recovered configured segment", "start": 0, "end": 1}]},
+        request=httpx.Request("POST", "https://api.deepgram.com/v1/listen"))
+    result = stt._transcribe_via_deepgram(
+        **{**kwargs, "segments_path": "segments", "segment_text_field": "text",
+           "segment_start_field": "start", "segment_end_field": "end"},
+        telehealth_timing=True,
+    )
+    assert isinstance(result, stt.SttTranscriptResult)
+    assert result.text == "Recovered configured segment"
+
+
+@pytest.mark.parametrize("transcript_present, transcript, words", [
+    (False, None, []),
+    (True, None, []),
+    (True, 7, []),
+    (True, "", None),
+    (True, "", {}),
+    (True, "", [{"punctuated_word": "Contradictory content"}]),
+])
+def test_deepgram_empty_result_guard_rejects_malformed_or_contradictory_payloads(
+    transcript_present, transcript, words,
+):
+    payload = {"results": {"channels": [{"alternatives": [{"words": words}]}]}}
+    if transcript_present:
+        payload["results"]["channels"][0]["alternatives"][0]["transcript"] = transcript
+    assert not stt._deepgram_has_explicit_empty_transcript(
+        payload, response_text_path="results.channels.0.alternatives.0.transcript",
+    )
 
 
 def test_batch_worker_uses_frozen_flags_after_preferences_or_admin_config_change(monkeypatch):
@@ -553,7 +628,10 @@ def test_audio_queue_uses_capture_snapshot_only_for_same_selected_config(monkeyp
         def refresh(self, _item):
             return None
 
-    monkeypatch.setattr(transcript_service, "_get_owner_transcript_for_ingestion", lambda *_a, **_kw: transcript)
+    # Admission locking/barriers have committed-connection coverage; this fake
+    # isolates the provider snapshot contract from database coordination.
+    monkeypatch.setattr(transcript_service, "_lock_split_source_writer_transcript", lambda *_a, **_kw: transcript)
+    monkeypatch.setattr(transcript_service, "assert_no_unresolved_stream_session", lambda *_a, **_kw: None)
     monkeypatch.setattr(transcript_service, "resolve_selected_team_stt", lambda *_a, **_kw: (None, config, "synthetic", None))
     monkeypatch.setattr(transcript_service, "ensure_stt_config_credential_ready", lambda **_kw: None)
     monkeypatch.setattr(transcript_service, "inspect_audio_duration_seconds", lambda **_kw: 1.0)
@@ -640,7 +718,10 @@ def _queue_retry_snapshot(monkeypatch, config, failed_job):
         def refresh(self, _item):
             return None
 
-    monkeypatch.setattr(transcript_service, "_get_owner_transcript_for_ingestion", lambda *_a, **_kw: transcript)
+    # Admission locking/barriers have committed-connection coverage; this fake
+    # isolates the provider snapshot contract from database coordination.
+    monkeypatch.setattr(transcript_service, "_lock_split_source_writer_transcript", lambda *_a, **_kw: transcript)
+    monkeypatch.setattr(transcript_service, "assert_no_unresolved_stream_session", lambda *_a, **_kw: None)
     monkeypatch.setattr(transcript_service, "resolve_selected_team_stt", lambda *_a, **_kw: (None, config, "model-a", None))
     monkeypatch.setattr(transcript_service, "ensure_stt_config_credential_ready", lambda **_kw: None)
     monkeypatch.setattr(transcript_service, "inspect_audio_duration_seconds", lambda **_kw: 1.0)

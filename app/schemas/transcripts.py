@@ -106,6 +106,7 @@ class TranscriptTurnView(BaseModel):
     scope_id: UUID
     speaker_id: str | None = None
     speaker_label: str
+    speaker_text_prefix: str = ""
     start_ms: int | None = None
     end_ms: int | None = None
     text: str

@@ -34,6 +34,7 @@ celery_app.conf.update(
         "openscribe.delete_expired_transcripts": {"queue": "control"},
         "openscribe.process_transcript_audio_cleanup_jobs": {"queue": "control"},
         "openscribe.expire_ingestion_source_audio": {"queue": "control"},
+        "openscribe.reconcile_telehealth_captures": {"queue": "control"},
         "openscribe.expire_security_audit_events": {"queue": "control"},
         "openscribe.expire_legal_document_versions": {"queue": "control"},
         "openscribe.process_provider_secret_cleanup_jobs": {"queue": "control"},
@@ -56,6 +57,11 @@ celery_app.conf.update(
         },
         "expire-ingestion-source-audio-every-10-seconds": {
             "task": "openscribe.expire_ingestion_source_audio",
+            "schedule": 10.0,
+            "options": {"expires": 10.0},
+        },
+        "reconcile-telehealth-captures-every-10-seconds": {
+            "task": "openscribe.reconcile_telehealth_captures",
             "schedule": 10.0,
             "options": {"expires": 10.0},
         },

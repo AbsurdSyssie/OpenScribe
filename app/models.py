@@ -3307,3 +3307,8 @@ class TaskDispatchOutbox(Base):
 
 def transcript_expiry(days: int) -> datetime:
     return utcnow() + timedelta(days=days)
+
+
+# Register owner-scoped telehealth metadata with the shared SQLAlchemy Base.
+# Keep these new capture tables independent of legacy ingestion-job ordering.
+from .models_telehealth import TelehealthCaptureSession, TelehealthCapturePart  # noqa: E402,F401

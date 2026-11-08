@@ -1,6 +1,6 @@
 import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261108-audio-provenance';
 import { prepareTelehealthDisplaySource } from './telehealthCapture.js?v=20261108-system-audio';
-import { createTelehealthDiagnostics } from './telehealthDiagnostics.js?v=20261106-server-events';
+import { createTelehealthDiagnostics } from './telehealthDiagnostics.js?v=20261108-audio-scope';
 import {
   createTelehealthRecoveryJournal,
   createTelehealthUploadPacer,

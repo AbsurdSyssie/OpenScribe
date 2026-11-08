@@ -47,7 +47,7 @@ def main() -> None:
         "./telehealthRecordingClient.js?v=20261108-audio-provenance": "./fake.mjs",
         "./telehealthCapture.js?v=20261108-system-audio": "./capture.mjs",
         "./telehealthRecoveryJournal.js?v=20261105-cross-tab-journal": "./fake.mjs",
-        "./telehealthDiagnostics.js?v=20261106-server-events": "./diagnostics.mjs",
+        "./telehealthDiagnostics.js?v=20261108-audio-scope": "./diagnostics.mjs",
     }
     for original, replacement in imports.items():
         if original not in ui:

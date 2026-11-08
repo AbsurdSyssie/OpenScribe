@@ -1,6 +1,6 @@
 """Record the requested Telehealth browser audio scope.
 
-Revision ID: b2c3d4e5f6a7
+Revision ID: eafc081108b1
 Revises: a1b2c3d4e5f6
 """
 
@@ -8,7 +8,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "b2c3d4e5f6a7"
+revision = "eafc081108b1"
 down_revision = "a1b2c3d4e5f6"
 branch_labels = None
 depends_on = None

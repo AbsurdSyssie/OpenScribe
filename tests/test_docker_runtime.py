@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,29 @@ def test_runtime_image_does_not_package_removed_transcriber_prototype() -> None:
 
     assert "transcriber_changes" not in dockerfile
     assert "transcriber_changes" not in dockerignore
+
+
+def test_docker_smoke_host_python_matches_runtime_image() -> None:
+    docker_python = re.search(r"^FROM python:(\d+\.\d+)", Path("Dockerfile").read_text())
+    assert docker_python is not None
+
+    workflow = yaml.safe_load(Path(".github/workflows/docker-smoke.yml").read_text())
+    steps = workflow["jobs"]["smoke-test"]["steps"]
+    setup_python = next(
+        step for step in steps if step.get("uses") == "actions/setup-python@v6"
+    )
+
+    assert setup_python["with"]["python-version"] == docker_python.group(1)
+    setup_index = steps.index(setup_python)
+    for name in (
+        "Validate operational documentation links",
+        "Validate cited scripts",
+        "Validate Telehealth Python and browser module syntax",
+        "Audit Python runtime dependencies",
+    ):
+        assert setup_index < next(
+            index for index, step in enumerate(steps) if step.get("name") == name
+        )
 
 
 def test_test_dependencies_split_out_of_runtime_requirements() -> None:

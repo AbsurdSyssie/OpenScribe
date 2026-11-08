@@ -55,6 +55,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Set up runtime Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - name: Validate operational documentation links
         run: python .github/scripts/check-operational-docs.py
 

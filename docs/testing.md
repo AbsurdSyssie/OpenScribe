@@ -495,7 +495,7 @@ Before running it, add a synthetic, non-patient WAV file at `tests/example_audio
 
 ## Persistent Docker smoke workflow
 
-`.github/workflows/docker-smoke.yml` validates Compose, builds the image, starts the `runtime` profile, waits for the `/health` healthcheck, and prints concise container diagnostics on failure. It does not prove provider connectivity or production readiness.
+`.github/workflows/docker-smoke.yml` uses the Dockerfile's Python 3.12 version for host-side syntax checks and the dependency audit, then validates Compose, builds the image, starts the `runtime` profile, waits for the `/health` healthcheck, and prints concise container diagnostics on failure. It does not prove provider connectivity or production readiness.
 
 Local equivalent:
 

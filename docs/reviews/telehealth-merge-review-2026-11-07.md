@@ -205,3 +205,17 @@ readiness remain outside this synthetic verification. At this local-verification
 milestone no commit, push, merge, deployment, or live clinical recording had been
 performed. The maintainer subsequently authorized committing and pushing the
 reviewed branch to verify remote CI; merge and deployment remain out of scope.
+
+### First push and CI environment finding
+
+The reviewed fixes were committed and pushed as
+`db6ed17af88085eeb5d4dcc11f6a64307e02b407`. The worktree was clean and synced with
+the existing branch upstream. No merge or deployment was performed.
+[Run 42435116802](https://github.com/AbsurdSyssie/OpenScribe/actions/runs/42435116802)
+passed docs, syntax, and both Telehealth smoke checks, then failed before runtime
+build: the hosted Ubuntu runner used Python 3.14, while pinned
+`presidio-analyzer==2.2.360` requires Python below 3.14. The application Docker
+runtime uses Python 3.12. Aligning the audit interpreter with that existing runtime
+is an environment correction; the dependency audit and dependency pins remain
+intact. Runtime build, container tests, and container authorization audit were
+skipped in this failed run and still require fresh CI evidence.

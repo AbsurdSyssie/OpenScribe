@@ -38,8 +38,6 @@ export function attachTelehealthControls({
   const recordIcon = document.querySelector('[data-record-toggle-icon]');
   const receipt = document.querySelector('[data-telehealth-receipt]');
   const message = document.querySelector('[data-telehealth-receipt-message]');
-  const scopeNotice = receipt?.querySelector('[data-telehealth-audio-scope-notice]');
-  const sourceLabel = receipt?.querySelector('[data-telehealth-source-label]');
   const channels = document.querySelector('[data-telehealth-channels]');
   const partialSummary = document.querySelector('[data-telehealth-partial-summary]');
   const gapSummary = document.querySelector('[data-telehealth-gap-summary]');
@@ -166,10 +164,6 @@ export function attachTelehealthControls({
   const unavailableParts = (capture) => (capture?.parts || []).filter((part) =>
     part.status !== 'transcribed' || part.included_in_transcript === false);
   const visiblePartialCapture = () => partialCapture || salvageCandidate || partialCaptures[0] || null;
-  // "patient" is the transport channel, not verified identity. System audio
-  // can contain unrelated speakers and monitored clinician speech.
-  const visibleChannelName = (capture, channel) => channel !== 'patient'
-    ? 'Clinician' : capture?.requested_audio_scope === 'system' ? 'System audio' : 'Patient';
   const renderPartialSummary = () => {
     if (!partialSummary) return;
     const capture = visiblePartialCapture();
@@ -197,14 +191,14 @@ export function attachTelehealthControls({
       const captureLabel = document.createElement('strong');
       const captureNumber = captures.indexOf(gapCapture) + 1;
       captureLabel.textContent = `${gapCapture.capture_session_id === capture.capture_session_id ? '' : `Capture ${captureNumber} · `}`;
-      const channel = visibleChannelName(gapCapture, part.channel);
+      const channel = part.channel === 'patient' ? 'Patient' : 'Clinician';
       const sequence = Number.isInteger(part.sequence_no) ? part.sequence_no + 1 : '?';
       const start = formatCaptureTime(part.timeline_start_frame, gapCapture.timeline_sample_rate);
       const end = formatCaptureTime(part.timeline_end_frame, gapCapture.timeline_sample_rate, true);
       const statusLabel = part.included_in_transcript === false && part.status === 'transcribed'
         ? 'transcribed; waiting to be added to transcript'
         : part.status === 'expired' ? 'audio expired' : part.status;
-      item.append(captureLabel, document.createTextNode(`${channel}${channel === 'System audio' ? '' : ' audio'} · window ${sequence} · ${start}–${end} · ${statusLabel}`));
+      item.append(captureLabel, document.createTextNode(`${channel} audio · window ${sequence} · ${start}–${end} · ${statusLabel}`));
       if (part.retry_available === true && part.ingestion_job_id) {
         const retryButton = document.createElement('button');
         retryButton.type = 'button';
@@ -264,10 +258,8 @@ export function attachTelehealthControls({
     selectedAudioScope = 'call';
   };
   const selectedSourceStatus = () => selectedAudioScope === 'system'
-    ? 'System audio connected'
+    ? 'Patient audio connected'
     : preparedSource?.surface === 'window' ? 'Window audio connected' : 'Tab connected';
-  // The clinical source-scope notice has its own persistent receipt element;
-  // transient recording status updates must never clear it.
   const updateAudioScopeWarning = () => {
     if (systemAudioWarning) systemAudioWarning.hidden = systemAudioOption?.checked !== true;
   };
@@ -302,21 +294,11 @@ export function attachTelehealthControls({
     toggle.setAttribute('aria-pressed', String(enabled));
     const visiblePartial = Boolean(visiblePartialCapture());
     receipt.hidden = !enabled && !visiblePartial;
-    const activeScope = restoredCapture?.requested_audio_scope
-      || (enabled ? selectedAudioScope : visiblePartialCapture()?.requested_audio_scope);
-    const hasSystemPartial = [partialCapture, salvageCandidate, ...partialCaptures]
-      .some((capture) => capture?.requested_audio_scope === 'system');
-    const showingSystemAudio = !receipt.hidden
-      && (activeScope === 'system' || (visiblePartial && hasSystemPartial));
-    if (scopeNotice) scopeNotice.hidden = !showingSystemAudio;
-    if (sourceLabel) sourceLabel.textContent = activeScope === 'system' ? 'System audio' : 'Patient';
     if (channels) channels.hidden = Boolean(salvageCandidate || (partialCapture && !enabled));
     if (visiblePartial) receipt.setAttribute('aria-label', enabled
       ? 'Telehealth recording and partial transcript recovery'
       : salvageCandidate ? 'Telehealth transcription recovery' : 'Partial Telehealth transcript recovery');
-    else receipt.setAttribute('aria-label', showingSystemAudio
-      ? 'System audio activity check — patient identity unverified'
-      : 'Patient audio activity check');
+    else receipt.setAttribute('aria-label', 'Patient audio activity check');
     renderPartialSummary();
     toggle.disabled = activating || blockSwitch() || client?.state === 'transcribing' || !getTranscriptId?.();
     if (inputLocked) {
@@ -474,7 +456,7 @@ export function attachTelehealthControls({
     if (!capture || capture.can_use_available_transcript !== true || partialResolutionInFlight
       || getTranscriptId?.() !== capture.transcript_id) return;
     const allGaps = unavailableParts(capture).map((part) => {
-      const channel = visibleChannelName(capture, part.channel);
+      const channel = part.channel === 'patient' ? 'Patient' : 'Clinician';
       const sequence = Number.isInteger(part.sequence_no) ? part.sequence_no + 1 : '?';
       const start = formatCaptureTime(part.timeline_start_frame, capture.timeline_sample_rate);
       const end = formatCaptureTime(part.timeline_end_frame, capture.timeline_sample_rate, true);

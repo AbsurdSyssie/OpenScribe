@@ -265,17 +265,18 @@ export function createTranscriptTurnsEditor({
           <section class="transcript-turn-scope" data-turn-scope="${escapeHtml(group.scope_id)}">
             ${showScopeHeadings ? `<h3 class="transcript-turn-scope__heading">Recording ${group.number}${group.number > 1 ? ' · speakers not matched to previous recording' : ''}</h3>` : ''}
             ${group.turns.map((turn) => {
+              const turnCanEdit = canEdit && !turn.source_warning;
               const rawValue = dirtyTexts.has(turn.id) ? dirtyTexts.get(turn.id) : turn.text;
               const value = maskedTurnText(turn, rawValue);
               const startTime = turnTime({ start_ms: turn.start_ms });
               const endTime = turnTime({ start_ms: turn.end_ms });
-              return `<article class="transcript-turn" data-turn-id="${escapeHtml(turn.id)}" data-speaker-tone="${speakerTone(turn)}">
-                <header class="transcript-turn__meta"><span class="transcript-turn__speaker">${escapeHtml(turn.speaker_label || '?')}</span>${startTime ? `<time title="Original audio interval; edited words are not word-timed">${escapeHtml(startTime)}${endTime ? `–${escapeHtml(endTime)}` : ''}</time>` : ''}${turn.edited ? '<span class="transcript-turn__edited">Edited</span>' : ''}
-                  ${canEdit ? `<details class="transcript-turn__actions"><summary aria-label="Turn actions" title="Turn actions">⋯</summary><button type="button" data-turn-delete="${escapeHtml(turn.id)}">Delete turn</button></details>` : ''}
+              return `<article class="transcript-turn${turn.source_warning ? ' transcript-turn--source-warning' : ''}" data-turn-id="${escapeHtml(turn.id)}" data-speaker-tone="${speakerTone(turn)}"${turn.source_warning ? ' role="note" aria-label="Recording coverage warning"' : ''}>
+                <header class="transcript-turn__meta"><span class="transcript-turn__speaker">${escapeHtml(turn.speaker_label || '?')}</span>${startTime ? `<time title="Original audio interval; edited words are not word-timed">${escapeHtml(startTime)}${endTime ? `–${escapeHtml(endTime)}` : ''}</time>` : ''}${turn.edited ? '<span class="transcript-turn__edited">Edited</span>' : ''}${turn.source_warning ? '<span class="transcript-turn__source-warning">Recording coverage warning</span>' : ''}
+                  ${turnCanEdit ? `<details class="transcript-turn__actions"><summary aria-label="Turn actions" title="Turn actions">⋯</summary><button type="button" data-turn-delete="${escapeHtml(turn.id)}">Delete turn</button></details>` : ''}
                 </header>
-                ${canEdit && editingTurnId === turn.id
+                ${turnCanEdit && editingTurnId === turn.id
                   ? `<textarea class="transcript-turn__text" data-turn-text="${escapeHtml(turn.id)}" aria-label="${escapeHtml(turn.speaker_label || '?')} transcript turn" rows="${Math.max(2, Math.min(12, String(value).split('\n').length + 1))}">${escapeHtml(visibleTurnText(turn, value, rawValue))}</textarea>`
-                  : canEdit
+                  : turnCanEdit
                     ? `<button type="button" class="transcript-turn__display" data-turn-display="${escapeHtml(turn.id)}" aria-label="Edit ${escapeHtml(turn.speaker_label || '?')} transcript turn">${highlightedTurnHtml(turn, value).replace(/\n/g, '<br>')}</button>`
                     : `<div class="transcript-turn__display">${masked ? escapeHtml(visibleTurnText(turn, value, rawValue)).replace(/\n/g, '<br>') : highlightedTurnHtml(turn, value).replace(/\n/g, '<br>')}</div>`}
               </article>`;
@@ -315,6 +316,7 @@ export function createTranscriptTurnsEditor({
     if (!input?.matches('[data-turn-text]')) return;
     const id = input.dataset.turnText;
     const turn = turnById(id);
+    if (turn?.source_warning) return;
     const prefix = trustedPrefix(turn || {});
     const rawValue = prefix && String(turn?.text || '').startsWith(prefix) ? `${prefix}${input.value}` : input.value;
     dirtyTexts.set(id, rawValue);
@@ -340,6 +342,7 @@ export function createTranscriptTurnsEditor({
     const display = event.target instanceof Element ? event.target.closest('[data-turn-display]') : null;
     if (!target && display) {
       if (actionPending) return;
+      if (turnById(display.dataset.turnDisplay)?.source_warning) return;
       editingTurnId = display.dataset.turnDisplay;
       renderTurns();
       const input = root.querySelector(`[data-turn-text="${CSS.escape(editingTurnId)}"]`);
@@ -352,6 +355,7 @@ export function createTranscriptTurnsEditor({
     target.disabled = true;
     try {
       if (target.hasAttribute('data-turn-delete')) {
+        if (turnById(target.dataset.turnDelete)?.source_warning) return;
         await persistAction((id) => `/api/v1/transcripts/${encodeURIComponent(id)}/turns/${encodeURIComponent(target.dataset.turnDelete)}`, 'DELETE', {});
       } else if (target.hasAttribute('data-turn-add')) {
         const existingIds = new Set(turns.map((turn) => turn.id));

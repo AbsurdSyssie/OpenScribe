@@ -6,7 +6,7 @@ from math import ceil
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, not_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -57,6 +57,7 @@ from app.services.audio import (
     normalize_audio_to_wav_16k_mono,
 )
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
+from app.services.telehealth_partial import job_is_not_accepted_partial
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner, keyed_digest_for_owner
 from app.services.redaction import (
     effective_redaction_text_and_phi_index,
@@ -1239,7 +1240,10 @@ def job_result_text(db: Session, *, transcript: Transcript, job: TranscriptInges
 def latest_ingestion_job_for_transcript(db: Session, *, transcript_id: UUID) -> TranscriptIngestionJob | None:
     return db.scalar(
         select(TranscriptIngestionJob)
-        .where(TranscriptIngestionJob.transcript_id == transcript_id)
+        .where(
+            TranscriptIngestionJob.transcript_id == transcript_id,
+            job_is_not_accepted_partial(),
+        )
         .order_by(TranscriptIngestionJob.created_at.desc(), TranscriptIngestionJob.id.desc())
         .limit(1)
     )
@@ -1297,6 +1301,7 @@ def _has_pending_ingestion_jobs(db: Session, *, transcript_id: UUID) -> bool:
                     TranscriptIngestionJobStatus.completed,
                 ]
             ),
+            job_is_not_accepted_partial(),
         )
         .limit(1)
     ) is not None
@@ -1743,7 +1748,11 @@ def snapshot_current_transcript_version(
         projection = canonical_transcript_projection(structured_turns)
         if projection != current_text:
             raise AppError(409, "transcript_version_mismatch", "Structured transcript does not match its saved text")
-        if not projection.strip() and not allow_empty:
+        has_clinical_text = any(
+            turn.get("text", "").strip() and not turn.get("source_warning")
+            for turn in structured_turns
+        )
+        if not has_clinical_text and (not allow_empty or projection.strip()):
             raise AppError(422, "business_rule_violation", "Transcript draft is empty", {"field": "current_draft_text_encrypted"})
         existing_versions = db.scalars(
             select(TranscriptVersion)
@@ -2078,21 +2087,41 @@ def commit_transcript_text(
     preview_redaction: bool = True,
 ) -> Transcript:
     transcript = _lock_split_source_writer_transcript(db, owner, transcript_id=transcript_id)
-    from app.services.structured_transcripts import load_current_turns
-    if load_current_turns(db, transcript=transcript) is not None:
+    from app.services.structured_transcripts import (
+        _refresh_partial_source_warnings,
+        _encrypt_current_turns,
+        _normalize_turn,
+        canonical_transcript_projection,
+        load_current_turns,
+        store_turns_on_version,
+    )
+    current_turns = load_current_turns(db, transcript=transcript)
+    if current_turns is not None and any(turn.get("text", "").strip() for turn in current_turns):
         raise AppError(
             409,
             "business_rule_violation",
             "Structured speaker turns must be edited one turn at a time",
             {"code": "structured_transcript_requires_turn_edits"},
         )
-    version = _create_transcript_version_from_text(
-        db,
-        transcript=transcript,
-        owner_user_id=owner.id,
-        plaintext=plaintext,
-    )
-    set_transcript_draft_text(db, transcript=transcript, plaintext=plaintext)
+    if current_turns is not None:
+        scope_id = uuid4()
+        turns = _refresh_partial_source_warnings(db, transcript=transcript, turns=[
+            _normalize_turn({"scope_id": scope_id, "speaker_id": None, "text": plaintext})
+        ])
+        projection = canonical_transcript_projection(turns)
+        _encrypt_current_turns(db, transcript=transcript, turns=turns)
+        version = _create_transcript_version_from_text(
+            db, transcript=transcript, owner_user_id=owner.id, plaintext=projection,
+        )
+        store_turns_on_version(db, version=version, owner_user_id=owner.id, turns=turns)
+    else:
+        version = _create_transcript_version_from_text(
+            db,
+            transcript=transcript,
+            owner_user_id=owner.id,
+            plaintext=plaintext,
+        )
+        set_transcript_draft_text(db, transcript=transcript, plaintext=plaintext)
     transcript.status = TranscriptStatus.ready
     db.add(transcript)
     if commit:
@@ -2535,6 +2564,7 @@ def queue_audio_file_ingestion(
             TranscriptIngestionJob.status.in_(
                 [TranscriptIngestionJobStatus.queued, TranscriptIngestionJobStatus.processing]
             ),
+            job_is_not_accepted_partial(),
         )
     )
     if existing_in_progress is not None:
@@ -2817,10 +2847,12 @@ def retry_failed_audio_ingestion(
         capture_session = db.scalar(select(TelehealthCaptureSession).where(
             TelehealthCaptureSession.id == telehealth_part.session_id,
         ).with_for_update())
-        if capture_session is None or capture_session.status not in ("failed", "processing"):
+        if capture_session is None or capture_session.status not in ("failed", "processing", "partial"):
             raise AppError(409, "ingestion_retry_unavailable", "Telehealth capture state prevents retry.")
         telehealth_part.status = "processing"
-        capture_session.status = "processing"
+        accepted_partial = capture_session.status == "partial"
+        if not accepted_partial:
+            capture_session.status = "processing"
         # Clearing a *transcription* failure is safe. Clearing an original
         # capture interruption after an STT retry would silently suppress
         # the persisted incomplete-recording warning in the clinical draft.
@@ -2830,7 +2862,10 @@ def retry_failed_audio_ingestion(
         capture_session.updated_at = utcnow()
         db.add(telehealth_part)
         db.add(capture_session)
-    transcript.status = TranscriptStatus.transcribing
+    if telehealth_part is not None and accepted_partial:
+        transcript.status = _resolved_transcript_status(db, transcript=transcript)
+    else:
+        transcript.status = TranscriptStatus.transcribing
     db.add(job)
     db.add(transcript)
     db.flush()
@@ -2985,7 +3020,17 @@ def _schedule_ingestion_retry(
     job.error_message = None
     job.started_at = None
     job.completed_at = None
-    transcript.status = TranscriptStatus.transcribing
+    partial_capture = db.scalar(select(TelehealthCaptureSession.id).join(
+        TelehealthCapturePart,
+        TelehealthCapturePart.session_id == TelehealthCaptureSession.id,
+    ).where(
+        TelehealthCapturePart.ingestion_job_id == job.id,
+        TelehealthCaptureSession.status == "partial",
+    ).limit(1))
+    transcript.status = (
+        _resolved_transcript_status(db, transcript=transcript)
+        if partial_capture is not None else TranscriptStatus.transcribing
+    )
     db.add(job)
     db.add(transcript)
     db.flush()
@@ -3198,7 +3243,7 @@ def _mark_telehealth_ingestion_part_failed(
         capture_session = db.scalar(select(TelehealthCaptureSession).where(
             TelehealthCaptureSession.id == capture_part.session_id,
         ).with_for_update())
-        if capture_session is not None and capture_session.status != "completed":
+        if capture_session is not None and capture_session.status not in ("completed", "partial"):
             capture_session.status = "failed"
             # Preserve any earlier audio-clock, permission, or track warning.
             if capture_session.failure_code is None:
@@ -3233,8 +3278,22 @@ def _mark_job_failed(db: Session, transcript: Transcript, job: TranscriptIngesti
                 session.updated_at = utcnow()
                 db.add(session)
             db.add(window)
-    transcript.status = TranscriptStatus.failed
     db.add(job)
+    db.add(transcript)
+    db.flush()
+    accepted_partial = db.scalar(select(TelehealthCapturePart.id).join(
+        TelehealthCaptureSession,
+        TelehealthCaptureSession.id == TelehealthCapturePart.session_id,
+    ).where(
+        TelehealthCapturePart.ingestion_job_id == job.id,
+        TelehealthCaptureSession.status == "partial",
+    ).limit(1)) is not None
+    # Ordinary failures retain the established failed-root behavior. Only an
+    # already accepted partial capture may resolve back to ready/transcribing.
+    transcript.status = (
+        _resolved_transcript_status(db, transcript=transcript)
+        if accepted_partial else TranscriptStatus.failed
+    )
     db.add(transcript)
     db.commit()
 

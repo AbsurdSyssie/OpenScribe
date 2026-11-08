@@ -636,6 +636,10 @@ export function attachTranscribeActions({
     onTranscriptSelectionIntent?.();
     const workspace = await fetchWorkspace(nextTranscriptId, { allowTranscriptSwitch: true });
     if (!workspace) {
+      if (getIsRecordingSwitchBlocked?.()) {
+        showFlash('Stop recording before switching consultations.', 'warning');
+        return;
+      }
       window.location.assign(link.href);
       return;
     }
@@ -668,6 +672,10 @@ export function attachTranscribeActions({
           throw new Error(await parseErrorMessage(response, 'Could not create a new consultation.'));
         }
         const transcript = await response.json();
+        if (getIsRecordingSwitchBlocked?.()) {
+          showFlash('Stop recording before switching consultations.', 'warning');
+          return;
+        }
         window.location.assign(`${routeBase}?transcript_id=${transcript.id}`);
       } catch (error) {
         showFlash(error instanceof Error ? error.message : 'Could not create a new consultation.', 'error');

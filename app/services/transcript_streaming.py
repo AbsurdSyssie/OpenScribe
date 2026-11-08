@@ -43,6 +43,7 @@ from app.models import (
     utcnow,
 )
 from app.services.content_crypto import encrypt_text_for_owner, keyed_digest_for_owner
+from app.services.telehealth_partial import job_is_not_accepted_partial
 from app.services.quotas import (
     increase_stream_provider_attempt_reservation,
     mark_provider_attempt_submitted,
@@ -316,6 +317,7 @@ def start_transcript_stream(
         select(TranscriptIngestionJob.id).where(
             TranscriptIngestionJob.transcript_id == transcript.id,
             TranscriptIngestionJob.status.in_([TranscriptIngestionJobStatus.queued, TranscriptIngestionJobStatus.processing]),
+            job_is_not_accepted_partial(),
         ).limit(1)
     )
     if (purpose == "conversation" and pending_job is not None) or _live_session_blocker(db, transcript_id=transcript.id) is not None:
@@ -727,6 +729,7 @@ def _resolve_transcript_after_stream_change(db: Session, *, transcript: Transcri
     pending_ingestion = db.scalar(select(TranscriptIngestionJob.id).where(
         TranscriptIngestionJob.transcript_id == transcript.id,
         TranscriptIngestionJob.status.in_([TranscriptIngestionJobStatus.queued, TranscriptIngestionJobStatus.processing]),
+        job_is_not_accepted_partial(),
     ).limit(1))
     blocker = _live_session_blocker(db, transcript_id=transcript.id, conversation_only=True)
     if blocker is not None:

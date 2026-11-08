@@ -21,7 +21,7 @@ for (const name of ['telehealthTimeline', 'telehealthVad', 'telehealthDiagnostic
   await writeFile(join(directory, name + '.mjs'), source, 'utf-8');
 }
 const load = async name => import(pathToFileURL(join(directory, name + '.mjs')).href);
-const { createTelehealthCapture } = await load('telehealthCapture');
+const { createTelehealthCapture, prepareTelehealthDisplaySource } = await load('telehealthCapture');
 const { createTelehealthVadMonitor } = await load('telehealthVad');
 const { createTelehealthDiagnostics } = await load('telehealthDiagnostics');
 
@@ -102,21 +102,30 @@ function sources(surface, audioIncluded) {
   };
 }
 
-function captureFixture(env, allowWindow = false) {
+async function prepareSource(env, allowWindow = false) {
   const events = [];
+  const source = await prepareTelehealthDisplaySource({
+    mediaDevices: env.mediaDevices,
+    confirmWindowAudio: () => allowWindow,
+    onDiagnostic: event => events.push(event),
+  });
+  return { source, events };
+}
+
+function captureFixture(prepared, env) {
   const recorder = createTelehealthCapture({
     mediaDevices: env.mediaDevices,
     AudioContextCtor: Context,
     AudioWorkletNodeCtor: Tap,
     onFrames: () => true,
-    confirmWindowAudio: () => allowWindow,
-    onDiagnostic: event => events.push(event),
+    preparedSource: prepared.source,
+    onDiagnostic: event => prepared.events.push(event),
   });
-  return { recorder, events };
+  return { recorder, events: prepared.events };
 }
 
 const tab = sources('browser', true);
-const tabFixture = captureFixture(tab);
+const tabFixture = captureFixture(await prepareSource(tab), tab);
 await tabFixture.recorder.start();
 assert.equal(tab.observed.microphoneRequests, 1);
 assert.equal(tab.observed.options.video, true);
@@ -126,24 +135,34 @@ assert.equal(tab.observed.options.surfaceSwitching, 'exclude');
 await tabFixture.recorder.stop();
 
 const windowSource = sources('window', true);
-const windowFixture = captureFixture(windowSource, true);
+const windowFixture = captureFixture(await prepareSource(windowSource, true), windowSource);
 await windowFixture.recorder.start();
 assert.ok(windowFixture.events.some(e => e.event === 'window_acknowledged'));
 await windowFixture.recorder.stop();
 
 const noAudio = sources('window', false);
-const noAudioFixture = captureFixture(noAudio, true);
-await assert.rejects(noAudioFixture.recorder.start(), /No audio was shared/);
+const noAudioEvents = [];
+await assert.rejects(prepareTelehealthDisplaySource({
+  mediaDevices: noAudio.mediaDevices,
+  confirmWindowAudio: () => true,
+  onDiagnostic: event => noAudioEvents.push(event),
+}), /No audio was shared/);
 assert.equal(noAudio.observed.microphoneRequests, 0);
-assert.ok(noAudioFixture.events.some(e => e.event === 'picker_rejected' && e.code === 'missing_audio'));
+assert.ok(noAudioEvents.some(e => e.event === 'picker_rejected' && e.code === 'missing_audio'));
 assert.equal(noAudio.video.stopped, true);
 
 const declined = sources('window', true);
-await assert.rejects(captureFixture(declined, false).recorder.start(), /cancelled/);
+await assert.rejects(prepareTelehealthDisplaySource({
+  mediaDevices: declined.mediaDevices,
+  confirmWindowAudio: () => false,
+}), /cancelled/);
 assert.equal(declined.observed.microphoneRequests, 0);
 
 const screen = sources('monitor', true);
-await assert.rejects(captureFixture(screen, true).recorder.start(), /Full-screen/);
+await assert.rejects(prepareTelehealthDisplaySource({
+  mediaDevices: screen.mediaDevices,
+  confirmWindowAudio: () => true,
+}), /Full-screen/);
 assert.equal(screen.observed.microphoneRequests, 0);
 
 const log = createTelehealthDiagnostics({ now: () => '2026-11-06T00:00:00Z' });

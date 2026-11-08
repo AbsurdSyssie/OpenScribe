@@ -84,7 +84,7 @@ def test_telehealth_role_prefix_is_view_only_and_unicode_offsets_stay_canonical(
     runner = tmp_path / "role-prefix-editor-runner.mjs"
     runner.write_text(
         f"""
-const {{ createTranscriptTurnsEditor }} = await import('{editor_module.as_uri()}');
+const {{ createTranscriptTurnsEditor, projectStructuredTurns }} = await import('{editor_module.as_uri()}');
 class FakeTextArea {{
   constructor(value = '') {{ this.value = value; this.dataset = {{ turnText: 'legacy' }}; this.selection = null; }}
   matches() {{ return true; }}
@@ -151,6 +151,21 @@ noPrefixEditor.render({{ revision_id: 'rev', editable: true, turns: [spoken,
 if (!noPrefixEditorRoot.innerHTML.includes('Patient: I said patient')) throw new Error('spoken words were stripped without trusted prefix metadata');
 if (!noPrefixEditorRoot.innerHTML.includes('>Patient: words</button>')) throw new Error('speaker prefix hiding stripped spoken same-role words');
 if (!noPrefixEditorRoot.innerHTML.includes('data-speaker-tone="1"')) throw new Error('clinician role tone is not deterministic');
+const warningText = '<Recording coverage is incomplete>';
+noPrefixEditor.render({{ revision_id: 'rev', editable: true,
+  pii_revision_id: 'rev', entities: [{{ source: 'manual', value: 'incomplete', start_index: 23, end_index: 33 }}],
+  turns: [{{ id: 'coverage-warning', text: warningText, source_warning: true, speaker_label: 'System' }}] }});
+if (!noPrefixEditorRoot.innerHTML.includes('Recording coverage warning')) throw new Error('protected source warning is not labeled');
+if (!noPrefixEditorRoot.innerHTML.includes('&lt;Recording coverage is <mark class="transcript-pii-highlight">incomplete</mark>&gt;')) throw new Error('source warning lost normal escaping or PII highlighting');
+if (noPrefixEditorRoot.innerHTML.includes('data-turn-display') || noPrefixEditorRoot.innerHTML.includes('data-turn-delete')
+  || noPrefixEditorRoot.innerHTML.includes('<textarea')) throw new Error('source warning exposed an edit or delete affordance');
+if (projectStructuredTurns([{{ id: 'coverage-warning', text: warningText, source_warning: true }}]) !== warningText)
+  throw new Error('copy projection omitted the protected warning');
+noPrefixEditor.render({{ revision_id: 'rev', editable: true, masked: true,
+  pii_revision_id: 'rev', entities: [{{ source: 'manual', value: 'incomplete', start_index: 23, end_index: 33 }}],
+  turns: [{{ id: 'coverage-warning', text: warningText, source_warning: true, speaker_label: 'System' }}] }});
+if (noPrefixEditorRoot.innerHTML.includes('Recording coverage is incomplete')) throw new Error('masked source warning exposed PII');
+if (!noPrefixEditorRoot.innerHTML.includes('Recording coverage warning')) throw new Error('masked source warning lost its safe label');
 """,
         encoding="utf-8",
     )

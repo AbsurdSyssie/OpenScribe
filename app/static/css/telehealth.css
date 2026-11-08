@@ -83,6 +83,15 @@
   color: var(--slate, #53616a);
   font-size: .74rem;
 }
+.telehealth-receipt [data-telehealth-gap-list] {
+  display: grid;
+  gap: .3rem;
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--slate, #53616a);
+  font-size: .74rem;
+}
+.telehealth-receipt [data-telehealth-gap-list] li { line-height: 1.4; }
 .telehealth-receipt.is-interrupted p { color: #993d3d; }
 .telehealth-guidance {
   width: min(28rem, calc(100% - 2rem));

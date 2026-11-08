@@ -73,6 +73,7 @@ export function createTelehealthRecordingClient({
     try { onStopProgress(phase); } catch (_) {}
   };
   let stopPromise = null, interruption = null, resolveSessionReady = null;
+  let createAttempted = false;
   const ready = new Promise((resolve) => { resolveSessionReady = resolve; });
   let readyResolved = false, earlyFrames = 0;
   const earlyPackets = [];
@@ -124,14 +125,19 @@ export function createTelehealthRecordingClient({
       };
     }
     const { sequence: partNo, key } = window._telehealthUpload;
-    window._telehealthPrepared = (async () => {
+    const prepared = (async () => {
       const currentId = await ready;
       if (!currentId) throw new Error('Recording session was not accepted.');
-      const encoded = encodeTelehealthWavWindow(window);
-      const part = {
-        captureId: currentId, transcriptId, channel: window.channel,
-        sequence: partNo, key, spans: encoded.spans, bytes: encoded.bytes,
-      };
+      // Keep the exact encoded value across retries, including a journal
+      // transaction that committed but reported a late failure.
+      const part = window._telehealthPart || (() => {
+        const encoded = encodeTelehealthWavWindow(window);
+        window._telehealthPart = {
+          captureId: currentId, transcriptId, channel: window.channel,
+          sequence: partNo, key, spans: encoded.spans, bytes: encoded.bytes,
+        };
+        return window._telehealthPart;
+      })();
       // Every bounded window gets an encrypted IndexedDB transaction
       // immediately, EVEN WHEN an earlier HTTP request is still pending.
       // A lost response cannot change its bytes, role, sequence or identity.
@@ -146,6 +152,13 @@ export function createTelehealthRecordingClient({
       }
       return part;
     })();
+    window._telehealthPrepared = prepared;
+    // A transient journal failure must be retryable. Keep the allocation
+    // above on the window, but allow a fresh persistence transaction to be
+    // attempted with the same sequence, key, WAV bytes and timeline spans.
+    void prepared.catch(() => {
+      if (window._telehealthPrepared === prepared) window._telehealthPrepared = null;
+    });
     // An independently queued durable promise can reject while a different
     // window's HTTP request is pending. The upload queue awaits the same
     // promise and surfaces the error at its original sequence position.
@@ -233,6 +246,7 @@ export function createTelehealthRecordingClient({
         }
       }
       earlyFrames = 0;
+      createAttempted = true;
       const started = await post(base, { timeline_sample_rate: sampleRate });
       captureId = started.capture_session_id;
       resolveSession(captureId);
@@ -370,6 +384,7 @@ export function createTelehealthRecordingClient({
   return {
     start, stop, retryPendingUploads, acknowledgeIncomplete, discard, transcribe, getStatus,
     get state() { return state; },
+    get mayHaveCreatedSession() { return createAttempted && !captureId; },
     get captureSessionId() { return captureId; },
     get uploadedParts() { return { ...accepted }; },
     get interruption() { return interruption; },

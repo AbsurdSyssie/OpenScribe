@@ -156,7 +156,11 @@ They cover tab preparation without recording, cancellation and source cleanup,
 three-second speech confirmation, shared microphone meters, exclusive input
 controls, timestamp tolerance, and overlapping speaker turns. Database checks
 cover unresolved-capture admission barriers, idempotent uploads, and concurrent
-capture/upload locking. They do not establish browser or live-provider behavior;
+capture/upload locking. Partial-salvage checks also cover explicit acceptance,
+scoped readiness, retained-source retry and expiry, automatic once-only recovery,
+protected pre-redaction notices, empty-source generation guards, edited/deleted
+turn preservation, unchanged note snapshots, and deferred insertion during other
+recording. They do not establish browser or live-provider behavior;
 use [the telehealth walkthrough](telehealth-crash-walkthrough.md) for manual checks.
 
 Provider configuration:

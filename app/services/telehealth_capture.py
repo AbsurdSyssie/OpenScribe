@@ -53,6 +53,7 @@ from app.services.transcripts import (
     assert_no_unresolved_stream_session,
     queue_orphan_transcript_audio_after_rollback,
 )
+from app.services.telehealth_partial import job_is_not_accepted_partial
 from app.services.vault import write_transcript_ingestion_source_audio
 
 
@@ -96,6 +97,7 @@ def _require_recorder_ready(db: Session, transcript: Transcript) -> None:
         TranscriptIngestionJob.status.in_(
             (TranscriptIngestionJobStatus.queued, TranscriptIngestionJobStatus.processing)
         ),
+        job_is_not_accepted_partial(),
     ).limit(1))
     if outstanding is not None:
         raise AppError(409, "conflict", "Resolve the current transcription before recording.")

@@ -199,6 +199,7 @@ export function createWorkspaceFetchCoordinator({
   endpointForTranscript,
   applyWorkspacePayload,
   getActiveTranscriptId,
+  canSwitchTranscript = () => true,
   requestsByEndpoint = new Map(),
 } = {}) {
   let latestSwitchIntent = 0;
@@ -236,6 +237,7 @@ export function createWorkspaceFetchCoordinator({
         if (
           switchIntent !== latestSwitchIntent
           || (targetTranscriptId && workspace?.active_transcript?.id !== targetTranscriptId)
+          || (targetTranscriptId !== getActiveTranscriptId?.() && !canSwitchTranscript?.())
         ) return null;
       } else if (!matchesActiveTranscript(workspace, activeTranscriptAtRequest)) {
         return null;

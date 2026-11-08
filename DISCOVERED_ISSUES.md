@@ -1,5 +1,16 @@
 # Discovered issues
 
+### TELEHEALTH-SUBMITTED-FAILURE-RESOLUTION — 2026-11-07
+
+- Status: Resolved locally on 8 November 2026 under the approved [implementation plan](plans/telehealth-partial-salvage-2026-11-07.md). Explicit partial acceptance preserves successful results and automatically adds later recovery in a new source version without replacing clinician edits or generated notes. The combined regression run passed 514 tests with one environment-dependent skip; the API authorization audit passed. Remote CI still needs a run containing these local fixes; see the [dated review record](docs/reviews/telehealth-merge-review-2026-11-07.md#8-november-addendum--approved-partial-salvage).
+- Discovery commit: `923db5d19c5d37cf18a7b69cbcdcacf8c9d87ea7`.
+- Locations: `app/services/telehealth_apply.py::apply_completed_telehealth_capture`, `app/services/telehealth_capture.py::discard_unsubmitted_telehealth_capture`, and `app/services/transcripts.py::assert_no_unresolved_stream_session` / `retry_failed_audio_ingestion`.
+- Exact boundaries: an all-silent result sets `session.status = "failed"`; discard rejects `any(part.ingestion_job_id is not None for part in parts)`; the unresolved barrier includes `"failed"`.
+- Impact: submitted captures with valid silent results or an expired failed source cannot be retried or discarded. Their unresolved state blocks further recording, uploads, editing, and generation on the consultation, including work on earlier saved content.
+- Initial decision boundary: resolving submitted captures required an explicit lifecycle decision. The maintainer subsequently selected partial salvage rather than abandonment; unsubmitted-only discard remains unchanged.
+- Subsequent direction: prefer applying successful results with an explicit incomplete-recording warning while keeping failed captured audio retryable within the original deadline. Do not implement abandonment as the default recovery path or silently overwrite clinician edits when later speech is recovered.
+- Resolution: implemented owner/expiry checks, concurrent-worker fencing, scoped readiness reconciliation, protected incomplete-source notices, paginated retry metadata, and silent/failed/expired-source regressions. Maintained capture/API documentation is aligned. Retention and provider accounting remain unchanged.
+
 ### SPLIT-SUGGESTION-MISSING-PROPOSAL-RECOVERY — 2026-11-04
 
 - Status: Open; defensive recovery follow-up, not reproduced through a valid provider-completion flow.

@@ -1,9 +1,15 @@
 """Telehealth accepts provider timing without accepting provider speaker identities."""
 from uuid import UUID
+import json
 
 import pytest
 
-from app.services.stt import _source_timed_turns_from_segments, _turns_match_transcript
+from app.services.stt import (
+    SttTranscriptResult, _source_timed_turns_from_segments,
+    _transcribe_via_http, _turns_match_transcript,
+)
+from app.models import SttAdapterKind
+from app.errors import AppError
 from app.services.telehealth_audio import (
     TelehealthAudioPart,
     TelehealthSourceSpan,
@@ -259,3 +265,113 @@ def test_reversed_deepgram_word_timings_are_discarded_not_reordered():
         segment_end_field="end",
     )
     assert extracted is None
+
+
+@pytest.mark.parametrize("provider", ["generic", "deepgram", "elevenlabs"])
+def test_telehealth_keeps_canonical_text_when_timing_segments_drop_negation(monkeypatch, provider):
+    canonical = "Patient denies chest pain"
+    if provider == "deepgram":
+        payload = _synthetic_deepgram_word_payload(
+            [("Patient", 0.0, 0.2), ("chest", 0.3, 0.5), ("pain", 0.6, 0.8)],
+            canonical,
+        )
+    elif provider == "elevenlabs":
+        payload = {
+            "text": canonical,
+            "words": [
+                {"text": "Patient", "start": 0.0, "end": 0.2},
+                {"text": "chest", "start": 0.3, "end": 0.5},
+                {"text": "pain", "start": 0.6, "end": 0.8},
+            ],
+        }
+    else:
+        payload = {
+            "text": canonical,
+            "segments": [
+                {"text": "Patient", "start": 0.0, "end": 0.2},
+                {"text": "chest", "start": 0.3, "end": 0.5},
+                {"text": "pain", "start": 0.6, "end": 0.8},
+            ],
+        }
+
+    class SyntheticResponse:
+        status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def json(self):
+            return payload
+
+        def iter_bytes(self):
+            return iter([json.dumps(payload).encode()])
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr("app.services.stt.httpx.stream", lambda *_a, **_kw: SyntheticResponse())
+    kwargs = dict(
+        base_url="https://stt.example.test", transcribe_path="/transcribe",
+        file_field_name="file", response_text_path="text",
+        extra_form_fields_json={}, bearer_token="synthetic-token",
+        model_name=None, model_field_name="model", language=None,
+        language_field_name="language", audio_bytes=b"synthetic audio",
+        filename="synthetic.wav", content_type="audio/wav",
+        telehealth_timing=True,
+    )
+    if provider == "deepgram":
+        kwargs.update(
+            response_text_path="results.channels.0.alternatives.0.transcript",
+            provider_preset="deepgram", adapter_kind=SttAdapterKind.generic_rest,
+            segments_path="segments", segment_text_field="text",
+            segment_start_field="start", segment_end_field="end",
+        )
+    elif provider == "elevenlabs":
+        kwargs.update(adapter_kind=SttAdapterKind.elevenlabs_speech_to_text)
+    else:
+        kwargs.update(
+            segments_path="segments", segment_text_field="text",
+            segment_start_field="start", segment_end_field="end",
+        )
+    result = _transcribe_via_http(**kwargs)
+    assert isinstance(result, SttTranscriptResult)
+    assert result.text == canonical
+    assert result.turns is None
+
+
+@pytest.mark.parametrize("payload", [{"text": ""}, {"segments": [{"text": "partial"}]}, {"text": 7}])
+def test_generic_telehealth_rejects_missing_or_invalid_canonical_text(monkeypatch, payload):
+    class SyntheticResponse:
+        status_code = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def json(self):
+            return payload
+
+        def iter_bytes(self):
+            return iter([json.dumps(payload).encode()])
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr("app.services.stt.httpx.stream", lambda *_a, **_kw: SyntheticResponse())
+    with pytest.raises(AppError) as exc_info:
+        _transcribe_via_http(
+            base_url="https://stt.example.test", transcribe_path="/transcribe",
+            file_field_name="file", response_text_path="text",
+            extra_form_fields_json={}, bearer_token="synthetic-token",
+            model_name=None, model_field_name="model", language=None,
+            language_field_name="language", audio_bytes=b"synthetic audio",
+            filename="synthetic.wav", content_type="audio/wav", telehealth_timing=True,
+        )
+    assert getattr(exc_info.value, "code", None) == "stt_response_invalid"

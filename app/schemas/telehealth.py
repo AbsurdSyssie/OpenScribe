@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 
 TelehealthChannel = Literal["clinician", "patient"]
 CaptureStatus = Literal[
-    "active", "stopping", "interrupted", "ready", "processing", "completed", "failed", "discarded"
+    "active", "stopping", "interrupted", "ready", "processing", "partial", "completed", "failed", "discarded"
 ]
 PartStatus = Literal["staged", "processing", "transcribed", "failed", "expired"]
 
@@ -57,6 +57,8 @@ class TelehealthCapturePartDetail(BaseModel):
     timeline_end_frame: int
     source_audio_duration_seconds: float
     ingestion_job_id: UUID | None
+    retry_available: bool = False
+    included_in_transcript: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -72,6 +74,12 @@ class TelehealthCaptureDetail(BaseModel):
     parts: list[TelehealthCapturePartDetail]
     recording_started_at: datetime
     recording_stopped_at: datetime | None
+    can_use_available_transcript: bool = False
+
+
+class TelehealthPartialCapturesPage(BaseModel):
+    items: list[TelehealthCaptureDetail]
+    next_offset: int | None
 
 
 class TelehealthAudioPartAccepted(BaseModel):

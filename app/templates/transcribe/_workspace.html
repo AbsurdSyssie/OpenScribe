@@ -143,10 +143,16 @@ aria-label="Recording mode"
     </div>
   </div>
   <p data-telehealth-receipt-message role="status" hidden></p>
+  <div data-telehealth-partial-summary hidden>
+    <p data-telehealth-gap-summary></p>
+    <ul data-telehealth-gap-list aria-label="Unavailable Telehealth source intervals"></ul>
+    <button type="button" data-telehealth-load-more-partials class="btn-secondary--compact" hidden>Load more recovery intervals</button>
+  </div>
   <div class="telehealth-receipt__actions" data-telehealth-actions hidden>
     <button type="button" data-telehealth-retry class="btn-secondary--compact" hidden>Retry audio upload</button>
     <button type="button" data-telehealth-submit-retry class="btn-secondary--compact" hidden>Retry transcription</button>
     <button type="button" data-telehealth-transcribe class="btn-secondary--compact" hidden>Acknowledge and transcribe</button>
+    <button type="button" data-telehealth-use-available class="btn-secondary--compact" hidden>Use available transcript</button>
     <button type="button" data-telehealth-discard class="btn-ghost-sm" hidden>Discard unsubmitted audio</button>
   </div>
   {% if telehealth_diagnostics_debug_ui|default(false) %}

@@ -1,9 +1,9 @@
-import { attachTranscribeActions } from './actions.js?v=20261106-telehealth-exclusive';
+import { attachTranscribeActions } from './actions.js?v=20261107-telehealth-switch-fence';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20261005-multiple-problems';
 import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261103-working-note-revision';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
 import { createAudioCaptureController } from './media.js?v=20261106-patient-audio-meter';
-import { attachTelehealthControls } from './telehealthUI.js?v=20261106-activation-lock';
+import { attachTelehealthControls } from './telehealthUI.js?v=20261108-telehealth-partial-salvage';
 import { DeepgramLiveStream, trimPinnedVadSpeechBuffer } from './deepgramLiveStream.js?v=20261027-dictation-live-preview';
 import { createOwnedMicStream, createVadCaptureOptions } from './vadCapture.js?v=20261027-shared-vad-capture';
 import { createMicVisualizer } from './micVisualizer.js?v=20261106-patient-audio-meter';
@@ -16,10 +16,10 @@ import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=2
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20261029-empty-note-version';
 import { createTemplateSuggestionController } from './templateSuggestions.js?v=20260830-template-suggestion-preference';
 import { createExampleConsultationBoundary, createExampleConsultationInitializer } from './exampleConsultation.js?v=20261021-example-consultation';
-import { createTranscriptTurnsEditor } from './transcriptTurnsEditor.js?v=20261107-telehealth-role-prefix';
+import { createTranscriptTurnsEditor } from './transcriptTurnsEditor.js?v=20261108-source-warning';
 import { createAutosaveController } from './autosaveController.js?v=20261022-diarized-turn-editor';
 import { createWorkingNoteAttemptStore } from './workingNoteSaveRecovery.js?v=20261103-working-note-save-recovery';
-import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261104-living-problem-plan-29';
+import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261107-telehealth-switch-fence';
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,
@@ -5509,6 +5509,9 @@ let statusDetailsHideTimer = null;
         endpointForTranscript: workspaceEndpointForTranscript,
         applyWorkspacePayload,
         getActiveTranscriptId: () => transcriptId,
+        canSwitchTranscript: () => !(Boolean(telehealthUi?.isUnresolved?.())
+          || Boolean(captureController?.isLiveCaptureUiActive?.())
+          || currentTranscriptStatus === 'recording'),
         requestsByEndpoint: workspaceFetchesByEndpoint,
       });
       splitAnalysisRestorationPoller = createSplitAnalysisRestorationPoller({
@@ -5969,6 +5972,7 @@ let statusDetailsHideTimer = null;
         setClinicianMicLevel: (rms, speechDetected) => captureController?.setExternalMicLevel?.(rms, speechDetected),
         resetClinicianMicLevel: () => captureController?.resetExternalMicLevel?.(),
         refreshWorkspace: async () => { await fetchWorkspace(); },
+        scheduleWorkspaceRefreshBurst,
         showNotice: showFlash,
       });
       telehealthUi.setOrdinaryControlsSync?.(() => setMicButtons(Boolean(captureController?.isCaptureUiActive?.())));

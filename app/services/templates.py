@@ -75,6 +75,7 @@ from app.schemas.templates import (
     StructuredTemplateConfig,
 )
 from app.services.llm import active_team_hallucination_check_selection
+from app.services.telehealth_partial import job_is_not_accepted_partial
 from app.services.llm_checker_selection import (
     FrozenCheckerSelection,
     copy_hallucination_check_selection,
@@ -1755,6 +1756,7 @@ def _has_generation_wait_ingestion_jobs(db: Session, *, transcript_id: UUID, cre
                     TranscriptIngestionJobStatus.completed,
                 ]
             ),
+            job_is_not_accepted_partial(),
         )
         .limit(1)
     ) is not None

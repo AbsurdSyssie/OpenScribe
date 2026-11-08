@@ -87,6 +87,7 @@ Other files whose names contain `roadmap`, `plan`, `brief`, `todo`, or `design` 
 
 ## Engineering review records
 
+- [Telehealth merge review — 7 November 2026](reviews/telehealth-merge-review-2026-11-07.md) records branch review findings, bounded remediation, verification, and the subsequent partial-salvage work following the maintainer's lifecycle decision.
 - [Discovered issues remediation and regression review — 19 October 2026](reviews/discovered-issues-remediation-2026-10-19.md) records issue dispositions, bounded fixes, regression verification, and remaining policy/deployment work.
 - [Documentation review — 18 October 2026](reviews/documentation-review-2026-10-18.md) records factual corrections, writing review, and verification limits against the [functional inventory](documentation-inventory.md).
 - [Generation-stage logging, efficiency and token review — 16 October 2026](reviews/generation-stage-cost-logging-review-2026-10-16.md) covers STT, source preparation, ordinary and split generation, recovery and checking, with bounded remediation and remaining cost/transport decisions.

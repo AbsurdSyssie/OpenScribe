@@ -1,4 +1,4 @@
-import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261106-preselected-source';
+import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261107-telehealth-recovery-retry';
 import { prepareTelehealthDisplaySource } from './telehealthCapture.js?v=20261106-preselected-source';
 import { createTelehealthDiagnostics } from './telehealthDiagnostics.js?v=20261106-server-events';
 import {
@@ -21,6 +21,7 @@ export function attachTelehealthControls({
   persistPreferences,
   csrfFetch,
   refreshWorkspace,
+  scheduleWorkspaceRefreshBurst,
   showNotice,
   setClinicianMicLevel = () => {},
   resetClinicianMicLevel = () => {},
@@ -37,6 +38,11 @@ export function attachTelehealthControls({
   const recordIcon = document.querySelector('[data-record-toggle-icon]');
   const receipt = document.querySelector('[data-telehealth-receipt]');
   const message = document.querySelector('[data-telehealth-receipt-message]');
+  const channels = document.querySelector('[data-telehealth-channels]');
+  const partialSummary = document.querySelector('[data-telehealth-partial-summary]');
+  const gapSummary = document.querySelector('[data-telehealth-gap-summary]');
+  const gapList = document.querySelector('[data-telehealth-gap-list]');
+  const loadMorePartials = document.querySelector('[data-telehealth-load-more-partials]');
   const setReceiptNotice = (text = '') => {
     if (!message) return;
     const visible = Boolean(text);
@@ -48,6 +54,7 @@ export function attachTelehealthControls({
   const partial = document.querySelector('[data-telehealth-transcribe]');
   const submitRetry = document.querySelector('[data-telehealth-submit-retry]');
   const discard = document.querySelector('[data-telehealth-discard]');
+  const useAvailable = document.querySelector('[data-telehealth-use-available]');
   const debugPanel = document.querySelector('[data-telehealth-debug-panel]');
   const debugReference = document.querySelector('[data-telehealth-debug-reference]');
   const debugEvents = document.querySelector('[data-telehealth-debug-events]');
@@ -63,6 +70,12 @@ export function attachTelehealthControls({
   let preparedSource = null;
   let client = null;
   let restoredCapture = null;
+  let partialCapture = null;
+  let partialCaptures = [];
+  let partialCaptureLoadedOffsets = [];
+  let partialCapturesNextOffset = null;
+  let partialCaptureListInFlight = false;
+  let salvageCandidate = null;
   const recoveryJournal = createTelehealthRecoveryJournal();
   const diagnostics = createTelehealthDiagnostics({
     sendBatch: async (targetTranscriptId, diagnosticId, events) => {
@@ -80,15 +93,19 @@ export function attachTelehealthControls({
   });
   let lastCheckedTranscriptId = null;
   let captureStatusCheckInFlight = false;
+  let captureCheckGeneration = 0;
   let ownProcessingCheckInFlight = false;
   let ownProcessingLastPollAt = 0;
   let boundTranscriptId = getTranscriptId?.() || null;
+  let transcriptEpoch = 0;
   let activating = false;
   let cancelSelection = null;
   let selectionEpoch = 0;
   let submissionInFlight = false;
   let stopPhase = null;
   let discardInFlight = false;
+  let partialResolutionInFlight = false;
+  const partialRetryJobs = new Set();
   let telehealthOwnsRecordLock = false;
   let sourceLoss = false;
   let telehealthMeterActive = false;
@@ -130,6 +147,107 @@ export function attachTelehealthControls({
       if (nodes[channel].status) nodes[channel].status.textContent = 'Waiting for audio';
     }
   };
+  const formatCaptureTime = (frame, sampleRate, roundUp = false) => {
+    const scaledSeconds = Math.max(0, Number(frame) || 0) / Math.max(1, Number(sampleRate) || 1);
+    const totalSeconds = roundUp ? Math.ceil(scaledSeconds) : Math.floor(scaledSeconds);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return hours
+      ? [hours, minutes, seconds].map((part) => String(part).padStart(2, '0')).join(':')
+      : [minutes, seconds].map((part) => String(part).padStart(2, '0')).join(':');
+  };
+  const unavailableParts = (capture) => (capture?.parts || []).filter((part) =>
+    part.status !== 'transcribed' || part.included_in_transcript === false);
+  const visiblePartialCapture = () => partialCapture || salvageCandidate || partialCaptures[0] || null;
+  const renderPartialSummary = () => {
+    if (!partialSummary) return;
+    const capture = visiblePartialCapture();
+    const visible = Boolean(capture);
+    partialSummary.hidden = !visible;
+    if (!visible) return;
+    const captures = [...partialCaptures];
+    if (partialCapture && !captures.some((item) => item.capture_session_id === partialCapture.capture_session_id)) captures.unshift(partialCapture);
+    if (salvageCandidate && !captures.some((item) => item.capture_session_id === salvageCandidate.capture_session_id)) captures.unshift(salvageCandidate);
+    const gaps = captures.flatMap((item) => unavailableParts(item).map((part) => ({ item, part })));
+    if (gapSummary) {
+      gapSummary.textContent = capture.failure_code === 'no_transcribed_speech'
+        ? 'No speech was found in the captured audio. Resolving this capture will not add transcript text.'
+        : salvageCandidate
+          ? 'Choose whether to add completed source intervals now. Unavailable intervals are listed below; review the transcript before using it clinically.'
+          : gaps.length
+            ? 'These source intervals are not yet in the transcript. Retained failed audio can still be retried; later speech is added as a new transcript version.'
+            : 'Available source results have been accepted. Check the transcript for completeness before using it clinically.';
+    }
+    if (!gapList) return;
+    gapList.replaceChildren();
+    for (const { item: gapCapture, part } of gaps) {
+      const item = document.createElement('li');
+      item.dataset.captureSessionId = gapCapture.capture_session_id;
+      const captureLabel = document.createElement('strong');
+      const captureNumber = captures.indexOf(gapCapture) + 1;
+      captureLabel.textContent = `${gapCapture.capture_session_id === capture.capture_session_id ? '' : `Capture ${captureNumber} · `}`;
+      const channel = part.channel === 'patient' ? 'Patient' : 'Clinician';
+      const sequence = Number.isInteger(part.sequence_no) ? part.sequence_no + 1 : '?';
+      const start = formatCaptureTime(part.timeline_start_frame, gapCapture.timeline_sample_rate);
+      const end = formatCaptureTime(part.timeline_end_frame, gapCapture.timeline_sample_rate, true);
+      const statusLabel = part.included_in_transcript === false && part.status === 'transcribed'
+        ? 'transcribed; waiting to be added to transcript'
+        : part.status === 'expired' ? 'audio expired' : part.status;
+      item.append(captureLabel, document.createTextNode(`${channel} audio · window ${sequence} · ${start}–${end} · ${statusLabel}`));
+      if (part.retry_available === true && part.ingestion_job_id) {
+        const retryButton = document.createElement('button');
+        retryButton.type = 'button';
+        retryButton.className = 'btn-secondary--compact';
+        retryButton.textContent = 'Retry this audio';
+        retryButton.disabled = partialRetryJobs.has(part.ingestion_job_id);
+        retryButton.addEventListener('click', () => { void retryPartialPart(gapCapture, part, retryButton); });
+        item.append(document.createTextNode(' '), retryButton);
+      }
+      gapList.append(item);
+    }
+    if (loadMorePartials) loadMorePartials.hidden = partialCapturesNextOffset === null;
+  };
+  const loadPartialCapturePage = async (append = false) => {
+    const transcriptId = getTranscriptId?.();
+    if (!transcriptId || partialCaptureListInFlight) return;
+    const offsets = append
+      ? (Number.isInteger(partialCapturesNextOffset) ? [partialCapturesNextOffset] : [])
+      : (partialCaptureLoadedOffsets.length ? [...partialCaptureLoadedOffsets] : [0]);
+    if (!offsets.length) return;
+    const epoch = transcriptEpoch;
+    partialCaptureListInFlight = true;
+    try {
+      const refreshed = append ? [...partialCaptures] : [];
+      let nextOffset = null;
+      const loadedOffsets = append ? [...partialCaptureLoadedOffsets] : [];
+      for (const offset of offsets) {
+        const response = await csrfFetch(
+          '/api/v1/transcripts/' + encodeURIComponent(transcriptId)
+            + '/telehealth/partial-captures?offset=' + offset + '&limit=20',
+          { credentials: 'include' },
+        );
+        if (!response.ok) return;
+        const page = await response.json();
+        if (epoch !== transcriptEpoch || transcriptId !== getTranscriptId?.()) return;
+        const items = Array.isArray(page?.items)
+          ? page.items.filter((item) => item?.status === 'partial' && item.transcript_id === transcriptId) : [];
+        if (append) refreshed.push(...items);
+        else refreshed.push(...items);
+        if (!loadedOffsets.includes(offset)) loadedOffsets.push(offset);
+        nextOffset = Number.isInteger(page?.next_offset) ? page.next_offset : null;
+      }
+      partialCaptures = refreshed;
+      partialCaptureLoadedOffsets = loadedOffsets;
+      partialCapturesNextOffset = nextOffset;
+      render();
+    } catch (_) {
+      // This is a supplementary retry listing; unresolved capture handling remains authoritative.
+    } finally {
+      partialCaptureListInFlight = false;
+      if (transcriptId !== getTranscriptId?.()) void loadPartialCapturePage(false);
+    }
+  };
   const releasePreparedSource = () => {
     preparedSource?.release?.();
     preparedSource = null;
@@ -161,7 +279,14 @@ export function attachTelehealthControls({
     toggle.hidden = getPreferences?.().show_telehealth_control === false
       && !restoredCapture && !enabled;
     toggle.setAttribute('aria-pressed', String(enabled));
-    receipt.hidden = !enabled;
+    const visiblePartial = Boolean(visiblePartialCapture());
+    receipt.hidden = !enabled && !visiblePartial;
+    if (channels) channels.hidden = Boolean(salvageCandidate || (partialCapture && !enabled));
+    if (visiblePartial) receipt.setAttribute('aria-label', enabled
+      ? 'Telehealth recording and partial transcript recovery'
+      : salvageCandidate ? 'Telehealth transcription recovery' : 'Partial Telehealth transcript recovery');
+    else receipt.setAttribute('aria-label', 'Patient audio activity check');
+    renderPartialSummary();
     toggle.disabled = activating || blockSwitch() || client?.state === 'transcribing' || !getTranscriptId?.();
     if (inputLocked) {
       if (modeSelect) modeSelect.disabled = true;
@@ -231,7 +356,13 @@ export function attachTelehealthControls({
       ['recovery_required', 'incomplete', 'sealed'].includes(client?.state)
       || (restoredCapture && !hasRestoredJob)
     );
-    if (actions) actions.hidden = [retry, partial, submitRetry, discard].every((item) => item?.hidden !== false);
+    if (useAvailable) {
+      useAvailable.hidden = salvageCandidate?.can_use_available_transcript !== true;
+      useAvailable.disabled = partialResolutionInFlight || Boolean(client);
+      useAvailable.textContent = salvageCandidate?.failure_code === 'no_transcribed_speech'
+        ? 'Resolve without transcript' : 'Use available transcript';
+    }
+    if (actions) actions.hidden = [retry, partial, submitRetry, discard, useAvailable].every((item) => item?.hidden !== false);
 
     for (const action of [retry, partial, submitRetry]) {
       if (action) action.disabled = actionsInFlight;
@@ -250,15 +381,18 @@ export function attachTelehealthControls({
     }
   };
 
-  const postRecovery = async (capture, suffix, payload = {}) => {
+  const postRecovery = async (capture, suffix, payload = null) => {
+    const hasPayload = payload !== null && payload !== undefined;
     const response = await csrfFetch(
       '/api/v1/transcripts/' + encodeURIComponent(capture.transcript_id)
       + '/telehealth/captures/' + encodeURIComponent(capture.capture_session_id)
       + '/' + suffix,
       {
         method: 'POST', credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        ...(hasPayload ? {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        } : {}),
       },
     );
     if (!response.ok) {
@@ -269,11 +403,102 @@ export function attachTelehealthControls({
     return response.json();
   };
 
+  const retryPartialPart = async (capture, part, button) => {
+    if (partialRetryJobs.has(part.ingestion_job_id) || !capture) return;
+    const transcriptId = getTranscriptId?.();
+    if (transcriptId !== capture.transcript_id) return;
+    partialRetryJobs.add(part.ingestion_job_id);
+    if (button) button.disabled = true;
+    try {
+      const response = await csrfFetch(
+        '/api/v1/transcripts/' + encodeURIComponent(capture.transcript_id)
+          + '/ingestion-jobs/' + encodeURIComponent(part.ingestion_job_id) + '/retry-audio',
+        { method: 'POST', credentials: 'include' },
+      );
+      if (!response.ok) {
+        let errorMessage = 'Could not retry this Telehealth source interval.';
+        try { errorMessage = (await response.json())?.error?.message || errorMessage; } catch (_) {}
+        throw new Error(errorMessage);
+      }
+      if (![partialCapture, salvageCandidate, ...partialCaptures].some((item) => item?.capture_session_id === capture.capture_session_id)
+        || getTranscriptId?.() !== capture.transcript_id) return;
+      notice('Retry started for this Telehealth audio interval.', 'success');
+      lastCheckedTranscriptId = null;
+      captureCheckGeneration += 1;
+      await refreshWorkspace?.();
+      void checkPersistedCapture();
+      scheduleWorkspaceRefreshBurst?.();
+    } catch (error) {
+      if (getTranscriptId?.() === capture.transcript_id) {
+        notice(error instanceof Error ? error.message : 'Could not retry this Telehealth source interval.', 'error');
+      }
+    } finally {
+      partialRetryJobs.delete(part.ingestion_job_id);
+      render();
+    }
+  };
+
+  const acceptAvailableTranscript = async () => {
+    const capture = salvageCandidate;
+    if (!capture || capture.can_use_available_transcript !== true || partialResolutionInFlight
+      || getTranscriptId?.() !== capture.transcript_id) return;
+    const allGaps = unavailableParts(capture).map((part) => {
+      const channel = part.channel === 'patient' ? 'Patient' : 'Clinician';
+      const sequence = Number.isInteger(part.sequence_no) ? part.sequence_no + 1 : '?';
+      const start = formatCaptureTime(part.timeline_start_frame, capture.timeline_sample_rate);
+      const end = formatCaptureTime(part.timeline_end_frame, capture.timeline_sample_rate, true);
+      const state = part.included_in_transcript === false && part.status === 'transcribed'
+        ? ', waiting to be added to the transcript' : '';
+      return `${channel} window ${sequence} (${start}–${end}${state})`;
+    });
+    const gaps = allGaps.slice(0, 5);
+    if (allGaps.length > gaps.length) gaps.push(`${allGaps.length - gaps.length} more intervals`);
+    const confirmation = capture.failure_code === 'no_transcribed_speech'
+      ? 'No speech was found in the captured audio. Resolve this capture without adding transcript text? Any retained failed audio remains retryable; prior transcript content and notes are unchanged.'
+      : 'Use only the source intervals already transcribed.'
+        + (gaps.length ? ` These intervals are not yet included: ${gaps.join('; ')}.` : '')
+        + ' No speech will be invented. If no usable speech is available, prior transcript content remains unchanged. Retained failed audio can still be retried, and later recovered speech is added as a new transcript version. Existing notes remain unchanged. Review the transcript before using it clinically. Continue?';
+    if (!window.confirm(confirmation)) return;
+    partialResolutionInFlight = true;
+    render();
+    try {
+      const result = await postRecovery(capture, 'use-available');
+      if (getTranscriptId?.() !== capture.transcript_id
+        || salvageCandidate?.capture_session_id !== capture.capture_session_id) return;
+      if (result?.status === 'partial') {
+        partialCapture = result;
+        salvageCandidate = null;
+        restoredCapture = null;
+        enabled = false;
+      } else if (result?.status === 'completed') {
+        partialCapture = null;
+        salvageCandidate = null;
+        restoredCapture = null;
+        enabled = false;
+        resetMeters();
+      }
+      render();
+      await refreshWorkspace?.();
+      scheduleWorkspaceRefreshBurst?.();
+      ordinaryControlsSync();
+    } catch (error) {
+      if (getTranscriptId?.() === capture.transcript_id) {
+        notice(error instanceof Error ? error.message : 'Could not use the available Telehealth transcription.', 'error');
+      }
+    } finally {
+      partialResolutionInFlight = false;
+      render();
+    }
+  };
+
   const checkPersistedCapture = async () => {
     const id = getTranscriptId?.();
+    const epoch = transcriptEpoch;
+    const checkGeneration = captureCheckGeneration;
     const recheckProcessing = Boolean(restoredCapture
       && ['processing', 'failed'].includes(restoredCapture.status));
-    if (!id || captureStatusCheckInFlight || (id === lastCheckedTranscriptId && !recheckProcessing)
+      const recheckPartial = Boolean(partialCapture);
+    if (!id || captureStatusCheckInFlight || (id === lastCheckedTranscriptId && !recheckProcessing && !recheckPartial)
       || (enabled && !restoredCapture) || client) return;
     captureStatusCheckInFlight = true;
     lastCheckedTranscriptId = id;
@@ -287,12 +512,16 @@ export function attachTelehealthControls({
         return;
       }
       const saved = await response.json();
-      if (id !== getTranscriptId?.() || client) return;
+      if (checkGeneration !== captureCheckGeneration || epoch !== transcriptEpoch
+        || id !== getTranscriptId?.() || client || (enabled && !restoredCapture)) return;
+      void loadPartialCapturePage(false);
       if (!saved) {
         // The pending capture has completed/disappeared, so return to
         // ordinary recording state rather than retaining a stale blocker.
-        if (restoredCapture) {
+        if (restoredCapture || partialCapture || salvageCandidate) {
           restoredCapture = null;
+          partialCapture = null;
+          salvageCandidate = null;
           enabled = false;
           resetMeters();
           if (recordLabel) recordLabel.textContent = 'Start recording';
@@ -302,7 +531,30 @@ export function attachTelehealthControls({
         }
         return;
       }
-      if (!['active', 'stopping', 'ready', 'interrupted', 'failed', 'processing'].includes(saved.status)) return;
+      if (saved.status === 'partial') {
+        restoredCapture = null;
+        partialCapture = saved;
+        salvageCandidate = null;
+        enabled = false;
+        sourceLoss = true;
+        resetMeters();
+        receipt.classList.add('is-interrupted');
+        setReceiptNotice('This Telehealth transcript is partial. Review the unavailable source intervals and retry retained audio where offered.');
+        render();
+        return;
+      }
+      partialCapture = null;
+      salvageCandidate = saved.status === 'failed' && saved.can_use_available_transcript === true
+        ? saved : null;
+      if (saved.status === 'completed' || saved.status === 'discarded') {
+        restoredCapture = null;
+        enabled = false;
+        resetMeters();
+        render();
+        ordinaryControlsSync();
+        return;
+      }
+        if (!['active', 'stopping', 'ready', 'interrupted', 'failed', 'processing'].includes(saved.status)) return;
       restoredCapture = saved;
       enabled = true;
       sourceLoss = true;
@@ -316,7 +568,9 @@ export function attachTelehealthControls({
         ? ''
         : saved.status === 'ready'
           ? 'Sealed Telehealth audio is awaiting transcription. Review the stored parts and submit them.'
-          : saved.parts?.some((part) => part.ingestion_job_id)
+          : salvageCandidate
+            ? 'Telehealth transcription failed. Review the unavailable intervals, then choose whether to use completed results or retry retained audio.'
+            : saved.parts?.some((part) => part.ingestion_job_id)
             ? 'A Telehealth transcription failed. Retry the retained source audio using the consultation recovery controls.'
             : 'The Telehealth recording ended unexpectedly. Encrypted unacknowledged audio may be recoverable on this browser; the final unflushed seconds might be missing. Recover or discard explicitly.');
       render();
@@ -325,6 +579,13 @@ export function attachTelehealthControls({
       lastCheckedTranscriptId = null;
     } finally {
       captureStatusCheckInFlight = false;
+      // A consultation may have changed while the previous owner's check was
+      // in flight. Recheck the currently selected root after releasing the
+      // shared in-flight guard; the stale response above cannot update its UI.
+      if (checkGeneration !== captureCheckGeneration || id !== getTranscriptId?.() || epoch !== transcriptEpoch) {
+        lastCheckedTranscriptId = null;
+        void checkPersistedCapture();
+      }
     }
   };
 
@@ -547,7 +808,9 @@ export function attachTelehealthControls({
       return;
     }
     const selectedSource = preparedSource;
+    const startTranscriptId = getTranscriptId();
     preparedSource = null; // Ownership passes to the recording client below.
+    let startingClient = null;
     try {
       resetMeters();
       if (nodes.patient.status) nodes.patient.status.textContent = 'Tab connected';
@@ -557,8 +820,8 @@ export function attachTelehealthControls({
       if (debugEvents) debugEvents.textContent = '';
       sourceLoss = false;
       setReceiptNotice();
-      client = createTelehealthRecordingClient({
-        transcriptId: getTranscriptId(),
+      client = startingClient = createTelehealthRecordingClient({
+        transcriptId: startTranscriptId,
         csrfFetch, onLevel, onSourceState, onWarning,
         onStateChange: (next) => {
           if (['stopping', 'sealed', 'transcribing', 'completed', 'failed', 'discarded', 'incomplete', 'recovery_required'].includes(next)) {
@@ -580,15 +843,43 @@ export function attachTelehealthControls({
       await attempt;
     } catch (error) {
       selectedSource.release();
-      telehealthMeterActive = false;
-      resetClinicianMicLevel();
-      notice((error instanceof Error ? error.message : 'Telehealth recording could not start.') + diagnosticSuffix(), 'error');
-      client = null;
-      enabled = false;
-      diagnostics.clear();
-      resetMeters();
-      render();
-      ordinaryControlsSync();
+      const sameStart = getTranscriptId() === startTranscriptId;
+      const ownsClient = client === startingClient;
+      if (ownsClient) {
+        telehealthMeterActive = false;
+        resetClinicianMicLevel();
+      }
+      if (ownsClient && sameStart) {
+        notice((error instanceof Error ? error.message : 'Telehealth recording could not start.') + diagnosticSuffix(), 'error');
+      }
+      const reconcilePossibleCreate = Boolean(startingClient?.mayHaveCreatedSession);
+      if (ownsClient) {
+        client = null;
+        enabled = false;
+        diagnostics.clear();
+        resetMeters();
+        if (!sameStart) {
+          // Navigation was deferred while this client was starting. Finish
+          // that deferred consultation switch now that the old client settled;
+          // leave any source or client no longer owned by this start alone.
+          const selected = getTranscriptId?.() || null;
+          if (boundTranscriptId !== selected) {
+            boundTranscriptId = selected;
+            transcriptEpoch += 1;
+          }
+          lastCheckedTranscriptId = null;
+        }
+        render();
+        ordinaryControlsSync();
+      }
+      if ((reconcilePossibleCreate && sameStart) || (ownsClient && !sameStart)) {
+        // The server may have committed capture creation before its response
+        // was lost. Reconcile through the owner-scoped unresolved endpoint.
+        // Invalidate the per-consultation negative cache so this retry runs.
+        lastCheckedTranscriptId = null;
+        captureCheckGeneration += 1;
+        void checkPersistedCapture();
+      }
     }
   };
 
@@ -734,6 +1025,8 @@ export function attachTelehealthControls({
       notice(error instanceof Error ? error.message : 'Telehealth transcription could not be submitted. Retry when ready.', 'error');
     });
   });
+  useAvailable?.addEventListener('click', () => { void acceptAvailableTranscript(); });
+  loadMorePartials?.addEventListener('click', () => { void loadPartialCapturePage(true); });
   discard?.addEventListener('click', () => {
     if (submissionInFlight || discardInFlight || (!client && !restoredCapture) || !window.confirm(
       'Permanently discard this unsubmitted recording? Clinician and patient audio staged so far will be queued for deletion. No transcription will be created.',
@@ -861,8 +1154,33 @@ export function attachTelehealthControls({
       } else if (result?.status === 'failed') {
         sourceLoss = true;
         receipt.classList.add('is-interrupted');
-        setReceiptNotice('Telehealth transcription failed. Retry the retained source from the consultation controls.');
+        if (result.can_use_available_transcript === true) {
+          client = null;
+          restoredCapture = result;
+          partialCapture = null;
+          salvageCandidate = result;
+          enabled = true;
+          resetMeters();
+          receipt.classList.add('is-interrupted');
+          setReceiptNotice('Telehealth transcription failed. Review unavailable intervals, use completed results, or retry retained audio.');
+          render();
+          ordinaryControlsSync();
+        } else {
+          setReceiptNotice('Telehealth transcription failed. Retry the retained source from the consultation controls.');
+          render();
+        }
+      } else if (result?.status === 'partial') {
+        client = null;
+        restoredCapture = null;
+        salvageCandidate = null;
+        partialCapture = result;
+        enabled = false;
+        sourceLoss = true;
+        resetMeters();
+        receipt.classList.add('is-interrupted');
+        setReceiptNotice('This Telehealth transcript is partial. Review unavailable source intervals; later recovered speech is added to a new transcript version.');
         render();
+        ordinaryControlsSync();
       }
     } catch (_) {
       // A failed status poll is not evidence that the ASR work completed.
@@ -880,11 +1198,17 @@ export function attachTelehealthControls({
       // consultation must never inherit the old session's enabled phone
       // state or disabled primary record button.
       boundTranscriptId = selected;
+      transcriptEpoch += 1;
       cancelSelection?.();
       releasePreparedSource();
       enabled = false;
       client = null;
       restoredCapture = null;
+      partialCapture = null;
+      salvageCandidate = null;
+      partialCaptures = [];
+      partialCaptureLoadedOffsets = [];
+      partialCapturesNextOffset = null;
       lastCheckedTranscriptId = null;
       stopPhase = null;
       diagnostics.clear();

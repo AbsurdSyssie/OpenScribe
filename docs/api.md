@@ -376,6 +376,8 @@ Full-user owner-scoped routes include:
 - `POST /api/v1/transcripts/{transcript_id}/deepgram-stream/{session_id}/discard`
 - `POST /api/v1/transcripts/{transcript_id}/audio-file`
 - `POST /api/v1/transcripts/{transcript_id}/telehealth/diagnostics` (feature-gated, owner-only, CSRF-protected, rate-limited; bounded metadata-only event batch)
+- `POST /api/v1/transcripts/{transcript_id}/telehealth/captures/{capture_session_id}/use-available` (feature-gated, owner-only and CSRF-protected; explicitly accepts available results from a failed submitted capture)
+- `GET /api/v1/transcripts/{transcript_id}/telehealth/partial-captures` (feature-gated and owner-only; paginated metadata for accepted partial captures)
 - `POST /api/v1/transcripts/{transcript_id}/retry-audio-file`
 - `POST /api/v1/transcripts/{transcript_id}/retry-audio`
 - `POST /api/v1/transcripts/{transcript_id}/ingestion-jobs/{job_id}/retry-audio`
@@ -385,6 +387,8 @@ Full-user owner-scoped routes include:
 - `POST /api/v1/transcribe/stt-health/recheck`
 
 The first-run example endpoint requires a full authenticated user session and CSRF protection. It creates the fictional owner-only consultation once, without provider calls, and returns `{ "id": "<transcript UUID>" }`; a repeat call or an account with prior consultation history returns `{ "id": null }`. Workspace projections expose `example_consultation_pending` and mark the active example with `active_transcript.is_example`.
+
+Telehealth `use-available` accepts no clinical payload and returns the capture's updated metadata. `can_use_available_transcript` identifies an available owner action; each part's `retry_available` reports whether its original source remains retryable. `included_in_transcript` distinguishes an applied result from a completed result still waiting for the transcript writer boundary. Capture detail and the owner unresolved-capture projection can return `partial`. The separate `partial-captures` projection keeps older accepted captures discoverable: it returns `items` and `next_offset`, accepts `offset` (default 0) and `limit` (default 20, maximum 100), and orders captures by creation time and ID. This outcome permits ordinary consultation work while preserving missing-window metadata and bounded retries; it is not a claim that all audio was recovered. No Vault reference, source text, or provider credential enters these projections. Later successful results automatically create a new source version; existing generated notes and saved generation snapshots remain unchanged. See [transcript capture](transcript-capture.md#using-available-results-after-a-source-failure).
 
 Owner working-note/dictation/context routes:
 

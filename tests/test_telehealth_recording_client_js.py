@@ -272,3 +272,58 @@ console.log(JSON.stringify(allStopBodies));
     from app.schemas.telehealth import TelehealthCaptureStop
     for payload in json.loads(result.stdout.splitlines()[-1]):
         TelehealthCaptureStop.model_validate(payload)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js required")
+def test_transient_journal_failure_retries_same_encoded_window(tmp_path):
+    source = (ROOT / "app/static/js/transcribe/telehealthRecordingClient.js").read_text(encoding="utf-8")
+    source = re.sub(r"['\"]\./telehealth(?:Capture|Windows|Wav)\.js(?:\?[^'\"]*)?['\"]", "'./fake.mjs'", source)
+    source = re.sub(r"['\"]\./telehealthRecoveryJournal\.js(?:\?[^'\"]*)?['\"]", "'./journal.mjs'", source)
+    (tmp_path / "client.mjs").write_text(source, encoding="utf-8")
+    (tmp_path / "fake.mjs").write_text(r"""
+export function createTelehealthCapture() { return {start:async()=>({sampleRate:48000}),stop:async()=>{}}; }
+export function createTelehealthWindows({onWindow}) {
+  const window={channel:'clinician',startFrame:120,endFrame:600,sampleRate:48000,samples:new Float32Array(480)};
+  let finished=false;
+  return {async finish(){finished=true;await onWindow(window);},async retryPending(){await onWindow(window);},status(){return{finished};}};
+}
+export function encodeTelehealthWavWindow(window) {
+  return {bytes:new Uint8Array([82,73,70,70,window.startFrame&255]),spans:[{file_start_sample:0,file_end_sample:480,timeline_start_frame:window.startFrame,timeline_end_frame:window.endFrame}]};
+}
+""", encoding="utf-8")
+    (tmp_path / "journal.mjs").write_text("export function createTelehealthRecoveryJournal(){} export function createTelehealthUploadPacer(){return async()=>{}} export async function submitTelehealthRecoveryWindow(){globalThis.__uploaded++}", encoding="utf-8")
+    (tmp_path / "test.mjs").write_text(r"""
+import assert from 'node:assert/strict';
+import {createTelehealthRecordingClient} from './client.mjs';
+globalThis.__uploaded=0;
+Object.defineProperty(globalThis,'crypto',{configurable:true,value:{randomUUID:()=> 'stable-window-key'}});
+const existing={key:'previous-window',bytes:new Uint8Array([7])};
+const durable=new Map([[existing.key,existing]]), attempts=[];
+let failOnce=true, uploaded=0;
+const journal={
+  async check(){},
+  async persist(part){
+    attempts.push({key:part.key,sequence:part.sequence,bytes:[...part.bytes],spans:structuredClone(part.spans)});
+    durable.set(part.key,part); // Simulate commit followed by a lost transaction response.
+    if(failOnce){failOnce=false;throw new Error('synthetic late journal failure');}
+  },
+  async remove(part){durable.delete(part.key);}, async clear(){durable.clear();},
+};
+const fetcher=async(url)=>{
+  if(url.endsWith('/telehealth/captures'))return{ok:true,json:async()=>({capture_session_id:'session',status:'active'})};
+  if(url.endsWith('/stop'))return{ok:true,json:async()=>({status:'stopping'})};
+  if(url.endsWith('/seal'))return{ok:true,json:async()=>({status:'ready'})};
+  throw new Error('unexpected route '+url);
+};
+const client=createTelehealthRecordingClient({transcriptId:'transcript',preparedSource:{isLive:()=>true},csrfFetch:fetcher,recoveryJournal:journal,pacedUpload:async()=>{}});
+await client.start();
+await assert.rejects(client.stop(),/synthetic late journal failure/);
+assert.equal(durable.has(existing.key),true,'failed write preserves previously committed journal entries');
+await client.retryPendingUploads();
+uploaded=globalThis.__uploaded;
+assert.deepEqual(attempts[0],attempts[1],'retry repeats the exact window key, sequence, WAV and spans');
+assert.equal(uploaded,1,'the window uploads after its journal write is confirmed');
+assert.equal(client.state,'sealed','retry completes sealing after the journal recovers');
+assert.equal(durable.has(existing.key),true);
+""", encoding="utf-8")
+    subprocess.run(["node", str(tmp_path / "test.mjs")], cwd=tmp_path, check=True, capture_output=True, text=True, timeout=30)

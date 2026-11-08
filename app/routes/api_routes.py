@@ -5,7 +5,7 @@ import logging
 import os
 from uuid import UUID
 
-from fastapi import Body, Depends, File, Form, Header, Request, UploadFile, status
+from fastapi import Body, Depends, File, Form, Header, Query, Request, UploadFile, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -2027,10 +2027,12 @@ from app.schemas.telehealth import (
     TelehealthTranscriptionQueued,
     TelehealthBrowserDiagnosticsBatch,
     TelehealthBrowserDiagnosticsAccepted,
+    TelehealthPartialCapturesPage,
 )
 from app.services import telehealth_diagnostics
 from app.services.telehealth_audio import TelehealthSourceSpan
 from app.services.telehealth_api import (
+    partial_telehealth_capture_details,
     telehealth_capture_detail,
     unresolved_telehealth_capture_detail,
 )
@@ -2042,6 +2044,7 @@ from app.services.telehealth_capture import (
     seal_telehealth_capture,
     stage_telehealth_audio_part,
 )
+from app.services.telehealth_apply import use_available_telehealth_capture
 from app.services.telehealth_dispatch import queue_telehealth_transcription
 
 # Dedicated private rotating file; never forward browser errors to stdout.
@@ -2130,6 +2133,25 @@ def unresolved_telehealth_capture_route(
 
 
 @api.get(
+    "/transcripts/{transcript_id}/telehealth/partial-captures",
+    response_model=TelehealthPartialCapturesPage,
+    responses=error_responses,
+)
+def list_partial_telehealth_captures_route(
+    transcript_id: UUID,
+    offset: int = Query(default=0, ge=0, le=100000),
+    limit: int = Query(default=20, ge=1, le=100),
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    return partial_telehealth_capture_details(
+        db, context.user, transcript_id=transcript_id,
+        offset=offset, limit=limit,
+    )
+
+
+@api.get(
     "/transcripts/{transcript_id}/telehealth/captures/{capture_session_id}",
     response_model=TelehealthCaptureDetail,
     responses=error_responses,
@@ -2141,6 +2163,29 @@ def get_telehealth_capture_route(
     db: Session = Depends(get_db),
 ):
     _require_telehealth_api_enabled()
+    return telehealth_capture_detail(
+        db, context.user,
+        transcript_id=transcript_id, capture_session_id=capture_session_id,
+    )
+
+
+@api.post(
+    "/transcripts/{transcript_id}/telehealth/captures/{capture_session_id}/use-available",
+    response_model=TelehealthCaptureDetail,
+    responses=error_responses,
+)
+def use_available_telehealth_capture_route(
+    transcript_id: UUID,
+    capture_session_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    use_available_telehealth_capture(
+        db, context.user,
+        transcript_id=transcript_id,
+        capture_session_id=capture_session_id,
+    )
     return telehealth_capture_detail(
         db, context.user,
         transcript_id=transcript_id, capture_session_id=capture_session_id,

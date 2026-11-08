@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 from typing import Any, Iterable
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
-from app.models import TelehealthCapturePart, TelehealthCaptureSession, Transcript, TranscriptStatus, TranscriptVersion, User
+from app.models import (
+    TelehealthCapturePart, TelehealthCaptureSession, Transcript,
+    TranscriptIngestionJob, TranscriptIngestionJobStatus, TranscriptStatus,
+    TranscriptVersion, User,
+)
 from app.schemas.transcripts import MAX_TRANSCRIPT_TURN_CHARS
 from app.services.content_crypto import (
     decrypt_json_for_owner,
@@ -57,6 +61,9 @@ def _normalize_turn(turn: dict[str, Any], *, scope_id: UUID | None = None) -> di
     speaker_number = turn.get("speaker_number")
     if speaker_number is not None and (type(speaker_number) is not int or speaker_number < 1):
         raise AppError(422, "validation_error", "Transcript speaker number is invalid")
+    source_warning = turn.get("source_warning", False)
+    if type(source_warning) is not bool:
+        raise AppError(422, "validation_error", "Transcript source warning metadata is invalid")
     start_ms, end_ms = turn.get("start_ms"), turn.get("end_ms")
     if start_ms is not None and (type(start_ms) is not int or start_ms < 0):
         raise AppError(422, "validation_error", "Transcript turn start is invalid")
@@ -79,6 +86,7 @@ def _normalize_turn(turn: dict[str, Any], *, scope_id: UUID | None = None) -> di
         "end_ms": end_ms,
         "text": text,
         "edited": bool(turn.get("edited", False)),
+        "source_warning": source_warning,
     }
 
 
@@ -221,7 +229,10 @@ def append_transcript_turns(
     incoming = [_normalize_turn({**turn, "speaker_number": None}, scope_id=scope_id) for turn in turns]
     if (not incoming or not any(turn["text"] for turn in incoming)) and fallback_text:
         incoming = [_normalize_turn({"scope_id": scope_id, "speaker_id": None, "text": fallback_text})]
-    combined = _assign_speaker_numbers([*previous, *incoming])
+    combined = _refresh_partial_source_warnings(
+        db, transcript=transcript, turns=[*previous, *incoming],
+    )
+    combined = _assign_speaker_numbers(combined)
     if len(combined) > 100000 or sum(len(turn["text"]) for turn in combined) > 8_000_000:
         raise AppError(422, "validation_error", "Structured transcript exceeds supported size")
     if len({turn["id"] for turn in combined}) != len(combined):
@@ -229,6 +240,52 @@ def append_transcript_turns(
     _encrypt_current_turns(db, transcript=transcript, turns=combined)
     if mark_ready:
         transcript.status = TranscriptStatus.ready
+    db.add(transcript)
+    return combined
+
+
+def merge_transcript_turns_preserving_order(
+    db: Session,
+    *,
+    transcript: Transcript,
+    turns: Iterable[dict[str, Any]],
+    scope_id: UUID,
+    fallback_text: str = "",
+) -> list[dict[str, Any]]:
+    """Insert newly recovered timed turns without reordering existing turns."""
+    previous = load_current_turns(db, transcript=transcript)
+    if previous is None:
+        old_text = decrypt_text_for_owner(
+            db, owner_user_id=transcript.owner_user_id, table="transcripts",
+            field="current_draft_text_encrypted", record_id=transcript.id,
+            stored_value=transcript.current_draft_text_encrypted,
+        ) or ""
+        previous = [_normalize_turn({"scope_id": uuid4(), "speaker_id": None, "text": old_text})] if old_text else []
+    incoming = [_normalize_turn({**turn, "speaker_number": None}, scope_id=scope_id) for turn in turns]
+    if not incoming and fallback_text:
+        incoming = [_normalize_turn({"scope_id": scope_id, "speaker_id": None, "text": fallback_text})]
+    combined = list(previous)
+    timed = sorted(
+        (turn for turn in incoming if turn.get("start_ms") is not None),
+        key=lambda turn: (turn["start_ms"], turn.get("end_ms") or turn["start_ms"]),
+    )
+    untimed = [turn for turn in incoming if turn.get("start_ms") is None]
+    for new_turn in timed:
+        same_scope_indexes = [index for index, old_turn in enumerate(combined)
+                              if old_turn.get("scope_id") == str(scope_id)
+                              and old_turn.get("start_ms") is not None]
+        position = next((index for index in same_scope_indexes
+                         if combined[index]["start_ms"] > new_turn["start_ms"]),
+                        same_scope_indexes[-1] + 1 if same_scope_indexes else len(combined))
+        combined.insert(position, new_turn)
+    # Missing chronology is explicit and stays as a distinct appended source block.
+    combined.extend(untimed)
+    combined = _assign_speaker_numbers(combined)
+    if len(combined) > 100000 or sum(len(turn["text"]) for turn in combined) > 8_000_000:
+        raise AppError(422, "validation_error", "Structured transcript exceeds supported size")
+    if len({turn["id"] for turn in combined}) != len(combined):
+        raise AppError(422, "validation_error", "Transcript contains duplicate turn identifiers")
+    _encrypt_current_turns(db, transcript=transcript, turns=combined)
     db.add(transcript)
     return combined
 
@@ -317,6 +374,7 @@ def _lock_editable_transcript(db: Session, owner: User, transcript_id: UUID, exp
 
 def _commit_turn_mutation(db: Session, *, transcript: Transcript, owner: User, turns: list[dict[str, Any]]) -> TranscriptVersion:
     from app.services.transcripts import _create_transcript_version_from_text
+    turns = _refresh_partial_source_warnings(db, transcript=transcript, turns=turns)
     normalized = _assign_speaker_numbers([_normalize_turn(turn) for turn in turns])
     projection = canonical_transcript_projection(normalized)
     version = _create_transcript_version_from_text(db, transcript=transcript, owner_user_id=owner.id, plaintext=projection)
@@ -327,11 +385,96 @@ def _commit_turn_mutation(db: Session, *, transcript: Transcript, owner: User, t
     return version
 
 
+def _refresh_partial_source_warnings(
+    db: Session,
+    *,
+    transcript: Transcript,
+    turns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep current gaps in the saved clinical source without allowing notice-only content."""
+    clinical_turns = [turn for turn in turns if not turn.get("source_warning") and turn.get("text", "").strip()]
+    existing = {
+        turn["id"]: turn for turn in turns
+        if turn.get("source_warning")
+    }
+    if not clinical_turns:
+        return [turn for turn in turns if not turn.get("source_warning")]
+
+    sessions = list(db.scalars(select(TelehealthCaptureSession).where(
+        TelehealthCaptureSession.transcript_id == transcript.id,
+        TelehealthCaptureSession.owner_user_id == transcript.owner_user_id,
+        or_(
+            TelehealthCaptureSession.status == "partial",
+            TelehealthCaptureSession.incomplete_acknowledged_at.is_not(None),
+        ),
+    )))
+    managed_ids = {str(uuid5(session.id, "telehealth-partial-source-warning-v1")) for session in sessions}
+    notices: list[dict[str, Any]] = [
+        turn for turn in turns
+        if turn.get("source_warning") and turn["id"] not in managed_ids
+    ]
+    for session in sessions:
+        needs_warning = session.status == "partial" or session.failure_code in {
+            "source_ended", "permission_revoked", "audio_clock_interrupted",
+            "audio_backpressure", "audio_processor_failed", "upload_failed",
+            "browser_capture_failed",
+        }
+        if not needs_warning:
+            continue
+        parts = list(db.scalars(select(TelehealthCapturePart).where(
+            TelehealthCapturePart.session_id == session.id,
+            TelehealthCapturePart.transcript_id == transcript.id,
+            TelehealthCapturePart.owner_user_id == transcript.owner_user_id,
+        ).order_by(TelehealthCapturePart.channel, TelehealthCapturePart.sequence_no)))
+        jobs = {
+            job.id: job for job in db.scalars(select(TranscriptIngestionJob).where(
+                TranscriptIngestionJob.id.in_([part.ingestion_job_id for part in parts if part.ingestion_job_id]),
+                TranscriptIngestionJob.transcript_id == transcript.id,
+                TranscriptIngestionJob.owner_user_id == transcript.owner_user_id,
+            ))
+        }
+        gaps = []
+        for part in parts:
+            job = jobs.get(part.ingestion_job_id)
+            if job is None or job.status is not TranscriptIngestionJobStatus.applied:
+                start_ms = part.timeline_start_frame * 1000 // max(1, part.timeline_sample_rate)
+                end_ms = (part.timeline_end_frame * 1000 + max(1, part.timeline_sample_rate) - 1) // max(1, part.timeline_sample_rate)
+                gaps.append(f"{part.channel} {start_ms}-{end_ms}ms")
+        shown_gaps = gaps[:20]
+        detail = ", ".join(shown_gaps) if shown_gaps else "the recording may have an uncaptured interval"
+        if len(gaps) > len(shown_gaps):
+            detail += f", plus {len(gaps) - len(shown_gaps)} additional intervals"
+        text = (
+            "INCOMPLETE TELEHEALTH RECORDING: Current missing audio: " + detail + ". "
+            "Verify this transcript before relying on it for a clinical note."
+        )
+        notice_id = str(uuid5(session.id, "telehealth-partial-source-warning-v1"))
+        notice = existing.get(notice_id, {
+            "id": notice_id,
+            "scope_id": str(session.id),
+            "speaker_id": None,
+            "speaker_role": None,
+            "speaker_text_prefix": "",
+            "speaker_number": None,
+            "start_ms": None,
+            "end_ms": None,
+            "edited": False,
+            "source_warning": True,
+        })
+        notice["text"] = text
+        notice["source_warning"] = True
+        notices.append(notice)
+    preserved = [turn for turn in turns if not turn.get("source_warning")]
+    return [*notices, *preserved]
+
+
 def edit_transcript_turn(db: Session, owner: User, *, transcript_id: UUID, turn_id: UUID, expected_version_id: UUID, text: str) -> Transcript:
     transcript, _, turns = _lock_editable_transcript(db, owner, transcript_id, expected_version_id)
     match = next((turn for turn in turns if turn["id"] == str(turn_id)), None)
     if match is None:
         raise AppError(404, "not_found", "Transcript turn not found", {"resource": "transcript_turn", "turn_id": str(turn_id)})
+    if match.get("source_warning"):
+        raise AppError(409, "business_rule_violation", "Telehealth source warnings cannot be edited.")
     match["text"] = text
     match["edited"] = True
     version = _commit_turn_mutation(db, transcript=transcript, owner=owner, turns=turns)
@@ -365,6 +508,9 @@ def add_transcript_turn(db: Session, owner: User, *, transcript_id: UUID, expect
 
 def delete_transcript_turn(db: Session, owner: User, *, transcript_id: UUID, turn_id: UUID, expected_version_id: UUID) -> Transcript:
     transcript, _, turns = _lock_editable_transcript(db, owner, transcript_id, expected_version_id)
+    match = next((turn for turn in turns if turn["id"] == str(turn_id)), None)
+    if match is not None and match.get("source_warning"):
+        raise AppError(409, "business_rule_violation", "Telehealth source warnings cannot be deleted.")
     remaining = [turn for turn in turns if turn["id"] != str(turn_id)]
     if len(remaining) == len(turns):
         raise AppError(404, "not_found", "Transcript turn not found", {"resource": "transcript_turn", "turn_id": str(turn_id)})

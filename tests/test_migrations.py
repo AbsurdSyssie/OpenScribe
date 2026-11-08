@@ -324,6 +324,8 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "transcript_stream_sessions",
         "transcript_stream_windows",
         "transcript_stream_deliveries",
+        "telehealth_capture_sessions",
+        "telehealth_capture_parts",
         "teams",
         "team_deidentification_provider_assignments",
         "team_deidentification_selections",

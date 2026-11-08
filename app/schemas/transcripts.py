@@ -111,6 +111,7 @@ class TranscriptTurnView(BaseModel):
     end_ms: int | None = None
     text: str
     edited: bool = False
+    source_warning: bool = False
     start_index: int
     end_index: int
 

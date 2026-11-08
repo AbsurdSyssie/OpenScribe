@@ -114,7 +114,41 @@ also prevent the final storage transaction from committing.
 receipt, unexpected source duplication or unexpected release of a blocked
 clinical note.
 
-## 4. Privacy and resilience observations
+## 4. Use available results and recover a failed window
+
+Use an isolated deployment with a controlled synthetic STT fixture. Arrange for
+one accepted source window to fail transcription while other windows succeed.
+Do not simulate this by changing production data or sending patient speech.
+
+1. Stop a synthetic recording and wait for the failed-source receipt. Check the
+   reported channel and missing interval. Cancel **Use available results** once;
+   this must leave the transcript and recovery state unchanged.
+2. Confirm **Use available results**. Successful speech should appear with a
+   protected coverage notice. Existing consultation text must remain intact.
+   The failed window must still offer retry while its original source is
+   retained. Ordinary consultation controls should become usable.
+3. Edit one published speech turn and delete another. Generate a synthetic
+   draft from the partial source. Restore the synthetic STT fixture, then retry
+   the failed window using its per-window control.
+4. Confirm recovered speech appears automatically in a new source version,
+   without another acceptance modal, repeated speech, changed clinician edits,
+   or reintroduced deleted turns. The existing generated draft must remain
+   unchanged. Current gap notices should reflect the remaining missing source.
+5. Repeat with another recording active when the old retry finishes. Its
+   encrypted result should wait for the source writer boundary to become
+   available, then appear without another provider request.
+6. Confirm coverage notices have no speech-edit/delete controls. Removing all
+   actual speech must not leave a warning-only source eligible for generation.
+7. Repeat with genuinely silent results, and separately with expired failed
+   audio. Explicitly continuing must preserve previous content without
+   inventing new speech. Expired audio must not offer retry or gain a new
+   retention deadline.
+
+**Pass:** useful speech is retained, accepted gaps do not lock the consultation,
+later recovery is applied exactly once, and earlier source edits and draft
+snapshots remain intact.
+
+## 5. Privacy and resilience observations
 
 - Inspect pending_windows: encrypted ciphertext only, with at most **eight**
   pending windows globally on this origin. Confirm successfully acknowledged

@@ -496,7 +496,16 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
         AccessTier.full,
     ),
     AuditCase(
+        "GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/partial-captures",
+        AccessTier.full,
+        query_params={"offset": "0", "limit": "20"},
+    ),
+    AuditCase(
         "GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/captures/{PLACEHOLDER_UUID_2}",
+        AccessTier.full,
+    ),
+    AuditCase(
+        "POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/telehealth/captures/{PLACEHOLDER_UUID_2}/use-available",
         AccessTier.full,
     ),
     AuditCase(

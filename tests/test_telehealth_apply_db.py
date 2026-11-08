@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from app.services.content_crypto import decrypt_text_for_owner
 
 from app.models import (
     TelehealthCapturePart,
@@ -17,10 +18,108 @@ from app.models import (
     TranscriptStatus,
     utcnow,
 )
-from app.services.telehealth_apply import apply_completed_telehealth_capture
+from app.services.telehealth_apply import (
+    apply_completed_telehealth_capture,
+    reconcile_processing_telehealth_captures,
+)
 from app.services.telehealth_apply import _mapped_turns
 from app.services.telehealth_merge import TelehealthSourceTurn, merge_telehealth_source_turns
 from app.services.telehealth_audio import TelehealthSourceSpan
+
+
+@pytest.mark.parametrize("failure_mode", ["raise", "return_false"])
+def test_reconciler_skips_pending_batch_and_rotates_failed_ready_candidate(
+    db_session, make_team, make_user, monkeypatch, failure_mode,
+):
+    team = make_team(name="Telehealth Fair Reconciliation")
+    owner = make_user(email="telehealth-fair-reconcile@example.com", password="password-1", team=team)
+    transcript = Transcript(
+        owner_user_id=owner.id, team_id=team.id,
+        status=TranscriptStatus.transcribing,
+        ingestion_mode=TranscriptIngestionMode.whole_file,
+        retention_days_applied=30,
+        retention_expires_at=utcnow() + timedelta(days=1),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    old = utcnow() - timedelta(days=2)
+    for index in range(51):
+        db_session.add(TelehealthCaptureSession(
+            transcript_id=transcript.id, owner_user_id=owner.id, team_id=team.id,
+            timeline_sample_rate=48000, status="processing",
+            updated_at=old + timedelta(seconds=index),
+        ))
+
+    def ready_session(offset):
+        session = TelehealthCaptureSession(
+            transcript_id=transcript.id, owner_user_id=owner.id, team_id=team.id,
+            timeline_sample_rate=48000, status="processing",
+            failure_code="source_ended", incomplete_acknowledged_at=utcnow(),
+            updated_at=old + timedelta(seconds=100 + offset),
+        )
+        db_session.add(session)
+        db_session.flush()
+        job = TranscriptIngestionJob(
+            transcript_id=transcript.id, owner_user_id=owner.id, team_id=team.id,
+            job_kind=TranscriptIngestionJobKind.audio_file,
+            source_filename="synthetic.wav", status=TranscriptIngestionJobStatus.completed,
+            result_text_encrypted="synthetic ciphertext",
+        )
+        db_session.add(job)
+        db_session.flush()
+        db_session.add(TelehealthCapturePart(
+            id=uuid4(), session_id=session.id, transcript_id=transcript.id,
+            owner_user_id=owner.id, team_id=team.id, channel="clinician",
+            sequence_no=0, idempotency_key=uuid4(), status="transcribed",
+            ingestion_job_id=job.id, timeline_start_frame=0, timeline_end_frame=4800,
+            timeline_sample_rate=48000, file_sample_rate=16000, file_samples=1600,
+            timing_spans_json=[{
+                "file_start_sample": 0, "file_end_sample": 1600,
+                "timeline_start_frame": 0, "timeline_end_frame": 4800,
+            }], source_audio_size_bytes=3244,
+            source_audio_fingerprint="b" * 64, source_audio_duration_seconds=0.1,
+        ))
+        return session
+
+    failing = ready_session(0)
+    later = ready_session(1)
+    db_session.commit()
+    failures_remaining = {failing.id: 1}
+    calls = []
+
+    def fake_apply(db, *, capture_session_id):
+        calls.append(capture_session_id)
+        if capture_session_id == failing.id and failures_remaining[failing.id]:
+            failures_remaining[failing.id] -= 1
+            if failure_mode == "raise":
+                raise RuntimeError("synthetic transient apply failure")
+            return False
+        row = db.get(TelehealthCaptureSession, capture_session_id)
+        row.status = "completed"
+        db.commit()
+        return True
+
+    monkeypatch.setattr("app.services.telehealth_apply.apply_completed_telehealth_capture", fake_apply)
+    # The earlier 51 pending sessions do not occupy the bounded batch.
+    assert reconcile_processing_telehealth_captures(db_session, batch_size=1) == 0
+    assert calls == [failing.id]
+    db_session.refresh(later)
+    db_session.refresh(failing)
+    assert failing.status == "processing"
+    assert failing.updated_at > old + timedelta(seconds=100)
+
+    # The rotated failure cannot monopolize a one-row batch; the next ready
+    # capture applies before the first candidate is retried.
+    assert reconcile_processing_telehealth_captures(db_session, batch_size=1) == 1
+    db_session.refresh(later)
+    db_session.refresh(failing)
+    assert later.status == "completed"
+    assert failing.status == "processing"
+
+    assert reconcile_processing_telehealth_captures(db_session, batch_size=1) == 1
+    db_session.refresh(failing)
+    assert failing.status == "completed"
+    assert calls == [failing.id, later.id, failing.id]
 
 
 def test_real_mapping_and_merge_keep_interleaving_with_small_tail_overrun(monkeypatch):
@@ -146,20 +245,29 @@ def test_capture_never_applies_before_both_sources_and_commits_once(
 
     monkeypatch.setattr("app.services.telehealth_apply._mapped_turns", fake_mapped)
     recorded = []
-    def fake_append(db, *, transcript, scope_id, turns, mark_ready):
+    real_merge = __import__(
+        "app.services.structured_transcripts", fromlist=["merge_transcript_turns_preserving_order"]
+    ).merge_transcript_turns_preserving_order
+    def capture_merge(db, *, transcript, scope_id, turns):
         assert scope_id == session.id
-        assert mark_ready is False
         recorded.append(turns)
-        return [{"text": item["text"], "speaker_id": item["speaker_id"]} for item in turns]
-
-    monkeypatch.setattr("app.services.structured_transcripts.append_transcript_turns", fake_append)
+        return real_merge(db, transcript=transcript, scope_id=scope_id, turns=turns)
+    monkeypatch.setattr(
+        "app.services.structured_transcripts.merge_transcript_turns_preserving_order", capture_merge,
+    )
     versions = []
-    def fake_version(db, *, transcript, owner_user_id, plaintext):
-        versions.append(plaintext)
-        return SimpleNamespace(id=uuid4(), transcript_id=transcript.id)
-
-    monkeypatch.setattr("app.services.transcripts._create_transcript_version_from_text", fake_version)
-    monkeypatch.setattr("app.services.structured_transcripts.store_turns_on_version", lambda *args, **kwargs: None)
+    real_create_version = __import__(
+        "app.services.transcripts", fromlist=["_create_transcript_version_from_text"]
+    )._create_transcript_version_from_text
+    def capture_version(db, *, transcript, owner_user_id, plaintext):
+        version = real_create_version(
+            db, transcript=transcript, owner_user_id=owner_user_id, plaintext=plaintext,
+        )
+        versions.append(version)
+        return version
+    monkeypatch.setattr(
+        "app.services.transcripts._create_transcript_version_from_text", capture_version,
+    )
     monkeypatch.setattr("app.services.transcripts._attempt_preview_redaction", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.services.transcripts._trigger_waiting_generation_dispatches", lambda *args, **kwargs: None)
 
@@ -183,7 +291,10 @@ def test_capture_never_applies_before_both_sources_and_commits_once(
         assert [item["text"] for item in recorded[0]] == ["Synthetic clinician question"]
         assert [item["speaker_id"] for item in recorded[0]] == ["clinician"]
         assert [item["start_ms"] for item in recorded[0]] == [100]
-        assert versions[0] == "Synthetic clinician question"
+        assert decrypt_text_for_owner(
+            db_session, owner_user_id=owner.id, table="transcript_versions", field="text_encrypted",
+            record_id=versions[0].id, stored_value=versions[0].text_encrypted,
+        ) == "Synthetic clinician question"
         assert recorded[0][0]["speaker_role"] == "clinician"
     else:
         assert [item["text"] for item in recorded[0]] == [
@@ -192,7 +303,10 @@ def test_capture_never_applies_before_both_sources_and_commits_once(
         ]
         assert [item["speaker_id"] for item in recorded[0]] == ["clinician", "patient"]
         assert [item["start_ms"] for item in recorded[0]] == [100, 200]
-        assert versions[0] == "Synthetic clinician question\nSynthetic patient answer"
+        assert decrypt_text_for_owner(
+            db_session, owner_user_id=owner.id, table="transcript_versions", field="text_encrypted",
+            record_id=versions[0].id, stored_value=versions[0].text_encrypted,
+        ) == "Synthetic clinician question\nSynthetic patient answer"
         assert [item["speaker_role"] for item in recorded[0]] == ["clinician", "patient"]
 
     for job in db_session.scalars(select(TranscriptIngestionJob)):

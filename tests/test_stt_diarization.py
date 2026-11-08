@@ -316,13 +316,26 @@ def test_deepgram_empty_result_is_accepted_only_for_telehealth_silence(monkeypat
         "words": [],
     }]}]}, "segments": [{"text": "Recovered configured segment", "start": 0, "end": 1}]},
         request=httpx.Request("POST", "https://api.deepgram.com/v1/listen"))
+    with pytest.raises(AppError) as error:
+        stt._transcribe_via_deepgram(
+            **{**kwargs, "segments_path": "segments", "segment_text_field": "text",
+               "segment_start_field": "start", "segment_end_field": "end"},
+            telehealth_timing=True,
+        )
+    assert error.value.code == "stt_response_invalid"
+
+    response = httpx.Response(200, json={"results": {"channels": [{"alternatives": [{
+        "transcript": "",
+        "words": [],
+    }]}]}, "segments": []},
+        request=httpx.Request("POST", "https://api.deepgram.com/v1/listen"))
     result = stt._transcribe_via_deepgram(
         **{**kwargs, "segments_path": "segments", "segment_text_field": "text",
            "segment_start_field": "start", "segment_end_field": "end"},
         telehealth_timing=True,
     )
     assert isinstance(result, stt.SttTranscriptResult)
-    assert result.text == "Recovered configured segment"
+    assert result.text == ""
 
 
 @pytest.mark.parametrize("transcript_present, transcript, words", [
@@ -341,6 +354,36 @@ def test_deepgram_empty_result_guard_rejects_malformed_or_contradictory_payloads
         payload["results"]["channels"][0]["alternatives"][0]["transcript"] = transcript
     assert not stt._deepgram_has_explicit_empty_transcript(
         payload, response_text_path="results.channels.0.alternatives.0.transcript",
+    )
+
+
+@pytest.mark.parametrize("configured_segments", [
+    [{"text": "contradictory"}], [{"unexpected": "malformed"}], None, {}, "malformed",
+])
+def test_deepgram_silence_rejects_nonempty_or_malformed_configured_segments(configured_segments):
+    payload = {
+        "results": {"channels": [{"alternatives": [{"transcript": "", "words": []}]}]},
+        "segments": configured_segments,
+    }
+    assert not stt._deepgram_has_explicit_empty_transcript(
+        payload,
+        response_text_path="results.channels.0.alternatives.0.transcript",
+        segments_path="segments",
+    )
+
+
+def test_deepgram_silence_allows_absent_or_empty_configured_segments():
+    payload = {"results": {"channels": [{"alternatives": [{"transcript": "", "words": []}]}]}}
+    assert stt._deepgram_has_explicit_empty_transcript(
+        payload,
+        response_text_path="results.channels.0.alternatives.0.transcript",
+        segments_path="segments",
+    )
+    payload["segments"] = []
+    assert stt._deepgram_has_explicit_empty_transcript(
+        payload,
+        response_text_path="results.channels.0.alternatives.0.transcript",
+        segments_path="segments",
     )
 
 

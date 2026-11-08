@@ -13,7 +13,7 @@ NODE = shutil.which("node")
 def test_failed_sealed_submission_retries_from_rendered_control_and_discard_unlocks(tmp_path):
     source = (ROOT / "app/static/js/transcribe/telehealthUI.js").read_text(encoding="utf-8")
     source = source.replace(
-        "./telehealthRecordingClient.js?v=20261106-preselected-source", "./fake.mjs"
+        "./telehealthRecordingClient.js?v=20261107-telehealth-recovery-retry", "./fake.mjs"
     ).replace(
         "./telehealthCapture.js?v=20261106-preselected-source", "./capture.mjs"
     ).replace(
@@ -58,8 +58,20 @@ export function createTelehealthRecordingClient(options) {
       f.events.push('client-start');
       f.clientStarts += 1;
       options.onDiagnostic({event:'picker_selected',surface:'window',windowTitle:'PATIENT SECRET'});
+      if (f.pendingStart) {
+        state='starting'; options.onStateChange(state);
+        f.startedStart();
+        await f.startGate;
+        state='failed'; options.onStateChange(state);
+        throw new Error('Synthetic start failure after consultation switch');
+      }
+      if (f.lostCreateResponse) {
+        state='failed';
+        throw new Error('Synthetic lost capture-create response');
+      }
       state='recording'; options.onStateChange(state); return {status:'active'};
     },
+    get mayHaveCreatedSession(){return Boolean(f.lostCreateResponse || f.pendingStartMayHaveCreated);},
     async stop(){
       f.stopAttempts=(f.stopAttempts||0)+1;
       state='stopping'; options.onStateChange(state);
@@ -74,13 +86,15 @@ export function createTelehealthRecordingClient(options) {
     },
     async transcribe(){
       attempts += 1; f.transcribeAttempts=attempts;
+      f.startedTranscribe();
+      if (f.action==='own-failed') { state='transcribing'; options.onStateChange(state); return {status:'processing'}; }
       if (attempts === 1) {
-        f.startedTranscribe();
         await f.firstTranscribeGate;
         throw new Error('Synthetic lost /transcribe response');
       }
       state='transcribing'; options.onStateChange(state); return {status:'processing'};
     },
+    async getStatus(){ return f.ownStatus; },
     async retryPendingUploads(){ f.retryUploadAttempts=(f.retryUploadAttempts||0)+1; return {status:'ready'}; },
     async acknowledgeIncomplete(){ f.partialAttempts=(f.partialAttempts||0)+1; },
     async discard(){
@@ -96,13 +110,15 @@ import assert from 'node:assert/strict';
 import { attachTelehealthControls } from './ui.mjs';
 
 class Element {
-  constructor(name){this.name=name;this.hidden=false;this.disabled=false;this.textContent='';this.dataset={};this.style={};this.attrs={};this.listeners={};this.classes=new Set();
+  constructor(name){this.name=name;this.hidden=false;this.disabled=false;this.textContent='';this.dataset={};this.style={};this.attrs={};this.listeners={};this.classes=new Set();this.childNodes=[];
     this.classList={add:(...xs)=>xs.forEach(x=>this.classes.add(x)),remove:(...xs)=>xs.forEach(x=>this.classes.delete(x)),contains:x=>this.classes.has(x)};}
   addEventListener(type,fn){(this.listeners[type] ||= []).push(fn);}
   removeEventListener(type,fn){this.listeners[type]=(this.listeners[type]||[]).filter(x=>x!==fn);}
   async click({force=false}={}){if(this.disabled&&!force)return;const event={prevented:false,stopped:false,preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;}};for(const fn of this.listeners.click||[]){await fn(event);if(event.stopped)break;}return event;}
   setAttribute(k,v){this.attrs[k]=v;}
   querySelector(selector){return this.children instanceof Map?(this.children.get(selector)||null):new Element(this.name+selector);}
+  append(...nodes){this.childNodes.push(...nodes);}
+  replaceChildren(...nodes){this.childNodes=[...nodes];}
   showModal(){this.open=true;}
   close(){this.open=false;for(const fn of this.listeners.close||[])fn();}
   focus(){}
@@ -110,9 +126,15 @@ class Element {
 const tick=()=>new Promise(r=>setTimeout(r,0));
 async function waitFor(predicate){for(let i=0;i<30;i++){if(predicate())return;await tick();}throw new Error('synthetic UI action did not reach expected state');}
 async function scenario(action){
-  let resolveSelection, resolveAcknowledgement;
+  let resolveSelection, resolveAcknowledgement, resolvePartialAction;
   const selectionGate=new Promise(r=>resolveSelection=r);
   const acknowledgementGate=new Promise(r=>resolveAcknowledgement=r);
+  const partialActionGate=new Promise(r=>resolvePartialAction=r);
+  let rejectStart, startedStart;
+  const startGate=new Promise((_,reject)=>rejectStart=reject);
+  const startAttempted=new Promise(r=>startedStart=r);
+  let resolveInitialUnresolved;
+  const initialUnresolvedGate=new Promise(r=>resolveInitialUnresolved=r);
   let transcriptId='transcript-uuid';
   const windowListeners={};
   let releaseModeSwitch, modeSwitchStarted;
@@ -128,11 +150,14 @@ async function scenario(action){
   const started=new Promise(r=>startedTranscribe=r);
   const discardGate=new Promise(r=>releaseDiscard=r);
   const discarding=new Promise(r=>startedDiscard=r);
+  const confirmations=[];
+  let confirmationResult=true;
   const selectors=[
     '[data-telehealth-toggle]','[data-record-toggle]','[data-record-toggle-label]',
     '[data-record-toggle-icon]','[data-telehealth-receipt]','[data-telehealth-channels]',
     '[data-telehealth-receipt-message]','[data-telehealth-actions]',
     '[data-telehealth-retry]','[data-telehealth-transcribe]','[data-telehealth-submit-retry]',
+    '[data-telehealth-partial-summary]','[data-telehealth-gap-summary]','[data-telehealth-gap-list]','[data-telehealth-use-available]','[data-telehealth-load-more-partials]',
     '[data-telehealth-discard]','[data-telehealth-debug-panel]','[data-telehealth-debug-reference]',
     '[data-telehealth-debug-events]','[data-telehealth-guidance]',
     '[data-telehealth-guidance-cancel]','[data-telehealth-guidance-continue]',
@@ -155,12 +180,14 @@ async function scenario(action){
   globalThis.document={
     querySelector:s=>els.get(s)||new Element(s),
     querySelectorAll:s=>s==='[data-record-mode-menu] [data-mode]'?modeOptions:[],
+    createElement:tag=>new Element(tag),
+    createTextNode:text=>({textContent:String(text)}),
   };
   if (!globalThis.crypto?.randomUUID) {
     globalThis.crypto = { randomUUID:()=> '01234567-89ab-cdef-0123-456789abcdef' };
   }
   globalThis.window={
-    confirm:()=>true, addEventListener(type,fn){(windowListeners[type] ||= []).push(fn);}, refreshLucideIcons(){},
+    confirm:(text)=>{confirmations.push(text);return confirmationResult;}, addEventListener(type,fn){(windowListeners[type] ||= []).push(fn);}, refreshLucideIcons(){},
     setTimeout:(fn)=>setTimeout(fn,0),clearTimeout,
   };
   const notices=[];
@@ -172,6 +199,41 @@ async function scenario(action){
     discardGate,startedDiscard:()=>startedDiscard()
     ,modeSwitchGate,modeSwitchRequested:()=>modeSwitchStarted(),micLevelCalls:[],micResetCalls:0
   };
+  fixture.action=action;
+  fixture.lostCreateResponse=action==='lost-create';
+  fixture.pendingStart=action.startsWith('late-start-root-switch');
+  fixture.pendingStartMayHaveCreated=action==='late-start-root-switch';
+  fixture.useAvailableRequests=[];
+  fixture.partialRetryRequests=[];
+  fixture.partialListRequests=[];
+  fixture.refreshCalls=0;
+  fixture.scheduledRefreshes=0;
+  fixture.confirmations=confirmations;
+  if(action==='own-failed') fixture.ownStatus={
+    transcript_id:'transcript-uuid',capture_session_id:'live-failed-session',status:'failed',
+    can_use_available_transcript:true,timeline_sample_rate:48000,failure_code:'transcription_failed',
+    parts:[{channel:'patient',sequence_no:0,status:'failed',timeline_start_frame:0,timeline_end_frame:480000,
+      ingestion_job_id:'live-failed-job',retry_available:true}],
+  };
+  if(action.startsWith('partial')) fixture.currentCapture={
+    transcript_id:'transcript-uuid',capture_session_id:'partial-session',
+    status:['partial-retry','partial-late-response','partial-pages','partial-deferred'].includes(action)?'partial':'failed',
+    timeline_sample_rate:48000,failure_code:action==='partial-silent'?'no_transcribed_speech':'transcription_failed',
+    can_use_available_transcript:!['partial-retry','partial-late-response','partial-pages','partial-deferred'].includes(action),
+    parts:action==='partial-silent'
+      ? [{channel:'patient',sequence_no:0,status:'transcribed',timeline_start_frame:0,
+        timeline_end_frame:480000,ingestion_job_id:'silent-job',retry_available:false,included_in_transcript:true}]
+      : [{channel:'patient',sequence_no:1,status:'failed',timeline_start_frame:480000,
+        timeline_end_frame:720000,ingestion_job_id:'failed-job-1',retry_available:true}],
+  };
+  if(action==='partial-deferred') fixture.currentCapture.parts=[{
+    channel:'patient',sequence_no:0,status:'transcribed',timeline_start_frame:0,timeline_end_frame:480000,
+    ingestion_job_id:'deferred-job',retry_available:false,included_in_transcript:false,
+  }];
+  fixture.startGate=startGate;
+  fixture.startedStart=()=>startedStart();
+  fixture.unresolvedChecks=0;
+  fixture.unresolvedRequests=[];
   fixture.ingestionMode='live_chunked';
   if(action==='late-picker') fixture.selectionGate=selectionGate;
   globalThis.__uiFixture=fixture;
@@ -181,6 +243,39 @@ async function scenario(action){
     canUseRecording:()=>true, isOtherRecordingActive:()=>false,
     getPreferences:()=>({show_telehealth_control:true,telehealth_guidance_acknowledged:action!=='late-ack'}),
     persistPreferences:async(patch)=>{if(patch.telehealth_guidance_acknowledged) await acknowledgementGate;},csrfFetch:async(_url, options={})=>{
+      if (_url.endsWith('/telehealth/unresolved')) {
+        fixture.unresolvedChecks+=1;
+        fixture.unresolvedRequests.push(_url);
+        if (fixture.lostCreateResponse && fixture.unresolvedChecks===1) await initialUnresolvedGate;
+        if (action==='partial-late-response' && fixture.unresolvedChecks===1) await initialUnresolvedGate;
+        const switchedRoot = fixture.pendingStart && _url.includes('another-synthetic-transcript');
+        return {ok:true,json:async()=>switchedRoot || (fixture.lostCreateResponse && fixture.unresolvedChecks>1) ? {
+          transcript_id:switchedRoot ? 'another-synthetic-transcript' : 'transcript-uuid',
+          capture_session_id:'server-committed-session',status:'active',parts:[],
+        } : fixture.currentCapture?.transcript_id === transcriptId ? fixture.currentCapture : null};
+      }
+      if (_url.includes('/telehealth/partial-captures?')) {
+        const offset=Number(new URL('http://local'+_url).searchParams.get('offset')||0);
+        fixture.partialListRequests.push(offset);
+        if(action==='partial-pages' && offset===20) return {ok:true,json:async()=>({items:[{
+          transcript_id:'transcript-uuid',capture_session_id:'older-partial',status:'partial',timeline_sample_rate:48000,
+          parts:[{channel:'patient',sequence_no:0,status:'failed',timeline_start_frame:0,timeline_end_frame:480000,
+            ingestion_job_id:'older-failed-job',retry_available:true}],
+        }],has_more:false,next_offset:null})};
+        const items=fixture.currentCapture?.status==='partial'?[fixture.currentCapture]:[];
+        return {ok:true,json:async()=>({items,has_more:action==='partial-pages',next_offset:action==='partial-pages'?20:null})};
+      }
+      if (_url.includes('/telehealth/captures/') && _url.endsWith('/use-available')) {
+        fixture.useAvailableRequests.push({url:_url,options});
+        if(action==='partial-stale-action') await partialActionGate;
+        fixture.currentCapture={...(fixture.currentCapture||fixture.ownStatus),status:'partial',can_use_available_transcript:false};
+        return {ok:true,json:async()=>fixture.currentCapture};
+      }
+      if (_url.includes('/ingestion-jobs/') && _url.endsWith('/retry-audio')) {
+        fixture.partialRetryRequests.push({url:_url,options});
+        fixture.currentCapture={...fixture.currentCapture,parts:fixture.currentCapture.parts.map(part=>({...part,status:'processing',retry_available:false}))};
+        return {ok:true,json:async()=>({})};
+      }
       if (options.body && _url.includes('/telehealth/diagnostics')) {
         const payload=JSON.parse(options.body);fixture.diagnosticRequests.push(payload);
         return {ok:true,json:async()=>({accepted:payload.events.length})};
@@ -192,7 +287,9 @@ async function scenario(action){
       }
       return {ok:true,json:async()=>null};
     },
-    refreshWorkspace:async()=>{},showNotice:(text,kind)=>notices.push([text,kind]),
+    refreshWorkspace:async()=>{fixture.refreshCalls+=1;if(action.startsWith('partial'))ui?.sync();},
+    scheduleWorkspaceRefreshBurst:()=>{fixture.scheduledRefreshes+=1;},
+    showNotice:(text,kind)=>notices.push([text,kind]),
     setClinicianMicLevel:(rms, speech)=>fixture.micLevelCalls.push([rms,speech]),
     resetClinicianMicLevel:()=>{fixture.micResetCalls+=1;},
   });
@@ -206,7 +303,140 @@ async function scenario(action){
   });
   fixture.ordinaryRecordStarts=0;
   els.get('[data-record-toggle]').addEventListener('click',()=>{fixture.ordinaryRecordStarts+=1;});
+  if(action==='partial-late-response') {
+    await waitFor(()=>fixture.unresolvedChecks===1);
+    transcriptId='another-synthetic-transcript';
+    ui.sync();
+    resolveInitialUnresolved();
+    await waitFor(()=>fixture.unresolvedRequests.some(url=>url.includes('another-synthetic-transcript')));
+    await waitFor(()=>!ui.isUnresolved() && els.get('[data-telehealth-partial-summary]').hidden);
+    assert.equal(els.get('[data-telehealth-receipt]').hidden,true,
+      'a delayed old-root partial projection cannot appear in the newly selected consultation');
+    return;
+  }
+  if(action.startsWith('partial')) {
+    await waitFor(()=>!els.get('[data-telehealth-partial-summary]').hidden);
+    if(action==='partial-silent') {
+      assert.equal(els.get('[data-telehealth-gap-list]').childNodes.length,0,
+        'a fully transcribed silent source is not falsely described as a missing interval');
+      assert.match(els.get('[data-telehealth-gap-summary]').textContent,/No speech was found/);
+    } else if(action==='partial-deferred') {
+      const deferredText=els.get('[data-telehealth-gap-list]').childNodes[0].childNodes.map(node=>node.textContent||'').join('');
+      assert.match(deferredText,/transcribed; waiting to be added to transcript/,
+        'completed source stays visible while durable application is deferred');
+      assert.equal(els.get('[data-telehealth-gap-list]').childNodes[0].childNodes.some(node=>node.name==='button'),false,
+        'a completed deferred part does not expose audio retry');
+      assert.equal(ui.isUnresolved(),false,'accepted partial remains nonblocking while auto-apply waits');
+      fixture.currentCapture.parts[0].included_in_transcript=true;
+      ui.sync();
+      await waitFor(()=>els.get('[data-telehealth-gap-list]').childNodes.length===0);
+      assert.equal(els.get('[data-telehealth-gap-summary]').textContent,
+        'Available source results have been accepted. Check the transcript for completeness before using it clinically.');
+      return;
+    } else {
+      const gapText=els.get('[data-telehealth-gap-list]').childNodes[0].childNodes
+        .map(node=>node.textContent||'').join('');
+      assert.match(gapText,/Patient audio · window 2 · 00:10–00:15 · failed/,
+        'the receipt identifies the missing source and its consultation interval');
+    }
+    const actionButton=els.get('[data-telehealth-use-available]');
+    if(action==='partial-retry'||action==='partial-late-response'||action==='partial-pages') {
+      assert.equal(actionButton.hidden,true,'an already accepted partial capture has no second acceptance action');
+      assert.equal(ui.isUnresolved(),false,'an accepted partial capture does not keep the root unresolved');
+      assert.equal(ui.isSelectedOrUnresolved(),false,'partial recovery does not retain the Telehealth selection lock');
+      assert.equal(els.get('[data-recording-mode-select]').disabled,false,'ordinary mode changes remain available');
+      assert.equal(els.get('[data-audio-file-input]').disabled,false,'audio input remains available');
+    } else {
+      assert.equal(actionButton.hidden,false);
+      assert.equal(ui.isUnresolved(),true,'a failed capture remains a barrier until the owner accepts available results');
+      assert.equal(ui.isSelectedOrUnresolved(),true);
+      assert.equal(els.get('[data-recording-mode-select]').disabled,true);
+    }
+    if(action==='partial-cancel') {
+      confirmationResult=false;
+      await actionButton.click();
+      assert.equal(fixture.useAvailableRequests.length,0,'cancel leaves available transcript unpublished');
+      assert.equal(els.get('[data-telehealth-partial-summary]').hidden,false);
+      return;
+    }
+    if(action==='partial-silent') {
+      assert.equal(actionButton.textContent,'Resolve without transcript',
+        'all-silent captures are not presented as a transcript to use');
+    }
+    if(action==='partial-stale-action') {
+      await actionButton.click();
+      await waitFor(()=>fixture.useAvailableRequests.length===1);
+      transcriptId='another-synthetic-transcript';
+      ui.sync();
+      resolvePartialAction();
+      await waitFor(()=>fixture.unresolvedRequests.some(url=>url.includes('another-synthetic-transcript')));
+      await waitFor(()=>els.get('[data-telehealth-partial-summary]').hidden);
+      assert.equal(els.get('[data-telehealth-receipt]').hidden,true,
+        'a late acceptance response cannot show stale intervals on another consultation');
+      return;
+    }
+    if(action==='partial-retry') {
+      const retryButton=els.get('[data-telehealth-gap-list]').childNodes[0].childNodes.find(node=>node.name==='button');
+      assert.ok(retryButton,'a retained failed source has an interval-specific retry action');
+      await retryButton.click();
+      await waitFor(()=>fixture.partialRetryRequests.length===1);
+      assert.match(fixture.partialRetryRequests[0].url,/transcripts\/transcript-uuid\/ingestion-jobs\/failed-job-1\/retry-audio$/);
+      assert.equal(fixture.partialRetryRequests[0].options.method,'POST');
+      assert.equal(fixture.partialRetryRequests[0].options.body,undefined,'retry sends no clinical content');
+      await waitFor(()=>fixture.currentCapture.parts[0].status==='processing');
+      assert.ok(fixture.scheduledRefreshes>0,'partial state is polled for later recovered speech');
+      fixture.currentCapture=null;
+      ui.sync();
+      await waitFor(()=>els.get('[data-telehealth-partial-summary]').hidden);
+      assert.equal(ui.isUnresolved(),false,'a later completed capture clears the old missing-interval notice');
+      return;
+    }
+    if(action==='partial-pages') {
+      const loadMore=els.get('[data-telehealth-load-more-partials]');
+      await waitFor(()=>loadMore.hidden===false);
+      await loadMore.click();
+      await waitFor(()=>els.get('[data-telehealth-gap-list]').childNodes.some(node=>node.dataset.captureSessionId==='older-partial'));
+      let olderGap=els.get('[data-telehealth-gap-list]').childNodes.find(node=>node.dataset.captureSessionId==='older-partial');
+      assert.ok(olderGap,'older accepted partial capture remains listed after page fetch');
+      const previousPageCalls=fixture.partialListRequests.filter(offset=>offset===20).length;
+      ui.sync();
+      await waitFor(()=>fixture.partialListRequests.filter(offset=>offset===20).length>previousPageCalls);
+      await waitFor(()=>els.get('[data-telehealth-gap-list]').childNodes.some(node=>node.dataset.captureSessionId==='older-partial'));
+      assert.equal(ui.isUnresolved(),false,'partial polling keeps accepted captures nonblocking');
+      olderGap=els.get('[data-telehealth-gap-list]').childNodes.find(node=>node.dataset.captureSessionId==='older-partial');
+      const olderRetry=olderGap.childNodes.find(node=>node.name==='button');
+      await olderRetry.click();
+      await waitFor(()=>fixture.partialRetryRequests.some(req=>req.url.includes('older-failed-job')));
+      assert.ok(fixture.partialRetryRequests.at(-1).url.includes('/older-failed-job/retry-audio'),
+        'retry remains reachable for older partial capture pages');
+      return;
+    }
+    confirmationResult=true;
+    await actionButton.click();
+    await waitFor(()=>fixture.useAvailableRequests.length===1);
+    assert.equal(fixture.useAvailableRequests[0].options.method,'POST');
+    assert.equal(fixture.useAvailableRequests[0].options.body,undefined,'acceptance sends no clinical content');
+    await waitFor(()=>fixture.refreshCalls>0);
+    assert.equal(ui.isUnresolved(),false,'acceptance releases the editing and new-input barrier');
+    assert.equal(ui.isSelectedOrUnresolved(),false);
+    assert.equal(els.get('[data-record-toggle]').disabled,false);
+    assert.equal(els.get('[data-recording-mode-select]').disabled,false);
+    assert.equal(els.get('[data-audio-file-input]').disabled,false);
+    if(action==='partial-silent') {
+      assert.ok(confirmations.at(-1).includes('without adding transcript text'));
+      assert.ok(confirmations.at(-1).includes('prior transcript content and notes are unchanged'));
+    } else {
+      assert.ok(confirmations.at(-1).includes('Patient window 2 (00:10–00:15)'),
+        'acceptance confirmation names the exact interval gap');
+      assert.ok(confirmations.at(-1).includes('later recovered speech is added as a new transcript version'));
+    }
+    fixture.currentCapture=null;
+    ui.sync();
+    await waitFor(()=>els.get('[data-telehealth-partial-summary]').hidden);
+    return;
+  }
   await els.get('[data-telehealth-toggle]').click();
+  if(action==='lost-create') await waitFor(()=>fixture.unresolvedChecks===1);
   await modeSwitchRequested;
   assert.equal(els.get('[data-record-toggle]').disabled,true,
     'ordinary recording is disabled while Telehealth waits for recorded-upload mode');
@@ -256,6 +486,34 @@ async function scenario(action){
   assert.equal(attemptedFileSelection.stopped,true);
   assert.equal(els.get('[data-audio-file-input]').value,'');
   await els.get('[data-record-toggle]').click();
+  if(fixture.pendingStart) {
+    await startAttempted;
+    transcriptId='another-synthetic-transcript';
+    ui.sync();
+    assert.equal(fixture.unresolvedRequests.some(url=>url.includes('another-synthetic-transcript')),false,
+      'root reconciliation waits until the old client start settles');
+    rejectStart(new Error('Synthetic committed start response lost'));
+    await waitFor(()=>fixture.unresolvedRequests.some(url=>url.includes('another-synthetic-transcript')));
+    await waitFor(()=>ui.isUnresolved());
+    assert.equal(els.get('[data-telehealth-transcribe]').hidden,false,
+      'the current consultation renders its own owner-unresolved capture');
+    assert.equal(els.get('[data-record-toggle]').disabled,true,
+      'the current consultation stays blocked until its capture is resolved');
+    assert.equal(fixture.preparedSources[0].releases,1,
+      'the failed old start releases its own selected source exactly once');
+    return;
+  }
+  if(action==='lost-create') {
+    await waitFor(()=>notices.some(([text])=>text.includes('Synthetic lost capture-create response')));
+    resolveInitialUnresolved();
+    await waitFor(()=>ui.isUnresolved());
+    assert.equal(fixture.unresolvedChecks,2,'ambiguous create failure reruns an earlier in-flight negative check');
+    assert.equal(els.get('[data-telehealth-transcribe]').hidden,false,
+      'the committed owner-unresolved capture is rendered with recovery actions');
+    assert.equal(els.get('[data-record-toggle]').disabled,true,
+      'the consultation stays blocked until the committed capture is resolved');
+    return;
+  }
   await waitFor(()=>ui.isRecording());
   assert.deepEqual(fixture.events,['picker','client-start']);
   assert.equal(fixture.startedWithSource,fixture.preparedSources[0], 'Start consumes the source prepared by Continue');
@@ -314,7 +572,23 @@ async function scenario(action){
   assert.equal(button.disabled,true);
   releaseStopSeal();
   await started;
-  assert.equal(label.textContent,'Submitting…','the button reports submission instead of recording');
+  if(action!=='own-failed') assert.equal(label.textContent,'Submitting…','the button reports submission instead of recording');
+  if(action==='own-failed') {
+    await waitFor(()=>fixture.transcribeAttempts===1);
+    ui.sync();
+    const useAvailable=els.get('[data-telehealth-use-available]');
+    await waitFor(()=>useAvailable.hidden===false);
+    assert.equal(ui.isUnresolved(),true,'live failed transcription remains a barrier before explicit acceptance');
+    assert.equal(useAvailable.textContent,'Use available transcript');
+    await useAvailable.click();
+    await waitFor(()=>fixture.useAvailableRequests.length===1);
+    assert.match(fixture.useAvailableRequests[0].url,/live-failed-session\/use-available$/,
+      'the post-Stop failed capture is actionable without reloading');
+    await waitFor(()=>ui.isUnresolved()===false);
+    assert.equal(els.get('[data-recording-mode-select]').disabled,false);
+    assert.equal(els.get('[data-audio-file-input]').disabled,false);
+    return;
+  }
   const retry=els.get('[data-telehealth-submit-retry]');
   assert.equal(retry.hidden,false,'sealed capture exposes a separate transcription retry action');
   assert.equal(retry.disabled,true,'the initial Stop submission remains in flight');
@@ -325,7 +599,7 @@ async function scenario(action){
   await waitFor(()=>retry.disabled===false);
   assert.equal(label.textContent,'Retry submission','failed submit returns to a truthful recovery label');
   assert.equal(button.attrs['aria-busy'],'false','saving state ends after submission failure');
-  assert.ok(notices.some(([text])=>text.includes('Synthetic lost /transcribe response')));
+  assert.ok(notices.some(([text])=>text.includes('Synthetic lost /transcribe response')),JSON.stringify(notices));
   assert.equal(retry.hidden,false,'failed submission keeps its retry action visible');
   if(action==='retry'){
     await retry.click();
@@ -362,6 +636,18 @@ async function scenario(action){
 for(const action of ['cancel','late-picker','late-ack','switch-root','pagehide']) await scenario(action);
 await scenario('retry');
 await scenario('discard');
+await scenario('lost-create');
+await scenario('late-start-root-switch');
+await scenario('late-start-root-switch-precreate');
+await scenario('partial-cancel');
+await scenario('partial-accept');
+await scenario('partial-retry');
+await scenario('partial-silent');
+await scenario('partial-late-response');
+await scenario('partial-stale-action');
+await scenario('partial-pages');
+await scenario('partial-deferred');
+await scenario('own-failed');
 console.log('Telehealth rendered submission retry and discard controls: passed');
 """, encoding="utf-8")
     completed = subprocess.run(

@@ -230,7 +230,12 @@ def _source_timed_turns_from_segments(
     return tuple(segments)
 
 
-def _deepgram_has_explicit_empty_transcript(payload: dict[str, Any], *, response_text_path: str) -> bool:
+def _deepgram_has_explicit_empty_transcript(
+    payload: dict[str, Any],
+    *,
+    response_text_path: str,
+    segments_path: str | None = None,
+) -> bool:
     """Recognize Deepgram's valid no-speech result for source-attributed capture.
 
     Accept only a present string transcript and an explicit empty word list.
@@ -241,7 +246,17 @@ def _deepgram_has_explicit_empty_transcript(payload: dict[str, Any], *, response
         words = extract_json_path(payload, "results.channels.0.alternatives.0.words")
     except AppError:
         return False
-    return isinstance(transcript, str) and not transcript.strip() and words == []
+    if not isinstance(transcript, str) or transcript.strip() or words != []:
+        return False
+    if not segments_path:
+        return True
+    try:
+        configured_segments = extract_json_path(payload, segments_path)
+    except AppError:
+        # Configured timing is optional. An omitted provider field is not
+        # contradictory evidence; a present malformed value is rejected.
+        return True
+    return configured_segments == []
 
 
 def _turns_match_transcript(turns: tuple[SttSpeakerTurn, ...] | None, transcript: str) -> bool:
@@ -1131,6 +1146,17 @@ def _extract_response_text(payload: dict[str, Any], path: str) -> str:
     return text
 
 
+def _telehealth_canonical_text(payload: dict[str, Any], path: str) -> str:
+    """Read the provider's canonical text; timing segments are only metadata."""
+    try:
+        value = extract_json_path(payload, path)
+    except AppError as exc:
+        raise AppError(502, "stt_response_invalid", "STT provider response did not contain transcript text") from exc
+    if not isinstance(value, str) or not value.strip():
+        raise AppError(502, "stt_response_invalid", "STT provider response did not contain transcript text")
+    return value.strip()
+
+
 def paragraphize_timestamped_segments(
     segments: list[dict[str, Any]],
     *,
@@ -1637,6 +1663,7 @@ def _transcribe_via_http(
             content_type=content_type,
             model_name=model_name,
             language=language,
+            telehealth_timing=telehealth_timing,
         )
     if resolved_provider_preset == SttProviderPreset.deepgram.value:
         return _transcribe_via_deepgram(
@@ -1677,6 +1704,7 @@ def _transcribe_via_http(
             segment_start_field=segment_start_field,
             segment_end_field=segment_end_field,
             segment_speaker_field=segment_speaker_field,
+            telehealth_timing=telehealth_timing,
         )
     form_fields = dict(extra_form_fields_json or {})
     if diarization_field_name:
@@ -1756,16 +1784,8 @@ def _transcribe_via_http(
         if not _turns_match_transcript(turns, transcript_text):
             turns = None
         return SttTranscriptResult(transcript_text, turns)
-    flat_text = _format_timestamped_transcript_payload_with_segments(
-        payload,
-        response_text_path=response_text_path,
-        segments_path=segments_path or "segments",
-        segment_text_field=segment_text_field or "text",
-        segment_start_field=segment_start_field or "start",
-        segment_end_field=segment_end_field or "end",
-        segment_speaker_field=segment_speaker_field or "speaker",
-    )
     if telehealth_timing:
+        flat_text = _telehealth_canonical_text(payload, response_text_path)
         turns = _source_timed_turns_from_segments(
             payload,
             segments_path=segments_path or "segments",
@@ -1776,6 +1796,15 @@ def _transcribe_via_http(
         if not _turns_match_transcript(turns, flat_text):
             turns = None
         return SttTranscriptResult(flat_text, turns)
+    flat_text = _format_timestamped_transcript_payload_with_segments(
+        payload,
+        response_text_path=response_text_path,
+        segments_path=segments_path or "segments",
+        segment_text_field=segment_text_field or "text",
+        segment_start_field=segment_start_field or "start",
+        segment_end_field=segment_end_field or "end",
+        segment_speaker_field=segment_speaker_field or "speaker",
+    )
     return flat_text
 
 
@@ -1788,7 +1817,8 @@ def _transcribe_via_elevenlabs_speech_to_text(
     content_type: str,
     model_name: str | None,
     language: str | None,
-) -> str:
+    telehealth_timing: bool = False,
+) -> str | SttTranscriptResult:
     if not api_key:
         raise AppError(409, "stt_config_secret_missing", "ElevenLabs STT requires a saved API key.")
 
@@ -1827,6 +1857,15 @@ def _transcribe_via_elevenlabs_speech_to_text(
         )
         raise _translate_http_stt_error(exc) from exc
 
+    if telehealth_timing:
+        flat_text = _telehealth_canonical_text(payload, "text")
+        turns = _source_timed_turns_from_segments(
+            payload, segments_path="words", segment_text_field="text",
+            segment_start_field="start", segment_end_field="end",
+        )
+        if not _turns_match_transcript(turns, flat_text):
+            turns = None
+        return SttTranscriptResult(flat_text, turns)
     return _format_timestamped_transcript_payload_with_segments(
         payload,
         response_text_path="text",
@@ -1838,7 +1877,7 @@ def _transcribe_via_elevenlabs_speech_to_text(
     )
 
 
-def _transcribe_via_elevenlabs(**kwargs: Any) -> str:
+def _transcribe_via_elevenlabs(**kwargs: Any) -> str | SttTranscriptResult:
     if "url" in kwargs:
         url = str(kwargs.pop("url"))
         suffix = "/v1/speech-to-text"
@@ -1934,25 +1973,20 @@ def _transcribe_via_deepgram(
         if not _turns_match_transcript(turns, transcript_text):
             turns = None
         return SttTranscriptResult(transcript_text, turns)
-    try:
-        flat_text = _format_timestamped_transcript_payload_with_segments(
-            payload,
-            response_text_path=response_text_path,
-            segments_path=segments_path,
-            segment_text_field=segment_text_field,
-            segment_start_field=segment_start_field,
-            segment_end_field=segment_end_field,
-            segment_speaker_field=segment_speaker_field,
-        )
-    except AppError as exc:
-        if (
-            exc.code != "stt_response_invalid"
-            or not telehealth_timing
-            or not _deepgram_has_explicit_empty_transcript(payload, response_text_path=response_text_path)
-        ):
-            raise
-        flat_text = ""
     if telehealth_timing:
+        try:
+            flat_text = _telehealth_canonical_text(payload, response_text_path)
+        except AppError as exc:
+            if (
+                exc.code != "stt_response_invalid"
+                or not _deepgram_has_explicit_empty_transcript(
+                    payload,
+                    response_text_path=response_text_path,
+                    segments_path=segments_path,
+                )
+            ):
+                raise
+            flat_text = ""
         turns = _source_timed_turns_from_segments(
             payload,
             segments_path="results.channels.0.alternatives.0.words",
@@ -1963,7 +1997,15 @@ def _transcribe_via_deepgram(
         if not _turns_match_transcript(turns, flat_text):
             turns = None
         return SttTranscriptResult(flat_text, turns)
-    return flat_text
+    return _format_timestamped_transcript_payload_with_segments(
+        payload,
+        response_text_path=response_text_path,
+        segments_path=segments_path,
+        segment_text_field=segment_text_field,
+        segment_start_field=segment_start_field,
+        segment_end_field=segment_end_field,
+        segment_speaker_field=segment_speaker_field,
+    )
 
 
 def _transcribe_via_openai_cloud(

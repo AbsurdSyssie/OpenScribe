@@ -15,7 +15,7 @@ def test_failed_sealed_submission_retries_from_rendered_control_and_discard_unlo
     source = source.replace(
         "./telehealthRecordingClient.js?v=20261107-telehealth-recovery-retry", "./fake.mjs"
     ).replace(
-        "./telehealthCapture.js?v=20261106-preselected-source", "./capture.mjs"
+        "./telehealthCapture.js?v=20261108-system-audio", "./capture.mjs"
     ).replace(
         "./telehealthRecoveryJournal.js?v=20261105-cross-tab-journal", "./fake.mjs"
     ).replace(
@@ -26,12 +26,14 @@ def test_failed_sealed_submission_retries_from_rendered_control_and_discard_unlo
         encoding="utf-8",
     )
     (tmp_path / "capture.mjs").write_text(r"""
-export function prepareTelehealthDisplaySource() {
+export function prepareTelehealthDisplaySource(options = {}) {
   const f = globalThis.__uiFixture;
+  f.requestedAudioScopes.push(options.audioScope);
   f.pickerCalls += 1;
   f.events.push('picker');
   const source = {
-    surface: 'browser',
+    surface: options.audioScope === 'system' ? 'window' : 'browser',
+    audioScope: options.audioScope,
     live: true,
     releases: 0,
     isLive() { return this.live; },
@@ -162,6 +164,8 @@ async function scenario(action){
     '[data-telehealth-debug-events]','[data-telehealth-guidance]',
     '[data-telehealth-guidance-cancel]','[data-telehealth-guidance-continue]',
     '[data-telehealth-guidance-error]',
+    '[data-telehealth-audio-scope-call]','[data-telehealth-audio-scope-system]',
+    '[data-telehealth-system-audio-warning]',
     '[data-recording-mode-select]','[data-record-mode-dropdown]',
     '[data-record-mode-menu]','[data-mode=whole_file]','[data-mode=live_chunked]',
     '[data-audio-file-input]','[data-audio-action-trigger]','[data-upload-form]',
@@ -194,6 +198,7 @@ async function scenario(action){
   const fixture={
     transcribeAttempts:0,retryUploadAttempts:0,partialAttempts:0,stopAttempts:0,
     pickerCalls:0,clientStarts:0,sourceReleases:0,preparedSources:[],events:[],
+    requestedAudioScopes:[],
     diagnosticRequests:[],firstTranscribeGate,startedTranscribe:()=>startedTranscribe(),
     stopCaptureGate,stopUploadGate,stopSealGate,startedStop:()=>startedStop(),
     discardGate,startedDiscard:()=>startedDiscard()
@@ -454,7 +459,14 @@ async function scenario(action){
     assert.equal(els.get('[data-record-toggle]').disabled,false);
     return;
   }
+  if (action === 'system-audio') {
+    els.get('[data-telehealth-audio-scope-call]').checked = false;
+    els.get('[data-telehealth-audio-scope-system]').checked = true;
+    for (const fn of els.get('[data-telehealth-audio-scope-system]').listeners.change || []) fn();
+    assert.equal(els.get('[data-telehealth-system-audio-warning]').hidden, false);
+  }
   await els.get('[data-telehealth-guidance-continue]').click();
+  assert.equal(fixture.requestedAudioScopes[0], action === 'system-audio' ? 'system' : 'call');
   if(['late-picker','late-ack','switch-root','pagehide'].includes(action)) {
     await waitFor(()=>fixture.pickerCalls===1);
     if(action==='switch-root') { transcriptId='another-synthetic-transcript'; ui.sync(); }
@@ -471,7 +483,12 @@ async function scenario(action){
     return;
   }
   await waitFor(()=>ui.isActive());
-  assert.equal(els.get('[data-telehealth-receipt-message]').hidden,true,'normal preparation needs no extra paragraph');
+  if (action === 'system-audio') {
+    assert.match(els.get('[data-telehealth-receipt-message]').textContent, /unrelated applications or speech/);
+    assert.equal(receipt.children.get('[data-telehealth-speech-status="patient"]').textContent, 'System audio connected');
+  } else {
+    assert.equal(els.get('[data-telehealth-receipt-message]').hidden,true,'normal preparation needs no extra paragraph');
+  }
   assert.deepEqual(fixture.events,['picker'],'selection preparation precedes recording start');
   assert.equal(fixture.clientStarts,0,'enabling only prepares a source; it does not start capture');
   assert.equal(els.get('[data-recording-mode-select]').disabled,true);
@@ -566,7 +583,13 @@ async function scenario(action){
   releaseStopCapture();
   await waitFor(()=>label.textContent==='Saving audio…');
   assert.equal(fixture.transcribeAttempts,0,'transcription cannot start before audio upload');
-  assert.equal(els.get('[data-telehealth-receipt-message]').hidden,true,'saving progress stays in the record button without a routine paragraph');
+  if (action === 'system-audio') {
+    assert.match(els.get('[data-telehealth-receipt-message]').textContent, /unrelated applications or speech/,
+      'system-audio privacy warning remains visible while stopping');
+  } else {
+    assert.equal(els.get('[data-telehealth-receipt-message]').hidden,true,
+      'saving progress stays in the record button without a routine paragraph');
+  }
   releaseStopUpload();
   await waitFor(()=>label.textContent==='Finalising audio…');
   assert.equal(button.disabled,true);
@@ -635,6 +658,7 @@ async function scenario(action){
 }
 for(const action of ['cancel','late-picker','late-ack','switch-root','pagehide']) await scenario(action);
 await scenario('retry');
+await scenario('system-audio');
 await scenario('discard');
 await scenario('lost-create');
 await scenario('late-start-root-switch');

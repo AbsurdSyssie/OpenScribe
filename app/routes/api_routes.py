@@ -2109,6 +2109,7 @@ def start_telehealth_capture_route(
         context.user,
         transcript_id=transcript_id,
         timeline_sample_rate=payload.timeline_sample_rate,
+        requested_audio_scope=payload.requested_audio_scope,
     )
     return telehealth_capture_detail(
         db, context.user,

@@ -20,6 +20,19 @@ def _batch(**overrides):
     return TelehealthBrowserDiagnosticsBatch.model_validate(value)
 
 
+def test_audio_scope_diagnostics_are_closed_and_content_free():
+    safe = diagnostics.safe_event({
+        "event": "picker_selected", "surface": "window", "audio_scope": "system",
+    })
+    assert safe == {"event": "picker_selected", "surface": "window", "audio_scope": "system"}
+    assert diagnostics.safe_event({
+        "event": "picker_selected", "surface": "window", "audio_scope": "untrusted",
+    }) is None
+    assert diagnostics.safe_event({
+        "event": "picker_selected", "audio_scope": "system", "window_title": "sensitive",
+    }) is None
+
+
 def test_closed_schema_refuses_sensitive_data_and_unbounded_payloads():
     batch = _batch()
     assert len(batch.events) == 1

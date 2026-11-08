@@ -20,19 +20,25 @@ const isLive = (track) => track && track.readyState === 'live';
 // the browser-provided display tracks until the one-shot handoff to capture.
 export function prepareTelehealthDisplaySource({
   mediaDevices = navigator.mediaDevices,
+  audioScope = 'call',
   confirmWindowAudio = () => false,
   onDiagnostic = () => {},
   onState = () => {},
 } = {}) {
-  if (!mediaDevices?.getDisplayMedia) throw new Error('Browser tab audio sharing is unsupported.');
+  if (!mediaDevices?.getDisplayMedia) throw new Error('Browser audio sharing is unsupported.');
+  if (!['call', 'system'].includes(audioScope)) throw new TypeError('Invalid Telehealth audio capture scope.');
   const log = (event, fields = {}) => { try { onDiagnostic({ event, ...fields }); } catch (_) {} };
-  log('picker_requested');
+  log('picker_requested', { audio_scope: audioScope });
   let picker;
   try {
     picker = mediaDevices.getDisplayMedia({
-      video: true, audio: true, selfBrowserSurface: 'exclude',
+      video: audioScope === 'system' ? { displaySurface: 'window' } : true,
+      audio: true, selfBrowserSurface: 'exclude',
       surfaceSwitching: 'exclude', monitorTypeSurfaces: 'exclude',
-      windowAudio: 'window', systemAudio: 'exclude',
+      // windowAudio governs window sharing, systemAudio governs monitor sharing.
+      // Entire-monitor capture remains excluded in BOTH modes.
+      windowAudio: audioScope === 'system' ? 'system' : 'window',
+      systemAudio: 'exclude',
     });
   } catch (error) {
     return Promise.reject(error);
@@ -65,7 +71,7 @@ export function prepareTelehealthDisplaySource({
     const audio = stream.getAudioTracks?.()[0];
     const displaySurface = video?.getSettings?.().displaySurface || 'unknown';
     const surface = ['browser', 'window', 'monitor'].includes(displaySurface) ? displaySurface : 'unknown';
-    log('picker_selected', { surface });
+    log('picker_selected', { surface, audio_scope: audioScope });
     const reject = (error) => { stop(); throw error; };
     if (!isLive(video)) {
       log('picker_rejected', { surface, code: 'missing_video' });
@@ -75,28 +81,34 @@ export function prepareTelehealthDisplaySource({
       log('picker_rejected', { surface, code: 'unsupported_surface' });
       return reject(new Error('Choose a browser tab or application window. Full-screen sharing is not supported.'));
     }
+    if (audioScope === 'system' && surface !== 'window') {
+      log('picker_rejected', { surface, code: 'unsupported_surface', audio_scope: audioScope });
+      return reject(new Error('Select a desktop application window for system audio. Browser tabs and entire-screen sharing are not supported in this mode.'));
+    }
     if (!isLive(audio)) {
-      log('picker_rejected', { surface, code: 'missing_audio' });
-      return reject(new Error(surface === 'window'
-        ? 'No audio was shared with that window. Enable window audio in the picker, or use a browser call tab.'
-        : 'No tab audio was shared. Select the call tab and enable Share tab audio.'));
+      log('picker_rejected', { surface, code: 'missing_audio', audio_scope: audioScope });
+      return reject(new Error(audioScope === 'system'
+        ? 'No system audio was shared. Select an application window and enable Share system audio, or use browser tab audio.'
+        : surface === 'window'
+          ? 'No audio was shared with that window. Enable window audio in the picker, or use a browser call tab.'
+          : 'No tab audio was shared. Select the call tab and enable Share tab audio.'));
     }
     if (surface === 'window') {
       let acknowledged = false;
-      try { acknowledged = await Promise.resolve(confirmWindowAudio()); }
+      try { acknowledged = await Promise.resolve(confirmWindowAudio({ audioScope, surface })); }
       catch (error) { return reject(error); }
       if (!acknowledged) {
         log('picker_rejected', { surface, code: 'window_declined' });
         return reject(new Error('Window-audio capture was cancelled.'));
       }
-      log('window_acknowledged', { surface });
+      log('window_acknowledged', { surface, audio_scope: audioScope });
     }
     if (!isLive(video) || !isLive(audio)) {
       log('picker_rejected', { surface, code: 'source_ended' });
       return reject(new Error('The selected source ended. Select the call tab again.'));
     }
     const source = {
-      stream, surface,
+      stream, surface, audioScope,
       isLive: () => owner !== 'released' && isLive(video) && isLive(audio),
       setInterruptionHandler(handler) { interruptionHandler = handler; },
       release,
@@ -349,9 +361,10 @@ export function createTelehealthCapture({
         log('picker_rejected', { surface, code: 'missing_video' });
         throw new Error('The selected sharing source has no live video track.');
       }
-      if (surface !== 'browser' && surface !== 'window') {
+      if ((surface !== 'browser' && surface !== 'window')
+        || (source.audioScope === 'system' && surface !== 'window')) {
         log('picker_rejected', { surface, code: 'unsupported_surface' });
-        throw new Error('Choose a browser tab or application window. Full-screen sharing is not supported.');
+        throw new Error('The selected audio source is not supported. Select it again.');
       }
       if (!isLive(patientAudio)) {
         log('picker_rejected', { surface, code: 'missing_audio' });
@@ -397,7 +410,7 @@ export function createTelehealthCapture({
       if (context.state !== 'running') throw new Error('Audio capture clock did not start.');
       state = 'running';
       hasStarted = true;
-      log('capture_started', { surface: surface });
+      log('capture_started', { surface, audio_scope: source.audioScope || 'call' });
       vadMonitor = createTelehealthVadMonitor({ onSpeechFrame, onState: onVadState, onDiagnostic });
       vadMonitor.start({ patient: patientAudio, clinician: microphoneAudio });
       context.onstatechange = () => {

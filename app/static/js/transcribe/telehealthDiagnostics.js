@@ -13,6 +13,7 @@ const EVENTS = new Set([
 const FIELDS = {
   channel: new Set(['patient', 'clinician', 'none']),
   surface: new Set(['browser', 'window', 'monitor', 'unknown']),
+  audio_scope: new Set(['call', 'system']),
   state: new Set([
     'idle', 'starting', 'recording', 'running', 'stopping', 'stopped',
     'failed', 'recovery_required', 'incomplete', 'sealed', 'transcribing',

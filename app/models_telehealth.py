@@ -55,6 +55,10 @@ class TelehealthCaptureSession(Base):
             "failure_code IS NULL OR char_length(failure_code) <= 128",
             name="ck_telehealth_capture_sessions_failure_code_length",
         ),
+        CheckConstraint(
+            "requested_audio_scope IN ('unknown', 'call', 'system')",
+            name="ck_telehealth_capture_sessions_audio_scope",
+        ),
         Index(
             "uq_telehealth_capture_sessions_open_transcript",
             "transcript_id",
@@ -83,6 +87,10 @@ class TelehealthCaptureSession(Base):
     )
     status: Mapped[str] = mapped_column(String(24), default="active", nullable=False)
     timeline_sample_rate: Mapped[int] = mapped_column(Integer, nullable=False)
+    # User's requested browser capture scope, not a verified process/audio source.
+    requested_audio_scope: Mapped[str] = mapped_column(
+        String(16), default="unknown", server_default="unknown", nullable=False,
+    )
     failure_channel: Mapped[str | None] = mapped_column(String(16), nullable=True)
     failure_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     incomplete_acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

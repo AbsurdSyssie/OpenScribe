@@ -38,6 +38,7 @@ EVENTS = frozenset({
 ENUM_FIELDS: dict[str, frozenset[str]] = {
     "channel": frozenset({"patient", "clinician", "none"}),
     "surface": frozenset({"browser", "window", "monitor", "unknown"}),
+    "audio_scope": frozenset({"call", "system"}),
     "state": frozenset({
         "idle", "starting", "recording", "running", "stopping", "stopped",
         "failed", "recovery_required", "incomplete", "sealed", "transcribing",

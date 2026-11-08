@@ -102,10 +102,11 @@ function sources(surface, audioIncluded) {
   };
 }
 
-async function prepareSource(env, allowWindow = false) {
+async function prepareSource(env, allowWindow = false, audioScope = 'call') {
   const events = [];
   const source = await prepareTelehealthDisplaySource({
     mediaDevices: env.mediaDevices,
+    audioScope,
     confirmWindowAudio: () => allowWindow,
     onDiagnostic: event => events.push(event),
   });
@@ -139,6 +140,29 @@ const windowFixture = captureFixture(await prepareSource(windowSource, true), wi
 await windowFixture.recorder.start();
 assert.ok(windowFixture.events.some(e => e.event === 'window_acknowledged'));
 await windowFixture.recorder.stop();
+
+// System capture is opt-in; full-screen sharing is still excluded.
+const systemWindow = sources('window', true);
+const preparedSystem = await prepareSource(systemWindow, true, 'system');
+assert.equal(systemWindow.observed.options.video.displaySurface, 'window');
+assert.equal(systemWindow.observed.options.windowAudio, 'system');
+assert.equal(systemWindow.observed.options.systemAudio, 'exclude');
+assert.equal(systemWindow.observed.options.monitorTypeSurfaces, 'exclude');
+assert.equal(preparedSystem.source.audioScope, 'system');
+assert.ok(preparedSystem.events.some(e => e.event === 'picker_selected' && e.audio_scope === 'system'));
+const systemFixture = captureFixture(preparedSystem, systemWindow);
+await systemFixture.recorder.start();
+assert.equal(systemWindow.observed.microphoneRequests, 1);
+await systemFixture.recorder.stop();
+
+const systemTab = sources('browser', true);
+await assert.rejects(prepareSource(systemTab, true, 'system'), /desktop application window/);
+assert.equal(systemTab.video.stopped, true);
+assert.equal(systemTab.observed.microphoneRequests, 0);
+const missingSystem = sources('window', false);
+await assert.rejects(prepareSource(missingSystem, true, 'system'), /No system audio was shared/);
+assert.equal(missingSystem.video.stopped, true);
+assert.equal(missingSystem.observed.microphoneRequests, 0);
 
 const noAudio = sources('window', false);
 const noAudioEvents = [];

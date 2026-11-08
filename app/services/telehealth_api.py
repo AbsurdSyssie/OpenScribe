@@ -53,6 +53,7 @@ def telehealth_capture_detail(
         transcript_id=transcript.id,
         status=capture.status,
         timeline_sample_rate=capture.timeline_sample_rate,
+        requested_audio_scope=capture.requested_audio_scope,
         failure_channel=capture.failure_channel,
         failure_code=capture.failure_code,
         incomplete_acknowledged_at=capture.incomplete_acknowledged_at,

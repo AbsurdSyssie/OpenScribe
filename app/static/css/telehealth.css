@@ -107,6 +107,20 @@
 .telehealth-guidance::backdrop { background: rgb(24 35 29 / .55); }
 .telehealth-guidance h2 { font-size: 1.15rem; font-weight: 700; margin: 0 0 .75rem; }
 .telehealth-guidance p { margin: .6rem 0; line-height: 1.5; }
+.telehealth-guidance__audio-scope { border: 0; padding: 0; margin: .8rem 0; min-width: 0; }
+.telehealth-guidance__audio-scope legend { font-weight: 650; margin-bottom: .35rem; }
+.telehealth-guidance__audio-scope label {
+  display: flex; gap: .65rem; align-items: flex-start;
+  padding: .55rem .6rem; border: 1px solid #c7d3cb; border-radius: .55rem;
+  margin: .4rem 0; cursor: pointer;
+}
+.telehealth-guidance__audio-scope input { flex: none; margin-top: .25rem; }
+.telehealth-guidance__audio-scope span { display: grid; gap: .2rem; }
+.telehealth-guidance__audio-scope small { line-height: 1.35; color: #53616a; }
+.telehealth-guidance [data-telehealth-system-audio-warning] {
+  border-left: 3px solid #9b661a; padding: .55rem .7rem; background: #fff5df;
+}
+.telehealth-guidance [data-telehealth-system-audio-warning][hidden] { display: none; }
 .telehealth-guidance__actions { display: flex; justify-content: flex-end; gap: .75rem; margin-top: 1.25rem; }
 .telehealth-guidance__actions button {
   border: 1px solid #7b9186; border-radius: .6rem;

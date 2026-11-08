@@ -1,5 +1,5 @@
 import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261107-telehealth-recovery-retry';
-import { prepareTelehealthDisplaySource } from './telehealthCapture.js?v=20261106-preselected-source';
+import { prepareTelehealthDisplaySource } from './telehealthCapture.js?v=20261108-system-audio';
 import { createTelehealthDiagnostics } from './telehealthDiagnostics.js?v=20261106-server-events';
 import {
   createTelehealthRecoveryJournal,
@@ -62,12 +62,16 @@ export function attachTelehealthControls({
   const guidanceCancel = document.querySelector('[data-telehealth-guidance-cancel]');
   const guidanceContinue = document.querySelector('[data-telehealth-guidance-continue]');
   const guidanceError = document.querySelector('[data-telehealth-guidance-error]');
+  const callAudioOption = document.querySelector('[data-telehealth-audio-scope-call]');
+  const systemAudioOption = document.querySelector('[data-telehealth-audio-scope-system]');
+  const systemAudioWarning = document.querySelector('[data-telehealth-system-audio-warning]');
   if (!toggle || !mainRecord || !receipt || !guidance || typeof csrfFetch !== 'function') {
     return { sync: () => {}, isActive: () => false, setOrdinaryControlsSync: () => {} };
   }
 
   let enabled = false;
   let preparedSource = null;
+  let selectedAudioScope = 'call';
   let client = null;
   let restoredCapture = null;
   let partialCapture = null;
@@ -251,12 +255,24 @@ export function attachTelehealthControls({
   const releasePreparedSource = () => {
     preparedSource?.release?.();
     preparedSource = null;
+    selectedAudioScope = 'call';
   };
+  const selectedSourceStatus = () => selectedAudioScope === 'system'
+    ? 'System audio connected'
+    : preparedSource?.surface === 'window' ? 'Window audio connected' : 'Tab connected';
+  const systemAudioReviewNotice = (scope = selectedAudioScope) => scope === 'system'
+    ? 'System audio can include unrelated applications or speech. Verify speakers and content before clinical use.'
+    : '';
+  const updateAudioScopeWarning = () => {
+    if (systemAudioWarning) systemAudioWarning.hidden = systemAudioOption?.checked !== true;
+  };
+  callAudioOption?.addEventListener('change', updateAudioScopeWarning);
+  systemAudioOption?.addEventListener('change', updateAudioScopeWarning);
   const setPreparedSourceState = (next) => {
     if (next === 'connected') {
       sourceLoss = false;
       setReceiptNotice();
-      if (nodes.patient.status) nodes.patient.status.textContent = 'Tab connected';
+      if (nodes.patient.status) nodes.patient.status.textContent = selectedSourceStatus();
     } else if (next === 'ended') {
       preparedSource = null;
       sourceLoss = true;
@@ -264,9 +280,9 @@ export function attachTelehealthControls({
       setReceiptNotice('The selected source ended. Turn Telehealth off and on to select it again.');
       render();
     } else if (next === 'muted' && nodes.patient.status) {
-      nodes.patient.status.textContent = 'Tab audio paused';
+      nodes.patient.status.textContent = 'Shared audio paused';
     } else if (next === 'live' && nodes.patient.status) {
-      nodes.patient.status.textContent = preparedSource ? 'Tab connected' : 'Waiting for audio';
+      nodes.patient.status.textContent = preparedSource ? selectedSourceStatus() : 'Waiting for audio';
     }
   };
   const render = () => {
@@ -539,7 +555,8 @@ export function attachTelehealthControls({
         sourceLoss = true;
         resetMeters();
         receipt.classList.add('is-interrupted');
-        setReceiptNotice('This Telehealth transcript is partial. Review the unavailable source intervals and retry retained audio where offered.');
+        setReceiptNotice('This Telehealth transcript is partial. Review the unavailable source intervals and retry retained audio where offered.'
+          + (saved.requested_audio_scope === 'system' ? ' ' + systemAudioReviewNotice('system') : ''));
         render();
         return;
       }
@@ -564,7 +581,7 @@ export function attachTelehealthControls({
       } else {
         receipt.classList.add('is-verified');
       }
-      setReceiptNotice(saved.status === 'processing'
+      setReceiptNotice((saved.status === 'processing'
         ? ''
         : saved.status === 'ready'
           ? 'Sealed Telehealth audio is awaiting transcription. Review the stored parts and submit them.'
@@ -572,7 +589,8 @@ export function attachTelehealthControls({
             ? 'Telehealth transcription failed. Review the unavailable intervals, then choose whether to use completed results or retry retained audio.'
             : saved.parts?.some((part) => part.ingestion_job_id)
             ? 'A Telehealth transcription failed. Retry the retained source audio using the consultation recovery controls.'
-            : 'The Telehealth recording ended unexpectedly. Encrypted unacknowledged audio may be recoverable on this browser; the final unflushed seconds might be missing. Recover or discard explicitly.');
+            : 'The Telehealth recording ended unexpectedly. Encrypted unacknowledged audio may be recoverable on this browser; the final unflushed seconds might be missing. Recover or discard explicitly.')
+        + (saved.requested_audio_scope === 'system' ? ' ' + systemAudioReviewNotice('system') : ''));
       render();
     } catch (_) {
       // Do not infer that the remote source is complete from a failed check.
@@ -690,9 +708,13 @@ export function attachTelehealthControls({
       if (!answer) {
         if (selectionEpoch === epoch) selectionEpoch += 1;
         chosenSource?.release?.();
+        selectedAudioScope = 'call';
         diagnostics.clear();
       } else {
         preparedSource = answer;
+        selectedAudioScope = answer.audioScope || selectedAudioScope;
+        if (nodes.patient.status) nodes.patient.status.textContent = selectedSourceStatus();
+        setReceiptNotice(systemAudioReviewNotice());
       }
       cancelSelection = null;
       guidance.removeEventListener('close', onClose);
@@ -705,6 +727,8 @@ export function attachTelehealthControls({
     const onClose = () => finish(false);
     const onCancel = () => finish(false);
     const onContinue = () => {
+      const audioScope = systemAudioOption?.checked === true ? 'system' : 'call';
+      selectedAudioScope = audioScope;
       chosenSource = null;
       guidanceContinue.disabled = true;
       guidanceError.hidden = true;
@@ -717,11 +741,12 @@ export function attachTelehealthControls({
       let acknowledgement;
       try {
         selection = prepareTelehealthDisplaySource({
+          audioScope,
           onDiagnostic: (event) => { if (selectionEpoch === epoch) onDiagnostic(event); },
           onState: (next) => { if (selectionEpoch === epoch) setPreparedSourceState(next); },
-          confirmWindowAudio: () => window.confirm(
-            'Window audio is experimental. Depending on your browser and operating system, sharing a window can capture ALL system audio, not just the call. Continue only if other application sounds are safe to record. Continue?'
-          ),
+          confirmWindowAudio: () => window.confirm(audioScope === 'system'
+            ? 'System audio can capture ALL computer sounds, including unrelated conversations and notifications, not just the selected window. Confirm that unrelated audio is safe to record. Continue?'
+            : 'Window audio is experimental. Your browser may share ALL system audio instead of just the call. Continue only if unrelated sounds are safe to record. Continue?'),
         }).then((source) => {
           chosenSource = source;
           if (selectionEpoch !== epoch || settled) {
@@ -766,6 +791,9 @@ export function attachTelehealthControls({
     guidance.addEventListener('close', onClose);
     guidanceContinue.addEventListener('click', onContinue);
     guidanceCancel.addEventListener('click', onCancel);
+    if (callAudioOption) callAudioOption.checked = true;
+    if (systemAudioOption) systemAudioOption.checked = false;
+    updateAudioScopeWarning();
     guidance.showModal();
     guidanceContinue.focus();
   });
@@ -813,13 +841,13 @@ export function attachTelehealthControls({
     let startingClient = null;
     try {
       resetMeters();
-      if (nodes.patient.status) nodes.patient.status.textContent = 'Tab connected';
+      if (nodes.patient.status) nodes.patient.status.textContent = selectedSourceStatus();
       stopPhase = null;
       telehealthMeterActive = true;
       if (debugReference) debugReference.textContent = diagnostics.diagnosticId || 'Unavailable';
       if (debugEvents) debugEvents.textContent = '';
       sourceLoss = false;
-      setReceiptNotice();
+      setReceiptNotice(systemAudioReviewNotice());
       client = startingClient = createTelehealthRecordingClient({
         transcriptId: startTranscriptId,
         csrfFetch, onLevel, onSourceState, onWarning,
@@ -959,7 +987,8 @@ export function attachTelehealthControls({
       client = null;
       stopPhase = null;
       resetMeters();
-      if (nodes.patient.status) nodes.patient.status.textContent = 'Tab connected';
+      if (nodes.patient.status) nodes.patient.status.textContent = selectedSourceStatus();
+      setReceiptNotice(systemAudioReviewNotice());
     } catch (error) {
       notice(error instanceof Error ? error.message : 'Telehealth could not be enabled.', 'error');
     } finally {

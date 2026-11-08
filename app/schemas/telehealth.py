@@ -16,6 +16,8 @@ PartStatus = Literal["staged", "processing", "transcribed", "failed", "expired"]
 class TelehealthCaptureStart(BaseModel):
     model_config = {"extra": "forbid"}
     timeline_sample_rate: int = Field(strict=True, ge=8000, le=192000)
+    # Unknown for older clients; browser hints cannot guarantee isolation.
+    requested_audio_scope: Literal["unknown", "call", "system"] = "unknown"
 
 
 class TelehealthCaptureStop(BaseModel):
@@ -68,6 +70,7 @@ class TelehealthCaptureDetail(BaseModel):
     transcript_id: UUID
     status: CaptureStatus
     timeline_sample_rate: int
+    requested_audio_scope: Literal["unknown", "call", "system"] = "unknown"
     failure_channel: TelehealthChannel | None
     failure_code: str | None
     incomplete_acknowledged_at: datetime | None
@@ -112,6 +115,7 @@ class TelehealthBrowserDiagnosticEvent(BaseModel):
     event: TelehealthDiagnosticEventName
     channel: Literal["patient", "clinician", "none"] | None = None
     surface: Literal["browser", "window", "monitor", "unknown"] | None = None
+    audio_scope: Literal["call", "system"] | None = None
     state: Literal[
         "idle", "starting", "recording", "running", "stopping", "stopped",
         "failed", "recovery_required", "incomplete", "sealed",

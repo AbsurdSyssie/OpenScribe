@@ -109,10 +109,13 @@ def begin_telehealth_capture(
     *,
     transcript_id: UUID,
     timeline_sample_rate: int,
+    requested_audio_scope: str = "unknown",
 ) -> TelehealthCaptureSession:
     """Start a server-owned capture run, with a single immutable audio clock."""
     if type(timeline_sample_rate) is not int or not 8000 <= timeline_sample_rate <= 192000:
         raise AppError(422, "validation_error", "Invalid capture sample rate.")
+    if requested_audio_scope not in {"unknown", "call", "system"}:
+        raise AppError(422, "validation_error", "Invalid requested audio scope.")
     transcript = _owner_transcript_locked(db, owner, transcript_id=transcript_id)
     _require_recorder_ready(db, transcript)
     already_active = db.scalar(select(TelehealthCaptureSession.id).where(
@@ -132,6 +135,7 @@ def begin_telehealth_capture(
         stt_config_id=config.id,
         status="active",
         timeline_sample_rate=timeline_sample_rate,
+        requested_audio_scope=requested_audio_scope,
     )
     transcript.status = TranscriptStatus.recording
     db.add(session)

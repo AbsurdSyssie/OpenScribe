@@ -162,6 +162,12 @@ protected pre-redaction notices, empty-source generation guards, edited/deleted
 turn preservation, unchanged note snapshots, and deferred insertion during other
 recording. They do not establish browser or live-provider behavior;
 use [the telehealth walkthrough](telehealth-crash-walkthrough.md) for manual checks.
+The experimental system-audio option additionally requires manual Chrome/Edge
+validation on each supported Windows/macOS version with a desktop Electron call,
+headphones and speakers, unrelated notifications, microphone monitoring, audio
+permissions, missing/muted tracks, window selection, and crash recovery. Browser
+sharing options are hints; seeing the chosen window does not prove audio isolation.
+Full-screen sharing remains excluded.
 
 Provider configuration:
 

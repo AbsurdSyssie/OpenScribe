@@ -179,3 +179,7 @@ STT completion state; and any anonymized console/network error codes.
 **Release gate:** Passing this walkthrough does **not** replace full
 concurrent-worker/retention tests, provider billing checks, privacy assessment,
 or a documented clinical-safety review.
+
+## Experimental window/system audio manual validation
+
+Before clinical use, test the Telehealth consent dialog's **System audio (experimental)** option in current Chrome and Edge on each supported Windows/macOS combination. Select a real desktop telehealth/Electron application window and explicitly enable audio in the browser picker. Check that the clinician microphone remains the independent channel and that patient speech reaches the system-audio track, including with headphones. Also test speakers, microphone monitoring, unrelated app notifications, call audio-device changes, picker denial, missing audio tracks, and source termination while capturing. Verify recording and recovery warnings and that the requested audio scope is returned with the owner-scoped capture details. System audio may contain unrelated speech: do not claim application isolation from window selection alone, and do not enable this mode for clinical production without privacy and real-device sign-off. Entire-screen capture is excluded.

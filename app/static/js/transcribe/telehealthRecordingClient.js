@@ -1,4 +1,4 @@
-import { createTelehealthCapture } from './telehealthCapture.js?v=20261106-preselected-source';
+import { createTelehealthCapture } from './telehealthCapture.js?v=20261108-system-audio';
 import { createTelehealthWindows } from './telehealthWindows.js?v=20261104-telehealth-windows';
 import { encodeTelehealthWavWindow } from './telehealthWav.js?v=20261105-telehealth-wav';
 import {
@@ -247,7 +247,11 @@ export function createTelehealthRecordingClient({
       }
       earlyFrames = 0;
       createAttempted = true;
-      const started = await post(base, { timeline_sample_rate: sampleRate });
+      const started = await post(base, {
+        timeline_sample_rate: sampleRate,
+        // Requested scope is provenance; browsers cannot prove audio isolation.
+        requested_audio_scope: preparedSource?.audioScope === 'system' ? 'system' : 'call',
+      });
       captureId = started.capture_session_id;
       resolveSession(captureId);
       // A track may have ended while the start request was in flight. Never

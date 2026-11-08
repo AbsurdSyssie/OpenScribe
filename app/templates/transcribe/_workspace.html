@@ -170,8 +170,15 @@ aria-label="Recording mode"
   <p>Headphones are recommended to avoid echo and duplicate speech. Inform all participants before recording and follow your organisation's recording and consent policy.</p>
   <p>Unacknowledged audio windows are temporarily encrypted in this browser profile to allow recovery after a crash. Use a trusted device. These local windows are removed when accepted by the server or explicitly discarded. They expire when OpenScribe next opens this recovery store; clearing browser data can remove them sooner.</p>
   <p>A crash can still lose the final unflushed audio. Any recovered recording is marked incomplete and must be checked by the clinician before using a clinical note.</p>
-  <p>When selecting a source, choose your call tab and enable <strong>Share tab audio</strong>, or choose a desktop application window and enable audio sharing if available. The Patient row shows when the source is connected. If it ends before recording starts, turn Telehealth off and on to select it again.</p>
-  <p><strong>Window sharing is experimental:</strong> some browsers or operating systems may capture all system audio instead of only the selected application. Confirm the warning before recording a window and prevent unrelated sounds from being captured.</p>
+  <fieldset class="telehealth-guidance__audio-scope" aria-label="Audio sharing source">
+    <legend>Which audio should OpenScribe capture?</legend>
+    <label><input type="radio" name="telehealth-audio-scope" value="call" data-telehealth-audio-scope-call checked>
+      <span><strong>Call tab or application window</strong><small>Preferred. Share tab audio or supported application audio. Browser isolation is not guaranteed.</small></span></label>
+    <label><input type="radio" name="telehealth-audio-scope" value="system" data-telehealth-audio-scope-system>
+      <span><strong>System audio (experimental)</strong><small>Include sound from other desktop applications through window sharing.</small></span></label>
+  </fieldset>
+  <p data-telehealth-system-audio-warning role="note" hidden><strong>System audio may capture all sounds on your computer</strong>, including unrelated applications, notifications and conversations. Choose an application window in the next browser dialog and enable audio sharing. Full-screen sharing is not supported; this mode is browser- and OS-dependent. Verify the transcript before clinical use.</p>
+  <p>For the call-tab/window option, enable <strong>Share tab audio</strong> or application audio in your browser's picker. Some browsers may still share all system audio when a window is selected. If sharing ends before recording starts, turn Telehealth off and on to choose the source again.</p>
   <div class="telehealth-guidance__actions">
     <button type="button" data-telehealth-guidance-cancel>Cancel</button>
     <button type="button" data-telehealth-guidance-continue>Continue</button>

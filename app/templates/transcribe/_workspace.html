@@ -138,10 +138,11 @@ aria-label="Recording mode"
 <div class="telehealth-receipt" data-telehealth-receipt hidden aria-live="polite" aria-label="Patient audio activity check">
   <div class="telehealth-receipt__channels" data-telehealth-channels>
     <div class="telehealth-receipt__source" data-telehealth-source="patient">
-      <span>Patient</span><div class="telehealth-receipt__track"><span data-telehealth-level="patient"></span></div>
+      <span data-telehealth-source-label>Patient</span><div class="telehealth-receipt__track"><span data-telehealth-level="patient"></span></div>
       <span class="telehealth-receipt__state" data-telehealth-speech-status="patient">Waiting for audio</span>
     </div>
   </div>
+  <p data-telehealth-audio-scope-notice role="note" hidden><strong>System audio — not verified patient speech.</strong> Other apps, notifications or monitored clinician speech may be included. Clinician speech may appear in both audio channels. Verify speakers and review the transcript before clinical use.</p>
   <p data-telehealth-receipt-message role="status" hidden></p>
   <div data-telehealth-partial-summary hidden>
     <p data-telehealth-gap-summary></p>

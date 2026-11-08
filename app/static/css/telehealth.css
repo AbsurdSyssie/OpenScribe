@@ -92,6 +92,11 @@
   font-size: .74rem;
 }
 .telehealth-receipt [data-telehealth-gap-list] li { line-height: 1.4; }
+.telehealth-receipt [data-telehealth-audio-scope-notice] {
+  margin: .4rem 0; padding: .55rem .65rem; border-left: 3px solid #9b661a;
+  border-radius: .2rem; background: #fff5df; color: #583e13; line-height: 1.45;
+}
+.telehealth-receipt [data-telehealth-audio-scope-notice][hidden] { display: none; }
 .telehealth-receipt.is-interrupted p { color: #993d3d; }
 .telehealth-guidance {
   width: min(28rem, calc(100% - 2rem));

@@ -20,6 +20,8 @@ def test_phone_toggle_and_first_use_notice_are_server_feature_gated():
         "data-telehealth-audio-scope-call",
         "data-telehealth-audio-scope-system",
         "data-telehealth-system-audio-warning",
+        "data-telehealth-audio-scope-notice",
+        "data-telehealth-source-label",
         'data-telehealth-source="patient"',
         "data-telehealth-speech-status=\"patient\"",
         "data-telehealth-retry",
@@ -87,6 +89,8 @@ def test_patient_only_receipt_keeps_connection_status_in_the_existing_row():
     assert 'data-telehealth-speech-status="clinician"' not in receipt
     assert 'data-telehealth-combined' not in receipt
     assert 'Patient</span>' in receipt
+    assert 'data-telehealth-audio-scope-notice role="note" hidden' in receipt
+    assert 'System audio — not verified patient speech.' in receipt
     assert 'data-telehealth-receipt-message role="status" hidden' in receipt
     assert "The Patient row shows when the source is connected." in html
     assert "Tab connected</p>" not in html, "connection state belongs in the row status, not another routine paragraph"

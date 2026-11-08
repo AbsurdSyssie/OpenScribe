@@ -250,7 +250,8 @@ export function createTelehealthRecordingClient({
       const started = await post(base, {
         timeline_sample_rate: sampleRate,
         // Requested scope is provenance; browsers cannot prove audio isolation.
-        requested_audio_scope: preparedSource?.audioScope === 'system' ? 'system' : 'call',
+        requested_audio_scope: ['call', 'system'].includes(preparedSource?.audioScope)
+          ? preparedSource.audioScope : 'unknown',
       });
       captureId = started.capture_session_id;
       resolveSession(captureId);

@@ -13,7 +13,7 @@ NODE = shutil.which("node")
 def test_failed_sealed_submission_retries_from_rendered_control_and_discard_unlocks(tmp_path):
     source = (ROOT / "app/static/js/transcribe/telehealthUI.js").read_text(encoding="utf-8")
     source = source.replace(
-        "./telehealthRecordingClient.js?v=20261107-telehealth-recovery-retry", "./fake.mjs"
+        "./telehealthRecordingClient.js?v=20261108-audio-provenance", "./fake.mjs"
     ).replace(
         "./telehealthCapture.js?v=20261108-system-audio", "./capture.mjs"
     ).replace(
@@ -175,6 +175,8 @@ async function scenario(action){
   els.get('[data-record-mode-menu]').hidden=false;
   const modeOptions=[els.get('[data-mode=whole_file]'),els.get('[data-mode=live_chunked]')];
   const receipt=els.get('[data-telehealth-receipt]'); receipt.children=new Map();
+  receipt.children.set('[data-telehealth-audio-scope-notice]',new Element('system-scope-notice'));
+  receipt.children.set('[data-telehealth-source-label]',new Element('source-label'));
   for(const suffix of ['source=','level=','speech-status=']){
     const selector=`[data-telehealth-${suffix}"patient"]`;
     receipt.children.set(selector,new Element(selector));
@@ -223,7 +225,8 @@ async function scenario(action){
   if(action.startsWith('partial')) fixture.currentCapture={
     transcript_id:'transcript-uuid',capture_session_id:'partial-session',
     status:['partial-retry','partial-late-response','partial-pages','partial-deferred'].includes(action)?'partial':'failed',
-    timeline_sample_rate:48000,failure_code:action==='partial-silent'?'no_transcribed_speech':'transcription_failed',
+    timeline_sample_rate:48000,requested_audio_scope:action==='partial-system'?'system':'call',
+    failure_code:action==='partial-silent'?'no_transcribed_speech':'transcription_failed',
     can_use_available_transcript:!['partial-retry','partial-late-response','partial-pages','partial-deferred'].includes(action),
     parts:action==='partial-silent'
       ? [{channel:'patient',sequence_no:0,status:'transcribed',timeline_start_frame:0,
@@ -341,8 +344,14 @@ async function scenario(action){
     } else {
       const gapText=els.get('[data-telehealth-gap-list]').childNodes[0].childNodes
         .map(node=>node.textContent||'').join('');
-      assert.match(gapText,/Patient audio · window 2 · 00:10–00:15 · failed/,
-        'the receipt identifies the missing source and its consultation interval');
+      if (action === 'partial-system') {
+        assert.match(gapText,/System audio · window 2 · 00:10–00:15 · failed/,
+          'recovery does not misidentify system audio as patient speech');
+        assert.equal(receipt.children.get('[data-telehealth-audio-scope-notice]').hidden,false);
+      } else {
+        assert.match(gapText,/Patient audio · window 2 · 00:10–00:15 · failed/,
+          'the receipt identifies the missing source and its consultation interval');
+      }
     }
     const actionButton=els.get('[data-telehealth-use-available]');
     if(action==='partial-retry'||action==='partial-late-response'||action==='partial-pages') {
@@ -431,8 +440,13 @@ async function scenario(action){
       assert.ok(confirmations.at(-1).includes('without adding transcript text'));
       assert.ok(confirmations.at(-1).includes('prior transcript content and notes are unchanged'));
     } else {
-      assert.ok(confirmations.at(-1).includes('Patient window 2 (00:10–00:15)'),
-        'acceptance confirmation names the exact interval gap');
+      assert.ok(confirmations.at(-1).includes(
+        action === 'partial-system' ? 'System audio window 2 (00:10–00:15)' : 'Patient window 2 (00:10–00:15)'
+      ), 'acceptance confirmation uses source provenance and exact interval');
+      if (action === 'partial-system') {
+        assert.equal(receipt.children.get('[data-telehealth-audio-scope-notice]').hidden,false,
+          'the system-audio warning survives partial acceptance');
+      }
       assert.ok(confirmations.at(-1).includes('later recovered speech is added as a new transcript version'));
     }
     fixture.currentCapture=null;
@@ -484,7 +498,10 @@ async function scenario(action){
   }
   await waitFor(()=>ui.isActive());
   if (action === 'system-audio') {
-    assert.match(els.get('[data-telehealth-receipt-message]').textContent, /unrelated applications or speech/);
+    assert.equal(receipt.children.get('[data-telehealth-source-label]').textContent,'System audio');
+    assert.equal(receipt.children.get('[data-telehealth-audio-scope-notice]').hidden,false);
+    assert.equal(receipt.attrs['aria-label'],'System audio activity check — patient identity unverified');
+    assert.equal(els.get('[data-telehealth-receipt-message]').hidden,true);
     assert.equal(receipt.children.get('[data-telehealth-speech-status="patient"]').textContent, 'System audio connected');
   } else {
     assert.equal(els.get('[data-telehealth-receipt-message]').hidden,true,'normal preparation needs no extra paragraph');
@@ -583,12 +600,11 @@ async function scenario(action){
   releaseStopCapture();
   await waitFor(()=>label.textContent==='Saving audio…');
   assert.equal(fixture.transcribeAttempts,0,'transcription cannot start before audio upload');
+  assert.equal(els.get('[data-telehealth-receipt-message]').hidden,true,
+    'saving progress stays in the record button without a routine paragraph');
   if (action === 'system-audio') {
-    assert.match(els.get('[data-telehealth-receipt-message]').textContent, /unrelated applications or speech/,
-      'system-audio privacy warning remains visible while stopping');
-  } else {
-    assert.equal(els.get('[data-telehealth-receipt-message]').hidden,true,
-      'saving progress stays in the record button without a routine paragraph');
+    assert.equal(receipt.children.get('[data-telehealth-audio-scope-notice]').hidden,false,
+      'the independent scope warning survives the Stop/save pipeline');
   }
   releaseStopUpload();
   await waitFor(()=>label.textContent==='Finalising audio…');
@@ -665,6 +681,7 @@ await scenario('late-start-root-switch');
 await scenario('late-start-root-switch-precreate');
 await scenario('partial-cancel');
 await scenario('partial-accept');
+await scenario('partial-system');
 await scenario('partial-retry');
 await scenario('partial-silent');
 await scenario('partial-late-response');

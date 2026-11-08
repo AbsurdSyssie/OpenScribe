@@ -89,6 +89,8 @@ const fetcher = async (path, opts = {}) => {
   history.push(opts.method || 'GET');
   if (path.endsWith('/telehealth/captures')) {
     assert.equal(history[0], 'capture-created-after-selection');
+    assert.equal(JSON.parse(opts.body).requested_audio_scope,'system',
+      'the selected system-audio scope is preserved in server metadata');
     return { ok: true, json: async () => ({ capture_session_id: 'session-uuid', status: 'active' }) };
   }
   if (path.endsWith('/stop')) {
@@ -131,7 +133,7 @@ const journal = {
 const stopPhases = [];
 const client = createTelehealthRecordingClient({
   transcriptId: 'transcript-uuid',
-  preparedSource: { isLive: () => true, transfer() {}, release() {} },
+  preparedSource: { audioScope: 'system', isLive: () => true, transfer() {}, release() {} },
   csrfFetch: fetcher, recoveryJournal: journal,
   pacedUpload: async () => {},
   onStopProgress: phase => stopPhases.push(phase),

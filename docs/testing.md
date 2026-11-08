@@ -2,6 +2,8 @@
 
 This document covers test execution, non-database test boundaries, and focused verification workflows. Database lifecycle and safety are in [dbtesting.md](dbtesting.md).
 
+The Docker runtime smoke workflow uses Node.js 24 for its browser-module syntax and smoke checks.
+
 Consultation-split tests must cover durable accepted-intent dispatch and duplicate delivery, queued-analysis waiting, one-note consumption, exact intent-bound review-draft initialization without document creation, safe terminalization for stale/deleted/expired roots, and sanitized retries for unexpected task failures. Verification tests must cover the no-selection and mixed/freeform fail-open paths, the structured exact-patch success and all-or-none rejection paths, durable submitted-before-call and duplicate-delivery behavior, quota settlement, and transcript deletion/retention. Assertions may inspect safe lifecycle metadata and encrypted-envelope presence, but must not print clinical source, provider output, patches, or verifier reasoning.
 
 Generation readiness tests must prove ordinary generation and current-source split analysis stay blocked while a live stream is active, finalizing, failed, or recovering, including the empty-transcript source path, and become available after completion or explicit discard. Workers may continue consuming already committed immutable source snapshots.

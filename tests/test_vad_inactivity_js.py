@@ -33,7 +33,7 @@ def test_vad_inactivity_prompt_dismiss_rearms_and_resets(tmp_path):
                 const DeepgramLiveStream = class {{}};
                 const trimPinnedVadSpeechBuffer = () => false;
               `)
-              .replace("import {{ createMicVisualizer }} from './micVisualizer.js?v=20261026-shared-mic-visualizer';", visualizerSource)
+              .replace("import {{ createMicVisualizer }} from './micVisualizer.js?v=20261106-patient-audio-meter';", visualizerSource)
               .replace("import {{ createOwnedMicStream, createVadCaptureCallbacks, createVadCaptureOptions }} from './vadCapture.js?v=20261027-shared-vad-capture';", captureHelpersSource)
               .replaceAll('export function ', 'function ');
 

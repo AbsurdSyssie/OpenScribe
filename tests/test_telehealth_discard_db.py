@@ -14,8 +14,11 @@ from app.models import (
     TranscriptIngestionJob, TranscriptIngestionJobKind,
     TranscriptIngestionJobStatus, TranscriptIngestionMode, TranscriptStatus, utcnow,
 )
-from app.services.telehealth_capture import discard_unsubmitted_telehealth_capture
+from app.services.telehealth_capture import (
+    acknowledge_incomplete_telehealth_capture, discard_unsubmitted_telehealth_capture,
+)
 from app.services.telehealth_api import unresolved_telehealth_capture_detail
+from app.services.structured_transcripts import append_transcript_turns, load_current_turns
 from app.services.transcripts import (
     _resolved_transcript_status, assert_no_unresolved_stream_session,
 )
@@ -152,3 +155,40 @@ def test_discard_refuses_any_stt_submitted_source_even_after_failure(
     db_session.refresh(capture)
     assert part.ingestion_job_id is not None
     assert capture.status == "failed"
+
+
+def test_discard_acknowledged_interruption_removes_and_does_not_restore_warning(
+    db_session, make_team, make_user, monkeypatch,
+):
+    team = make_team(name="Telehealth Discard Warning")
+    owner = make_user(
+        email="telehealth-discard-warning@example.com", password="password-1", team=team,
+    )
+    transcript, capture, _, _ = _fixture(db_session, owner)
+    acknowledge_incomplete_telehealth_capture(
+        db_session, owner, transcript_id=transcript.id, capture_session_id=capture.id,
+    )
+    # Reproduce an existing current warning created before discard.
+    before = append_transcript_turns(
+        db_session, transcript=transcript, scope_id=uuid4(),
+        turns=[{"text": "Synthetic prior consultation."}],
+    )
+    assert any(turn["source_warning"] for turn in before)
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.services.transcripts.delete_transcript_ingestion_source_audio",
+        lambda *, secret_ref: None,
+    )
+    discarded = discard_unsubmitted_telehealth_capture(
+        db_session, owner, transcript_id=transcript.id, capture_session_id=capture.id,
+    )
+    assert discarded.incomplete_acknowledged_at is not None
+    assert discarded.failure_code == "source_ended"
+
+    for text in ("Synthetic new source.", "Synthetic later source."):
+        turns = append_transcript_turns(
+            db_session, transcript=transcript, scope_id=uuid4(), turns=[{"text": text}],
+        )
+        db_session.commit()
+        assert not any(turn["source_warning"] for turn in turns)
+        assert not any(turn["source_warning"] for turn in load_current_turns(db_session, transcript=transcript))

@@ -13,11 +13,11 @@ NODE = shutil.which("node")
 def test_failed_sealed_submission_retries_from_rendered_control_and_discard_unlocks(tmp_path):
     source = (ROOT / "app/static/js/transcribe/telehealthUI.js").read_text(encoding="utf-8")
     source = source.replace(
-        "./telehealthRecordingClient.js?v=20261108-audio-provenance", "./fake.mjs"
+        "./telehealthRecordingClient.js?v=20261108-final-merge-review", "./fake.mjs"
     ).replace(
         "./telehealthCapture.js?v=20261108-system-audio", "./capture.mjs"
     ).replace(
-        "./telehealthRecoveryJournal.js?v=20261105-cross-tab-journal", "./fake.mjs"
+        "./telehealthRecoveryJournal.js?v=20261108-final-merge-review", "./fake.mjs"
     ).replace(
         "./telehealthDiagnostics.js?v=20261108-audio-scope", "./diagnostics.mjs"
     )
@@ -528,6 +528,11 @@ async function scenario(action){
       'the committed owner-unresolved capture is rendered with recovery actions');
     assert.equal(els.get('[data-record-toggle]').disabled,true,
       'the consultation stays blocked until the committed capture is resolved');
+    confirmationResult=false;
+    await els.get('[data-telehealth-transcribe]').click();
+    assert.match(confirmations.at(-1), /Stop recording in all other tabs and devices first/);
+    assert.match(confirmations.at(-1), /stops and finalizes this capture/);
+    assert.match(confirmations.at(-1), /unflushed speech may be lost/);
     return;
   }
   await waitFor(()=>ui.isRecording());

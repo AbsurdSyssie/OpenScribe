@@ -44,9 +44,9 @@ def fixture_code(filename: str) -> str:
 def main() -> None:
     ui = (JS / "telehealthUI.js").read_text(encoding="utf-8")
     imports = {
-        "./telehealthRecordingClient.js?v=20261108-audio-provenance": "./fake.mjs",
+        "./telehealthRecordingClient.js?v=20261108-final-merge-review": "./fake.mjs",
         "./telehealthCapture.js?v=20261108-system-audio": "./capture.mjs",
-        "./telehealthRecoveryJournal.js?v=20261105-cross-tab-journal": "./fake.mjs",
+        "./telehealthRecoveryJournal.js?v=20261108-final-merge-review": "./fake.mjs",
         "./telehealthDiagnostics.js?v=20261108-audio-scope": "./diagnostics.mjs",
     }
     for original, replacement in imports.items():

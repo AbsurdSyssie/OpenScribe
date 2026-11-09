@@ -105,7 +105,7 @@ def test_smart_phrase_partial_opens_blank_creator_for_canonical_new_selection():
 def test_smart_phrase_library_renders_personal_portability_controls():
     rendered = _render_partial([_phrase()])
 
-    assert 'class="smart-phrase-library-utilities" aria-label="Smart phrase import and export"' in rendered
+    assert 'class="smart-phrase-library-utilities" role="group" aria-label="Smart phrase import and export"' in rendered
     assert 'data-smart-phrase-export-checkbox' in rendered
     assert 'data-smart-phrase-import-dialog' in rendered
     assert 'data-smart-phrase-import-file' in rendered

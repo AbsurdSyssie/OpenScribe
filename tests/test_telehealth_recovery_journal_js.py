@@ -178,7 +178,7 @@ const fetcher = async (url, opts) => {
     identity: opts.headers['Idempotency-Key'],
   };
   attempted.push(submitted);
-  if (fail) {
+  if (fail && attempted.length === 2) {
     fail = false;
     return {ok:false, json:async()=>({error:{message:'Synthetic network disconnect'}})};
   }
@@ -198,11 +198,108 @@ const onReload = createTelehealthRecoveryJournal({store,cryptography:webcrypto,n
 assert.deepEqual(await replayTelehealthRecoveryWindows({
   journal:onReload, capture:receipt, csrfFetch:fetcher, pace:async()=>{},
 }), {clinician:0,patient:1});
-assert.equal(attempted.length, 2);
-assert.equal(attempted[0].identity, attempted[1].identity);
-assert.equal(attempted[0].identity, otherK);
+assert.equal(attempted.length, 3);
+assert.equal(attempted[0].channel, 'clinician', 'existing server parts are checked with exact replay');
+assert.equal(attempted[0].identity, K);
+assert.equal(attempted[1].identity, attempted[2].identity);
+assert.equal(attempted[1].identity, otherK);
 assert.equal(store.tables.pending_windows.size, 0);
 assert.equal(store.tables.capture_keys.size, 0, 'remove the encryption key on successful ack');
+
+// Equal timing bounds alone cannot authorize deleting a local window. A 409
+// from the staging endpoint means the server has a different key or digest.
+const conflictCapture = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const conflictPart = { ...part('patient',0,otherK), captureId:conflictCapture };
+await journal.persist(conflictPart);
+const conflictReceipt = {
+  capture_session_id:conflictCapture, transcript_id:T, status:'ready',
+  parts:[{
+    channel:'patient', sequence_no:0, status:'staged',
+    timeline_start_frame:0, timeline_end_frame:12,
+  }],
+};
+await assert.rejects(replayTelehealthRecoveryWindows({
+  journal, capture:conflictReceipt,
+  csrfFetch:async()=>({ok:false,json:async()=>({error:{message:'Conflicting idempotency key'}})}),
+  pace:async()=>{},
+}), /Conflicting idempotency key/);
+assert.equal((await journal.list(conflictCapture,T)).length,1,
+  'conflicting remote identity retains encrypted local audio');
+await journal.clear(conflictCapture,T);
+
+// A sealed exact retry is safe and validates the accepted bytes/key before the
+// local journal is removed; it does not count as a newly attached window.
+const sealedCapture = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+await journal.persist({ ...part('clinician',0,K), captureId:sealedCapture });
+let sealedReplayCount = 0;
+const sealedReceipt = {
+  capture_session_id:sealedCapture, transcript_id:T, status:'ready',
+  parts:[{
+    channel:'clinician', sequence_no:0, status:'staged',
+    timeline_start_frame:0, timeline_end_frame:12,
+  }],
+};
+assert.deepEqual(await replayTelehealthRecoveryWindows({
+  journal, capture:sealedReceipt,
+  csrfFetch:async(_url, opts)=>{
+    sealedReplayCount += 1;
+    assert.equal(opts.headers['Idempotency-Key'],K);
+    return {ok:true,json:async()=>({capture_session_id:sealedCapture,
+      part:{channel:'clinician',sequence_no:0}})};
+  }, pace:async()=>{},
+}), {clinician:0,patient:0});
+assert.equal(sealedReplayCount,1);
+assert.equal((await journal.list(sealedCapture,T)).length,0);
+
+// Invalid remote ledgers can fail after decryption. Every plaintext buffer
+// returned by the journal must still be zeroed on that path.
+const invalidCapture = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+await journal.persist({ ...part('patient',0,otherK), captureId:invalidCapture });
+const plaintextEntries = await journal.list(invalidCapture,T);
+await assert.rejects(replayTelehealthRecoveryWindows({
+  journal:{ list:async()=>plaintextEntries },
+  capture:{
+    capture_session_id:invalidCapture, transcript_id:T, status:'active',
+    parts:[
+      {channel:'patient',sequence_no:0},
+      {channel:'patient',sequence_no:0},
+    ],
+  }, csrfFetch:fetcher, pace:async()=>{},
+}), /Saved Telehealth source sequence is invalid/);
+assert.ok(plaintextEntries.every((entry)=>entry.bytes.every((byte)=>byte===0)),
+  'invalid remote ledger clears all decrypted audio');
+await journal.clear(invalidCapture,T);
+
+// If a later ciphertext fails authentication, earlier decrypted windows are
+// cleared before list() rejects. Capture the first returned plaintext buffer
+// through a synthetic WebCrypto wrapper to verify the wipe deterministically.
+const midDecryptCapture = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+await journal.persist({ ...part('clinician',0,K), captureId:midDecryptCapture });
+await journal.persist({ ...part('patient',0,otherK), captureId:midDecryptCapture });
+let firstDecrypted = null;
+let decryptCalls = 0;
+const failingDecryptCrypto = {
+  subtle: {
+    generateKey: (...args)=>webcrypto.subtle.generateKey(...args),
+    encrypt: (...args)=>webcrypto.subtle.encrypt(...args),
+    decrypt: async (...args)=>{
+      decryptCalls += 1;
+      if (decryptCalls === 2) throw new Error('Synthetic authentication failure');
+      const plaintext = await webcrypto.subtle.decrypt(...args);
+      firstDecrypted = new Uint8Array(plaintext);
+      return plaintext;
+    },
+  },
+  getRandomValues: (bytes)=>webcrypto.getRandomValues(bytes),
+  randomUUID: ()=>webcrypto.randomUUID(),
+};
+const failingDecryptJournal = createTelehealthRecoveryJournal({
+  store, cryptography:failingDecryptCrypto, now:()=>now, locks,
+});
+await assert.rejects(failingDecryptJournal.list(midDecryptCapture,T), /failed authentication/);
+assert.ok(firstDecrypted.every((byte)=>byte===0),
+  'a later decryption error clears earlier plaintext buffers');
+await journal.clear(midDecryptCapture,T);
 
 const conflict = part('patient', 0, otherK);
 await journal.persist(conflict);
@@ -223,6 +320,34 @@ const raw = store.tables.pending_windows.get(C+':patient:0');
 new Uint8Array(raw.ciphertext)[0] ^= 8;
 await assert.rejects(journal.list(C,T), /failed authentication/);
 await journal.clear(C,T);
+
+// The storage health check is a real store access, so it must enforce expiry
+// before another capture can begin. Keep fresh windows and a fresh key that
+// has not committed its first window.
+const expiredCapture = '77777777-7777-4777-8777-777777777777';
+const freshCapture = '88888888-8888-4888-8888-888888888888';
+const unusedFreshCapture = '99999999-9999-4999-8999-999999999999';
+await journal.persist({ ...part('clinician',0,K), captureId:expiredCapture });
+await journal.persist({ ...part('patient',0,otherK), captureId:freshCapture });
+now += 6*60*60*1000 + 1;
+const freshWindowId = freshCapture + ':patient:0';
+store.tables.pending_windows.get(freshWindowId).createdAt = now;
+store.tables.capture_keys.get(freshCapture).createdAt = now;
+store.tables.capture_keys.set(unusedFreshCapture, {
+  id:unusedFreshCapture, key, createdAt:now,
+});
+await journal.check();
+assert.equal(store.tables.pending_windows.has(expiredCapture+':clinician:0'),false,
+  'check removes an encrypted recovery window after its six-hour deadline');
+assert.equal(store.tables.capture_keys.has(expiredCapture),false,
+  'check removes the expired window encryption key');
+assert.equal(store.tables.pending_windows.has(freshWindowId),true,
+  'check preserves a fresh encrypted window');
+assert.equal(store.tables.capture_keys.has(freshCapture),true,
+  'check preserves a key for a fresh window');
+assert.equal(store.tables.capture_keys.has(unusedFreshCapture),true,
+  'check preserves a fresh key while its first window is still being committed');
+await journal.clear(freshCapture,T);
 
 // Persisting a ninth unaccepted 10-second window must fail and NOT replace
 // any of the eight encrypted source windows already stored.

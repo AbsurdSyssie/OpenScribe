@@ -190,7 +190,7 @@ def test_scribe_mobile_flow_assets_have_current_cache_keys():
     assert 'data-dictation-live-toggle' in scribe_workspace
     assert '{% if dictation_live_streaming_available %}' not in scribe_workspace
     assert 'transcribe/mobile.js?v=20260823-mobile-toast' in shell_extras
-    assert 'documents.js?v=20261103-working-note-revision' in read("app/static/js/transcribe/app.js")
+    assert 'documents.js?v=20261108-final-merge-review' in read("app/static/js/transcribe/app.js")
     assert 'transcribe-mobile.css?v=20260930-detected-pii-override' in legacy_transcribe
     assert 'src="/static/js/transcribe/mobile.js' not in legacy_transcribe
 

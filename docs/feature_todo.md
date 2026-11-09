@@ -6,6 +6,54 @@ This file contains only confirmed remaining product/engineering work. Completed 
 
 Use issues/focused plans for implementation detail. Do not use this file as a substitute for migrations/services/tests/security review.
 
+## Telehealth release validation and deferred scope
+
+The reviewed branch implements the core recorded browser-tab pathway with
+separate clinician/patient sources, encrypted browser recovery, bounded replay,
+partial-result recovery, and discard. The final merge review fixed the
+identified journal-expiry, replay-integrity, buffer-clearing,
+discarded-notice, and same-document menu-refresh regressions. These fixes do
+not certify platform support or clinical readiness. See the [current capture
+contract](transcript-capture.md), [synthetic physical walkthrough](telehealth-crash-walkthrough.md),
+and [dated merge review](reviews/telehealth-final-merge-review-2026-11-08.md).
+
+**V1 browser-tab release gates:** before enabling the feature outside isolated
+testing, complete the physical walkthrough for the browser-tab mode on each
+intended OS/browser combination. Verify independent clinician-mic and call-tab
+audio, timing/ordering, source loss and recovery, consent, headphones, and
+provider-metered durations/billing for both channels. Complete privacy,
+subprocessor, retention, concurrent-worker, and documented clinical-safety
+reviews, including clear clinician instructions to verify identity, content,
+omissions, and incomplete-capture warnings. Keep `TELEHEALTH_API_ENABLED` off
+until the V1 release checks are signed off. Unit, synthetic-browser, and CI
+tests alone do not authorize release.
+
+**Experimental window/system audio:** the consent flow currently exposes this
+as experimental. Do not promise or enable it for clinical use until the
+intended browser/OS combinations have been physically checked for independent
+mic and call audio, unrelated system sound, source loss, permission denial,
+recovery, and privacy consequences. Selection of an application window or a
+live audio track does not prove application-level isolation. The reported
+Ubuntu 24 Brave/Edge setup allowed window selection but prompted the user to
+choose another browser tab to share audio; this is one environment observation,
+not a universal compatibility statement or a blocker to a separately validated
+browser-tab path. No native Linux desktop-audio bridge is implemented.
+
+**Deferred product phase:** the agreed plan treats native WhatsApp Desktop
+capture on Windows/macOS as a later phase. Feasibility, supported platform
+approach, implementation, and acceptance evidence remain future work. This
+phase is separate from V1 browser-tab release gates and does not imply that the
+current experimental window mode provides native app-isolated capture.
+
+**Known runtime limitations:** recovery cannot detect or stop a recorder in
+another tab or device. The clinician must stop those recordings before
+continuing recovery; doing so finalizes the old capture and may lose audio not
+yet flushed into an encrypted window. Recovery windows expire when the browser
+next opens the recovery store after six hours; dormant browser data can remain
+longer, while clearing browser data can remove recovery sooner. These are
+current behavior and release considerations, not new authorization to change
+cross-device detection or retention architecture.
+
 ## Capture quality and resilience
 
 ### Controlled microphone/VAD tuning

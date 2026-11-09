@@ -9,8 +9,14 @@ Use desktop Chrome or Edge with a browser-tab Teams or WhatsApp Web call and
 a separate clinician microphone. A desktop application window (such as WhatsApp
 Desktop) may be selected only if the browser returns an audio track. Its playback
 may include other system audio; it is not yet validated as app-isolated capture.
-A native desktop capture bridge is not implemented. Use headphones to reduce
-microphone echo leakage. OpenScribe must be on HTTPS (or localhost) and the
+A native desktop capture bridge is not implemented. A reported Ubuntu 24
+setup using Brave and Edge allowed application-window selection but displayed
+the browser message “select another browser tab” to share audio. Treat this as
+an observed limitation of that setup, not a compatibility conclusion for all
+Linux/browser versions. Windows/macOS and current browser combinations remain
+to be validated; a picker accepting a window is not evidence that its audio is
+captured or isolated. Use headphones to reduce microphone echo leakage.
+OpenScribe must be on HTTPS (or localhost) and the
 browser must allow WebCrypto, IndexedDB, the Web Locks API, microphone and
 browser-tab sharing. Recording fails closed if encrypted, cross-tab recovery
 coordination is unavailable.
@@ -81,11 +87,15 @@ recording works when the phone toggle is off.
    reopen the **same browser profile** and sign in as the **same owner**.
 5. Reopen the same consultation. The receipt should show an unresolved capture
    even if **Show Telehealth button** was previously disabled in Settings.
-6. Click **Recover audio and transcribe**. The UI should stop/mark the capture
+6. Stop recording in every other OpenScribe tab and device before continuing.
+   Recovery cannot detect or stop another active recorder automatically.
+7. Click **Recover audio and transcribe**. The UI should stop/mark the capture
    incomplete, replay saved windows using original channel/sequence IDs,
    re-check the server receipt, seal only after verifying accepted counts,
    request explicit clinician acknowledgement, then submit both recoverable
-   sources for STT.
+   sources for STT. Audio frames still buffered in the browser and not yet
+   flushed into an encrypted window may be lost; review the incomplete warning
+   and do not treat recovery as a complete recording.
 
 **Pass:** no automatic declaration of a complete capture; no duplicate
 clinician/patient windows, even if an earlier server reply was lost. The
@@ -176,10 +186,14 @@ activity; number of server-accepted windows per channel; number of locally
 replayed windows; capture state before/after reload; incomplete warning present;
 STT completion state; and any anonymized console/network error codes.
 
-**Release gate:** Passing this walkthrough does **not** replace full
-concurrent-worker/retention tests, provider billing checks, privacy assessment,
-or a documented clinical-safety review.
+**Release gate:** This procedure is required validation and is not evidence
+that the scenarios have passed. Passing it does **not** replace full
+concurrent-worker/retention tests, provider timing and billing checks,
+privacy/subprocessor assessment, or documented clinical-safety review. Keep the
+feature flag off until the supported OS/browser matrix, real-device audio
+behavior, provider accounting, and clinical/privacy release checks are signed
+off.
 
 ## Experimental window/system audio manual validation
 
-Before clinical use, test the Telehealth consent dialog's **System audio (experimental)** option in current Chrome and Edge on each supported Windows/macOS combination. Select a real desktop telehealth/Electron application window and explicitly enable audio in the browser picker. Check that the clinician microphone remains the independent channel and that patient speech reaches the system-audio track, including with headphones. Also test speakers, microphone monitoring, unrelated app notifications, call audio-device changes, picker denial, missing audio tracks, and source termination while capturing. Verify recording and recovery warnings and that the requested audio scope is returned with the owner-scoped capture details. System audio may contain unrelated speech: do not claim application isolation from window selection alone, and do not enable this mode for clinical production without privacy and real-device sign-off. Entire-screen capture is excluded.
+Before clinical use, test the Telehealth consent dialog's **System audio (experimental)** option in current Chrome and Edge on each intended Windows/macOS combination. These are validation targets, not currently certified combinations. Select a real desktop telehealth/Electron application window and explicitly enable audio in the browser picker. Check that the clinician microphone remains the independent channel and that patient speech reaches the system-audio track, including with headphones. Also test speakers, microphone monitoring, unrelated app notifications, call audio-device changes, picker denial, missing audio tracks, and source termination while capturing. Verify recording and recovery warnings and that the requested audio scope is returned with the owner-scoped capture details. System audio may contain unrelated speech: do not claim application isolation from window selection alone, and do not enable this mode for clinical production without privacy and real-device sign-off. Entire-screen capture is excluded.

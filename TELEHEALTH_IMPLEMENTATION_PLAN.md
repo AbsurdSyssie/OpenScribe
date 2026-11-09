@@ -1,6 +1,6 @@
 # Telehealth dual-channel capture — implementation and decision plan
 
-**Status:** PRODUCT SCOPE AGREED — implementation work packages ready for agents. Engineering feasibility, security, privacy and clinical-safety release gates remain mandatory; this status is **not** production deployment approval.
+**Status:** Historical product-decision and implementation plan. The core recorded browser-tab capture path is implemented on the reviewed branch. Platform validation and the separately agreed native WhatsApp Desktop Windows/macOS phase remain outstanding. For current behavior and remaining work, use [docs/transcript-capture.md](docs/transcript-capture.md), [docs/feature_todo.md](docs/feature_todo.md), and [the physical validation procedure](docs/telehealth-crash-walkthrough.md). This dated decision record does not certify platform support or authorize production/clinical use.
 **Branch:** feature/telehealth-dual-channel-capture (branched from master at bf63c2879dd8526db582a9598663db92df13642b on 2026-11-04).
 **Owner:** OpenScribe maintainers. **Scope:** One clinician-owned consultation in OpenScribe Scribe, with local microphone and remote-call/tab audio kept separate for transcription and mapped into one ordered structured transcript.
 **Plan authority:** This document was requested explicitly in the repository root. Repository AGENTS.md normally prefers plans/; the root placement is intentional.

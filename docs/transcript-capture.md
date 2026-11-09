@@ -4,7 +4,7 @@
 
 This document describes implemented transcript-ingestion behavior and clearly labelled remaining work. The previous opening that described capture as a pre-implementation MVP plan was obsolete: whole-file and live-chunked ingestion, queued worker processing, encrypted persistence, working notes, post-consultation dictation, and owner workspace behavior are implemented.
 
-Detailed browser VAD behavior for the live path is in [live_stt.md](live_stt.md). Endpoint request/response details are in [api.md](api.md).
+Detailed browser VAD behavior for the live path is in [live_stt.md](live_stt.md). Endpoint request/response details are in [api.md](api.md). For Telehealth's current limitations and remaining release validation, see [the capture backlog](feature_todo.md#telehealth-release-validation-and-deferred-scope); the step-by-step synthetic device and crash-recovery procedure is [the physical walkthrough](telehealth-crash-walkthrough.md).
 
 ## Security and ownership invariants
 
@@ -76,7 +76,7 @@ Successful in-flight siblings and later retries automatically produce a new tran
 
 Only the system updates current coverage notices as gaps change. Historical versions retain their original notices and content. Failed or expired intervals remain visible; retry is offered only while the original source is available. No clinical speech is invented when no result is usable.
 
-Apply Alembic revision `a1b2c3d4e5f6` before running code that accepts partial captures. It adds `partial` to the existing capture-status constraint. Downgrade refuses while any accepted partial capture remains; do not rewrite capture states or delete retained source to bypass that guard. The feature remains default-off.
+Before deploying this code, apply all branch migrations with `alembic upgrade head`, including the capture-session, discard-status, partial-status (`a1b2c3d4e5f6`), and requested-audio-scope (`eafc081108b1`) revisions. Downgrading the capture-session schema refuses while any capture-session rows remain; the discard-status revision refuses while discarded rows remain, and the partial-status revision refuses while accepted partial rows remain. Do not rewrite capture states, delete retained audio, or remove provenance to bypass these guards. The feature remains default-off.
 
 The encrypted browser recovery journal coordinates key and window updates across tabs with the Web Locks API. Web Locks support is required: capture fails closed when safe cross-tab coordination is unavailable. The journal keeps its existing limit of eight windows and six hours, including expiry cleanup during the startup readiness check. Recovery resubmits each retained window with its original bytes, timing and idempotency key before deleting it locally, even when matching timing already appears in the server receipt. Conflicting or rejected replays retain the encrypted window. Decrypted replay buffers are cleared on success and failure, including malformed receipts and partial decryption failures.
 

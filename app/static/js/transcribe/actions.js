@@ -1237,7 +1237,10 @@ export function attachTranscribeActions({
     if (noResults) noResults.hidden = !query || visible > 0;
   };
   dom.followupHistorySearch?.addEventListener('input', filterFollowupHistory);
-  window.document.addEventListener('transcribe:followup-history-rendered', filterFollowupHistory);
+  window.document.addEventListener('transcribe:followup-history-rendered', () => {
+    filterFollowupHistory();
+    positionOpenFollowupHistoryMenus();
+  });
   const positionFollowupHistoryMenu = (details) => {
     const summary = details?.querySelector('summary');
     const menu = details?.querySelector('[role="menu"]');

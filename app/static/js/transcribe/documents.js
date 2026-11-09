@@ -227,6 +227,9 @@ export function createDocumentNavigator({
     setTab,
   } = helpers;
 
+  const activeTranscriptId = () => String(getState()?.activeTranscriptId || '');
+  if (followupHistory) followupHistory.dataset.transcriptId = activeTranscriptId();
+
   const selectedDocumentFromList = (documents, selectedId) => {
     if (!Array.isArray(documents) || documents.length === 0) {
       return null;
@@ -425,6 +428,21 @@ export function createDocumentNavigator({
 
   const renderFollowupHistory = (documents, selectedId) => {
     if (!followupHistory) return;
+    const priorTranscriptId = followupHistory.dataset.transcriptId || '';
+    const transcriptId = activeTranscriptId();
+    const priorOpenMenu = followupHistory.querySelector('[data-followup-history-menu][open]');
+    const priorDocumentId = priorOpenMenu?.closest('[data-document-id]')?.dataset.documentId || '';
+    const priorSummary = priorOpenMenu?.querySelector('summary');
+    const priorFocus = window.document.activeElement;
+    const focusAction = priorOpenMenu?.contains(priorFocus)
+      ? (priorFocus === priorSummary ? 'summary'
+        : priorFocus.closest('[data-followup-copy]') ? 'copy'
+          : priorFocus.closest('[data-followup-delete]') ? 'delete' : null)
+      : null;
+    const preserveMenu = Boolean(priorDocumentId && priorTranscriptId
+      && priorTranscriptId === transcriptId
+      && documents.some((item) => String(item.id || '') === priorDocumentId));
+    followupHistory.dataset.transcriptId = transcriptId;
     followupHistory.innerHTML = "";
     if (!documents.length) {
       followupHistory.innerHTML = '<div class="followup-empty-v2">No follow-ups yet.</div><div class="followup-empty-v2" data-followup-history-no-results hidden>No follow-ups match your search.</div>';
@@ -455,7 +473,23 @@ export function createDocumentNavigator({
     });
     followupHistory.insertAdjacentHTML('beforeend', '<div class="followup-empty-v2" data-followup-history-no-results hidden>No follow-ups match your search.</div>');
     refreshIcons?.(followupHistory);
+    let focusAfterRender = null;
+    if (preserveMenu) {
+      const card = [...followupHistory.querySelectorAll('[data-document-id]')]
+        .find((item) => item.dataset.documentId === priorDocumentId);
+      const details = card?.querySelector('[data-followup-history-menu]');
+      if (details) {
+        details.open = true;
+        details.querySelector('summary')?.setAttribute('aria-expanded', 'true');
+        focusAfterRender = focusAction === 'copy'
+          ? details.querySelector('[data-followup-copy]')
+          : focusAction === 'delete'
+            ? details.querySelector('[data-followup-delete]')
+            : focusAction === 'summary' ? details.querySelector('summary') : null;
+      }
+    }
     window.document.dispatchEvent(new window.CustomEvent('transcribe:followup-history-rendered'));
+    focusAfterRender?.focus?.();
   };
 
   const renderSelectedNote = ({ forcePreserveEditor = false, forceRenderEditor = false } = {}) => {

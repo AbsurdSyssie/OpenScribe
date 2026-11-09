@@ -12,6 +12,7 @@ This document describes the implemented authentication, onboarding, account reco
 - A fresh trusted-device record can skip the TOTP challenge after successful password or linked-OIDC primary authentication.
 - The first system administrator can be created only while the database contains zero users. Production also requires `BOOTSTRAP_ADMIN_TOKEN`; the submitted deployment credential must match it.
 - Normal managed accounts are created by a leader/system administrator or from an approved account request.
+- Account deletion reassigns retained provider-management metadata, including LLM model-policy updater references, to the authorized deleting actor. This does not transfer ownership of clinical content.
 
 ## Browser destinations
 

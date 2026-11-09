@@ -210,21 +210,26 @@ export function createTelehealthRecoveryJournal({
     if (!subtle) throw new Error('Browser encryption is unavailable for saved audio.');
     const aesKey = await keyFor(captureId);
     const recovered = [];
-    for (const entry of entries) {
-      let plaintext;
-      try {
-        plaintext = await subtle.decrypt(
-          { name: 'AES-GCM', iv: entry.iv }, aesKey, entry.ciphertext,
-        );
-      } catch (_) {
-        throw new Error('Encrypted Telehealth recovery data failed authentication.');
+    try {
+      for (const entry of entries) {
+        let plaintext;
+        try {
+          plaintext = await subtle.decrypt(
+            { name: 'AES-GCM', iv: entry.iv }, aesKey, entry.ciphertext,
+          );
+        } catch (_) {
+          throw new Error('Encrypted Telehealth recovery data failed authentication.');
+        }
+        recovered.push({
+          captureId, transcriptId, channel: entry.channel, sequence: entry.sequence,
+          key: entry.key, spans: entry.spans, bytes: new Uint8Array(plaintext),
+        });
       }
-      recovered.push({
-        captureId, transcriptId, channel: entry.channel, sequence: entry.sequence,
-        key: entry.key, spans: entry.spans, bytes: new Uint8Array(plaintext),
-      });
+      return recovered;
+    } catch (error) {
+      for (const entry of recovered) entry.bytes.fill(0);
+      throw error;
     }
-    return recovered;
   });
   const remove = (part) => run(async () => {
     const id = partId(part.captureId, part.channel, part.sequence);
@@ -248,6 +253,10 @@ export function createTelehealthRecoveryJournal({
     if (!subtle || typeof cryptography?.getRandomValues !== 'function') {
       throw new Error('Encrypted Telehealth recovery requires WebCrypto on HTTPS or localhost.');
     }
+    // Opening the recovery store is also its expiry boundary. In particular,
+    // the startup health check must not leave six-hour-old audio on disk until
+    // a later upload or explicit recovery happens to list/persist a window.
+    await prune();
     await store.list(WINDOWS); // Fail BEFORE server capture if storage is blocked.
     const key = await subtle.generateKey(
       { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'],
@@ -337,51 +346,55 @@ export async function replayTelehealthRecoveryWindows({
   const captureId = capture.capture_session_id;
   const transcriptId = capture.transcript_id;
   const entries = await journal.list(captureId, transcriptId);
-  const remote = { clinician: new Map(), patient: new Map() };
-  for (const part of capture.parts || []) {
-    if (!CHANNELS.includes(part.channel) || !Number.isSafeInteger(part.sequence_no)
-      || remote[part.channel].has(part.sequence_no)) {
-      throw new Error('Saved Telehealth source sequence is invalid.');
-    }
-    remote[part.channel].set(part.sequence_no, part);
-  }
-  const next = {};
-  for (const channel of CHANNELS) {
-    let sequence = 0;
-    for (const value of [...remote[channel].keys()].sort((a, b) => a - b)) {
-      if (value !== sequence++) throw new Error('Server source sequence has a gap.');
-    }
-    next[channel] = sequence;
-  }
-  const replayed = { clinician: 0, patient: 0 };
   try {
+    const remote = { clinician: new Map(), patient: new Map() };
+    for (const part of capture.parts || []) {
+      if (!CHANNELS.includes(part.channel) || !Number.isSafeInteger(part.sequence_no)
+        || remote[part.channel].has(part.sequence_no)) {
+        throw new Error('Saved Telehealth source sequence is invalid.');
+      }
+      remote[part.channel].set(part.sequence_no, part);
+    }
+    const next = {};
+    for (const channel of CHANNELS) {
+      let sequence = 0;
+      for (const value of [...remote[channel].keys()].sort((a, b) => a - b)) {
+        if (value !== sequence++) throw new Error('Server source sequence has a gap.');
+      }
+      next[channel] = sequence;
+    }
+    const replayed = { clinician: 0, patient: 0 };
     for (const entry of entries) {
       const serverPart = remote[entry.channel].get(entry.sequence);
-    if (serverPart) {
-      const span = entry.spans[0];
-      if (serverPart.timeline_start_frame !== span.timeline_start_frame
-        || serverPart.timeline_end_frame !== span.timeline_end_frame
-        || serverPart.status === 'expired') {
-        throw new Error('Saved Telehealth audio conflicts with the server receipt.');
+      if (serverPart) {
+        const span = entry.spans[0];
+        if (serverPart.timeline_start_frame !== span.timeline_start_frame
+          || serverPart.timeline_end_frame !== span.timeline_end_frame
+          || serverPart.status === 'expired') {
+          throw new Error('Saved Telehealth audio conflicts with the server receipt.');
+        }
+        // Bounds do not prove that the server accepted these exact bytes or
+        // this idempotency key. Ask the existing staging endpoint to verify
+        // the original retry identity before deleting local recovery audio.
+        await submitTelehealthRecoveryWindow({ part: entry, csrfFetch, pace });
+        await journal.remove(entry);
+      } else {
+        if (!['active', 'stopping'].includes(capture.status)) {
+          throw new Error('This Telehealth capture is already sealed; unaccepted local audio cannot be attached.');
+        }
+        if (entry.sequence !== next[entry.channel]) {
+          throw new Error('A locally retained audio window is missing its preceding part.');
+        }
+        await submitTelehealthRecoveryWindow({ part: entry, csrfFetch, pace });
+        await journal.remove(entry);
+        next[entry.channel] += 1;
+        replayed[entry.channel] += 1;
       }
-      await journal.remove(entry);
-    } else {
-      if (!['active', 'stopping'].includes(capture.status)) {
-        throw new Error('This Telehealth capture is already sealed; unaccepted local audio cannot be attached.');
-      }
-      if (entry.sequence !== next[entry.channel]) {
-        throw new Error('A locally retained audio window is missing its preceding part.');
-      }
-      await submitTelehealthRecoveryWindow({ part: entry, csrfFetch, pace });
-      await journal.remove(entry);
-      next[entry.channel] += 1;
-      replayed[entry.channel] += 1;
     }
-    }
+    return replayed;
   } finally {
     // Zero every recovered plaintext buffer, including any not sent after
     // an HTTP, sequence-validation, storage or decryption error.
     for (const entry of entries) entry.bytes.fill(0);
   }
-  return replayed;
 }

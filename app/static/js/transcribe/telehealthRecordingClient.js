@@ -5,7 +5,7 @@ import {
   createTelehealthRecoveryJournal,
   createTelehealthUploadPacer,
   submitTelehealthRecoveryWindow,
-} from './telehealthRecoveryJournal.js?v=20261105-cross-tab-journal';
+} from './telehealthRecoveryJournal.js?v=20261108-final-merge-review';
 
 // Telehealth recorded-upload v1. Each track is submitted independently;
 // silence is retained in the uploaded audio, while the original context-frame

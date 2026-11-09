@@ -1,11 +1,11 @@
-import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261108-audio-provenance';
+import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261108-final-merge-review';
 import { prepareTelehealthDisplaySource } from './telehealthCapture.js?v=20261108-system-audio';
 import { createTelehealthDiagnostics } from './telehealthDiagnostics.js?v=20261108-audio-scope';
 import {
   createTelehealthRecoveryJournal,
   createTelehealthUploadPacer,
   replayTelehealthRecoveryWindows,
-} from './telehealthRecoveryJournal.js?v=20261105-cross-tab-journal';
+} from './telehealthRecoveryJournal.js?v=20261108-final-merge-review';
 
 // The recording bar is controlled only when Telehealth is explicitly selected.
 // Existing microphone/Deepgram recording flows remain untouched otherwise.
@@ -1078,9 +1078,11 @@ export function attachTelehealthControls({
     });
   });
   partial?.addEventListener('click', () => {
-    if (submissionInFlight || discardInFlight || (!client && !restoredCapture) || !window.confirm(
-      'This Telehealth recording may be incomplete after a browser crash. Encrypted local windows will be replayed with their original IDs where available. The final unflushed seconds may still be missing. Review the result before any clinical note. Continue?',
-    )) return;
+    if (submissionInFlight || discardInFlight || (!client && !restoredCapture)) return;
+    const confirmation = client
+      ? 'This Telehealth recording may be incomplete after a browser crash. Encrypted local windows will be replayed with their original IDs where available. The final unflushed seconds may still be missing. Review the result before any clinical note. Continue?'
+      : 'Stop recording in all other tabs and devices first. Continuing stops and finalizes this capture; unflushed speech may be lost. Encrypted local windows will be replayed where available. Review the result before any clinical note. Continue?';
+    if (!window.confirm(confirmation)) return;
     const continueCapture = async () => {
       if (client) {
         await client.acknowledgeIncomplete();

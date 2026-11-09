@@ -1,9 +1,9 @@
-import { attachTranscribeActions } from './actions.js?v=20261107-telehealth-switch-fence';
+import { attachTranscribeActions } from './actions.js?v=20261108-final-merge-review';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20261005-multiple-problems';
-import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261103-working-note-revision';
+import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261108-final-merge-review';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
 import { createAudioCaptureController } from './media.js?v=20261106-patient-audio-meter';
-import { attachTelehealthControls } from './telehealthUI.js?v=20261108-diagnostics-cache';
+import { attachTelehealthControls } from './telehealthUI.js?v=20261108-final-merge-review';
 import { DeepgramLiveStream, trimPinnedVadSpeechBuffer } from './deepgramLiveStream.js?v=20261027-dictation-live-preview';
 import { createOwnedMicStream, createVadCaptureOptions } from './vadCapture.js?v=20261027-shared-vad-capture';
 import { createMicVisualizer } from './micVisualizer.js?v=20261106-patient-audio-meter';

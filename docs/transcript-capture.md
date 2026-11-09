@@ -70,13 +70,15 @@ The owner can confirm **Use available transcript** for a failed submitted captur
 
 An accepted partial capture no longer blocks editing, generation, another recording, or navigation. Unrelated unresolved work still blocks. The receipt shows current missing clinician/patient intervals. Saved source versions include protected coverage notices before redaction; those notices cannot be edited or deleted as clinical speech. Notices alone do not count as usable clinical content.
 
+Discarded unsubmitted captures do not add coverage notices to later transcript updates. Refreshing current turns removes any notice previously added for a discarded capture; historical versions remain unchanged. Crash recovery does not detect recording in another tab or device. Stop recording in all other tabs and devices before recovery: continuing stops and finalizes the capture, and unflushed speech may be lost.
+
 Successful in-flight siblings and later retries automatically produce a new transcript version exactly once, without another acceptance step. Existing turn text, clinician edits, and deletions remain intact. New timed turns use only evidenced ordering within their capture; untimed recovery remains explicitly identified without invented chronology. Automatic insertion waits while another unresolved source holds the transcript writer boundary, retaining encrypted results for reconciliation. Already generated notes and immutable queued generation snapshots are unchanged; generating from the expanded source is a separate action.
 
 Only the system updates current coverage notices as gaps change. Historical versions retain their original notices and content. Failed or expired intervals remain visible; retry is offered only while the original source is available. No clinical speech is invented when no result is usable.
 
 Apply Alembic revision `a1b2c3d4e5f6` before running code that accepts partial captures. It adds `partial` to the existing capture-status constraint. Downgrade refuses while any accepted partial capture remains; do not rewrite capture states or delete retained source to bypass that guard. The feature remains default-off.
 
-The encrypted browser recovery journal coordinates key and window updates across tabs with the Web Locks API. Web Locks support is required: capture fails closed when safe cross-tab coordination is unavailable. The journal keeps its existing limit of eight windows and six hours, and removes acknowledged windows and unused keys through its existing cleanup rules.
+The encrypted browser recovery journal coordinates key and window updates across tabs with the Web Locks API. Web Locks support is required: capture fails closed when safe cross-tab coordination is unavailable. The journal keeps its existing limit of eight windows and six hours, including expiry cleanup during the startup readiness check. Recovery resubmits each retained window with its original bytes, timing and idempotency key before deleting it locally, even when matching timing already appears in the server receipt. Conflicting or rejected replays retain the encrypted window. Decrypted replay buffers are cleared on success and failure, including malformed receipts and partial decryption failures.
 
 ### Live chunked
 

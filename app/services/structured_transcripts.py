@@ -414,6 +414,10 @@ def _refresh_partial_source_warnings(
         if turn.get("source_warning") and turn["id"] not in managed_ids
     ]
     for session in sessions:
+        # Retain discarded session IDs in managed_ids so a prior warning is
+        # removed on refresh, but do not warn about audio the owner discarded.
+        if session.status == "discarded":
+            continue
         needs_warning = session.status == "partial" or session.failure_code in {
             "source_ended", "permission_revoked", "audio_clock_interrupted",
             "audio_backpressure", "audio_processor_failed", "upload_failed",

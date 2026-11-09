@@ -819,3 +819,21 @@ Reconciled on 19 October 2026 against `97da191926db1da74fdf741e01f4f8490d60f6c8`
 - Likely cause: the shared timer is cleared by each title input, while each callback promotes only its captured problem. This cause is inferred from the handler structure; the observed state was the earlier titled row remaining temporary.
 - Not fixed now: this is an incidental autosave issue outside the bounded layout review; broadening the implementation before the user validates the main flow could change autosave behavior.
 - Resolution: all titled temporary rows are promoted together; completed edits of existing rows still save. The focused controller regression passes standalone, including rapid multi-row entry without closing Review. The earlier scope decision above describes the initial layout-review stage.
+
+### ADMIN-DELETE-LLM-MODEL-POLICY-FK — 2026-11-08
+
+- Current status: Resolved in the Telehealth merge review; focused test passed on 8 November 2026. Reproduced on master baseline `bf63c2879dd8526db582a9598663db92df13642b`.
+- Locations: `app/services/admin.py::_delete_user_rows`; `app/models.py::TeamLlmProviderModelPolicy.updated_by_user_id`; `tests/test_api.py::test_system_admin_delete_reassigns_metadata_foreign_keys`.
+- The model declares `updated_by_user_id = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)`. The deletion service reassigns LLM configuration and selection metadata but does not reassign this policy reference.
+- Observed problem: deleting a system administrator referenced by a team LLM model policy fails on that foreign key. The integration review reproduced the same test failure on master using `APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_api.py::test_system_admin_delete_reassigns_metadata_foreign_keys`.
+- Likely impact: an affected system administrator account cannot be deleted until its policy metadata reference is resolved.
+- Resolution: the deletion service now reassigns the policy updater to the authorized deletion actor alongside other provider metadata; the existing deletion test asserts the policy reference. This does not transfer clinical content ownership.
+- Verification: `tests/test_api.py::test_system_admin_delete_reassigns_metadata_foreign_keys` passed (1 passed, 2 warnings).
+
+### ADMIN-QUOTA-INLINE-STYLE-CSP — 2026-11-08
+
+- Current status: Resolved during the Telehealth merge review; focused admin CSP browser verification passed on 9 November 2026. Present on master baseline `bf63c2879dd8526db582a9598663db92df13642b`.
+- Locations: `app/templates/admin_quota_panel.html` and `app/templates/_admin_quota_usage_detail_row.html`.
+- The quota bars included inline `style="width: ..."` attributes, which strict style-attribute CSP blocks and the existing security test detects.
+- Resolution: removed the redundant inline attributes while retaining the bounded `data-style-width-pct` values and progress-bar ARIA. Existing `applyPercentageStyle` and `setQuotaBarWidths` code in `app/templates/admin_mockup.html` applies these values through CSSOM for initial and dynamically loaded quota views.
+- Verification: `tests/test_csrf_browser.py::test_dynamic_cssom_mutations_work_under_strict_style_attribute_csp` passed as part of the final browser pair (2 passed, 4 warnings).

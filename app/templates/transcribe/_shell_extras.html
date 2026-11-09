@@ -117,6 +117,7 @@ syncQuickActionQuickPicks();
 document.addEventListener('click', function(e) {
 var recordModeDropdown = e.target.closest('[data-record-mode-dropdown]');
 if (recordModeDropdown) {
+if (recordModeDropdown.disabled) return;
 e.preventDefault();
 e.stopPropagation();
 var menu = document.querySelector('[data-record-mode-menu]');
@@ -134,6 +135,7 @@ return;
 
 var recordModeOption = e.target.closest('[data-mode]');
 if (recordModeOption) {
+if (recordModeOption.disabled) return;
 e.preventDefault();
 var mode = recordModeOption.getAttribute('data-mode');
 var modeSelect = document.querySelector('[data-recording-mode-select]');
@@ -538,6 +540,6 @@ syncRecordButtonLabel();
     } | tojson }}
   </script>
   <script src="/static/vendor/sortable/Sortable.min.js?v=1.15.2"></script>
-  <script type="module" src="/static/js/transcribe/app.js?v=20261104-living-problem-plan-29"></script>
+  <script type="module" src="/static/js/transcribe/app.js?v=20261108-final-merge-review"></script>
   <script type="module" src="/static/js/transcribe/mobile.js?v=20260823-mobile-toast"></script>
   {% include "_csrf_script.html" %}

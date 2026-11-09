@@ -2,13 +2,13 @@
 
 This document records the browser-side storage used by the current OpenScribe application. It supports the operator cookie/browser-storage notice and DSPT evidence. It does not describe every cookie or log that a reverse proxy, CDN, identity provider, or modified deployment may add.
 
-Last reviewed: 26 October 2026.
+Last reviewed: 5 November 2026.
 
 ## Scope and method
 
-The review covered cookie issuance in `app/main.py`, cookie names and lifetimes in the authentication and CSRF services, and every `localStorage` and `sessionStorage` reference under `app/`. Focused cookie, legal-content, workspace, admin-UI, and JavaScript contract tests provide regression evidence. A deployment check remains necessary before publication because Cloudflare or another proxy can add storage independently of OpenScribe.
+The review covered cookie issuance in `app/main.py`, cookie names and lifetimes in the authentication and CSRF services, every `localStorage` and `sessionStorage` reference, and Telehealth recovery storage under `app/`. Focused cookie, legal-content, workspace, admin-UI, and JavaScript contract tests provide regression evidence. A deployment check remains necessary before publication because Cloudflare or another proxy can add storage independently of OpenScribe.
 
-No application use of IndexedDB, Cache Storage, service workers, advertising storage, or third-party analytics SDK storage was found in this review.
+Telehealth uses IndexedDB for temporary recovery windows. It stores WAV bytes only after encrypting them with a non-extractable AES-GCM key held in IndexedDB; database rows contain ciphertext, IVs, and capture/window metadata. Same-origin browser tabs coordinate journal reads, writes, pruning, and deletion with the Web Locks API. Telehealth recording fails closed when Web Locks, IndexedDB, or WebCrypto is unavailable. If a journal write reports failure, the same encoded window is retried with its original key, sequence and timing; an ambiguous capture-start response triggers a fresh owner-scoped unresolved-capture check so a server-committed session remains available for recovery. The journal is limited to eight windows and removes windows older than six hours on its next access, including the startup readiness check. Recovery does not detect a live recording in another tab or device; stop recording in all other tabs and devices before recovery, which stops and finalizes the capture and may lose unflushed speech. Acknowledged windows and keys are deleted through the recovery flow. No application use of Cache Storage, service workers, advertising storage, or third-party analytics SDK storage was found in this review.
 
 ## Application cookies
 
@@ -52,7 +52,7 @@ The two transcript-linked entries are not authentication authority and cannot by
 
 The admin navigation value does not contain team names, member IDs, quota edit state, notices, monitoring filters, form drafts, credentials, or transcript-derived content. It is scoped by the system-administrator account ID and is separate per tab. No session, trusted-device, CSRF, provider credential, audio, transcript text, Working note, generated note, prompt, or PII value is intentionally stored in Web Storage.
 
-During eligible Deepgram live capture, the browser temporarily holds a bounded pre-roll ring and uncommitted recovery audio in JavaScript memory for the open tab. This is volatile capture state, not Web Storage; it is cleared after a committed window or successful explicit recovery and can be lost on refresh, tab closure, or process loss. If a stream window fails before it is committed, OpenScribe can store matching recovery audio in Vault for an owner-requested retry. That audio expires within 24 hours, subject to the transcript's earlier retention deadline. Successful stream windows retain finalized transcript text and metadata, not PCM audio.
+During eligible Deepgram live capture, the browser temporarily holds a bounded pre-roll ring and uncommitted recovery audio in JavaScript memory for the open tab. This is volatile capture state, not Web Storage; it is cleared after a committed window or successful explicit recovery and can be lost on refresh, tab closure, or process loss. If a stream window fails before it is committed, OpenScribe can store matching recovery audio in Vault for an owner-requested retry. That audio expires within 24 hours, subject to the transcript's earlier retention deadline. Successful stream windows retain finalized transcript text and metadata, not PCM audio. Telehealth tab capture has a separate encrypted IndexedDB recovery journal as described above; it contains no plaintext audio or transcript text.
 
 ## Cloudflare boundary
 

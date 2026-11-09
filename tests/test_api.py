@@ -14763,6 +14763,7 @@ def test_system_admin_delete_reassigns_metadata_foreign_keys(
     stt_selection = make_stt_selection(config=stt_config, actor=target)
     llm_config = make_llm_config(team=team, actor=target, label="Metadata LLM")
     llm_selection = make_llm_selection(config=llm_config, actor=target)
+    assert db_session.get(TeamLlmProviderModelPolicy, llm_config.id).updated_by_user_id == target.id
     team_template = PromptTemplate(
         scope=TemplateScope.team,
         owner_user_id=None,
@@ -14823,6 +14824,8 @@ def test_system_admin_delete_reassigns_metadata_foreign_keys(
     assert db_session.get(TeamSttSelection, stt_selection.id).selected_by_user_id == actor.id
     assert db_session.get(TeamLlmConfig, llm_config.id).created_by_user_id == actor.id
     assert db_session.get(TeamLlmConfig, llm_config.id).updated_by_user_id == actor.id
+    db_session.expire_all()
+    assert db_session.get(TeamLlmProviderModelPolicy, llm_config.id).updated_by_user_id == actor.id
     assert db_session.get(TeamLlmSelection, llm_selection.id).selected_by_user_id == actor.id
     assert db_session.get(PromptTemplate, team_template.id).created_by_user_id == actor.id
     assert db_session.get(PromptTemplateVersion, team_template_version.id).created_by_user_id == actor.id

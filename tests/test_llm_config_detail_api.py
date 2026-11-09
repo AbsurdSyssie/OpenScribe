@@ -1,5 +1,6 @@
 from app.schemas import LlmConfigDraftCreate
 from app.schemas import SttConfigDraftCreate
+from app.schemas.llm import LlmConfigInspectResult
 from app.schemas.stt import SttInspectResult
 from app.services import llm, stt
 
@@ -8,12 +9,12 @@ def test_system_admin_can_read_pending_llm_revision_metadata_without_secret(clie
     team = make_team(name="LLM review metadata")
     admin = make_user(email="llm-review-admin@example.com", password="password-1", is_system_admin=True)
     root = make_llm_config(team=team, actor=admin, label="Saved config", available_models_json=["base-model"])
-    monkeypatch.setattr(llm, "inspect_llm_contract", lambda *args, **kwargs: type("Inspection", (), {
-        "provider_preset": "openai", "provider_display_name": "OpenAI", "base_url": "https://api.openai.com/v1",
-        "adapter_kind": "openai_chat", "model_name": "review-model", "available_models": ["review-model"],
-        "discovery_status": "fetched", "default_model_source": "provider", "requires_bearer_token": True,
-        "supports_model_discovery": True, "warnings": [], "notes": [],
-    })())
+    monkeypatch.setattr(llm, "inspect_llm_contract", lambda *args, **kwargs: LlmConfigInspectResult(
+        provider_preset="openai", provider_display_name="OpenAI", base_url="https://api.openai.com/v1",
+        adapter_kind="openai_chat", model_name="review-model", available_models=["review-model"],
+        discovery_status="fetched", model_catalog_checked=True, model_catalog_check_status="checked",
+        default_model_source="provider", requires_bearer_token=True, supports_model_discovery=True,
+    ))
     monkeypatch.setattr(llm, "write_team_llm_bearer_token", lambda **kwargs: "vault://synthetic/unrestricted-secret-reference")
     revision, _ = llm.create_llm_config_draft(
         db_session,

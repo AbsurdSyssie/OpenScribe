@@ -1,6 +1,7 @@
 import socket
 import threading
 from datetime import timedelta
+from urllib.parse import urlparse
 
 import pytest
 from sqlalchemy.orm import sessionmaker
@@ -330,22 +331,21 @@ def test_followup_history_menu_paints_above_the_workspace(
     )
     db_session.add(transcript_version)
     db_session.flush()
-    db_session.add(
-        GeneratedDocument(
-            owner_user_id=member.id,
-            team_id=team.id,
-            transcript_id=transcript.id,
-            transcript_version_id=transcript_version.id,
-            generator_type=GeneratedDocumentGeneratorType.followup,
-            source_template_name="Follow-up",
-            status=GeneratedDocumentStatus.ready,
-            title="Custom follow-up",
-            document_mode=TemplateMode.freeform,
-            original_output_text_encrypted="Synthetic follow-up.",
-            edited_output_text_encrypted="Synthetic follow-up.",
-            retention_expires_at=transcript.retention_expires_at,
-        )
+    followup_document = GeneratedDocument(
+        owner_user_id=member.id,
+        team_id=team.id,
+        transcript_id=transcript.id,
+        transcript_version_id=transcript_version.id,
+        generator_type=GeneratedDocumentGeneratorType.followup,
+        source_template_name="Follow-up",
+        status=GeneratedDocumentStatus.ready,
+        title="Custom follow-up",
+        document_mode=TemplateMode.freeform,
+        original_output_text_encrypted="Synthetic follow-up.",
+        edited_output_text_encrypted="Synthetic follow-up.",
+        retention_expires_at=transcript.retention_expires_at,
     )
+    db_session.add(followup_document)
     db_session.commit()
 
     try:
@@ -363,13 +363,49 @@ def test_followup_history_menu_paints_above_the_workspace(
         page.get_by_role("button", name="Sign in").click()
         page.wait_for_url("**/workspace")
 
+        page.add_init_script(
+            f"""
+            (() => {{
+              const originalFetch = window.fetch.bind(window);
+              let releaseWorkspaceRefresh;
+              const workspaceGate = new Promise((resolve) => {{ releaseWorkspaceRefresh = resolve; }});
+              window.__releaseWorkspaceRefresh = () => releaseWorkspaceRefresh();
+              document.addEventListener('transcribe:followup-history-rendered', () => {{
+                if (document.documentElement.dataset.workspaceRefreshComplete === 'true') {{
+                  document.documentElement.dataset.workspaceRefreshRendered = 'true';
+                }}
+              }});
+              window.fetch = async (input, init) => {{
+                const url = typeof input === 'string' ? input : input.url;
+                if (!window.__workspaceRefreshHeld
+                  && url.includes('/api/v1/transcribe/workspace')
+                  && url.includes('transcript_id={transcript.id}')) {{
+                  window.__workspaceRefreshHeld = true;
+                  document.documentElement.dataset.workspaceRefreshHeld = 'true';
+                  await workspaceGate;
+                  const response = await originalFetch(input, init);
+                  document.documentElement.dataset.workspaceRefreshComplete = 'true';
+                  return response;
+                }}
+                return originalFetch(input, init);
+              }};
+            }})();
+            """
+        )
         page.goto(f"/transcribe?transcript_id={transcript.id}&tab=followups")
+        page.locator('html[data-workspace-refresh-held="true"]').wait_for()
         page.get_by_role("tab", name="Follow Ups").click()
 
         menu_trigger = page.locator("[data-followup-history-menu] > summary")
         menu_trigger.click()
         menu = page.locator('[data-followup-history-menu][open] > [role="menu"]')
         expect(menu).to_be_visible()
+        followup_document.updated_at = utcnow() + timedelta(seconds=1)
+        db_session.commit()
+        page.evaluate("window.__releaseWorkspaceRefresh()")
+        page.locator('html[data-workspace-refresh-rendered="true"]').wait_for()
+        expect(menu).to_be_visible()
+        expect(menu_trigger).to_be_focused()
 
         # Checking the viewport alone misses stacking-context bugs: a hidden menu
         # can retain a valid layout box. Hit testing its centre proves it paints
@@ -563,9 +599,13 @@ def test_dynamic_cssom_mutations_work_under_strict_style_attribute_csp(live_serv
         page.locator('form[action="/login"] input[name="email"]').fill("browser-dynamic-csp-admin@example.com")
         page.locator('form[action="/login"] input[name="password"]').fill("password-2")
         page.get_by_role("button", name="Sign in").click()
-        page.wait_for_url("**/admin")
+        # System-admin login canonically lands on /admin, then the default
+        # admin tab redirects to /admin/usage. Accept either route while
+        # asserting the subsequent request reaches an authorized page.
+        page.wait_for_url(lambda url: urlparse(url).path in {"/admin", "/admin/usage"})
         admin_response = page.goto("/admin")
         assert admin_response is not None
+        assert admin_response.status == 200
         assert "style-src-attr 'none'" in admin_response.headers["content-security-policy"]
         admin_chart_width = page.evaluate(
             """

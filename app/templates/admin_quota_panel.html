@@ -71,7 +71,7 @@
                 {% set usage_percent = ((committed * 100) / window.effective_limit)|round|int %}
                 <span>{{ usage_percent }}% committed</span>
                 <div class="quota-progress" role="progressbar" aria-label="{{ 'Daily' if quota_period == 'daily' else 'Monthly' }} {{ resource_name }} committed for {{ user.full_name or user.email }}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ 100 if usage_percent > 100 else usage_percent }}" aria-valuetext="{{ committed|quota_units(resource_key) }} committed of {{ window.effective_limit|quota_units(resource_key) }}; {{ window.consumed|quota_units(resource_key) }} used; {{ window.pending_reserved|quota_units(resource_key) }} in progress{% if committed > window.effective_limit %}; over limit by {{ (committed - window.effective_limit)|quota_units(resource_key) }}{% endif %}">
-                  <span data-style-width-pct="{{ 100 if usage_percent > 100 else usage_percent }}" style="width: {{ 100 if usage_percent > 100 else usage_percent }}%"></span>
+                  <span data-style-width-pct="{{ 100 if usage_percent > 100 else usage_percent }}"></span>
                 </div>
                 {% elif window.effective_limit == 0 %}
                 <span>Disabled{% if committed > 0 %} · {{ committed|quota_units(resource_key) }} committed{% endif %}</span>

@@ -57,8 +57,8 @@ def test_template_suggestion_preference_precedes_advanced_settings_and_stays_in_
     assert '.setting-control--model .select-wrap { width: 400px; max-width: 100%; }' in styles
     assert 'settings.css?v=20260902-account-dialogs-4' in settings_page
     assert 'settings.css?v=20260902-account-dialogs-4' in workspace_page
-    assert 'settings/controls.js?v=20260911-split-preferences' in settings_page
-    assert 'settings/controls.js?v=20260911-split-preferences' in workspace_page
+    assert 'settings/controls.js?v=20261022-diarization-preferences' in settings_page
+    assert 'settings/controls.js?v=20261022-diarization-preferences' in workspace_page
 
 
 def test_template_suggestion_popover_uses_static_csp_safe_styles():

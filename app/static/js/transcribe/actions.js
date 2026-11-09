@@ -10,6 +10,7 @@ export function attachTranscribeActions({
   getActiveIngestionMode,
   getIsLiveCaptureUiActive,
   getIsRecordingSwitchBlocked,
+  getIsTelehealthSelected,
   selectDocumentFromUi,
   showFlash,
   showCopyToast,
@@ -635,6 +636,10 @@ export function attachTranscribeActions({
     onTranscriptSelectionIntent?.();
     const workspace = await fetchWorkspace(nextTranscriptId, { allowTranscriptSwitch: true });
     if (!workspace) {
+      if (getIsRecordingSwitchBlocked?.()) {
+        showFlash('Stop recording before switching consultations.', 'warning');
+        return;
+      }
       window.location.assign(link.href);
       return;
     }
@@ -667,6 +672,10 @@ export function attachTranscribeActions({
           throw new Error(await parseErrorMessage(response, 'Could not create a new consultation.'));
         }
         const transcript = await response.json();
+        if (getIsRecordingSwitchBlocked?.()) {
+          showFlash('Stop recording before switching consultations.', 'warning');
+          return;
+        }
         window.location.assign(`${routeBase}?transcript_id=${transcript.id}`);
       } catch (error) {
         showFlash(error instanceof Error ? error.message : 'Could not create a new consultation.', 'error');
@@ -679,33 +688,45 @@ export function attachTranscribeActions({
       const transcriptId = getTranscriptId();
       const targetMode = dom.recordingModeSelect.value || 'whole_file';
       const previousMode = getActiveIngestionMode() || 'whole_file';
+      if (dom.recordingModeSelect.dataset.modeChangeInFlight === 'true') {
+        dom.recordingModeSelect.value = previousMode;
+        return;
+      }
+      if (getIsTelehealthSelected?.()) {
+        dom.recordingModeSelect.value = previousMode;
+        return;
+      }
       if (!transcriptId || targetMode === previousMode) {
         dom.recordingModeSelect.value = previousMode;
         return;
       }
-        try {
-          await syncTranscriptTitleIfNeeded();
-          const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}`, {
+      dom.recordingModeSelect.dataset.modeChangeInFlight = 'true';
+      try {
+        await syncTranscriptTitleIfNeeded();
+        if (getIsTelehealthSelected?.()) throw new Error('Turn off Telehealth before changing the recording mode.');
+        const response = await csrfFetch(`/api/v1/transcripts/${transcriptId}`, {
           method: 'PATCH',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ingestion_mode: targetMode }),
         });
-          if (!response.ok) {
-            throw new Error(await parseErrorMessage(response, 'Could not change the recording mode for this consultation.'));
-          }
-          if (persistUserAppPreferences) {
-            try {
-              await persistUserAppPreferences({ preferred_recording_mode: targetMode });
-            } catch (_) {}
-          }
-          await fetchWorkspace();
+        if (!response.ok) {
+          throw new Error(await parseErrorMessage(response, 'Could not change the recording mode for this consultation.'));
+        }
+        if (persistUserAppPreferences) {
+          try {
+            await persistUserAppPreferences({ preferred_recording_mode: targetMode });
+          } catch (_) {}
+        }
+        await fetchWorkspace();
         setMicButtons(getIsLiveCaptureUiActive());
         showFlash(`Recording mode changed to ${targetMode === 'live_chunked' ? 'live capture' : 'recorded upload'}.`, 'success');
       } catch (error) {
         dom.recordingModeSelect.value = previousMode;
         setMicButtons(getIsLiveCaptureUiActive());
         showFlash(error instanceof Error ? error.message : 'Could not change the recording mode for this consultation.', 'error');
+      } finally {
+        delete dom.recordingModeSelect.dataset.modeChangeInFlight;
       }
     });
   }
@@ -774,6 +795,11 @@ export function attachTranscribeActions({
   if (dom.uploadForm) {
     dom.uploadForm.addEventListener('submit', async (event) => {
       event.preventDefault();
+      if (getIsTelehealthSelected?.()) {
+        showFlash('Turn off Telehealth before uploading a recording.', 'warning');
+        return;
+      }
+      if (dom.uploadForm.dataset.uploadInFlight === 'true') return;
       const transcriptId = getTranscriptId();
       if (!transcriptId || !dom.fileInput?.files || dom.fileInput.files.length === 0) return;
       if (sharedPendingAudioRetry()) {
@@ -783,6 +809,12 @@ export function attachTranscribeActions({
       const file = dom.fileInput.files[0];
       const idempotencyKey = newUploadIdempotencyKey();
       const retry = async () => {
+        if (getIsTelehealthSelected?.()) {
+          showFlash('Turn off Telehealth before uploading a recording.', 'warning');
+          return false;
+        }
+        dom.uploadForm.dataset.uploadInFlight = 'true';
+        try {
         if (dom.pendingAudioRetryButton) dom.pendingAudioRetryButton.disabled = true;
         setVisibleStatus('uploading');
         setSessionProgress('Uploading your recording...');
@@ -793,6 +825,7 @@ export function attachTranscribeActions({
           let response = null;
           try {
             await syncTranscriptTitleIfNeeded();
+            if (getIsTelehealthSelected?.()) throw new Error('Turn off Telehealth before uploading a recording.');
             const formData = new FormData();
             formData.append('audio', file, file.name);
             response = await csrfFetch(`/api/v1/transcripts/${transcriptId}/audio-file`, {
@@ -826,6 +859,9 @@ export function attachTranscribeActions({
         setRetryAvailability(false);
         showPendingWholeFileUpload(message, retry, transcriptId);
         return false;
+        } finally {
+          delete dom.uploadForm.dataset.uploadInFlight;
+        }
       };
       await retry();
     });
@@ -1201,7 +1237,10 @@ export function attachTranscribeActions({
     if (noResults) noResults.hidden = !query || visible > 0;
   };
   dom.followupHistorySearch?.addEventListener('input', filterFollowupHistory);
-  window.document.addEventListener('transcribe:followup-history-rendered', filterFollowupHistory);
+  window.document.addEventListener('transcribe:followup-history-rendered', () => {
+    filterFollowupHistory();
+    positionOpenFollowupHistoryMenus();
+  });
   const positionFollowupHistoryMenu = (details) => {
     const summary = details?.querySelector('summary');
     const menu = details?.querySelector('[role="menu"]');

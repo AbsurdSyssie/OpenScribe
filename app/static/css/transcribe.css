@@ -3483,9 +3483,11 @@ color: var(--fg);
 .transcript-turn[data-speaker-tone="3"] { background: color-mix(in srgb, var(--accent-green) 48%, white); }
 .transcript-turn[data-speaker-tone="4"] { background: color-mix(in srgb, var(--parchment) 70%, white); }
 .transcript-turn[data-speaker-tone="neutral"] { background: #fff; }
+.transcript-turn--source-warning { background: color-mix(in srgb, var(--warning, #d69e2e) 10%, white); border-color: color-mix(in srgb, var(--warning, #d69e2e) 52%, white); }
 .transcript-turn__meta { min-height: 1.55rem; display: flex; align-items: center; gap: .45rem; padding: .18rem .55rem 0; color: var(--muted); font-size: .72rem; white-space: normal; }
 .transcript-turn__speaker { color: var(--accent); font-weight: 700; }
 .transcript-turn__edited { margin-left: auto; font-size: .7rem; }
+.transcript-turn__source-warning { margin-left: auto; color: #80520a; font-size: .7rem; font-weight: 650; }
 .transcript-turn__actions { margin-left: auto; position: relative; }
 .transcript-turn__actions summary { cursor: pointer; list-style: none; padding: 0 .35rem; font-size: 1.1rem; line-height: 1; }
 .transcript-turn__actions summary::-webkit-details-marker { display: none; }

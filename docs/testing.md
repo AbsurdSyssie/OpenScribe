@@ -2,6 +2,8 @@
 
 This document covers test execution, non-database test boundaries, and focused verification workflows. Database lifecycle and safety are in [dbtesting.md](dbtesting.md).
 
+The Docker runtime smoke workflow uses Node.js 24 for its browser-module syntax and smoke checks.
+
 Consultation-split tests must cover durable accepted-intent dispatch and duplicate delivery, queued-analysis waiting, one-note consumption, exact intent-bound review-draft initialization without document creation, safe terminalization for stale/deleted/expired roots, and sanitized retries for unexpected task failures. Verification tests must cover the no-selection and mixed/freeform fail-open paths, the structured exact-patch success and all-or-none rejection paths, durable submitted-before-call and duplicate-delivery behavior, quota settlement, and transcript deletion/retention. Assertions may inspect safe lifecycle metadata and encrypted-envelope presence, but must not print clinical source, provider output, patches, or verifier reasoning.
 
 Generation readiness tests must prove ordinary generation and current-source split analysis stay blocked while a live stream is active, finalizing, failed, or recovering, including the empty-transcript source path, and become available after completion or explicit discard. Workers may continue consuming already committed immutable source snapshots.
@@ -144,6 +146,30 @@ Transcript ingestion/generation lifecycle:
 ```bash
 pytest -q tests/test_api.py tests/test_transcript_streaming.py tests/test_retention.py tests/test_task_outbox.py tests/test_quota_lifecycle.py
 ```
+
+Telehealth capture and input exclusion:
+
+```bash
+pytest -q tests/test_telehealth_*.py tests/test_mic_visualizer.py tests/test_stt_diarization.py tests/test_consultation_split_writer_locks.py tests/test_batch_capture_startup.py
+```
+
+These checks use synthetic audio, provider responses, and Node DOM/media harnesses.
+They cover tab preparation without recording, cancellation and source cleanup,
+three-second speech confirmation, shared microphone meters, exclusive input
+controls, timestamp tolerance, and overlapping speaker turns. Database checks
+cover unresolved-capture admission barriers, idempotent uploads, and concurrent
+capture/upload locking. Partial-salvage checks also cover explicit acceptance,
+scoped readiness, retained-source retry and expiry, automatic once-only recovery,
+protected pre-redaction notices, empty-source generation guards, edited/deleted
+turn preservation, unchanged note snapshots, and deferred insertion during other
+recording. They do not establish browser or live-provider behavior;
+use [the telehealth walkthrough](telehealth-crash-walkthrough.md) for manual checks.
+The experimental system-audio option additionally requires manual Chrome/Edge
+validation on each supported Windows/macOS version with a desktop Electron call,
+headphones and speakers, unrelated notifications, microphone monitoring, audio
+permissions, missing/muted tracks, window selection, and crash recovery. Browser
+sharing options are hints; seeing the chosen window does not prove audio isolation.
+Full-screen sharing remains excluded.
 
 Provider configuration:
 
@@ -477,7 +503,7 @@ Before running it, add a synthetic, non-patient WAV file at `tests/example_audio
 
 ## Persistent Docker smoke workflow
 
-`.github/workflows/docker-smoke.yml` validates Compose, builds the image, starts the `runtime` profile, waits for the `/health` healthcheck, and prints concise container diagnostics on failure. It does not prove provider connectivity or production readiness.
+`.github/workflows/docker-smoke.yml` uses the Dockerfile's Python 3.12 version for host-side syntax checks and the dependency audit, then validates Compose, builds the image, starts the `runtime` profile, waits for the `/health` healthcheck, and prints concise container diagnostics on failure. It does not prove provider connectivity or production readiness.
 
 Local equivalent:
 

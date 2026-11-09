@@ -83,6 +83,10 @@ def _serialize_preferences_payload(payload: UserAppPreferencesUpsert) -> dict[st
         preferences["diarization_enabled"] = True
     if payload.diarization_warning_acknowledged:
         preferences["diarization_warning_acknowledged"] = True
+    if not payload.show_telehealth_control:
+        preferences["show_telehealth_control"] = False
+    if payload.telehealth_guidance_acknowledged:
+        preferences["telehealth_guidance_acknowledged"] = True
     return preferences
 
 
@@ -184,6 +188,10 @@ def _validate_preferences_json(db: Session, actor: User, preferences_json: dict[
         normalized["diarization_enabled"] = True
     if preferences_json.get("diarization_warning_acknowledged") is True:
         normalized["diarization_warning_acknowledged"] = True
+    if preferences_json.get("show_telehealth_control") is False:
+        normalized["show_telehealth_control"] = False
+    if preferences_json.get("telehealth_guidance_acknowledged") is True:
+        normalized["telehealth_guidance_acknowledged"] = True
 
     return normalized
 
@@ -253,6 +261,17 @@ def set_user_app_preferences(db: Session, actor: User, payload: UserAppPreferenc
     # preference. Preserve it when older clients submit a full preference set.
     if preference and preference.preferences_json.get("diarization_warning_acknowledged") is True:
         serialized["diarization_warning_acknowledged"] = True
+    # Acknowledgement is monotonic: older clients cannot reset it with a full
+    # preferences POST that does not know this new field.
+    if preference and (preference.preferences_json or {}).get("telehealth_guidance_acknowledged") is True:
+        serialized["telehealth_guidance_acknowledged"] = True
+    # Older clients omit this default-visible switch. Preserve an existing
+    # explicit hide decision unless the request actually includes the field.
+    if (
+        preference and "show_telehealth_control" not in payload.model_fields_set
+        and (preference.preferences_json or {}).get("show_telehealth_control") is False
+    ):
+        serialized["show_telehealth_control"] = False
     normalized = _validate_preferences_json(db, owner, serialized, strict=True)
     was_template_suggestions_enabled = preference is None or preference.preferences_json.get("template_suggestions_enabled") is not False
     will_template_suggestions_enabled = normalized.get("template_suggestions_enabled") is not False

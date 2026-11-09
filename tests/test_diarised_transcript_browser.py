@@ -328,3 +328,30 @@ def test_microphone_batch_capture_token_is_frozen_and_bound_to_every_upload():
     assert "captureSettingsId });" in media
     assert "event.detail?.diarisation_enabled" in app
     assert "diarizationEnabled: captureSettings.diarisation_enabled" in media
+
+
+def test_telehealth_role_headings_hide_only_legacy_prefix_and_preserve_edits(static_repo_server, tmp_path):
+    turns = [
+        {"id": "legacy", "scope_id": "telehealth", "speaker_id": "patient", "speaker_label": "Patient",
+         "speaker_text_prefix": "Patient: ", "text": "Patient: Synthetic 😀 report.",
+         "start_index": 0, "end_index": 27, "start_ms": 31000, "end_ms": 38000},
+        {"id": "current", "scope_id": "telehealth", "speaker_id": "clinician", "speaker_label": "Clinician",
+         "text": "When did it begin?", "start_index": 28, "end_index": 46,
+         "start_ms": 39000, "end_ms": 41000},
+        {"id": "ordinary", "scope_id": "ordinary", "speaker_id": "patient", "speaker_label": "Speaker 1",
+         "text": "Patient: spoken words.", "start_index": 47, "end_index": 69},
+    ]
+    with _browser_page(static_repo_server) as page:
+        _install_turn_editor(page, static_repo_server, turns=turns)
+        assert page.locator('.transcript-turn__speaker').all_text_contents() == ["Patient", "Clinician", "Speaker 1"]
+        assert page.locator('[data-turn-display="legacy"]').inner_text() == "Synthetic 😀 report."
+        assert page.locator('[data-turn-display="current"]').inner_text() == "When did it begin?"
+        assert page.locator('[data-turn-display="ordinary"]').inner_text() == "Patient: spoken words."
+        page.screenshot(path=str(tmp_path / "telehealth-role-turns.png"), full_page=True)
+        page.locator('[data-turn-display="legacy"]').click()
+        editor = page.locator('[data-turn-text="legacy"]')
+        assert editor.input_value() == "Synthetic 😀 report."
+        editor.fill("Synthetic 😀 correction.")
+        page.evaluate("() => window.turnTest.editor.flush()")
+        saved = page.evaluate("() => window.turnTest.state.requests.find(request => request.method === 'PATCH').body.text")
+        assert saved == "Patient: Synthetic 😀 correction."

@@ -185,6 +185,80 @@ def _speaker_turns_from_segments(
     return tuple(grouped) if grouped else None
 
 
+def _source_timed_turns_from_segments(
+    payload: dict[str, Any],
+    *,
+    segments_path: str | None,
+    segment_text_field: str | None,
+    segment_start_field: str | None,
+    segment_end_field: str | None,
+) -> tuple[SttSpeakerTurn, ...] | None:
+    """Optional timeline-only ASR segments, independent of diarisation.
+
+    Used only by source-attributed Telehealth: a provider's speaker numbers
+    must not override known microphone/call source roles. Preserve text
+    exactly and discard unsafe or absent timing rather than fabricating it.
+    """
+    if not segments_path:
+        return None
+    try:
+        raw_segments = extract_json_path(payload, segments_path)
+    except AppError:
+        return None
+    if not isinstance(raw_segments, list) or not 1 <= len(raw_segments) <= MAX_DIARIZATION_SEGMENTS:
+        return None
+    segments: list[SttSpeakerTurn] = []
+    previous_start_ms = -1
+    for item in raw_segments:
+        if not isinstance(item, dict):
+            return None
+        text = item.get(segment_text_field or "text")
+        start_ms = _timestamp_milliseconds(item.get(segment_start_field or "start"))
+        end_ms = _timestamp_milliseconds(item.get(segment_end_field or "end"))
+        if (
+            not isinstance(text, str) or not text.strip()
+            or len(text) > MAX_DIARIZED_TURN_TEXT_CHARS
+            or start_ms is None or end_ms is None or end_ms < start_ms
+            or start_ms < previous_start_ms
+        ):
+            return None
+        segments.append(SttSpeakerTurn(
+            text=text.strip(), speaker_id=None,
+            start_ms=start_ms, end_ms=end_ms,
+        ))
+        previous_start_ms = start_ms
+    return tuple(segments)
+
+
+def _deepgram_has_explicit_empty_transcript(
+    payload: dict[str, Any],
+    *,
+    response_text_path: str,
+    segments_path: str | None = None,
+) -> bool:
+    """Recognize Deepgram's valid no-speech result for source-attributed capture.
+
+    Accept only a present string transcript and an explicit empty word list.
+    Other payloads retain normal response validation and segment handling.
+    """
+    try:
+        transcript = extract_json_path(payload, response_text_path)
+        words = extract_json_path(payload, "results.channels.0.alternatives.0.words")
+    except AppError:
+        return False
+    if not isinstance(transcript, str) or transcript.strip() or words != []:
+        return False
+    if not segments_path:
+        return True
+    try:
+        configured_segments = extract_json_path(payload, segments_path)
+    except AppError:
+        # Configured timing is optional. An omitted provider field is not
+        # contradictory evidence; a present malformed value is rejected.
+        return True
+    return configured_segments == []
+
+
 def _turns_match_transcript(turns: tuple[SttSpeakerTurn, ...] | None, transcript: str) -> bool:
     """Reject attribution when segment text differs from the source beyond whitespace."""
     if turns is None:
@@ -1072,6 +1146,17 @@ def _extract_response_text(payload: dict[str, Any], path: str) -> str:
     return text
 
 
+def _telehealth_canonical_text(payload: dict[str, Any], path: str) -> str:
+    """Read the provider's canonical text; timing segments are only metadata."""
+    try:
+        value = extract_json_path(payload, path)
+    except AppError as exc:
+        raise AppError(502, "stt_response_invalid", "STT provider response did not contain transcript text") from exc
+    if not isinstance(value, str) or not value.strip():
+        raise AppError(502, "stt_response_invalid", "STT provider response did not contain transcript text")
+    return value.strip()
+
+
 def paragraphize_timestamped_segments(
     segments: list[dict[str, Any]],
     *,
@@ -1561,6 +1646,7 @@ def _transcribe_via_http(
     segment_end_field: str | None = None,
     segment_speaker_field: str | None = None,
     diarization_enabled: bool = False,
+    telehealth_timing: bool = False,
     diarization_field_name: str | None = None,
     diarization_on_value: str = "true",
     diarization_off_value: str = "false",
@@ -1577,6 +1663,7 @@ def _transcribe_via_http(
             content_type=content_type,
             model_name=model_name,
             language=language,
+            telehealth_timing=telehealth_timing,
         )
     if resolved_provider_preset == SttProviderPreset.deepgram.value:
         return _transcribe_via_deepgram(
@@ -1600,6 +1687,7 @@ def _transcribe_via_http(
             segment_end_field=segment_end_field,
             segment_speaker_field=segment_speaker_field,
             diarization_enabled=diarization_enabled,
+            telehealth_timing=telehealth_timing,
         )
     if provider_preset == SttProviderPreset.elevenlabs.value:
         return _transcribe_via_elevenlabs(
@@ -1616,6 +1704,7 @@ def _transcribe_via_http(
             segment_start_field=segment_start_field,
             segment_end_field=segment_end_field,
             segment_speaker_field=segment_speaker_field,
+            telehealth_timing=telehealth_timing,
         )
     form_fields = dict(extra_form_fields_json or {})
     if diarization_field_name:
@@ -1695,7 +1784,19 @@ def _transcribe_via_http(
         if not _turns_match_transcript(turns, transcript_text):
             turns = None
         return SttTranscriptResult(transcript_text, turns)
-    return _format_timestamped_transcript_payload_with_segments(
+    if telehealth_timing:
+        flat_text = _telehealth_canonical_text(payload, response_text_path)
+        turns = _source_timed_turns_from_segments(
+            payload,
+            segments_path=segments_path or "segments",
+            segment_text_field=segment_text_field or "text",
+            segment_start_field=segment_start_field or "start",
+            segment_end_field=segment_end_field or "end",
+        )
+        if not _turns_match_transcript(turns, flat_text):
+            turns = None
+        return SttTranscriptResult(flat_text, turns)
+    flat_text = _format_timestamped_transcript_payload_with_segments(
         payload,
         response_text_path=response_text_path,
         segments_path=segments_path or "segments",
@@ -1704,6 +1805,7 @@ def _transcribe_via_http(
         segment_end_field=segment_end_field or "end",
         segment_speaker_field=segment_speaker_field or "speaker",
     )
+    return flat_text
 
 
 def _transcribe_via_elevenlabs_speech_to_text(
@@ -1715,7 +1817,8 @@ def _transcribe_via_elevenlabs_speech_to_text(
     content_type: str,
     model_name: str | None,
     language: str | None,
-) -> str:
+    telehealth_timing: bool = False,
+) -> str | SttTranscriptResult:
     if not api_key:
         raise AppError(409, "stt_config_secret_missing", "ElevenLabs STT requires a saved API key.")
 
@@ -1754,6 +1857,15 @@ def _transcribe_via_elevenlabs_speech_to_text(
         )
         raise _translate_http_stt_error(exc) from exc
 
+    if telehealth_timing:
+        flat_text = _telehealth_canonical_text(payload, "text")
+        turns = _source_timed_turns_from_segments(
+            payload, segments_path="words", segment_text_field="text",
+            segment_start_field="start", segment_end_field="end",
+        )
+        if not _turns_match_transcript(turns, flat_text):
+            turns = None
+        return SttTranscriptResult(flat_text, turns)
     return _format_timestamped_transcript_payload_with_segments(
         payload,
         response_text_path="text",
@@ -1765,7 +1877,7 @@ def _transcribe_via_elevenlabs_speech_to_text(
     )
 
 
-def _transcribe_via_elevenlabs(**kwargs: Any) -> str:
+def _transcribe_via_elevenlabs(**kwargs: Any) -> str | SttTranscriptResult:
     if "url" in kwargs:
         url = str(kwargs.pop("url"))
         suffix = "/v1/speech-to-text"
@@ -1795,6 +1907,7 @@ def _transcribe_via_deepgram(
     segment_end_field: str | None = None,
     segment_speaker_field: str | None = None,
     diarization_enabled: bool = False,
+    telehealth_timing: bool = False,
 ) -> str | SttTranscriptResult:
     if not bearer_token:
         raise AppError(409, "stt_config_secret_missing", "Deepgram STT requires a saved API key.")
@@ -1860,6 +1973,30 @@ def _transcribe_via_deepgram(
         if not _turns_match_transcript(turns, transcript_text):
             turns = None
         return SttTranscriptResult(transcript_text, turns)
+    if telehealth_timing:
+        try:
+            flat_text = _telehealth_canonical_text(payload, response_text_path)
+        except AppError as exc:
+            if (
+                exc.code != "stt_response_invalid"
+                or not _deepgram_has_explicit_empty_transcript(
+                    payload,
+                    response_text_path=response_text_path,
+                    segments_path=segments_path,
+                )
+            ):
+                raise
+            flat_text = ""
+        turns = _source_timed_turns_from_segments(
+            payload,
+            segments_path="results.channels.0.alternatives.0.words",
+            segment_text_field="punctuated_word",
+            segment_start_field="start",
+            segment_end_field="end",
+        )
+        if not _turns_match_transcript(turns, flat_text):
+            turns = None
+        return SttTranscriptResult(flat_text, turns)
     return _format_timestamped_transcript_payload_with_segments(
         payload,
         response_text_path=response_text_path,
@@ -2159,6 +2296,7 @@ def transcribe_with_stt_snapshot(
     segment_end_field: str | None = None,
     segment_speaker_field: str | None = None,
     stt_diarisation_enabled: bool = False,
+    telehealth_timing: bool = False,
     diarization_batch_enabled: bool = False,
     diarization_field_name: str | None = None,
     diarization_on_value: str = "true",
@@ -2236,6 +2374,7 @@ def transcribe_with_stt_snapshot(
         segment_end_field=segment_end_field,
         segment_speaker_field=segment_speaker_field,
         diarization_enabled=effective_diarization,
+        telehealth_timing=telehealth_timing,
         diarization_field_name=diarization_field_name,
         diarization_on_value=diarization_on_value,
         diarization_off_value=diarization_off_value,

@@ -6,7 +6,7 @@ from math import ceil
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, not_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -21,6 +21,8 @@ from app.models import (
     Transcript,
     TranscriptCaptureSettings,
     TranscriptAudioCleanupJob,
+    TelehealthCapturePart,
+    TelehealthCaptureSession,
     TranscriptIngestionJob,
     TranscriptIngestionJobKind,
     TranscriptIngestionJobStatus,
@@ -55,6 +57,7 @@ from app.services.audio import (
     normalize_audio_to_wav_16k_mono,
 )
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
+from app.services.telehealth_partial import job_is_not_accepted_partial
 from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner, keyed_digest_for_owner
 from app.services.redaction import (
     effective_redaction_text_and_phi_index,
@@ -373,6 +376,17 @@ def queue_retry_source_cleanup_for_transcripts(db: Session, *, transcript_ids: l
                    TranscriptStreamWindow.recovery_audio_vault_ref.is_not(None))
         ) if ref
     )
+    # Telehealth holds staged but not-yet-transcribed audio in separate owner-
+    # scoped capture-part rows. The transcript root remains its deletion and
+    # retention root: schedule cleanup in the SAME transaction as root deletion.
+    vault_refs.update(
+        ref for ref in db.scalars(
+            select(TelehealthCapturePart.source_audio_vault_ref).where(
+                TelehealthCapturePart.transcript_id.in_(transcript_ids),
+                TelehealthCapturePart.source_audio_vault_ref.is_not(None),
+            )
+        ) if ref
+    )
     if not vault_refs:
         return []
     return queue_transcript_audio_cleanup(db, secret_refs=vault_refs)
@@ -387,6 +401,10 @@ def _is_live_transcript_ingestion_source_audio_ref(db: Session, *, secret_ref: s
     ) is not None or db.scalar(
         select(TranscriptStreamWindow.id).where(
             TranscriptStreamWindow.recovery_audio_vault_ref == secret_ref,
+        ).limit(1)
+    ) is not None or db.scalar(
+        select(TelehealthCapturePart.id).where(
+            TelehealthCapturePart.source_audio_vault_ref == secret_ref,
         ).limit(1)
     ) is not None
 
@@ -499,6 +517,14 @@ def expire_ingestion_source_audio(
             comparison_now=comparison_now,
         )
         expired_count += 1
+    # Stage expiry uses short per-part owner/root locks and transaction commits.
+    # Run it BEFORE stream expiry: the existing stream expiry routine flushes
+    # outstanding recovery-window changes in the caller's transaction.
+    # A staged expiry snapshot rollback must not undo those stream changes.
+    from app.services.telehealth_retention import expire_telehealth_staged_audio
+    expired_count += expire_telehealth_staged_audio(
+        db, batch_size=max(1, batch_size - expired_count), now=comparison_now,
+    )
     from app.services.transcript_streaming import expire_stream_recovery_audio
     expired_count += expire_stream_recovery_audio(db, batch_size=max(1, batch_size - expired_count), now=comparison_now)
     return expired_count
@@ -528,6 +554,12 @@ def _expire_locked_ingestion_source(
                     now=comparison_now,
                 )
         delete_dispatches_for_sources(db, ingestion_job_ids=[job.id])
+        _mark_telehealth_ingestion_part_failed(
+            db,
+            job=job,
+            failure_code="source_audio_expired",
+            now=comparison_now,
+        )
         job.status = TranscriptIngestionJobStatus.failed
         job.error_code = "ingestion_source_expired"
         job.error_message = "Uploaded audio expired before transcription completed"
@@ -1208,7 +1240,10 @@ def job_result_text(db: Session, *, transcript: Transcript, job: TranscriptInges
 def latest_ingestion_job_for_transcript(db: Session, *, transcript_id: UUID) -> TranscriptIngestionJob | None:
     return db.scalar(
         select(TranscriptIngestionJob)
-        .where(TranscriptIngestionJob.transcript_id == transcript_id)
+        .where(
+            TranscriptIngestionJob.transcript_id == transcript_id,
+            job_is_not_accepted_partial(),
+        )
         .order_by(TranscriptIngestionJob.created_at.desc(), TranscriptIngestionJob.id.desc())
         .limit(1)
     )
@@ -1266,6 +1301,7 @@ def _has_pending_ingestion_jobs(db: Session, *, transcript_id: UUID) -> bool:
                     TranscriptIngestionJobStatus.completed,
                 ]
             ),
+            job_is_not_accepted_partial(),
         )
         .limit(1)
     ) is not None
@@ -1306,7 +1342,19 @@ def _resolved_transcript_status(db: Session, *, transcript: Transcript) -> Trans
     ).limit(1))
     if failed_stream is not None:
         return TranscriptStatus.failed
+    failed_telehealth = db.scalar(select(TelehealthCaptureSession.id).where(
+        TelehealthCaptureSession.transcript_id == transcript.id,
+        TelehealthCaptureSession.status.in_(("interrupted", "failed")),
+    ).limit(1))
+    if failed_telehealth is not None:
+        return TranscriptStatus.failed
     if _has_pending_ingestion_jobs(db, transcript_id=transcript.id):
+        return TranscriptStatus.transcribing
+    active_telehealth = db.scalar(select(TelehealthCaptureSession.id).where(
+        TelehealthCaptureSession.transcript_id == transcript.id,
+        TelehealthCaptureSession.status.in_(("active", "stopping", "ready", "processing")),
+    ).limit(1))
+    if active_telehealth is not None:
         return TranscriptStatus.transcribing
     latest_job = latest_ingestion_job_for_transcript(db, transcript_id=transcript.id)
     if latest_job is not None and latest_job.status is TranscriptIngestionJobStatus.failed:
@@ -1417,6 +1465,12 @@ def can_switch_transcript_ingestion_mode(
         return transcript, False, "Resolve live transcription before switching input mode"
     if _has_pending_ingestion_jobs(db, transcript_id=transcript.id):
         return transcript, False, "Wait for the current session transcription to finish before switching input mode"
+    unresolved_telehealth = db.scalar(select(TelehealthCaptureSession.id).where(
+        TelehealthCaptureSession.transcript_id == transcript.id,
+        TelehealthCaptureSession.status.in_(("active", "stopping", "ready", "interrupted", "processing", "failed")),
+    ).limit(1))
+    if unresolved_telehealth is not None:
+        return transcript, False, "Resolve the telehealth capture before switching input mode"
     return transcript, True, None
 
 
@@ -1444,6 +1498,22 @@ def assert_no_unresolved_stream_session(db: Session, *, transcript_id: UUID) -> 
     )
     if stream_id is not None:
         raise AppError(409, "stream_session_unresolved", "Resolve live transcription before continuing")
+    # Protect all existing call sites (file uploads, snapshot generation,
+    # consultation split and new recorder starts) from publishing stale notes
+    # while a two-source capture is still recording, unsealed, interrupted,
+    # transcribing or awaiting explicit failure recovery. This must be a
+    # SERVER-SIDE barrier; disabling a browser button is not sufficient.
+    capture_id = db.scalar(select(TelehealthCaptureSession.id).where(
+        TelehealthCaptureSession.transcript_id == transcript_id,
+        TelehealthCaptureSession.status.in_((
+            "active", "stopping", "ready", "interrupted", "processing", "failed",
+        )),
+    ).limit(1))
+    if capture_id is not None:
+        raise AppError(
+            409, "telehealth_capture_unresolved",
+            "Resolve the Telehealth recording before continuing.",
+        )
 
 
 def get_active_owner_transcript(db: Session, owner: User, *, transcript_id: UUID) -> Transcript:
@@ -1678,7 +1748,11 @@ def snapshot_current_transcript_version(
         projection = canonical_transcript_projection(structured_turns)
         if projection != current_text:
             raise AppError(409, "transcript_version_mismatch", "Structured transcript does not match its saved text")
-        if not projection.strip() and not allow_empty:
+        has_clinical_text = any(
+            turn.get("text", "").strip() and not turn.get("source_warning")
+            for turn in structured_turns
+        )
+        if not has_clinical_text and (not allow_empty or projection.strip()):
             raise AppError(422, "business_rule_violation", "Transcript draft is empty", {"field": "current_draft_text_encrypted"})
         existing_versions = db.scalars(
             select(TranscriptVersion)
@@ -1960,7 +2034,7 @@ def update_transcript(
 ) -> Transcript:
     transcript = (
         _lock_split_source_writer_transcript(db, owner, transcript_id=transcript_id)
-        if structured_context_json is not None
+        if structured_context_json is not None or ingestion_mode is not None
         else _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
     )
     if title is not None:
@@ -2013,21 +2087,41 @@ def commit_transcript_text(
     preview_redaction: bool = True,
 ) -> Transcript:
     transcript = _lock_split_source_writer_transcript(db, owner, transcript_id=transcript_id)
-    from app.services.structured_transcripts import load_current_turns
-    if load_current_turns(db, transcript=transcript) is not None:
+    from app.services.structured_transcripts import (
+        _refresh_partial_source_warnings,
+        _encrypt_current_turns,
+        _normalize_turn,
+        canonical_transcript_projection,
+        load_current_turns,
+        store_turns_on_version,
+    )
+    current_turns = load_current_turns(db, transcript=transcript)
+    if current_turns is not None and any(turn.get("text", "").strip() for turn in current_turns):
         raise AppError(
             409,
             "business_rule_violation",
             "Structured speaker turns must be edited one turn at a time",
             {"code": "structured_transcript_requires_turn_edits"},
         )
-    version = _create_transcript_version_from_text(
-        db,
-        transcript=transcript,
-        owner_user_id=owner.id,
-        plaintext=plaintext,
-    )
-    set_transcript_draft_text(db, transcript=transcript, plaintext=plaintext)
+    if current_turns is not None:
+        scope_id = uuid4()
+        turns = _refresh_partial_source_warnings(db, transcript=transcript, turns=[
+            _normalize_turn({"scope_id": scope_id, "speaker_id": None, "text": plaintext})
+        ])
+        projection = canonical_transcript_projection(turns)
+        _encrypt_current_turns(db, transcript=transcript, turns=turns)
+        version = _create_transcript_version_from_text(
+            db, transcript=transcript, owner_user_id=owner.id, plaintext=projection,
+        )
+        store_turns_on_version(db, version=version, owner_user_id=owner.id, turns=turns)
+    else:
+        version = _create_transcript_version_from_text(
+            db,
+            transcript=transcript,
+            owner_user_id=owner.id,
+            plaintext=plaintext,
+        )
+        set_transcript_draft_text(db, transcript=transcript, plaintext=plaintext)
     transcript.status = TranscriptStatus.ready
     db.add(transcript)
     if commit:
@@ -2054,10 +2148,16 @@ def delete_transcripts(
     if not unique_ids:
         raise AppError(422, "business_rule_violation", "Select at least one transcript to delete")
 
-    transcripts = [
-        _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
-        for transcript_id in unique_ids
-    ]
+    # Lock the owner/transcript roots BEFORE enumerating Vault refs. A
+    # concurrent telehealth source-part upload holds this same owner/root
+    # scope until its Vault reference is committed. Without the lock the
+    # delete could miss a just-accepted staged part and orphan its secret.
+    # Sort root locks to avoid a multi-consultation delete deadlock.
+    transcripts_by_id = {
+        transcript_id: _lock_split_source_writer_transcript(db, owner, transcript_id=transcript_id)
+        for transcript_id in sorted(unique_ids)
+    }
+    transcripts = [transcripts_by_id[transcript_id] for transcript_id in unique_ids]
     deleting_transcript_ids = [transcript.id for transcript in transcripts]
     cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=deleting_transcript_ids)
     terminalize_attempts_for_transcripts(db, deleting_transcript_ids, utcnow())
@@ -2119,6 +2219,24 @@ def delete_expired_transcripts(
     if not transcripts:
         return 0
 
+    # Revalidate and lock the owner/root rows before scanning live Vault
+    # references. This serializes expiry with in-flight telehealth part
+    # acceptance, preventing a just-staged part from escaping root cleanup.
+    candidate_ids = [transcript.id for transcript in transcripts]
+    owner_ids = sorted({transcript.owner_user_id for transcript in transcripts})
+    list(db.scalars(
+        select(User).where(User.id.in_(owner_ids)).order_by(User.id.asc()).with_for_update()
+    ))
+    transcripts = list(db.scalars(
+        select(Transcript)
+        .where(Transcript.id.in_(candidate_ids), Transcript.retention_expires_at <= comparison_now)
+        .order_by(Transcript.id.asc())
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    ))
+    if not transcripts:
+        db.rollback()
+        return 0
     transcript_ids = [transcript.id for transcript in transcripts]
     cleanup_job_ids = queue_retry_source_cleanup_for_transcripts(db, transcript_ids=transcript_ids)
     terminalize_attempts_for_transcripts(db, transcript_ids, comparison_now)
@@ -2412,7 +2530,7 @@ def queue_audio_file_ingestion(
     capture_settings_id: UUID | None = None,
     _diarisation_snapshot_job: TranscriptIngestionJob | None = None,
 ) -> tuple[Transcript, TranscriptIngestionJob]:
-    transcript = _get_owner_transcript_for_ingestion(db, owner, transcript_id=transcript_id)
+    transcript = _lock_split_source_writer_transcript(db, owner, transcript_id=transcript_id)
     if transcript.ingestion_mode is not TranscriptIngestionMode.whole_file:
         raise AppError(
             409,
@@ -2420,6 +2538,8 @@ def queue_audio_file_ingestion(
             "Transcript ingestion mode does not accept file ingestion",
             {"ingestion_mode": transcript.ingestion_mode.value},
         )
+    # Exact idempotent replays only return an already admitted job, so preserve
+    # replay behavior even if a capture started after the original request.
     if request_idempotency_key:
         existing_request = db.scalar(select(TranscriptIngestionJob).where(
             TranscriptIngestionJob.transcript_id == transcript.id,
@@ -2432,6 +2552,11 @@ def queue_audio_file_ingestion(
             ):
                 raise AppError(409, "idempotency_conflict", "Upload request conflicts with an existing audio job")
             return transcript, existing_request
+
+    # Replays are safe under the lock and return only the already admitted job.
+    # New jobs must pass the unresolved-capture barrier before credentials,
+    # quota checks, or Vault writes.
+    assert_no_unresolved_stream_session(db, transcript_id=transcript.id)
     existing_in_progress = db.scalar(
         select(TranscriptIngestionJob).where(
             TranscriptIngestionJob.transcript_id == transcript.id,
@@ -2439,6 +2564,7 @@ def queue_audio_file_ingestion(
             TranscriptIngestionJob.status.in_(
                 [TranscriptIngestionJobStatus.queued, TranscriptIngestionJobStatus.processing]
             ),
+            job_is_not_accepted_partial(),
         )
     )
     if existing_in_progress is not None:
@@ -2623,6 +2749,13 @@ def retry_audio_file_ingestion(
     latest_job = latest_ingestion_job_for_transcript(db, transcript_id=transcript.id)
     if latest_job is None or latest_job.job_kind is not TranscriptIngestionJobKind.audio_file:
         raise AppError(409, "ingestion_retry_unavailable", "There is no failed uploaded audio available to retry for this session")
+    # Legacy file retry requeues a NEW ordinary job. A telehealth source must
+    # instead retry its original job so channel provenance and session finalization
+    # cannot be detached or applied as unlabelled audio.
+    if db.scalar(select(TelehealthCapturePart.id).where(
+        TelehealthCapturePart.ingestion_job_id == latest_job.id,
+    ).limit(1)) is not None:
+        raise AppError(409, "ingestion_retry_unavailable", "Retry the specific telehealth audio source job.")
     if latest_job.status is not TranscriptIngestionJobStatus.failed:
         raise AppError(409, "ingestion_retry_unavailable", "The latest uploaded audio is not in a retryable failed state")
     if not _retry_source_available(latest_job):
@@ -2703,7 +2836,36 @@ def retry_failed_audio_ingestion(
     job.error_message = None
     job.started_at = None
     job.completed_at = None
-    transcript.status = TranscriptStatus.transcribing
+    # Reenable the same source and capture session after owner-initiated retry.
+    # The existing job and Vault ref stay attached, unlike a new file upload.
+    telehealth_part = db.scalar(select(TelehealthCapturePart).where(
+        TelehealthCapturePart.ingestion_job_id == job.id,
+        TelehealthCapturePart.transcript_id == transcript.id,
+        TelehealthCapturePart.owner_user_id == owner.id,
+    ).with_for_update())
+    if telehealth_part is not None:
+        capture_session = db.scalar(select(TelehealthCaptureSession).where(
+            TelehealthCaptureSession.id == telehealth_part.session_id,
+        ).with_for_update())
+        if capture_session is None or capture_session.status not in ("failed", "processing", "partial"):
+            raise AppError(409, "ingestion_retry_unavailable", "Telehealth capture state prevents retry.")
+        telehealth_part.status = "processing"
+        accepted_partial = capture_session.status == "partial"
+        if not accepted_partial:
+            capture_session.status = "processing"
+        # Clearing a *transcription* failure is safe. Clearing an original
+        # capture interruption after an STT retry would silently suppress
+        # the persisted incomplete-recording warning in the clinical draft.
+        if capture_session.failure_code == "transcription_failed":
+            capture_session.failure_code = None
+            capture_session.failure_channel = None
+        capture_session.updated_at = utcnow()
+        db.add(telehealth_part)
+        db.add(capture_session)
+    if telehealth_part is not None and accepted_partial:
+        transcript.status = _resolved_transcript_status(db, transcript=transcript)
+    else:
+        transcript.status = TranscriptStatus.transcribing
     db.add(job)
     db.add(transcript)
     db.flush()
@@ -2858,7 +3020,17 @@ def _schedule_ingestion_retry(
     job.error_message = None
     job.started_at = None
     job.completed_at = None
-    transcript.status = TranscriptStatus.transcribing
+    partial_capture = db.scalar(select(TelehealthCaptureSession.id).join(
+        TelehealthCapturePart,
+        TelehealthCapturePart.session_id == TelehealthCaptureSession.id,
+    ).where(
+        TelehealthCapturePart.ingestion_job_id == job.id,
+        TelehealthCaptureSession.status == "partial",
+    ).limit(1))
+    transcript.status = (
+        _resolved_transcript_status(db, transcript=transcript)
+        if partial_capture is not None else TranscriptStatus.transcribing
+    )
     db.add(job)
     db.add(transcript)
     db.flush()
@@ -3053,7 +3225,44 @@ def _expire_ingestion_source_before_preparation(db: Session, *, job_id: UUID) ->
     return True
 
 
+def _mark_telehealth_ingestion_part_failed(
+    db: Session,
+    *,
+    job: TranscriptIngestionJob,
+    failure_code: str,
+    now: datetime,
+) -> None:
+    """Fail the Telehealth source and capture without erasing an earlier interruption."""
+    capture_part = db.scalar(select(TelehealthCapturePart).where(
+        TelehealthCapturePart.ingestion_job_id == job.id,
+    ).with_for_update())
+    if capture_part is not None:
+        capture_part.status = "failed"
+        capture_part.updated_at = now
+        db.add(capture_part)
+        capture_session = db.scalar(select(TelehealthCaptureSession).where(
+            TelehealthCaptureSession.id == capture_part.session_id,
+        ).with_for_update())
+        if capture_session is not None and capture_session.status not in ("completed", "partial"):
+            capture_session.status = "failed"
+            # Preserve any earlier audio-clock, permission, or track warning.
+            if capture_session.failure_code is None:
+                capture_session.failure_channel = capture_part.channel
+                capture_session.failure_code = failure_code
+            capture_session.updated_at = now
+            db.add(capture_session)
+
+
 def _mark_job_failed(db: Session, transcript: Transcript, job: TranscriptIngestionJob, *, code: str, message: str) -> None:
+    # Telehealth results cannot be applied one-sided. Mark a terminal source
+    # failure on its owning capture so the other job never appears complete
+    # and can still be retried from its existing Vault audio source.
+    _mark_telehealth_ingestion_part_failed(
+        db,
+        job=job,
+        failure_code="transcription_failed",
+        now=utcnow(),
+    )
     job.status = TranscriptIngestionJobStatus.failed
     job.error_code = code
     job.error_message = message[:255]
@@ -3069,8 +3278,22 @@ def _mark_job_failed(db: Session, transcript: Transcript, job: TranscriptIngesti
                 session.updated_at = utcnow()
                 db.add(session)
             db.add(window)
-    transcript.status = TranscriptStatus.failed
     db.add(job)
+    db.add(transcript)
+    db.flush()
+    accepted_partial = db.scalar(select(TelehealthCapturePart.id).join(
+        TelehealthCaptureSession,
+        TelehealthCaptureSession.id == TelehealthCapturePart.session_id,
+    ).where(
+        TelehealthCapturePart.ingestion_job_id == job.id,
+        TelehealthCaptureSession.status == "partial",
+    ).limit(1)) is not None
+    # Ordinary failures retain the established failed-root behavior. Only an
+    # already accepted partial capture may resolve back to ready/transcribing.
+    transcript.status = (
+        _resolved_transcript_status(db, transcript=transcript)
+        if accepted_partial else TranscriptStatus.failed
+    )
     db.add(transcript)
     db.commit()
 
@@ -3449,6 +3672,11 @@ def process_transcript_ingestion_job(
         # Successful queued -> processing claim is irreversible dispatch
         # boundary. Deletion after this point may discard only late results.
         stage = "stt_dispatch"
+        is_telehealth = db.scalar(select(TelehealthCapturePart.id).where(
+            TelehealthCapturePart.ingestion_job_id == job.id,
+            TelehealthCapturePart.transcript_id == transcript.id,
+            TelehealthCapturePart.owner_user_id == transcript.owner_user_id,
+        ).limit(1)) is not None
         transcription_result = transcribe_with_stt_snapshot(
             db,
             team_id=transcript.team_id,
@@ -3470,6 +3698,7 @@ def process_transcript_ingestion_job(
             segment_end_field=job.stt_segment_end_field,
             segment_speaker_field=job.stt_segment_speaker_field,
             stt_diarisation_enabled=job.stt_diarisation_enabled,
+            **({"telehealth_timing": True} if is_telehealth else {}),
             diarization_batch_enabled=job.stt_diarization_batch_enabled,
             diarization_field_name=job.stt_diarization_field_name,
             diarization_on_value=job.stt_diarization_on_value,
@@ -3553,7 +3782,48 @@ def process_transcript_ingestion_job(
             outcome=AttemptOutcome.succeeded,
         )
 
-        if job.job_kind is TranscriptIngestionJobKind.audio_file:
+        # Telehealth audio_file jobs use the *same* measured quota and
+        # encrypted provider-result path, but must NOT append their text yet.
+        # Both source-labelled results are committed together only after the
+        # whole capture completes (see telehealth_apply).
+        telehealth_part = db.scalar(select(TelehealthCapturePart).where(
+            TelehealthCapturePart.ingestion_job_id == job.id,
+            TelehealthCapturePart.transcript_id == transcript.id,
+            TelehealthCapturePart.owner_user_id == transcript.owner_user_id,
+        ).with_for_update())
+        if telehealth_part is not None:
+            telehealth_part.status = "transcribed"
+            telehealth_part.updated_at = now
+            job.status = TranscriptIngestionJobStatus.completed
+            job.source_audio_blob = None
+            # A sibling may finish after expiry/interruption terminalized its
+            # capture. Reconcile instead of resurrecting the transcript root.
+            transcript.status = _resolved_transcript_status(db, transcript=transcript)
+            db.add(telehealth_part)
+            db.add(job)
+            db.add(transcript)
+            db.commit()  # Persist provider text even if final assembly fails.
+            try:
+                from app.services.telehealth_apply import apply_completed_telehealth_capture
+                apply_completed_telehealth_capture(
+                    db, capture_session_id=telehealth_part.session_id,
+                )
+            except Exception:
+                db.rollback()
+                # Never expose provider content/exception details to logs.
+                transcript_ingestion_logger.warning(
+                    "telehealth_capture_application_deferred",
+                    extra={"capture_session_id": str(telehealth_part.session_id)},
+                )
+            if job.source_audio_vault_ref:
+                try:
+                    clear_ingestion_retry_source(
+                        db, job_id=job.id, clear_storage=True,
+                        clear_accounting=False, delete_backing_secret=True,
+                    )
+                except AppError:
+                    pass
+        elif job.job_kind is TranscriptIngestionJobKind.audio_file:
             job.status = TranscriptIngestionJobStatus.applied
             job.applied_at = now
             job.source_audio_blob = None

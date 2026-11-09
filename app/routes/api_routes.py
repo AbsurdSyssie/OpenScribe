@@ -5,8 +5,9 @@ import logging
 import os
 from uuid import UUID
 
-from fastapi import Body, Depends, File, Form, Header, Request, UploadFile, status
+from fastapi import Body, Depends, File, Form, Header, Query, Request, UploadFile, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import main as main_module
@@ -16,6 +17,7 @@ from ..main import (
     ACCOUNT_REQUEST_RATE_LIMIT,
     AuthenticatedContext,
     LIVE_CHUNK_UPLOAD_RATE_LIMIT,
+    TELEHEALTH_DIAGNOSTICS_RATE_LIMIT,
     LLM_GENERATION_BURST_RATE_LIMIT,
     LLM_GENERATION_DAILY_RATE_LIMIT,
     LOGIN_RATE_LIMIT,
@@ -40,7 +42,7 @@ from ..main import (
     require_system_admin,
     require_user_manager,
 )
-from ..models import AttemptKind, GeneratedDocument, SessionAuthLevel, TemplateScope, Transcript, User
+from ..models import AttemptKind, GeneratedDocument, SessionAuthLevel, TemplateScope, Transcript, User, UserAppPreference
 from ..schemas import (
     AccountActivationConfirmRequest,
     AccountRequestApprove,
@@ -2009,6 +2011,356 @@ def create_transcript_capture_settings_route(
     return TranscriptCaptureSettingsDetail(
         capture_settings_id=snapshot.id,
         diarisation_enabled=snapshot.stt_diarisation_enabled,
+    )
+
+
+# Telehealth is deliberately behind an explicit, default-off rollout flag.
+# The owner-only service code can be tested before actual browser recording and
+# clinical-safety sign-off. Never enable in production without DCB0129 review.
+from app.schemas.telehealth import (
+    TelehealthAudioPartAccepted,
+    TelehealthAudioTimingSpan,
+    TelehealthCaptureDetail,
+    TelehealthCaptureSeal,
+    TelehealthCaptureStart,
+    TelehealthCaptureStop,
+    TelehealthTranscriptionQueued,
+    TelehealthBrowserDiagnosticsBatch,
+    TelehealthBrowserDiagnosticsAccepted,
+    TelehealthPartialCapturesPage,
+)
+from app.services import telehealth_diagnostics
+from app.services.telehealth_audio import TelehealthSourceSpan
+from app.services.telehealth_api import (
+    partial_telehealth_capture_details,
+    telehealth_capture_detail,
+    unresolved_telehealth_capture_detail,
+)
+from app.services.telehealth_capture import (
+    acknowledge_incomplete_telehealth_capture,
+    begin_telehealth_capture,
+    discard_unsubmitted_telehealth_capture,
+    request_telehealth_capture_stop,
+    seal_telehealth_capture,
+    stage_telehealth_audio_part,
+)
+from app.services.telehealth_apply import use_available_telehealth_capture
+from app.services.telehealth_dispatch import queue_telehealth_transcription
+
+# Dedicated private rotating file; never forward browser errors to stdout.
+telehealth_diagnostics.configure_file_sink(
+    os.getenv("TELEHEALTH_DIAGNOSTICS_LOG_PATH", ".local/logs/telehealth-capture.jsonl")
+)
+
+
+def _require_telehealth_api_enabled() -> None:
+    if os.getenv("TELEHEALTH_API_ENABLED", "false").lower() not in ("1", "true", "yes"):
+        raise AppError(404, "not_found", "Telehealth recording is not enabled.")
+
+
+@api.post(
+    "/transcripts/{transcript_id}/telehealth/diagnostics",
+    response_model=TelehealthBrowserDiagnosticsAccepted,
+    responses=error_responses,
+)
+@TELEHEALTH_DIAGNOSTICS_RATE_LIMIT
+def collect_telehealth_browser_diagnostics(
+    request: Request,
+    transcript_id: UUID,
+    payload: TelehealthBrowserDiagnosticsBatch,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    # The full-authenticated owner check is compulsory even for content-free
+    # metadata, so callers cannot use another owner's root as a log sink.
+    get_active_owner_transcript(db, context.user, transcript_id=transcript_id)
+    accepted = telehealth_diagnostics.emit_many(
+        payload.diagnostic_id,
+        [event.model_dump(exclude_none=True) for event in payload.events],
+    )
+    return TelehealthBrowserDiagnosticsAccepted(accepted=accepted)
+
+
+@api.post(
+    "/transcripts/{transcript_id}/telehealth/captures",
+    response_model=TelehealthCaptureDetail,
+    status_code=status.HTTP_201_CREATED,
+    responses=error_responses,
+)
+def start_telehealth_capture_route(
+    transcript_id: UUID,
+    payload: TelehealthCaptureStart,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    # First-use notice acknowledgement is an owner-persisted precondition,
+    # not merely a front-end tooltip. Do not start capture if the client
+    # skipped the headphones/participant-notification guidance.
+    preference = db.scalar(select(UserAppPreference).where(UserAppPreference.user_id == context.user.id))
+    if preference is None or (preference.preferences_json or {}).get("telehealth_guidance_acknowledged") is not True:
+        raise AppError(
+            409, "telehealth_guidance_required",
+            "Read and acknowledge the Telehealth recording guidance before starting.",
+        )
+    capture = begin_telehealth_capture(
+        db,
+        context.user,
+        transcript_id=transcript_id,
+        timeline_sample_rate=payload.timeline_sample_rate,
+        requested_audio_scope=payload.requested_audio_scope,
+    )
+    return telehealth_capture_detail(
+        db, context.user,
+        transcript_id=transcript_id, capture_session_id=capture.id,
+    )
+
+
+@api.get(
+    "/transcripts/{transcript_id}/telehealth/unresolved",
+    response_model=TelehealthCaptureDetail | None,
+    responses=error_responses,
+)
+def unresolved_telehealth_capture_route(
+    transcript_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    return unresolved_telehealth_capture_detail(
+        db, context.user, transcript_id=transcript_id,
+    )
+
+
+@api.get(
+    "/transcripts/{transcript_id}/telehealth/partial-captures",
+    response_model=TelehealthPartialCapturesPage,
+    responses=error_responses,
+)
+def list_partial_telehealth_captures_route(
+    transcript_id: UUID,
+    offset: int = Query(default=0, ge=0, le=100000),
+    limit: int = Query(default=20, ge=1, le=100),
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    return partial_telehealth_capture_details(
+        db, context.user, transcript_id=transcript_id,
+        offset=offset, limit=limit,
+    )
+
+
+@api.get(
+    "/transcripts/{transcript_id}/telehealth/captures/{capture_session_id}",
+    response_model=TelehealthCaptureDetail,
+    responses=error_responses,
+)
+def get_telehealth_capture_route(
+    transcript_id: UUID,
+    capture_session_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    return telehealth_capture_detail(
+        db, context.user,
+        transcript_id=transcript_id, capture_session_id=capture_session_id,
+    )
+
+
+@api.post(
+    "/transcripts/{transcript_id}/telehealth/captures/{capture_session_id}/use-available",
+    response_model=TelehealthCaptureDetail,
+    responses=error_responses,
+)
+def use_available_telehealth_capture_route(
+    transcript_id: UUID,
+    capture_session_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    use_available_telehealth_capture(
+        db, context.user,
+        transcript_id=transcript_id,
+        capture_session_id=capture_session_id,
+    )
+    return telehealth_capture_detail(
+        db, context.user,
+        transcript_id=transcript_id, capture_session_id=capture_session_id,
+    )
+
+
+@api.post(
+    "/transcripts/{transcript_id}/telehealth/captures/{capture_session_id}/audio-parts",
+    response_model=TelehealthAudioPartAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses=error_responses,
+)
+@LIVE_CHUNK_UPLOAD_RATE_LIMIT
+def stage_telehealth_audio_part_route(
+    request: Request,
+    transcript_id: UUID,
+    capture_session_id: UUID,
+    audio: UploadFile = File(...),
+    channel: str = Form(...),
+    sequence_no: int = Form(...),
+    spans_json: str = Form(...),
+    idempotency_key: UUID = Header(..., alias="Idempotency-Key"),
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    if len(spans_json) > 32768:
+        raise AppError(422, "validation_error", "Audio timing metadata is too large.")
+    try:
+        parsed_spans = json.loads(spans_json)
+        if not isinstance(parsed_spans, list) or len(parsed_spans) > 128:
+            raise ValueError("Invalid timing spans.")
+        spans = [
+            TelehealthSourceSpan(**TelehealthAudioTimingSpan.model_validate(span).model_dump())
+            for span in parsed_spans
+        ]
+    except (ValueError, TypeError):
+        raise AppError(422, "validation_error", "Invalid audio timing metadata.") from None
+    audio_bytes = read_live_chunk_upload(upload=audio)
+    part = stage_telehealth_audio_part(
+        db,
+        context.user,
+        transcript_id=transcript_id,
+        capture_session_id=capture_session_id,
+        channel=channel,
+        sequence_no=sequence_no,
+        idempotency_key=idempotency_key,
+        spans=spans,
+        audio_bytes=audio_bytes,
+    )
+    return TelehealthAudioPartAccepted(
+        capture_session_id=capture_session_id,
+        part=part,
+    )
+
+
+@api.post(
+    "/transcripts/{transcript_id}/telehealth/captures/{capture_session_id}/stop",
+    response_model=TelehealthCaptureDetail,
+    responses=error_responses,
+)
+def stop_telehealth_capture_route(
+    transcript_id: UUID,
+    capture_session_id: UUID,
+    payload: TelehealthCaptureStop,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    request_telehealth_capture_stop(
+        db, context.user,
+        transcript_id=transcript_id,
+        capture_session_id=capture_session_id,
+        interrupted_channel=payload.interrupted_channel,
+        failure_code=payload.failure_code,
+    )
+    return telehealth_capture_detail(
+        db, context.user,
+        transcript_id=transcript_id, capture_session_id=capture_session_id,
+    )
+
+
+@api.post(
+    "/transcripts/{transcript_id}/telehealth/captures/{capture_session_id}/seal",
+    response_model=TelehealthCaptureDetail,
+    responses=error_responses,
+)
+def seal_telehealth_capture_route(
+    transcript_id: UUID,
+    capture_session_id: UUID,
+    payload: TelehealthCaptureSeal,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    seal_telehealth_capture(
+        db, context.user,
+        transcript_id=transcript_id, capture_session_id=capture_session_id,
+        expected_clinician_parts=payload.expected_clinician_parts,
+        expected_patient_parts=payload.expected_patient_parts,
+    )
+    return telehealth_capture_detail(
+        db, context.user,
+        transcript_id=transcript_id, capture_session_id=capture_session_id,
+    )
+
+
+@api.post(
+    "/transcripts/{transcript_id}/telehealth/captures/{capture_session_id}/acknowledge-incomplete",
+    response_model=TelehealthCaptureDetail,
+    responses=error_responses,
+)
+def acknowledge_incomplete_telehealth_capture_route(
+    transcript_id: UUID,
+    capture_session_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    acknowledge_incomplete_telehealth_capture(
+        db, context.user,
+        transcript_id=transcript_id, capture_session_id=capture_session_id,
+    )
+    return telehealth_capture_detail(
+        db, context.user,
+        transcript_id=transcript_id, capture_session_id=capture_session_id,
+    )
+
+
+@api.post(
+    "/transcripts/{transcript_id}/telehealth/captures/{capture_session_id}/discard",
+    response_model=TelehealthCaptureDetail,
+    responses=error_responses,
+)
+def discard_telehealth_capture_route(
+    transcript_id: UUID,
+    capture_session_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    discard_unsubmitted_telehealth_capture(
+        db, context.user,
+        transcript_id=transcript_id,
+        capture_session_id=capture_session_id,
+    )
+    return telehealth_capture_detail(
+        db, context.user,
+        transcript_id=transcript_id,
+        capture_session_id=capture_session_id,
+    )
+
+
+@api.post(
+    "/transcripts/{transcript_id}/telehealth/captures/{capture_session_id}/transcribe",
+    response_model=TelehealthTranscriptionQueued,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses=error_responses,
+)
+def transcribe_telehealth_capture_route(
+    transcript_id: UUID,
+    capture_session_id: UUID,
+    context: AuthenticatedContext = Depends(require_full_context),
+    db: Session = Depends(get_db),
+):
+    _require_telehealth_api_enabled()
+    capture, jobs = queue_telehealth_transcription(
+        db, context.user,
+        transcript_id=transcript_id, capture_session_id=capture_session_id,
+    )
+    return TelehealthTranscriptionQueued(
+        capture_session_id=capture.id,
+        status=capture.status,
+        ingestion_job_ids=[job.id for job in jobs],
     )
 
 

@@ -50,6 +50,7 @@ These documents are maintained as descriptions of implemented behavior or an exp
 | User-workspace migration history and legacy `/home` redirects | [home_brief.md](home_brief.md) |
 | Scribe workspace summary | [transcribe_brief.md](transcribe_brief.md) |
 | Transcript capture contracts and remaining roadmap | [transcript-capture.md](transcript-capture.md) |
+| Telehealth physical device, crash-recovery and release-validation procedure | [telehealth-crash-walkthrough.md](telehealth-crash-walkthrough.md) |
 | Template-suggestion preference | [template-suggestion-preference.md](template-suggestion-preference.md) |
 | Consultation-splitting preference rollout and partial recovery | [consultation-splitting-preference.md](consultation-splitting-preference.md) |
 | Deepgram streaming and live chunked STT | [live_stt.md](live_stt.md) |
@@ -87,6 +88,8 @@ Other files whose names contain `roadmap`, `plan`, `brief`, `todo`, or `design` 
 
 ## Engineering review records
 
+- [Telehealth final merge review — 8–9 November 2026](reviews/telehealth-final-merge-review-2026-11-08.md) records the final branch comparison, recovery fixes, independent re-review and regression verification before the merge decision.
+- [Telehealth merge review — 7 November 2026](reviews/telehealth-merge-review-2026-11-07.md) records branch review findings, bounded remediation, verification, and the subsequent partial-salvage work following the maintainer's lifecycle decision.
 - [Discovered issues remediation and regression review — 19 October 2026](reviews/discovered-issues-remediation-2026-10-19.md) records issue dispositions, bounded fixes, regression verification, and remaining policy/deployment work.
 - [Documentation review — 18 October 2026](reviews/documentation-review-2026-10-18.md) records factual corrections, writing review, and verification limits against the [functional inventory](documentation-inventory.md).
 - [Generation-stage logging, efficiency and token review — 16 October 2026](reviews/generation-stage-cost-logging-review-2026-10-16.md) covers STT, source preparation, ordinary and split generation, recovery and checking, with bounded remediation and remaining cost/transport decisions.

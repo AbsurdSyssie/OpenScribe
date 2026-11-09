@@ -429,6 +429,7 @@ def test_workspace_fetch_coordinator_rejects_stale_joined_payload_after_transcri
         f"""
 const {{ createWorkspaceFetchCoordinator }} = await import('{module_uri}');
 let activeTranscriptId = 'old';
+let switchBlocked = false;
 const resolvers = new Map();
 const fetchCalls = [];
 const applied = [];
@@ -439,6 +440,7 @@ const coordinator = createWorkspaceFetchCoordinator({{
   endpointForTranscript: (id) => `/workspace?transcript_id=${{id}}`,
   applyWorkspacePayload: (workspace) => applied.push(workspace.active_transcript.id),
   getActiveTranscriptId: () => activeTranscriptId,
+  canSwitchTranscript: () => !switchBlocked,
 }});
 const guardedOld = coordinator.fetchWorkspace('old', {{ guardTranscriptId: 'old' }});
 const unguardedOld = coordinator.fetchWorkspace('old');
@@ -485,6 +487,21 @@ resolvers.get('/workspace?transcript_id=link-B')(responseFor('link-B'));
 const sessionLinkBResult = await sessionLinkB;
 if (!dictationDResult || sessionLinkBResult || applied.join() !== 'new,C,same,dictation-D') {{
   throw new Error('dictation transition did not invalidate an earlier session switch');
+}}
+activeTranscriptId = 'consultation-A';
+const pendingBeforeRecording = coordinator.fetchWorkspace('consultation-B', {{ allowTranscriptSwitch: true }});
+await Promise.resolve();
+switchBlocked = true; // Telehealth Start completed while the workspace response was pending.
+resolvers.get('/workspace?transcript_id=consultation-B')(responseFor('consultation-B'));
+const blockedSwitchResult = await pendingBeforeRecording;
+if (blockedSwitchResult || applied.at(-1) !== 'dictation-D' || activeTranscriptId !== 'consultation-A') {{
+  throw new Error('a pending workspace response switched consultations after recording started');
+}}
+const sameRootWhileBlocked = coordinator.fetchWorkspace('consultation-A', {{ allowTranscriptSwitch: true }});
+await Promise.resolve();
+resolvers.get('/workspace?transcript_id=consultation-A')(responseFor('consultation-A'));
+if (!(await sameRootWhileBlocked) || applied.at(-1) !== 'consultation-A') {{
+  throw new Error('recording blocked a same-consultation workspace refresh');
 }}
 """
     )
@@ -1164,10 +1181,18 @@ const {{ attachTranscribeActions }} = await import('{actions_uri}');
 const sessionList = new FakeElement();
 const newSessionForm = new FakeElement();
 const link = new FakeElement(); link.dataset.transcriptId = 'B'; link.href = '/transcribe?transcript_id=B'; link.closestMatches['[data-session-link]'] = link;
-let release; let accepted = true; let switches = 0; let starts = 0; const navigations = [];
+let release; let accepted = true; let switches = 0; let starts = 0; let recordingBlocked = false;
+let holdWorkspaceSwitch = false, releaseWorkspaceSwitch, workspaceSwitchStarted;
+const workspaceSwitchGate = new Promise((resolve) => releaseWorkspaceSwitch = resolve);
+const workspaceSwitchPending = new Promise((resolve) => workspaceSwitchStarted = resolve);
+let holdStartResponse = false, releaseStartResponse, startResponseStarted;
+const startResponseGate = new Promise((resolve) => releaseStartResponse = resolve);
+const startResponsePending = new Promise((resolve) => startResponseStarted = resolve);
+const navigations = [];
 globalThis.fetch = async (url) => {{
   if (url !== '/api/v1/transcripts/start') throw new Error(`unexpected fetch ${{url}}`);
   starts += 1;
+  if (holdStartResponse) {{ startResponseStarted(); await startResponseGate; }}
   return {{ ok: true, json: async () => ({{ id: 'new-consultation' }}) }};
 }};
 const pending = () => new Promise((resolve) => {{ release = () => resolve(accepted); }});
@@ -1175,8 +1200,12 @@ let barrier = pending();
 attachTranscribeActions({{
   dom: {{ sessionList, newSessionForm }}, routeBase: '/transcribe', getTranscriptId: () => 'A',
   getTranscriptText: () => '', getActiveIngestionMode: () => 'whole_file', getIsLiveCaptureUiActive: () => false,
-  getIsRecordingSwitchBlocked: () => false, showFlash() {{}}, showCopyToast() {{}}, parseErrorMessage: async (_response, fallback) => fallback,
-  fetchWorkspace: async (id, options) => {{ if (id === 'B' && options?.allowTranscriptSwitch) switches += 1; return {{ active_transcript: {{ id }} }}; }},
+  getIsRecordingSwitchBlocked: () => recordingBlocked, showFlash() {{}}, showCopyToast() {{}}, parseErrorMessage: async (_response, fallback) => fallback,
+  fetchWorkspace: async (id, options) => {{
+    if (id === 'B' && options?.allowTranscriptSwitch) switches += 1;
+    if (holdWorkspaceSwitch) {{ workspaceSwitchStarted(); await workspaceSwitchGate; return null; }}
+    return {{ active_transcript: {{ id }} }};
+  }},
   pollWorkspace() {{}}, scheduleWorkspaceRefreshBurst() {{}}, syncTranscriptTitleIfNeeded: async () => {{}},
   persistPendingEditorsBeforeWorkspaceSwitch: async () => true, waitForGenerationSubmission: () => barrier,
   enqueueTemplateGeneration: async () => true, setVisibleStatus() {{}}, setSessionProgress() {{}}, setRetryAvailability() {{}},
@@ -1196,6 +1225,18 @@ for (let tick = 0; tick < 4; tick += 1) await Promise.resolve();
 if (starts !== 0) throw new Error('new consultation started before Create reached durable acceptance');
 release(); for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
 if (starts !== 1 || navigations.at(-1) !== '/transcribe?transcript_id=new-consultation') throw new Error('new consultation did not start after durable acceptance');
+const navigationCount = navigations.length;
+holdWorkspaceSwitch = true; sessionList.fire('click', {{ target: link }});
+await workspaceSwitchPending;
+recordingBlocked = true; releaseWorkspaceSwitch();
+for (let tick = 0; tick < 6; tick += 1) await Promise.resolve();
+if (navigations.length !== navigationCount) throw new Error('a late blocked session-link fallback unloaded the active recording');
+recordingBlocked = false; holdStartResponse = true;
+newSessionForm.fire('submit');
+await startResponsePending;
+recordingBlocked = true; releaseStartResponse();
+for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
+if (starts !== 2 || navigations.length !== navigationCount) throw new Error('a delayed new-session response navigated away from the active recording');
 """
     )
     subprocess.run(["node", str(runner)], check=True, cwd=ROOT, env={**os.environ, "NODE_NO_WARNINGS": "1"})

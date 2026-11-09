@@ -156,6 +156,11 @@ Designated fields must contain versioned ciphertext envelopes in PostgreSQL, not
 - job creation and task-dispatch outbox creation are transactional;
 - duplicate task delivery is idempotent/claim-safe;
 - processing stale/deadline reconciliation is deterministic;
+- Telehealth crash recovery skips captures whose source jobs are still pending and rotates an eligible capture that cannot yet apply, allowing later ready captures to make progress within the bounded batch;
+- explicit partial acceptance applies only successful jobs atomically with the new source version, retains failed jobs and their original deadlines, and scopes readiness exceptions to that accepted capture;
+- accepted partial retries and in-flight siblings automatically add only unapplied results, preserve clinician edits/deletions and previous note snapshots, and defer while another source holds the writer boundary;
+- protected coverage notices survive source edits and redaction snapshots, update only through server source writers, and cannot make an otherwise empty source eligible for generation;
+- handed-off Telehealth source expiry preserves interruption acknowledgement, provider accounting and durable cleanup; it terminalises an unaccepted capture, but retains an accepted partial gap without reblocking the consultation, and fences late expired results;
 - result text appends in the expected sequence and is encrypted;
 - terminal cleanup clears/durably queues source-audio deletion;
 - a pre-dispatch credential failure does not consume provider quota.

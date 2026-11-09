@@ -1,11 +1,12 @@
-import { attachTranscribeActions } from './actions.js?v=20261021-example-consultation';
+import { attachTranscribeActions } from './actions.js?v=20261108-final-merge-review';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20261005-multiple-problems';
-import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261103-working-note-revision';
+import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261108-final-merge-review';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
-import { createAudioCaptureController } from './media.js?v=20261027-live-dictation';
+import { createAudioCaptureController } from './media.js?v=20261106-patient-audio-meter';
+import { attachTelehealthControls } from './telehealthUI.js?v=20261108-final-merge-review';
 import { DeepgramLiveStream, trimPinnedVadSpeechBuffer } from './deepgramLiveStream.js?v=20261027-dictation-live-preview';
 import { createOwnedMicStream, createVadCaptureOptions } from './vadCapture.js?v=20261027-shared-vad-capture';
-import { createMicVisualizer } from './micVisualizer.js?v=20261026-shared-mic-visualizer';
+import { createMicVisualizer } from './micVisualizer.js?v=20261106-patient-audio-meter';
 import { createStructuredEditor } from './structured.js?v=20260918-retired-note-workspace';
 import { attachSmartPhraseExpander } from './smart-phrases.js?v=20260430-smart-phrases-reorder';
 import { attachNoteReordering } from './reorder.js?v=20260501-blank-line-reorder-guard';
@@ -15,10 +16,10 @@ import { isWorkingNoteTargetId, workingNoteTargetId } from './noteTargets.js?v=2
 import { captureNoteDirtyBaseline, noteBaselineForSave } from './noteSaveState.js?v=20261029-empty-note-version';
 import { createTemplateSuggestionController } from './templateSuggestions.js?v=20260830-template-suggestion-preference';
 import { createExampleConsultationBoundary, createExampleConsultationInitializer } from './exampleConsultation.js?v=20261021-example-consultation';
-import { createTranscriptTurnsEditor } from './transcriptTurnsEditor.js?v=20261022-recording-headings';
+import { createTranscriptTurnsEditor } from './transcriptTurnsEditor.js?v=20261108-source-warning';
 import { createAutosaveController } from './autosaveController.js?v=20261022-diarized-turn-editor';
 import { createWorkingNoteAttemptStore } from './workingNoteSaveRecovery.js?v=20261103-working-note-save-recovery';
-import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261104-living-problem-plan-29';
+import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261107-telehealth-switch-fence';
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,
@@ -319,6 +320,8 @@ import {
       const audioActionTrigger = document.querySelector('[data-audio-action-trigger]');
       const dictationAudioActionTrigger = document.querySelector('[data-dictation-audio-action-trigger]');
       const recordingModeSelect = document.querySelector('[data-recording-mode-select]');
+      const recordingModeDropdown = document.querySelector('[data-record-mode-dropdown]');
+      const recordingModeOptions = [...document.querySelectorAll('[data-record-mode-menu] [data-mode]')];
       const recordToggleButton = document.querySelector('[data-record-toggle]');
       const recordToggleLabel = document.querySelector('[data-record-toggle-label]');
       const getRecordToggleIcon = () => document.querySelector('[data-record-toggle-icon]');
@@ -371,6 +374,7 @@ import {
 
       let currentTranscriptTitle = (renameTitleInput?.value || '').trim();
       let captureController = null;
+      let telehealthUi = null;
       let localStatusLabel = null;
       let micIssue = null;
       let dictationModalOpener = null;
@@ -790,6 +794,8 @@ let statusDetailsHideTimer = null;
           preferred_transcribe_tab: userAppPreferences.preferred_transcribe_tab || null,
           diarization_enabled: userAppPreferences.diarization_enabled === true,
           diarization_warning_acknowledged: userAppPreferences.diarization_warning_acknowledged === true,
+          show_telehealth_control: userAppPreferences.show_telehealth_control !== false,
+          telehealth_guidance_acknowledged: userAppPreferences.telehealth_guidance_acknowledged === true,
           ...patch,
         };
         const response = await csrfFetch('/api/v1/app-preferences', {
@@ -1457,7 +1463,7 @@ let statusDetailsHideTimer = null;
 
       const isConsultationCaptureActive = () => {
         const label = String(recordToggleLabel?.textContent || '').toLowerCase();
-        return Boolean(captureController?.isCaptureUiActive?.() || label.includes('stop') || label.includes('stopping') || label.includes('uploading'));
+        return Boolean(telehealthUi?.isUnresolved?.() || captureController?.isCaptureUiActive?.() || label.includes('stop') || label.includes('stopping') || label.includes('uploading'));
       };
 
       const hasDictationContent = (dictation = null) => {
@@ -3458,6 +3464,8 @@ let statusDetailsHideTimer = null;
           recordingModeSelect.title = !transcriptId ? 'Create or open a consultation to choose the recording mode.' : '';
           syncRecordingModeControl();
         }
+        if (recordingModeDropdown) recordingModeDropdown.disabled = isRecording || !transcriptId;
+        recordingModeOptions.forEach((option) => { option.disabled = isRecording || !transcriptId; });
         if (fileInput) {
           fileInput.disabled = isRecording || liveMode || !canUseWholeFileInput();
         }
@@ -3486,6 +3494,7 @@ let statusDetailsHideTimer = null;
           fileInput.title = (!isRecording && !canUseWholeFileInput() && !sttAvailable && sttStatusMessage) ? sttStatusMessage : '';
         }
         captureController?.syncDisplayedDuration?.();
+        telehealthUi?.sync?.();
       };
 
       const setNewSessionAvailability = (canCreate, message) => {
@@ -5500,6 +5509,9 @@ let statusDetailsHideTimer = null;
         endpointForTranscript: workspaceEndpointForTranscript,
         applyWorkspacePayload,
         getActiveTranscriptId: () => transcriptId,
+        canSwitchTranscript: () => !(Boolean(telehealthUi?.isUnresolved?.())
+          || Boolean(captureController?.isLiveCaptureUiActive?.())
+          || currentTranscriptStatus === 'recording'),
         requestsByEndpoint: workspaceFetchesByEndpoint,
       });
       splitAnalysisRestorationPoller = createSplitAnalysisRestorationPoller({
@@ -5819,7 +5831,8 @@ let statusDetailsHideTimer = null;
         getTranscriptText: () => currentDraftText,
         getActiveIngestionMode: () => activeIngestionMode,
         getIsLiveCaptureUiActive: () => isLiveCaptureUiActive(),
-        getIsRecordingSwitchBlocked: () => Boolean(captureController?.isLiveCaptureUiActive?.()) || currentTranscriptStatus === 'recording',
+        getIsRecordingSwitchBlocked: () => Boolean(telehealthUi?.isUnresolved?.()) || Boolean(captureController?.isLiveCaptureUiActive?.()) || currentTranscriptStatus === 'recording',
+        getIsTelehealthSelected: () => Boolean(telehealthUi?.isSelectedOrUnresolved?.()),
         selectDocumentFromUi,
         showFlash,
         showCopyToast,
@@ -5940,6 +5953,29 @@ let statusDetailsHideTimer = null;
           }
         },
       });
+
+      // This is entirely inert unless the default-off server rollout flag
+      // rendered an explicit phone toggle. The microphone recorder remains
+      // authoritative for every ordinary consultation.
+      telehealthUi = attachTelehealthControls({
+        getTranscriptId: () => transcriptId,
+        getIngestionMode: () => activeIngestionMode,
+        canUseRecording: canUseWholeFileInput,
+        isOtherRecordingActive: () => Boolean(
+          captureController?.isCaptureUiActive?.()
+          || currentTranscriptStatus === 'recording'
+          || ['recording', 'paused'].includes(dictationRecordingState)
+        ),
+        getPreferences: () => userAppPreferences,
+        persistPreferences: persistUserAppPreferences,
+        csrfFetch,
+        setClinicianMicLevel: (rms, speechDetected) => captureController?.setExternalMicLevel?.(rms, speechDetected),
+        resetClinicianMicLevel: () => captureController?.resetExternalMicLevel?.(),
+        refreshWorkspace: async () => { await fetchWorkspace(); },
+        scheduleWorkspaceRefreshBurst,
+        showNotice: showFlash,
+      });
+      telehealthUi.setOrdinaryControlsSync?.(() => setMicButtons(Boolean(captureController?.isCaptureUiActive?.())));
 
       createGuidedTour({
         dom: {

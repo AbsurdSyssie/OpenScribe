@@ -106,6 +106,8 @@ Successful normal-user and team-leader login lands directly on `/workspace`. Leg
 
 Once a consultation has enough transcript text, the Scribe can suggest one accessible note template. The suggestion is advisory: accepting it uses the ordinary template picker and does not generate a note. Classification runs through the encrypted, redacted, quota-backed provider workflow described in [docs/transcript-capture.md](docs/transcript-capture.md).
 
+The default-off Telehealth preview can retain usable transcription after a source-window failure. The owner explicitly accepts available results with a coverage warning; retained failed audio remains retryable, and later recovered speech creates a new transcript version without replacing clinician edits or existing notes. See [the capture contract](docs/transcript-capture.md#using-available-results-after-a-source-failure) and the existing browser/privacy/clinical release gates before enabling the preview.
+
 Deployments may enable Google, Microsoft, the dedicated NHS Care Identity (CIS2) provider, and one custom OpenID Connect provider at the same time. Existing users link each provider from `/workspace/account`; OpenScribe never creates or links an account from a provider email claim. Password login and recovery remain available. See [docs/auth.md](docs/auth.md), [docs/cis2.md](docs/cis2.md), and [docs/environment.md](docs/environment.md#openid-connect-login).
 
 ## Quick start

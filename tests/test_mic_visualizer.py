@@ -41,6 +41,15 @@ first.updateFrame(separatedFrame);
 assert.ok(Math.abs(Number(firstElement.bars[0].style.values['--level']) - 0.613) < 1e-12, 'the first audio bucket drives its matching bar');
 assert.ok(Math.abs(Number(firstElement.bars[1].style.values['--level']) - 0.129) < 1e-12, 'quiet buckets remain low');
 assert.equal(secondElement.bars[0].style.values['--level'], '0.14');
+const previousLevel=Number(firstElement.bars[0].style.values['--level']);
+first.updateLevel(0.1);
+assert.ok(Math.abs(Number(firstElement.bars[0].style.values['--level'])-(previousLevel*0.45+0.7*0.55))<1e-12,
+  'external RMS updates the existing bars without an audio stream');
+const beforeInvalid=firstElement.bars.map(bar=>bar.style.values['--level']);
+first.updateLevel(NaN);
+assert.deepEqual(firstElement.bars.map(bar=>bar.style.values['--level']),beforeInvalid);
+first.reset();
+assert.ok(firstElement.bars.every(bar=>bar.style.values['--level']==='0.14'));
 first.setVadActive(true);
 assert.equal(firstElement.dataset.vadActive, 'true');
 assert.equal(secondElement.dataset.vadActive, 'false');

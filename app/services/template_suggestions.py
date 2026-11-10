@@ -65,6 +65,14 @@ TEMPLATE_SUGGESTION_PROVIDER_DEADLINE_SECONDS = 90
 logger = logging.getLogger("openscribe.template_suggestion")
 
 
+def _record_generation_trace_outcome(db: Session, *, attempt_id: UUID, validation: str | None = None, decision: str | None = None, error_code: str | None = None, not_dispatched: bool = False) -> None:
+    try:
+        from app.services.generation_trace import record_outcome
+        record_outcome(db, attempt_id=attempt_id, validation=validation, decision=decision, error_code=error_code, not_dispatched=not_dispatched)
+    except Exception:
+        pass
+
+
 def _log(event: str, *, job: TemplateSuggestionJob | None = None, transcript_id: UUID | None = None, **metadata: object) -> None:
     """Record lifecycle metadata without content, template details, or secrets."""
     job_id = job.id if job is not None and isinstance(job.id, UUID) else None
@@ -613,6 +621,10 @@ def _try_backup_suggestion_impl(
     child.deadline_at = now + timedelta(seconds=TEMPLATE_SUGGESTION_PROVIDER_DEADLINE_SECONDS)
     mark_provider_attempt_submitted(db, attempt_id=child.id, deadline_at=child.deadline_at, now=now)
     db.commit()
+    trace_primary = current_primary if preclaim else primary_attempt
+    if trace_primary is not None:
+        _record_generation_trace_outcome(db, attempt_id=trace_primary.id, decision="backup",
+            not_dispatched=preclaim, error_code="llm_invalid_credential" if preclaim else None)
     try:
         adapter = LlmAdapterKind(backup.adapter_kind)
         with provider_attempt_execution(db, attempt_id=child.id, maximum_seconds=90):
@@ -620,12 +632,26 @@ def _try_backup_suggestion_impl(
                 config=config, adapter_kind=adapter, base_url=backup.base_url,
                 provider_config=dict(backup.provider_config), credential=credential, request_body=request,
             )
-        result = _parse_suggestion_result(output, locked)
     except AppError as exc:
+        _record_generation_trace_outcome(db, attempt_id=child.id, decision="terminal", error_code=exc.code)
         _fail(db, locked, "template_suggestion_failed", submitted_attempt_id=child.id,
             usage=locals().get("usage"), timeout_waived=exc.code == "llm_provider_timeout")
         return None
     except Exception:
+        _record_generation_trace_outcome(db, attempt_id=child.id, decision="terminal")
+        _fail(db, locked, "template_suggestion_failed", submitted_attempt_id=child.id,
+            usage=locals().get("usage"))
+        return None
+    try:
+        result = _parse_suggestion_result(output, locked)
+        _record_generation_trace_outcome(db, attempt_id=child.id, validation="accepted")
+    except (AppError, ValueError) as parse_exc:
+        _record_generation_trace_outcome(db, attempt_id=child.id, validation="invalid", decision="terminal", error_code=parse_exc.code if isinstance(parse_exc, AppError) else "template_suggestion_invalid_response")
+        _fail(db, locked, "template_suggestion_failed", submitted_attempt_id=child.id,
+            usage=locals().get("usage"))
+        return None
+    except Exception:
+        _record_generation_trace_outcome(db, attempt_id=child.id, decision="terminal")
         _fail(db, locked, "template_suggestion_failed", submitted_attempt_id=child.id,
             usage=locals().get("usage"))
         return None
@@ -908,16 +934,20 @@ def process_template_suggestion(db: Session, *, job_id: UUID) -> TemplateSuggest
         )
         if backup_result is None:
             _log("template_suggestion_provider_failed", job=locked, reason_code="provider_failed")
+            _record_generation_trace_outcome(db, attempt_id=active_attempt.id, decision="terminal", error_code=exc.code)
             return _fail(db, locked, "template_suggestion_failed", submitted_attempt_id=active_attempt.id,
                 timeout_waived=exc.code == "llm_provider_timeout")
         result, usage, config, active_attempt = backup_result
     except Exception:
         _log("template_suggestion_provider_failed", job=locked, reason_code="provider_or_output_validation_failed")
+        _record_generation_trace_outcome(db, attempt_id=active_attempt.id, decision="terminal")
         return _fail(db, locked, "template_suggestion_failed", submitted_attempt_id=active_attempt.id)
     else:
         try:
             result = _parse_suggestion_result(output, locked)
+            _record_generation_trace_outcome(db, attempt_id=active_attempt.id, validation="accepted")
         except (AppError, ValueError) as parse_exc:
+            _record_generation_trace_outcome(db, attempt_id=active_attempt.id, validation="invalid", error_code=parse_exc.code if isinstance(parse_exc, AppError) else "template_suggestion_invalid_response")
             if isinstance(parse_exc, AppError):
                 validation_error = tag_output_validation_failure(parse_exc)
             else:
@@ -928,6 +958,7 @@ def process_template_suggestion(db: Session, *, job_id: UUID) -> TemplateSuggest
             )
             if backup_result is None:
                 _log("template_suggestion_provider_failed", job=locked, reason_code="output_validation_failed")
+                _record_generation_trace_outcome(db, attempt_id=active_attempt.id, decision="terminal")
                 return _fail(db, locked, "template_suggestion_failed",
                     submitted_attempt_id=active_attempt.id, usage=usage)
             result, usage, config, active_attempt = backup_result

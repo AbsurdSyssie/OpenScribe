@@ -264,6 +264,8 @@ passwords, cookies, sessions, tokens, or credentials;
 
 sensitive request or response bodies.
 
+Authorized exception: the opt-in owner generation trace may retain redacted provider-bound request snapshots and model text as short-lived, owner-encrypted transcript content. The system administrator controls capture but gains no content access. Keep the 24-hour and transcript-root expiry limits, existing-owner encryption and deletion rules, bounded omission reporting, and content-free audit, attempt, usage, outbox and logs. Never capture credentials, raw HTTP errors, PII mappings or unredacted sources.
+
 Never weaken a security constraint or test merely to make a change pass.
 
 Scope discipline and discovered issues

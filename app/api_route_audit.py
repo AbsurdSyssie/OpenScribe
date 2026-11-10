@@ -78,6 +78,9 @@ def _file(name: str = "sample.wav") -> dict[str, tuple[str, bytes, str]]:
 
 
 ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
+    AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/generation-traces", AccessTier.full),
+    AuditCase("GET", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/generation-traces/{PLACEHOLDER_UUID_2}", AccessTier.full),
+    AuditCase("DELETE", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/generation-traces", AccessTier.full),
     AuditCase("POST", "/api/v1/auth/login", AccessTier.public, json_body=_json(email="nobody@example.com", password="password-1")),
     AuditCase("POST", "/api/v1/auth/logout", AccessTier.public),
     AuditCase("POST", "/api/v1/auth/password-reset/request", AccessTier.public, json_body=_json(email="nobody@example.com")),

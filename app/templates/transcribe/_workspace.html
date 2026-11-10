@@ -616,6 +616,27 @@ data-generated-freeform-panel
 </div>
 
 <div data-output-llm-request-slot></div>
+{% if not current_user.is_system_admin %}
+<details class="generation-trace" data-generation-trace data-transcript-id="{{ active_transcript.id if active_transcript else '' }}" data-enabled="{{ 'true' if current_user.generation_trace_enabled else 'false' }}"{% if not active_transcript %} hidden{% endif %}>
+  <summary data-generation-trace-summary>
+    <span>Generation trace</span>
+    <span class="generation-trace__state" data-generation-trace-indicator>{% if current_user.generation_trace_enabled %}Capture on · owner only{% else %}Capture off{% endif %}</span>
+  </summary>
+  <div class="generation-trace__body">
+    <p class="generation-trace__notice" data-generation-trace-notice>
+      When enabled, future traces show redacted provider requests and model responses. Only you can read them. Each trace expires within 24 hours, or earlier when this consultation expires or is deleted.
+    </p>
+    <p class="generation-trace__notice" data-generation-trace-completeness>
+      Trace history can be incomplete if capture was off, failed or expired. An event marked complete describes that event only; no event does not prove that no provider call was made.
+    </p>
+    <p class="generation-trace__status" data-generation-trace-status role="status" aria-live="polite">Open this panel to load trace history.</p>
+    <button type="button" class="btn-ghost-sm" data-generation-trace-refresh>Refresh trace history</button>
+    <ol class="generation-trace__events" data-generation-trace-events aria-label="Generation trace events"></ol>
+    <section class="generation-trace__detail" data-generation-trace-detail aria-live="polite" hidden></section>
+    <button type="button" class="btn-ghost-sm" data-generation-trace-clear hidden>Clear traces for this consultation</button>
+  </div>
+</details>
+{% endif %}
 <div data-output-redaction-debug-slot>
 {% if show_redaction_debug and latest_generated_document %}
 <details class="border border-stone bg-white p-3 mt-4 rounded-lg" data-redaction-debug-panel data-generated-document-id="{{ latest_generated_document.id }}">

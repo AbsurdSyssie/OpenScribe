@@ -163,6 +163,8 @@ def bounded_request(call: Callable[[ExecutionBudget], object]) -> object:
             active = getattr(observer, "is_active", None)
             if callable(active) and not active():
                 raise AppError(409, "llm_attempt_inactive", "The generation attempt is no longer active")
+            from app.services.generation_trace import start_transport, end_transport
+            trace_id = start_transport(ordinal)
             started = time.monotonic()
             status: int | None = None
             wait = 0.0
@@ -201,6 +203,10 @@ def bounded_request(call: Callable[[ExecutionBudget], object]) -> object:
                     details = dict(details)
                     details["backup_failure_class"] = "provider_failure"
                 exc.details = details
+            except BaseException:
+                end_transport(trace_id, outcome="provider_error")
+                raise
+            end_transport(trace_id, outcome=code, http_status=status, retry_wait_ms=round(wait * 1000), error_code=error.code if error else None)
             if error is not None and error.details is not None:
                 details = {
                     key: value

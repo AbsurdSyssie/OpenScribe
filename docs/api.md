@@ -541,3 +541,8 @@ The worker applies the normal de-identification path and saved manual PII rules 
 - [transcript-capture.md](transcript-capture.md)
 - [workspace.md](workspace.md)
 - [testing.md](testing.md)
+
+
+## Owner generation traces
+
+`GET /api/v1/transcripts/{transcript_id}/generation-traces` lists unexpired trace metadata for the active owner; optional `generated_document_id` filters results. `GET /api/v1/transcripts/{transcript_id}/generation-traces/{event_id}` decrypts and returns the owner-authorized request snapshot and raw model text after owner and expiry checks. A JSON preview is syntactic only; its separate validation status records workflow validation. `DELETE /api/v1/transcripts/{transcript_id}/generation-traces` clears the owner's traces. Responses are no-store. An incomplete or missing trace does not prove a call was not made.

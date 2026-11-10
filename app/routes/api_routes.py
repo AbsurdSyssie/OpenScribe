@@ -1725,6 +1725,30 @@ def start_transcript(payload: TranscriptStart, context: AuthenticatedContext = D
     return transcript_detail_response(db, transcript)
 
 
+@api.get("/transcripts/{transcript_id}/generation-traces", responses=error_responses)
+def list_generation_traces(transcript_id: UUID, response: Response, generated_document_id: UUID | None = None,
+                           context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    from app.services.generation_trace import list_traces
+    response.headers["Cache-Control"] = "no-store"
+    return list_traces(db, context.user, transcript_id, generated_document_id=generated_document_id)
+
+
+@api.get("/transcripts/{transcript_id}/generation-traces/{event_id}", responses=error_responses)
+def get_generation_trace(transcript_id: UUID, event_id: UUID, response: Response,
+                         context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    from app.services.generation_trace import get_trace
+    response.headers["Cache-Control"] = "no-store"
+    return get_trace(db, context.user, transcript_id, event_id)
+
+
+@api.delete("/transcripts/{transcript_id}/generation-traces", status_code=status.HTTP_204_NO_CONTENT, responses=error_responses)
+def clear_generation_traces(transcript_id: UUID, response: Response,
+                            context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
+    from app.services.generation_trace import clear_traces
+    response.headers["Cache-Control"] = "no-store"
+    clear_traces(db, context.user, transcript_id)
+
+
 @api.post("/transcripts/{transcript_id}/commit", response_model=TranscriptDetail, responses=error_responses)
 def commit_transcript(transcript_id: UUID, payload: TranscriptCommit, context: AuthenticatedContext = Depends(require_full_context), db: Session = Depends(get_db)):
     transcript = commit_transcript_text_service(

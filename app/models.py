@@ -563,6 +563,7 @@ class User(Base):
         default=UserOnboardingState.complete,
         nullable=False,
     )
+    generation_trace_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"), nullable=False)
     example_consultation_pending: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     mfa_required: Mapped[bool] = mapped_column(default=True, nullable=False)
     mfa_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
@@ -3274,6 +3275,44 @@ class ProviderAttempt(Base):
         back_populates="provider_attempt",
     )
 
+
+
+class GenerationTraceEvent(Base):
+    """Bounded owner-encrypted provider content, rooted in a consultation."""
+    __tablename__ = "generation_trace_events"
+    __table_args__ = (Index("ix_generation_trace_events_expiry", "expires_at"),
+                      Index("ix_generation_trace_events_root_time", "transcript_id", "captured_at"),
+                      CheckConstraint("state IN ('pending', 'complete', 'incomplete')", name="ck_generation_trace_state"),
+                      CheckConstraint("expires_at > captured_at AND expires_at <= captured_at + interval '24 hours'", name="ck_generation_trace_lifetime"),
+                      CheckConstraint("request_ordinal BETWEEN 1 AND 4", name="ck_generation_trace_ordinal"),
+                      CheckConstraint("workflow IN ('llm_generation', 'llm_hallucination_check', 'llm_template_suggestion', 'consultation_split_analysis', 'consultation_split_generation', 'consultation_split_verification')", name='ck_generation_trace_workflow'),
+                      CheckConstraint("outcome IS NULL OR outcome IN ('success', 'rate_limited', 'timeout', 'connection_error', 'provider_error', 'not_dispatched')", name='ck_generation_trace_outcome'),
+                      CheckConstraint("validation IS NULL OR validation IN ('accepted', 'invalid')", name='ck_generation_trace_validation'),
+                      CheckConstraint("decision IS NULL OR decision IN ('retry', 'backup', 'repair', 'terminal')", name='ck_generation_trace_decision'),
+                      CheckConstraint("reason IS NULL OR reason IN ('event_limit', 'size_limit', 'key_unavailable', 'credential_safety', 'validation_not_captured', 'partial_response')", name='ck_generation_trace_reason'),
+                      CheckConstraint('(http_status IS NULL OR http_status BETWEEN 100 AND 599) AND (retry_wait_ms IS NULL OR retry_wait_ms BETWEEN 0 AND 30000)', name='ck_generation_trace_transport'))
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id", ondelete="CASCADE"), nullable=False)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    attempt_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("provider_attempts.id", ondelete="SET NULL"), nullable=True)
+    generated_document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("generated_documents.id", ondelete="SET NULL"), nullable=True)
+    workflow: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    validation: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    trace_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    decision: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retry_wait_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    provider_adapter: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 class TaskDispatchOutbox(Base):
     __tablename__ = "task_dispatch_outbox"

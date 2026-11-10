@@ -87,6 +87,14 @@ from app.services.task_outbox import cancel_pending_task_dispatch
 from app.services.transcripts import transcript_is_expired
 
 
+def _record_generation_trace_outcome(db: Session, *, attempt_id: UUID, validation: str | None = None, decision: str | None = None, error_code: str | None = None, not_dispatched: bool = False) -> None:
+    try:
+        from app.services.generation_trace import record_outcome
+        record_outcome(db, attempt_id=attempt_id, validation=validation, decision=decision, error_code=error_code, not_dispatched=not_dispatched)
+    except Exception:
+        pass
+
+
 # This is intentionally shorter than the reservation, but long enough for the
 # existing provider transport timeouts.  A timeout closes the submitted quota
 # attempt conservatively through the regular quota lifecycle worker.
@@ -733,11 +741,13 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
         db.rollback()
         return SplitAnalysisRuntimeResult("in_flight", execution_id)
     if not isinstance(response, dict) or set(response) != {"text", "usage"}:
+        _record_generation_trace_outcome(db, attempt_id=expected_attempt_id, validation="invalid", error_code="consultation_split_analysis_invalid")
         db.rollback()
         invalid = tag_output_validation_failure(AppError(502, "consultation_split_analysis_invalid", "Split analysis output was invalid"))
         backup_result = _try_backup_analysis(db, execution_id=execution_id, primary_error=invalid)
         if backup_result is not None:
             return backup_result
+        _record_generation_trace_outcome(db, attempt_id=expected_attempt_id, decision="terminal")
         return _terminalize_submitted_failure(
             db, execution_id=execution_id, expected_attempt_id=expected_attempt_id,
             code="consultation_split_analysis_invalid_output"
@@ -745,11 +755,13 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
     text = response.get("text")
     usage = _normalized_usage(response.get("usage"))
     if not isinstance(text, str) or not text or len(text) > RECOVERABLE_RESPONSE_MAX_CHARS:
+        _record_generation_trace_outcome(db, attempt_id=expected_attempt_id, validation="invalid", error_code="consultation_split_analysis_invalid")
         db.rollback()
         invalid = tag_output_validation_failure(AppError(502, "consultation_split_analysis_invalid", "Split analysis output was invalid"))
         backup_result = _try_backup_analysis(db, execution_id=execution_id, primary_error=invalid, usage=usage)
         if backup_result is not None:
             return backup_result
+        _record_generation_trace_outcome(db, attempt_id=expected_attempt_id, decision="terminal")
         return _terminalize_submitted_failure(
             db, execution_id=execution_id, expected_attempt_id=expected_attempt_id,
             code="consultation_split_analysis_invalid_output", usage=usage
@@ -805,11 +817,13 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
         parsed = parse_split_analysis_output(text, candidate_ids=_candidate_ids(candidates))
         proposal = _proposal_json(parsed)
     except (AppError, UnicodeDecodeError):
+        _record_generation_trace_outcome(db, attempt_id=expected_attempt_id, validation="invalid", error_code="consultation_split_analysis_invalid")
         db.rollback()
         invalid = tag_output_validation_failure(AppError(502, "consultation_split_analysis_invalid", "Split analysis output was invalid"))
         backup_result = _try_backup_analysis(db, execution_id=execution_id, primary_error=invalid, usage=usage)
         if backup_result is not None:
             return backup_result
+        _record_generation_trace_outcome(db, attempt_id=expected_attempt_id, decision="terminal")
         return _terminalize_submitted_failure(
             db,
             execution_id=execution_id,
@@ -817,6 +831,7 @@ def _finalize_recoverable_response(db: Session, *, execution_id: UUID) -> SplitA
             code="consultation_split_analysis_invalid_output",
             usage=usage,
         )
+    _record_generation_trace_outcome(db, attempt_id=expected_attempt_id, validation="accepted")
     existing_events = db.scalars(
         select(ProviderUsageEvent)
         .where(ProviderUsageEvent.consultation_split_execution_id == execution_id)
@@ -1034,12 +1049,14 @@ def _try_backup_analysis(db: Session, *, execution_id: UUID, primary_error: AppE
         deadline_at=now + timedelta(seconds=SPLIT_ANALYSIS_PROVIDER_DEADLINE_SECONDS))
     work.execution.recoverable_response_encrypted = None
     db.commit()
+    _record_generation_trace_outcome(db, attempt_id=work.primary_attempt.id, decision="backup")
     try:
         with provider_attempt_execution(db, attempt_id=child.id, maximum_seconds=90):
             response_text, raw_usage = llm_runtime.invoke_llm(snapshot=backup, credential=credential,
                                                                request_body=backup_request)
     except AppError as exc:
         tagged = tag_provider_failure(exc)
+        _record_generation_trace_outcome(db, attempt_id=child.id, decision="terminal", error_code=tagged.code)
         failed = _terminalize_submitted_failure(db, execution_id=execution_id,
             expected_attempt_id=child.id,
             code="consultation_split_provider_failed",
@@ -1049,6 +1066,7 @@ def _try_backup_analysis(db: Session, *, execution_id: UUID, primary_error: AppE
             timeout_waived=tagged.code == "llm_provider_timeout")
         return failed
     if not isinstance(response_text, str) or not response_text or len(response_text) > RECOVERABLE_RESPONSE_MAX_CHARS:
+        _record_generation_trace_outcome(db, attempt_id=child.id, validation="invalid", decision="terminal")
         invalid = tag_output_validation_failure(AppError(502, "consultation_split_analysis_invalid",
                                                           "Split analysis output was invalid"))
         return _terminalize_submitted_failure(db, execution_id=execution_id, code=invalid.code,
@@ -1158,11 +1176,14 @@ def _try_pre_submit_backup_analysis(
     mark_provider_attempt_submitted(db, attempt_id=child.id, now=now,
         deadline_at=now + timedelta(seconds=SPLIT_ANALYSIS_PROVIDER_DEADLINE_SECONDS))
     db.commit()
+    _record_generation_trace_outcome(db, attempt_id=work.primary_attempt.id, decision="backup",
+        not_dispatched=True, error_code="llm_invalid_credential")
     try:
         with provider_attempt_execution(db, attempt_id=child.id, maximum_seconds=90):
             response_text, raw_usage = llm_runtime.invoke_llm(snapshot=backup, credential=credential, request_body=request)
     except AppError as exc:
         tagged = tag_provider_failure(exc)
+        _record_generation_trace_outcome(db, attempt_id=child.id, decision="terminal", error_code=tagged.code)
         return _terminalize_submitted_failure(db, execution_id=execution_id,
             expected_attempt_id=child.id,
             code="consultation_split_provider_failed",
@@ -1171,6 +1192,7 @@ def _try_pre_submit_backup_analysis(
             provider_http_status=(tagged.details or {}).get("provider_http_status"),
             timeout_waived=tagged.code == "llm_provider_timeout")
     if not isinstance(response_text, str) or not response_text or len(response_text) > RECOVERABLE_RESPONSE_MAX_CHARS:
+        _record_generation_trace_outcome(db, attempt_id=child.id, validation="invalid", decision="terminal")
         return _terminalize_submitted_failure(db, execution_id=execution_id,
             expected_attempt_id=child.id,
             code="consultation_split_analysis_invalid_output", usage=_normalized_usage(raw_usage))
@@ -1203,6 +1225,7 @@ def _run_prepared_provider_call(db: Session, *, prepared: PreparedSplitAnalysisS
         backup_result = _try_backup_analysis(db, execution_id=prepared.execution_id, primary_error=tagged)
         if backup_result is not None:
             return backup_result
+        _record_generation_trace_outcome(db, attempt_id=prepared.attempt_id, decision="terminal", error_code=tagged.code)
         provider_error_code, provider_http_status = _safe_provider_error(tagged)
         return _terminalize_submitted_failure(
             db,
@@ -1214,16 +1237,19 @@ def _run_prepared_provider_call(db: Session, *, prepared: PreparedSplitAnalysisS
             timeout_waived=tagged.code == "llm_provider_timeout",
         )
     except Exception:
+        _record_generation_trace_outcome(db, attempt_id=prepared.attempt_id, decision="terminal")
         return _terminalize_submitted_failure(
             db, execution_id=prepared.execution_id, expected_attempt_id=prepared.attempt_id,
             code="consultation_split_provider_failed"
         )
     if not isinstance(response_text, str) or not response_text or len(response_text) > RECOVERABLE_RESPONSE_MAX_CHARS:
+        _record_generation_trace_outcome(db, attempt_id=prepared.attempt_id, validation="invalid", error_code="consultation_split_analysis_invalid")
         invalid = tag_output_validation_failure(AppError(502, "consultation_split_analysis_invalid", "Split analysis output was invalid"))
         backup_result = _try_backup_analysis(db, execution_id=prepared.execution_id,
             primary_error=invalid, usage=_normalized_usage(raw_usage))
         if backup_result is not None:
             return backup_result
+        _record_generation_trace_outcome(db, attempt_id=prepared.attempt_id, decision="terminal")
         return _terminalize_submitted_failure(
             db,
             execution_id=prepared.execution_id,

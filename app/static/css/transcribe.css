@@ -4540,3 +4540,22 @@ height: 1.25rem;
   outline: 2px solid #2d5264;
   outline-offset: 2px;
 }
+.generation-trace { margin-top: 1rem; border: 1px solid #d8d2c8; border-radius: 12px; background: rgba(255,255,255,.92); color: #1a202c; }
+.generation-trace > summary { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .8rem 1rem; cursor: pointer; font-size: .9rem; font-weight: 650; }
+.generation-trace > summary:focus-visible, .generation-trace button:focus-visible, .generation-trace input:focus-visible { outline: 3px solid #0b667b; outline-offset: 2px; }
+.generation-trace__state { color: #56616f; font-size: .8rem; font-weight: 600; }
+.generation-trace[data-enabled="true"] .generation-trace__state { color: #246b46; }
+.generation-trace__body { padding: 0 1rem 1rem; }
+.generation-trace__notice, .generation-trace__status { max-width: 75ch; margin: 0 0 .75rem; color: #485465; font-size: .84rem; line-height: 1.5; }
+.generation-trace__events { display: grid; gap: .45rem; margin: .75rem 0; padding: 0; list-style: none; }
+.generation-trace__events button { width: 100%; padding: .65rem .75rem; border: 1px solid #e2ded6; border-radius: 8px; background: #fff; color: #1a202c; text-align: left; }
+.generation-trace__events button:hover, .generation-trace__events button[aria-current="true"] { border-color: #3d7a8c; background: #e0f2f5; }
+.generation-trace__events small { display: block; margin-top: .2rem; color: #56616f; }
+.generation-trace__detail { display: grid; gap: .75rem; margin: .75rem 0; }
+.generation-trace__detail[hidden] { display: none; }
+.generation-trace__detail h3 { margin: 0 0 .4rem; font-size: .9rem; }
+.generation-trace__content { min-width: 0; }
+.generation-trace__content pre { max-height: 24rem; overflow: auto; margin: 0; padding: .75rem; border: 1px solid #e2ded6; border-radius: 8px; background: #f5f1eb; color: #1a202c; font: .78rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 4; white-space: pre-wrap; overflow-wrap: anywhere; }
+.generation-trace__whitespace { display: flex; flex-wrap: wrap; gap: .8rem; margin: 0 0 .4rem; color: #485465; font-size: .8rem; }
+.generation-trace__comparison-note { margin: 0; color: #56616f; font-size: .8rem; }
+@media (max-width: 600px) { .generation-trace > summary { align-items: flex-start; flex-direction: column; gap: .25rem; } }

@@ -577,3 +577,6 @@ When code changes user-facing routes, environment settings, lifecycle schedules,
 3. update the API auth audit manifest for new routes;
 4. avoid rewriting dated compliance evidence—add a new assessment result instead;
 5. use repository-relative links.
+
+
+Owner generation trace changes require synthetic-data checks in `tests/test_generation_trace.py`, `tests/test_generation_trace_adapters.py`, `tests/test_generation_trace_outcomes.py`, `tests/test_generation_trace_migration.py`, and `tests/test_generation_trace_ui_browser.py`, plus the affected provider execution and workflow suites and the API authorization audit. Run the audit after pytest because they share isolated infrastructure.

@@ -94,6 +94,7 @@ from ..services.admin import (
     update_team_default_retention as update_team_default_retention_service,
     update_team_quota_defaults as update_team_quota_defaults_service,
 )
+from ..services.generation_trace import set_user_generation_trace_enabled
 from ..services.admin_quotas import (
     grant_user_quota_batch,
     reset_user_quota_batch,
@@ -3611,6 +3612,48 @@ def admin_suspend_user(
         )
     return RedirectResponse(
         url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "directory", team_id=return_team_id or None),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/users/{user_id}/generation-trace", response_class=HTMLResponse)
+def admin_set_user_generation_trace(
+    request: Request,
+    user_id: UUID,
+    enabled: str = Form("false"),
+    return_view: str = Form("workspace"),
+    return_tab: str = Form("members"),
+    return_team_id: str = Form(""),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        set_user_generation_trace_enabled(
+            db,
+            actor=context.user,
+            target_user_id=user_id,
+            enabled=enabled == "true",
+        )
+    except AppError as exc:
+        return render_admin(
+            request,
+            db,
+            current_user=context.user,
+            selected_team_id=return_team_id or None,
+            message=exc.message,
+            message_kind="error",
+            status_code=exc.status_code,
+            active_admin_tab=return_tab,
+            admin_page_route=_admin_page_route_from_return_view(return_view),
+            admin_return_view=_admin_return_view_value(return_view),
+        )
+    return RedirectResponse(
+        url=_admin_redirect_url(return_view=return_view, return_tab=return_tab, team_id=return_team_id or None),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 

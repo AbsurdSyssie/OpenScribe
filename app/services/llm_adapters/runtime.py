@@ -311,6 +311,10 @@ def _invoke_openai_compatible_once(
             except Exception:
                 pass
     choice = completion.choices[0] if completion.choices else None
+    from app.services.generation_trace import capture_active, raw_model_text
+    if capture_active():
+        message = getattr(choice, "message", None) if choice is not None else None
+        raw_model_text(openai_message_content_text(getattr(message, "content", None) if message is not None else None, strip=False))
     if choice is not None:
         _validate_completion_finish_reason(getattr(choice, "finish_reason", None))
     message = getattr(choice, "message", None) if choice is not None else None
@@ -356,9 +360,9 @@ def _validate_completion_finish_reason(value: object) -> None:
     )
 
 
-def openai_message_content_text(content: object) -> str:
+def openai_message_content_text(content: object, *, strip: bool = True) -> str:
     if isinstance(content, str):
-        return content.strip()
+        return content.strip() if strip else content
     if not isinstance(content, list):
         return ""
     parts: list[str] = []
@@ -374,7 +378,8 @@ def openai_message_content_text(content: object) -> str:
             parts.append(text)
         elif isinstance(text, dict) and isinstance(text.get("value"), str):
             parts.append(text["value"])
-    return "".join(parts).strip()
+    joined = "".join(parts)
+    return joined.strip() if strip else joined
 
 
 def _invoke_ollama_once(
@@ -456,6 +461,11 @@ def _invoke_ollama_once(
             connect_error_cls=connect_error_cls,
             http_status_error_cls=http_status_error_cls,
         ) from exc
+    finally:
+        if generated_parts:
+            from app.services.generation_trace import capture_active, raw_model_text
+            if capture_active():
+                raw_model_text("".join(generated_parts))
     if final_payload is None:
         raise AppError(
             502,
@@ -592,7 +602,9 @@ def invoke_openai_compatible(
     connection_error_cls: type[Exception] = APIConnectionError,
     status_error_cls: type[Exception] = APIStatusError,
 ) -> tuple[str, GenerationUsage]:
-    return bounded_request(lambda budget: _invoke_openai_compatible_once(
+    from app.services.generation_trace import request_context
+    with request_context(request_body, api_key):
+        return bounded_request(lambda budget: _invoke_openai_compatible_once(
         api_key=api_key,
         base_url=base_url,
         request_body=request_body,
@@ -617,7 +629,9 @@ def invoke_ollama(
     connect_error_cls: type[Exception] = httpx.ConnectError,
     http_status_error_cls: type[Exception] = httpx.HTTPStatusError,
 ) -> tuple[str, GenerationUsage]:
-    return bounded_request(lambda budget: _invoke_ollama_once(
+    from app.services.generation_trace import request_context
+    with request_context(request_body, bearer_token):
+        return bounded_request(lambda budget: _invoke_ollama_once(
         base_url=base_url,
         bearer_token=bearer_token,
         request_body=request_body,
@@ -633,7 +647,9 @@ def invoke_ollama(
 
 
 def invoke_gemini(*, provider_config: Mapping[str, object], credential: object | None, request_body: dict[str, object]) -> tuple[str, GenerationUsage]:
-    return bounded_request(lambda budget: _invoke_gemini_once(
+    from app.services.generation_trace import request_context
+    with request_context(request_body, credential):
+        return bounded_request(lambda budget: _invoke_gemini_once(
         provider_config=provider_config,
         credential=credential,
         request_body=request_body,

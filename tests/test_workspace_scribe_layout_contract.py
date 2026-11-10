@@ -167,6 +167,29 @@ def test_scribe_mobile_dictation_modal_owns_the_top_layer_and_safe_viewport():
     assert re.search(r'/static/css/transcribe\.css\?v=[^"\s]+', read("app/templates/transcribe/_head_assets.html"))
 
 
+def test_generation_trace_is_owner_surface_and_loads_content_only_after_opening():
+    workspace = read("app/templates/transcribe/_workspace.html")
+    extras = read("app/templates/transcribe/_shell_extras.html")
+    trace_js = read("app/static/js/transcribe/generationTrace.js")
+    css = compact_css(read("app/static/css/transcribe.css"))
+
+    assert "data-generation-trace" in workspace
+    assert "Only you can read them" in workspace
+    assert "within 24 hours" in workspace
+    assert "no event does not prove that no provider call was made" in workspace
+    assert '"generationTraceEnabled": current_user.generation_trace_enabled' in extras
+    assert "root.addEventListener('toggle'" in trace_js
+    assert "if (root.open && !loaded) void loadHistory()" in trace_js
+    assert "cache: 'no-store'" in trace_js
+    assert "pre.textContent" in trace_js
+    assert "innerHTML" not in trace_js
+    assert "noteVersion?.dataset.latestGeneratedId === String(event.generated_document_id)" in trace_js
+    assert "const structured = output.querySelectorAll('[data-structured-line-input]')" in trace_js
+    assert "detail.validation_status" in trace_js
+    assert "transcribe:workspace-applied" in trace_js
+    assert ".generation-trace__content pre" in css
+
+
 def test_shared_modal_close_control_centres_its_icon():
     """Both modal headers reuse this control, so it must centre block-level SVGs."""
     workspace = read("app/templates/transcribe/_workspace.html")

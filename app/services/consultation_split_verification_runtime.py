@@ -44,6 +44,14 @@ from app.services.task_outbox import cancel_pending_task_dispatch
 _DEADLINE_SECONDS = 30
 
 
+def _record_generation_trace_outcome(db: Session, *, attempt_id: UUID, validation: str | None = None, decision: str | None = None, error_code: str | None = None, not_dispatched: bool = False) -> None:
+    try:
+        from app.services.generation_trace import record_outcome
+        record_outcome(db, attempt_id=attempt_id, validation=validation, decision=decision, error_code=error_code, not_dispatched=not_dispatched)
+    except Exception:
+        pass
+
+
 def _credential_ok(config: TeamLlmConfig | None, credential: object | None) -> bool:
     if config is None:
         return False
@@ -195,10 +203,13 @@ def _try_pre_submit_backup_verification(db: Session, *, work, primary_request: d
     mark_provider_attempt_submitted(db, attempt_id=child.id, now=now,
         deadline_at=now + timedelta(seconds=_DEADLINE_SECONDS))
     db.commit()
+    _record_generation_trace_outcome(db, attempt_id=primary.id, decision="backup",
+        not_dispatched=True, error_code="llm_invalid_credential")
     try:
         with provider_attempt_execution(db, attempt_id=child.id, maximum_seconds=30):
             text, usage = llm_runtime.invoke_llm(snapshot=backup, credential=credential, request_body=request)
     except AppError as exc:
+        _record_generation_trace_outcome(db, attempt_id=child.id, decision="terminal", error_code=exc.code)
         current = _lock(db, execution_id)
         if current and current[4].id == child.id:
             _finish(db, current, reason="verification_provider_failed", verified=False,
@@ -214,6 +225,7 @@ def _try_pre_submit_backup_verification(db: Session, *, work, primary_request: d
         db.rollback()
         return True
     if not isinstance(text, str):
+        _record_generation_trace_outcome(db, attempt_id=child.id, validation="invalid", decision="terminal", error_code="consultation_split_verification_invalid")
         _finish(db, current, reason="verification_invalid_output", verified=False,
             submitted=True, usage=usage, expected_attempt_id=child.id)
         return True
@@ -613,11 +625,13 @@ def _try_backup_verification(db: Session, *, execution_id: UUID, error: AppError
     execution.recoverable_response_encrypted = None
     mark_provider_attempt_submitted(db, attempt_id=child.id, now=now, deadline_at=now + timedelta(seconds=_DEADLINE_SECONDS))
     db.commit()
+    _record_generation_trace_outcome(db, attempt_id=primary.id, decision="backup")
     try:
         with provider_attempt_execution(db, attempt_id=child.id, maximum_seconds=30):
             text, backup_usage = llm_runtime.invoke_llm(snapshot=backup, credential=credential, request_body=request)
     except AppError as exc:
         tagged = tag_provider_failure(exc)
+        _record_generation_trace_outcome(db, attempt_id=child.id, decision="terminal", error_code=tagged.code)
         work = _lock(db, execution_id)
         if work and work[4].id == child.id:
             _finish(db, work, reason="verification_provider_failed", verified=False,
@@ -627,6 +641,7 @@ def _try_backup_verification(db: Session, *, execution_id: UUID, error: AppError
             db.rollback()
         return True
     if not isinstance(text, str):
+        _record_generation_trace_outcome(db, attempt_id=child.id, validation="invalid", decision="terminal", error_code="consultation_split_verification_invalid")
         invalid = tag_output_validation_failure(AppError(502, "consultation_split_verification_invalid", "Verification output was invalid"))
         work = _lock(db, execution_id)
         if work and work[4].id == child.id:
@@ -697,10 +712,12 @@ def process_consultation_split_verification_execution(db: Session, *, execution_
         try:
             corrected, count = apply_split_verification_response(payload_text=response["text"], confirmed_plan=plan, survivor_outputs=survivors)
         except (AppError, TypeError, ValueError, KeyError):
+            _record_generation_trace_outcome(db, attempt_id=expected_attempt_id, validation="invalid", error_code="consultation_split_verification_invalid")
             db.rollback()
             invalid = tag_output_validation_failure(AppError(502, "consultation_split_verification_invalid", "Verification output was invalid"))
             if _try_backup_verification(db, execution_id=execution_id, error=invalid, usage=response.get("usage")):
                 return
+            _record_generation_trace_outcome(db, attempt_id=expected_attempt_id, decision="terminal")
             work = _lock(db, execution_id)
             if work and work[4].id == expected_attempt_id:
                 _finish(db, work, reason="verification_invalid_output", verified=False,
@@ -708,6 +725,7 @@ def process_consultation_split_verification_execution(db: Session, *, execution_
             else:
                 db.rollback()
             return
+        _record_generation_trace_outcome(db, attempt_id=expected_attempt_id, validation="accepted")
         _finish(db, work, reason=None, verified=True, corrected=corrected, correction_count=count,
             submitted=True, usage=response.get("usage"), expected_attempt_id=expected_attempt_id)
         return
@@ -739,6 +757,7 @@ def process_consultation_split_verification_execution(db: Session, *, execution_
         tagged = tag_provider_failure(exc)
         if _try_backup_verification(db, execution_id=execution_id, error=tagged):
             return
+        _record_generation_trace_outcome(db, attempt_id=submitted_attempt_id, decision="terminal")
         work = _lock(db, execution_id)
         if work and work[4].id == submitted_attempt_id:
             _finish(db, work, reason="verification_provider_failed", verified=False,
@@ -748,6 +767,7 @@ def process_consultation_split_verification_execution(db: Session, *, execution_
             db.rollback()
         return
     except Exception:
+        _record_generation_trace_outcome(db, attempt_id=submitted_attempt_id, decision="terminal")
         work = _lock(db, execution_id)
         if work and work[4].id == submitted_attempt_id:
             _finish(db, work, reason="verification_provider_failed", verified=False,
@@ -772,9 +792,11 @@ def process_consultation_split_verification_execution(db: Session, *, execution_
         db.rollback()
         return
     if not isinstance(text, str):
+        _record_generation_trace_outcome(db, attempt_id=submitted_attempt_id, validation="invalid", error_code="consultation_split_verification_invalid")
         invalid = tag_output_validation_failure(AppError(502, "consultation_split_verification_invalid", "Verification output was invalid"))
         if _try_backup_verification(db, execution_id=execution_id, error=invalid, usage=usage):
             return
+        _record_generation_trace_outcome(db, attempt_id=submitted_attempt_id, decision="terminal")
         work = _lock(db, execution_id)
         if work and work[4].id == submitted_attempt_id:
             _finish(db, work, reason="verification_invalid_output", verified=False,

@@ -202,3 +202,10 @@ Gemini note generation applies a model-aware low-thinking policy. The exact Gemi
 Set `ENABLE_GEMINI_ENTERPRISE_PROVIDER=false` to hide and reject new Gemini Enterprise setup during rollout. Default is enabled. Existing persisted Gemini configs remain visible to authorized admins, usable by existing team selections, and re-inspectable with their saved Vault-backed credential; disabling creation must not make persisted provider rows unreadable or return server errors.
 
 See [Gemini Enterprise setup](gemini-enterprise-setup.md) for bare-metal and Docker deployment instructions. Publisher-model discovery uses Google's `v1beta1` Model Garden catalog; token counting and generation use stable `v1`. Discovery failure still permits manual selection, with `count_tokens` providing the authoritative access check during finalization.
+
+
+## Owner generation trace
+
+System administrators can enable optional capture per user. Future supported provider attempts can record redacted request snapshots, model text and bounded transport/decision metadata under the owning user's encryption key. Capture is best effort; incomplete events and unavailable history must not be interpreted as evidence that no provider request occurred. Encrypted content expires at the earlier of 24 hours or transcript expiry, and the transcript expiry sweep removes expired trace rows. Disabling capture stops new capture; owners can clear existing rows. Provider-attempt, quota, outbox, usage and audit records remain content-free. Existing generated-document owner views provide the final editor content. The Gemini snapshot represents SDK request arguments, not literal wire bytes.
+
+The generation-trace migration adds a default-off user flag and transcript-cascaded trace table. Downgrading it deletes all stored traces and the capture flags; export is not provided. The scheduled transcript expiry sweep also removes expired trace rows even when no transcript root expires in that run.

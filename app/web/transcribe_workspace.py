@@ -1443,6 +1443,7 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, 
             consultation_problem_plan = None
         consultation_split_batch = read_workspace_split_batch(db, current_user, transcript_id=active_transcript.id)
     return TranscribeWorkspaceDetail(
+        generation_trace_enabled=bool(current_user and current_user.generation_trace_enabled),
         example_consultation_pending=bool(
             current_user is not None
             and current_user.example_consultation_pending

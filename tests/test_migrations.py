@@ -307,6 +307,7 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "detected_pii_dismissals",
         "generated_document_sections",
         "generated_documents",
+        "generation_trace_events",
         "post_consultation_dictation_segments",
         "post_consultation_dictations",
         "provider_attempts",
@@ -359,6 +360,9 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
     audit_indexes = {index["name"] for index in inspect(engine).get_indexes("security_audit_events")}
     assert "ix_security_audit_events_created_at" in audit_indexes
     inspector = inspect(engine)
+    assert "generation_trace_enabled" in {column["name"] for column in inspector.get_columns("users")}
+    trace_checks = {item["name"] for item in inspector.get_check_constraints("generation_trace_events")}
+    assert {"ck_generation_trace_state", "ck_generation_trace_lifetime", "ck_generation_trace_ordinal"} <= trace_checks
     account_request_indexes = {index["name"]: index for index in inspector.get_indexes("account_requests")}
     pending_request_index = account_request_indexes["uq_account_requests_pending_email_team"]
     assert pending_request_index["unique"] is True

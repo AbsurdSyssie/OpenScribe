@@ -76,6 +76,15 @@ from app.schemas.templates import (
 )
 from app.services.llm import active_team_hallucination_check_selection
 from app.services.telehealth_partial import job_is_not_accepted_partial
+
+
+def _record_generation_trace_outcome(db: Session, *, attempt_id: UUID, validation: str | None = None, decision: str | None = None, error_code: str | None = None, not_dispatched: bool = False) -> None:
+    """Best-effort, content-free trace outcome; generation remains authoritative."""
+    try:
+        from app.services.generation_trace import record_outcome
+        record_outcome(db, attempt_id=attempt_id, validation=validation, decision=decision, error_code=error_code, not_dispatched=not_dispatched)
+    except Exception:
+        pass
 from app.services.llm_checker_selection import (
     FrozenCheckerSelection,
     copy_hallucination_check_selection,
@@ -2647,6 +2656,7 @@ def _repair_backup_generated_note(
         or backup_attempt.backup_of_attempt_id is None or backup_attempt.repair_of_attempt_id is not None
         or backup_attempt.status is not AttemptStatus.submitted):
         return None
+    _record_generation_trace_outcome(db, attempt_id=backup_attempt.id, validation="invalid", decision="repair", error_code=error.code)
     if not _lock_live_generation_result(db, document=document, submitted_attempt_id=backup_attempt.id):
         return None
     require_supported_execution_context()
@@ -2707,8 +2717,11 @@ def _repair_backup_generated_note(
             text, repair_usage = _invoke_frozen_llm(config=config, adapter_kind=adapter_kind,
                 base_url=base_url, provider_config=provider_config, credential=credential, request_body=repair_request)
         _validate_generation_provider_output(db, document=document, text=text)
+        _record_generation_trace_outcome(db, attempt_id=repair.id, validation="accepted")
         return _SameModelRetryResult(attempt_id=repair.id, text=text, usage=repair_usage)
     except AppError as exc:
+        if exc.code == "llm_generation_invalid_json" or (exc.details or {}).get("backup_failure_class") == "output_validation_failure":
+            _record_generation_trace_outcome(db, attempt_id=repair.id, validation="invalid", decision="terminal", error_code=exc.code)
         return _SameModelRetryResult(attempt_id=repair.id, text=locals().get("text"),
             usage=locals().get("repair_usage"), error=exc)
     except Exception:
@@ -2747,6 +2760,7 @@ def _retry_generated_note_after_invalid_json(
     ):
         return None
     require_supported_execution_context()
+    _record_generation_trace_outcome(db, attempt_id=primary_attempt.id, validation="invalid", decision="retry", error_code=primary_error.code)
 
     if "messages" in request_body:
         messages = request_body.get("messages")
@@ -2826,8 +2840,11 @@ def _retry_generated_note_after_invalid_json(
                 provider_config=provider_config, credential=credential, request_body=request_body,
             )
         _validate_generation_provider_output(db, document=document, text=text)
+        _record_generation_trace_outcome(db, attempt_id=retry_attempt.id, validation="accepted")
         return _SameModelRetryResult(attempt_id=retry_attempt.id, text=text, usage=usage)
     except AppError as exc:
+        if exc.code == "llm_generation_invalid_json" or (exc.details or {}).get("backup_failure_class") == "output_validation_failure":
+            _record_generation_trace_outcome(db, attempt_id=retry_attempt.id, validation="invalid", decision="terminal", error_code=exc.code)
         return _SameModelRetryResult(
             attempt_id=retry_attempt.id, text=locals().get("text"),
             usage=locals().get("usage"), error=exc,
@@ -2933,6 +2950,7 @@ def _try_backup_generated_document(
     child.deadline_at = now + timedelta(seconds=GENERATION_PROVIDER_DEADLINE_SECONDS)
     mark_provider_attempt_submitted(db, attempt_id=child.id, deadline_at=child.deadline_at, now=now)
     db.commit()
+    _record_generation_trace_outcome(db, attempt_id=primary_attempt_id, decision="backup")
     try:
         with provider_attempt_execution(db, attempt_id=child.id, maximum_seconds=90):
             text, usage = _invoke_frozen_llm(
@@ -2943,7 +2961,10 @@ def _try_backup_generated_document(
             _validate_generation_provider_output(db, document=document, text=text)
         else:
             output_validator(text)
+        _record_generation_trace_outcome(db, attempt_id=child.id, validation="accepted")
     except AppError as exc:
+        if exc.code == "llm_generation_invalid_json" or (exc.details or {}).get("backup_failure_class") == "output_validation_failure":
+            _record_generation_trace_outcome(db, attempt_id=child.id, validation="invalid", error_code=exc.code)
         repair = _repair_backup_generated_note(
             db, document=document, config=backup_config, adapter_kind=backup_adapter,
             base_url=backup.base_url, provider_config=dict(backup.provider_config), credential=credential,
@@ -3810,6 +3831,9 @@ def _try_backup_hallucination_check(
     document.hallucination_check_model_name = backup.model
     document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
     db.commit()
+    _record_generation_trace_outcome(db, attempt_id=primary_attempt.id, decision="backup",
+        not_dispatched=preclaim, error_code="llm_invalid_credential" if preclaim else None)
+    validation_started = False
     try:
         with provider_attempt_execution(
             db, attempt_id=child.id, maximum_seconds=30,
@@ -3819,8 +3843,11 @@ def _try_backup_hallucination_check(
                 config=config, adapter_kind=adapter, base_url=backup.base_url,
                 provider_config=dict(backup.provider_config), credential=credential, request_body=request,
             )
+        validation_started = True
         _parse_hallucination_check_response(text, edit_cap=edit_cap)
     except AppError as exc:
+        if validation_started:
+            _record_generation_trace_outcome(db, attempt_id=child.id, validation="invalid", decision="terminal", error_code=exc.code)
         if not _checker_attempt_result_is_current(db, document=document, submitted_attempt_id=child.id):
             db.rollback()
             return None
@@ -3847,6 +3874,7 @@ def _try_backup_hallucination_check(
     if not _checker_attempt_result_is_current(db, document=document, submitted_attempt_id=child.id):
         db.rollback()
         return None
+    _record_generation_trace_outcome(db, attempt_id=child.id, validation="accepted")
     document.hallucination_check_llm_config_id = config.id
     document.hallucination_check_model_name = backup.model
     document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
@@ -4104,6 +4132,7 @@ def _run_hallucination_check(
                 return title, sections, HallucinationCheckStatus.failed_provider, None
             try:
                 parsed_preflight = _parse_hallucination_check_response(response_text, edit_cap=edit_cap)
+                _record_generation_trace_outcome(db, attempt_id=checker_attempt.id, validation="accepted")
                 if parsed_preflight["status"] == "unchanged":
                     _settle_hallucination_check_attempt(
                         db, attempt=checker_attempt, usage=checker_usage, outcome=AttemptOutcome.succeeded,
@@ -4118,6 +4147,7 @@ def _run_hallucination_check(
                     title=title, sections=sections, edits=parsed_preflight["edits"],
                 )
             except AppError as invalid_backup:
+                _record_generation_trace_outcome(db, attempt_id=checker_attempt.id, validation="invalid", decision="terminal", error_code=invalid_backup.code)
                 _settle_hallucination_check_attempt(
                     db, attempt=checker_attempt, usage=checker_usage, outcome=AttemptOutcome.failed,
                     error_code=invalid_backup.code,
@@ -4208,6 +4238,7 @@ def _run_hallucination_check(
                 document.hallucination_check_model_name = model_name
                 document.hallucination_check_provider_snapshot_json = _checker_provider_snapshot(config)
             else:
+                _record_generation_trace_outcome(db, attempt_id=checker_attempt.id, decision="terminal", error_code=exc.code)
                 if checker_attempt.status is not AttemptStatus.submitted:
                     return title, sections, _checker_backup_failure_status(
                         db, primary_attempt=checker_attempt,
@@ -4246,6 +4277,7 @@ def _run_hallucination_check(
                 )
                 return title, sections, HallucinationCheckStatus.failed_provider, None
         except Exception:
+            _record_generation_trace_outcome(db, attempt_id=checker_attempt.id, decision="terminal", error_code="hallucination_check_failed")
             if not _lock_live_generation_result(db, document=document):
                 db.rollback()
                 _checker_usage_event(
@@ -4281,6 +4313,7 @@ def _run_hallucination_check(
             return title, sections, HallucinationCheckStatus.failed_provider, None
         try:
             parsed = _parse_hallucination_check_response(response_text, edit_cap=edit_cap)
+            _record_generation_trace_outcome(db, attempt_id=checker_attempt.id, validation="accepted")
             edits = parsed["edits"]
             if parsed["status"] == "unchanged":
                 _settle_hallucination_check_attempt(
@@ -4321,6 +4354,7 @@ def _run_hallucination_check(
             return next_title, next_sections, HallucinationCheckStatus.checked_corrected, applied_count
         except AppError as exc:
             failure_code = str((exc.details or {}).get("failure_code") or exc.code)
+            _record_generation_trace_outcome(db, attempt_id=checker_attempt.id, validation="invalid", error_code=failure_code)
             if attempt in {0, 1}:
                 validation_exc = tag_output_validation_failure(exc)
                 backup_result = _try_backup_hallucination_check(
@@ -4337,6 +4371,7 @@ def _run_hallucination_check(
                         db.rollback()
                         return title, sections, HallucinationCheckStatus.failed_provider, None
                     backup_parsed = _parse_hallucination_check_response(backup_text, edit_cap=edit_cap)
+                    _record_generation_trace_outcome(db, attempt_id=backup_attempt.id, validation="accepted")
                     if backup_parsed["status"] == "unchanged":
                         _settle_hallucination_check_attempt(
                             db, attempt=backup_attempt, usage=backup_usage, outcome=AttemptOutcome.succeeded,
@@ -4352,6 +4387,7 @@ def _run_hallucination_check(
                             title=title, sections=sections, edits=backup_parsed["edits"],
                         )
                     except AppError as backup_exc:
+                        _record_generation_trace_outcome(db, attempt_id=backup_attempt.id, validation="invalid", decision="terminal", error_code=backup_exc.code)
                         _settle_hallucination_check_attempt(
                             db, attempt=backup_attempt, usage=backup_usage, outcome=AttemptOutcome.failed,
                             error_code=backup_exc.code,
@@ -4393,7 +4429,9 @@ def _run_hallucination_check(
                 error_code=failure_code,
             )
             if attempt == 0 and checker_attempt.backup_of_attempt_id is None:
+                _record_generation_trace_outcome(db, attempt_id=checker_attempt.id, decision="retry")
                 continue
+            _record_generation_trace_outcome(db, attempt_id=checker_attempt.id, decision="terminal")
             if debug_payload is not None:
                 debug_payload["retry_count"] = attempt
                 debug_payload["failure_code"] = failure_code
@@ -6626,6 +6664,9 @@ def _process_split_regenerated_document(
     if active_attempt is None:
         raise AppError(500, "llm_generation_attempt_missing", "Generation accounting state is missing")
     active_attempt_id = active_attempt.id
+    if preflight_backup is not None and active_attempt.backup_of_attempt_id is not None:
+        _record_generation_trace_outcome(db, attempt_id=active_attempt.backup_of_attempt_id,
+            decision="backup", not_dispatched=True, error_code="llm_invalid_credential")
     try:
         with provider_attempt_execution(db, attempt_id=active_attempt_id, maximum_seconds=90):
             generated_text, usage = _invoke_frozen_llm(
@@ -7135,6 +7176,9 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
     if active_attempt is None:
         raise AppError(500, "llm_generation_attempt_missing", "Generation accounting state is missing")
     active_attempt_id = active_attempt.id
+    if preflight_backup is not None and active_attempt.backup_of_attempt_id is not None:
+        _record_generation_trace_outcome(db, attempt_id=active_attempt.backup_of_attempt_id,
+            decision="backup", not_dispatched=True, error_code="llm_invalid_credential")
     try:
         request_body = llm_request_payload
         with provider_attempt_execution(db, attempt_id=active_attempt_id, maximum_seconds=90):
@@ -7147,7 +7191,10 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
                 request_body=request_body,
             )
         _validate_generation_provider_output(db, document=document, text=generated_text)
+        _record_generation_trace_outcome(db, attempt_id=active_attempt_id, validation="accepted")
     except AppError as exc:
+        if exc.code == "llm_generation_invalid_json" or (exc.details or {}).get("backup_failure_class") == "output_validation_failure":
+            _record_generation_trace_outcome(db, attempt_id=active_attempt_id, validation="invalid", error_code=exc.code)
         failure_exc = exc
         failure_usage = locals().get("usage")
         failure_output = locals().get("generated_text")
@@ -7198,6 +7245,7 @@ def _process_generated_document_impl(db: Session, *, document_id: UUID) -> Gener
             adapter_kind = LlmAdapterKind(document.llm_adapter_kind)
             base_url = document.llm_base_url or config.base_url
         elif failure_exc is not None:
+            _record_generation_trace_outcome(db, attempt_id=active_attempt_id, decision="terminal")
             current = db.get(GeneratedDocument, document.id)
             if current is not None and current.status in {GeneratedDocumentStatus.failed, GeneratedDocumentStatus.ready}:
                 return current

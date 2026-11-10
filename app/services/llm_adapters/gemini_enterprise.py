@@ -209,6 +209,14 @@ def generate_gemini_text(
             contents=contents,
             config=config,
         )
+        from app.services.generation_trace import capture_active, raw_model_text
+        if capture_active():
+            try:
+                raw_text = _response_text(response)
+            except AppError:
+                raw_text = None
+            if isinstance(raw_text, str):
+                raw_model_text(raw_text)
         finish_reason = _finish_reason(response)
         if finish_reason == "MAX_TOKENS":
             raise AppError(

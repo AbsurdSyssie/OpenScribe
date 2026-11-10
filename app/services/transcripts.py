@@ -6,7 +6,7 @@ from math import ceil
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import exists, func, not_, select, update
+from sqlalchemy import delete, exists, func, not_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -2208,6 +2208,10 @@ def delete_expired_transcripts(
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
     comparison_now = now or utcnow()
+    from app.models import GenerationTraceEvent
+    expired_trace_ids = select(GenerationTraceEvent.id).where(GenerationTraceEvent.expires_at <= comparison_now).order_by(GenerationTraceEvent.expires_at).limit(batch_size)
+    db.execute(delete(GenerationTraceEvent).where(GenerationTraceEvent.id.in_(expired_trace_ids)))
+    db.commit()
     transcripts = list(
         db.scalars(
             select(Transcript)

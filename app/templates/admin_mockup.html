@@ -5102,6 +5102,16 @@
                       </button>
                       <div class="member-menu" id="member-menu-panel-{{ user.id }}" hidden>
                         <a class="btn small" href="/admin/usage?team_id={{ selected_team.id }}&amp;view=quotas&amp;member_id={{ user.id }}">Manage quotas</a>
+                        {% if current_user.is_system_admin %}
+                        <form method="post" action="/admin/users/{{ user.id }}/generation-trace">
+                          <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+                          <input type="hidden" name="enabled" value="{{ 'false' if user.generation_trace_enabled|default(false) else 'true' }}">
+                          <input type="hidden" name="return_view" value="workspace">
+                          <input type="hidden" name="return_tab" value="members">
+                          <input type="hidden" name="return_team_id" value="{{ selected_team.id }}">
+                          <button type="submit">{{ 'Disable' if user.generation_trace_enabled|default(false) else 'Enable' }} owner generation traces</button>
+                        </form>
+                        {% endif %}
                         {% if user.status.value == 'active' %}
                         <form
                           method="post"

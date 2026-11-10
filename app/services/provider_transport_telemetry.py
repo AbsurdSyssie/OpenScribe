@@ -83,5 +83,6 @@ def provider_attempt_execution(db: Session, *, attempt_id: UUID, maximum_seconds
     # Bound to the caller's engine/isolated test connection; transactions remain
     # separate in deployment and fixture savepoints remain isolated in tests.
     observer = transport_observer(attempt_id, session_factory=lambda: Session(bind=db.get_bind(), join_transaction_mode="create_savepoint"))
-    with execution_policy(budget=stage, observer=observer):
+    from app.services.generation_trace import attempt_context
+    with attempt_context(db, attempt_id), execution_policy(budget=stage, observer=observer):
         yield

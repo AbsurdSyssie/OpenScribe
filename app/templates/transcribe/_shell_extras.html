@@ -506,6 +506,7 @@ syncRecordButtonLabel();
   <script id="transcribe-bootstrap" type="application/json" nonce="{{ request.state.csp_nonce }}">
     {{ {
       "activeTranscriptId": active_transcript_id,
+      "generationTraceEnabled": current_user.generation_trace_enabled if current_user and not current_user.is_system_admin else false,
       "activeIngestionMode": active_transcript.ingestion_mode.value if active_transcript else none,
       "activeTranscriptHasContent": active_transcript.has_transcript_content if active_transcript else false,
       "activeTranscriptMultipleProblems": active_transcript.multiple_problems if active_transcript else false,
@@ -541,5 +542,6 @@ syncRecordButtonLabel();
   </script>
   <script src="/static/vendor/sortable/Sortable.min.js?v=1.15.2"></script>
   <script type="module" src="/static/js/transcribe/app.js?v=20261108-final-merge-review"></script>
+  <script type="module" src="/static/js/transcribe/generationTrace.js?v=20261110-owner-trace"></script>
   <script type="module" src="/static/js/transcribe/mobile.js?v=20260823-mobile-toast"></script>
   {% include "_csrf_script.html" %}

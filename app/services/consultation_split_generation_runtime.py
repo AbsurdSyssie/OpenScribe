@@ -70,6 +70,14 @@ _CONTROLLED_PROVIDER_ERROR_BY_APP_CODE = {
 
 GenerationOutcome = Literal["ready", "failed", "in_flight", "noop"]
 
+
+def _record_generation_trace_outcome(db: Session, *, attempt_id: UUID, validation: str | None = None, decision: str | None = None, error_code: str | None = None, not_dispatched: bool = False) -> None:
+    try:
+        from app.services.generation_trace import record_outcome
+        record_outcome(db, attempt_id=attempt_id, validation=validation, decision=decision, error_code=error_code, not_dispatched=not_dispatched)
+    except Exception:
+        pass
+
 @dataclass(frozen=True, slots=True)
 class SplitGenerationRuntimeResult:
     outcome: GenerationOutcome
@@ -379,10 +387,13 @@ def _try_pre_submit_backup_generation(db: Session, *, work: _Work,
     locked.execution.started_at = now
     locked.batch.status = ConsultationSplitBatchStatus.generating
     db.commit()
+    _record_generation_trace_outcome(db, attempt_id=locked.primary_attempt.id, decision="backup",
+        not_dispatched=True, error_code="llm_invalid_credential")
     try:
         with provider_attempt_execution(db, attempt_id=child.id, maximum_seconds=90):
             text, usage = llm_runtime.invoke_llm(snapshot=backup, credential=credential, request_body=request)
     except AppError as exc:
+        _record_generation_trace_outcome(db, attempt_id=child.id, decision="terminal", error_code=exc.code)
         work = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
         if (work is None or work.attempt.id != child.id
             or work.attempt.status is not AttemptStatus.submitted
@@ -544,11 +555,13 @@ def _try_backup_generation(db: Session, *, execution_id: UUID, error: AppError,
     mark_provider_attempt_submitted(db, attempt_id=child.id, now=now,
         deadline_at=now + timedelta(seconds=SPLIT_GENERATION_PROVIDER_DEADLINE_SECONDS))
     db.commit()
+    _record_generation_trace_outcome(db, attempt_id=work.primary_attempt.id, decision="backup")
     try:
         with provider_attempt_execution(db, attempt_id=child.id, maximum_seconds=90):
             text, raw_usage = llm_runtime.invoke_llm(snapshot=backup, credential=credential, request_body=request)
     except AppError as exc:
         tagged = tag_provider_failure(exc)
+        _record_generation_trace_outcome(db, attempt_id=child.id, decision="terminal", error_code=tagged.code)
         work = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
         if (work is None or work.attempt.id != child.id
             or work.attempt.status is not AttemptStatus.submitted
@@ -740,6 +753,7 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
             if target_uuids != {note.topic_uuid for note in parsed.notes} | set(parsed.failed_topic_uuids):
                 raise AppError(502, "consultation_split_generation_invalid", "Split generation output was invalid")
         except AppError as parse_error:
+            _record_generation_trace_outcome(db, attempt_id=finalization_attempt_id, validation="invalid", error_code="consultation_split_generation_invalid")
             db.rollback()
             event = "consultation_split_generation_parse_failed"
             logger.warning(
@@ -759,8 +773,10 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
             # Preserve the established partial-recovery path when no backup is
             # available. The outer finalization handler treats this pure
             # parser failure as recoverable only for the first generation.
+            _record_generation_trace_outcome(db, attempt_id=finalization_attempt_id, decision="terminal")
             raise AppError(502, "consultation_split_generation_invalid", "Split generation output was invalid")
         parsed_response = True
+        _record_generation_trace_outcome(db, attempt_id=finalization_attempt_id, validation="accepted")
 
         # Split notes keep generic persisted document titles.  The one
         # provider-generated title belongs to the transcript and follows the
@@ -818,6 +834,7 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
                     batch_id=work.batch.id, execution_id=work.execution.id,
                 )
                 if automatic is not None:
+                    _record_generation_trace_outcome(db, attempt_id=finalization_attempt_id, decision="retry")
                     return SplitGenerationRuntimeResult("ready", execution_id)
             # Either this recovery is terminal, or the automatic decision could
             # not safely create attempt two. The survivor set is now stable.
@@ -956,10 +973,14 @@ def _finalize(db: Session, execution_id: UUID) -> SplitGenerationRuntimeResult:
         )
         if recover:
             from app.services.consultation_split_recovery import queue_automatic_split_recovery
-            queue_automatic_split_recovery(
+            automatic = queue_automatic_split_recovery(
                 db, work.owner, transcript_id=work.transcript.id,
                 batch_id=work.batch.id, execution_id=work.execution.id,
             )
+            _record_generation_trace_outcome(db, attempt_id=finalization_attempt_id,
+                decision="retry" if automatic is not None else "terminal")
+        else:
+            _record_generation_trace_outcome(db, attempt_id=finalization_attempt_id, decision="terminal")
         return result
 
 def process_consultation_split_generation_execution(db: Session, *, execution_id: UUID) -> SplitGenerationRuntimeResult:
@@ -990,6 +1011,7 @@ def process_consultation_split_generation_execution(db: Session, *, execution_id
         backup_result = _try_backup_generation(db, execution_id=execution_id, error=tagged)
         if backup_result is not None:
             return backup_result
+        _record_generation_trace_outcome(db, attempt_id=submitted_attempt_id, decision="terminal", error_code=tagged.code)
         provider_error_code, provider_http_status = _safe_provider_error(tagged)
         work=_lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
         return _terminal(
@@ -999,6 +1021,7 @@ def process_consultation_split_generation_execution(db: Session, *, execution_id
             timeout_waived=tagged.code == "llm_provider_timeout",
         ) if work else SplitGenerationRuntimeResult("in_flight", execution_id)
     except Exception:
+        _record_generation_trace_outcome(db, attempt_id=submitted_attempt_id, decision="terminal")
         work=_lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
         return _terminal(db, work, "consultation_split_provider_failed", submitted=True) if work else SplitGenerationRuntimeResult("in_flight", execution_id)
     work=_lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
@@ -1017,10 +1040,12 @@ def process_consultation_split_generation_execution(db: Session, *, execution_id
     # the single automatic recovery chance.  Exceptions/no response remain
     # uncertain submitted outcomes and never reach that path.
     if not isinstance(text, str) or len(text) > RECOVERABLE_GENERATION_RESPONSE_MAX_CHARS:
+        _record_generation_trace_outcome(db, attempt_id=submitted_attempt_id, validation="invalid", error_code="consultation_split_generation_invalid")
         invalid = tag_output_validation_failure(AppError(502, "consultation_split_generation_invalid", "Split generation output was invalid"))
         backup_result = _try_backup_generation(db, execution_id=execution_id, error=invalid, usage=_usage(raw_usage))
         if backup_result is not None:
             return backup_result
+        _record_generation_trace_outcome(db, attempt_id=submitted_attempt_id, decision="terminal")
         work = _lock_work(db, execution_id, status=ConsultationSplitExecutionStatus.processing)
         return _terminal(db, work, "consultation_split_generation_invalid_output", submitted=True, usage=_usage(raw_usage)) if work else SplitGenerationRuntimeResult("in_flight", execution_id)
     work.execution.recoverable_response_encrypted=encrypt_json_for_existing_owner(db, owner_user_id=work.owner.id, table="consultation_split_executions", field="recoverable_response_encrypted", record_id=work.execution.id, plaintext={"text": text, "usage": _usage(raw_usage)})

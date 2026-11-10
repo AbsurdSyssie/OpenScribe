@@ -5,6 +5,7 @@ This document records implemented security boundaries and operational requiremen
 ## Core invariants
 
 - Transcript-derived content is owner-only.
+- Opt-in generation trace content is owner-encrypted, transcript-owned and unavailable after the earlier of 24 hours or transcript expiry. The system administrator may enable capture for an account but cannot read its trace. Provider request snapshots and model text may still contain identifying information after redaction. Credentials, raw provider errors, unredacted source text and redaction mappings are excluded. Trace capture is bounded and can be incomplete.
 - Leader or system-administrator authority does not grant transcript, working-note, dictation, generated-document, prompt, redaction, or PII readability.
 - System-administrator accounts do not own transcript content.
 - Transcript retention is snapshotted from server-owned team policy; user payloads cannot extend it.

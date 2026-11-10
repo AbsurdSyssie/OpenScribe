@@ -3577,6 +3577,7 @@ def test_admin_workspace_members_wire_existing_account_routes(client, db_session
     assert f'name="team_id" value="{team.id}"' in page.text
     assert 'name="return_view" value="workspace"' in page.text
     assert f'action="/admin/users/{member.id}/suspend"' in page.text
+    assert f'action="/admin/users/{member.id}/generation-trace"' in page.text
     assert f'action="/admin/users/{member.id}/send-activation"' in page.text
     assert f'action="/admin/users/{member.id}/reset-mfa"' in page.text
     assert f'action="/admin/users/{member.id}/delete"' in page.text
@@ -3600,6 +3601,40 @@ def test_admin_workspace_members_wire_existing_account_routes(client, db_session
     )
     assert response.status_code == 303
     assert response.headers["location"] == f"/admin?team_id={team.id}&team_tab=members"
+
+
+def test_admin_generation_trace_toggle_is_system_admin_only_and_metadata_only(client, db_session, make_team, make_user):
+    team = make_team(name="Owner Trace Toggle")
+    admin = make_user(email="owner-trace-admin@example.com", password="password-1", is_system_admin=True)
+    member = make_user(email="owner-trace-member@example.com", password="password-1", team=team)
+    assert member.generation_trace_enabled is False
+
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+    response = client.post(
+        f"/admin/users/{member.id}/generation-trace",
+        data={"enabled": "true", "return_view": "workspace", "return_tab": "members", "return_team_id": str(team.id)},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/admin?team_id={team.id}&team_tab=members"
+    db_session.refresh(member)
+    assert member.generation_trace_enabled is True
+
+    page = client.get(f"/admin?team_id={team.id}&team_tab=members")
+    assert "Disable owner generation traces" in page.text
+    assert "trace content" not in page.text.lower()
+
+    client.post("/logout", follow_redirects=False)
+    client.post("/login", data={"email": member.email, "password": "password-1"}, follow_redirects=False)
+    forbidden = client.post(
+        f"/admin/users/{member.id}/generation-trace",
+        data={"enabled": "false", "return_view": "workspace", "return_tab": "members", "return_team_id": str(team.id)},
+        follow_redirects=False,
+    )
+    assert forbidden.status_code == 403
+    db_session.refresh(member)
+    assert member.generation_trace_enabled is True
 
 
 def test_admin_workspace_wires_team_deid_assignment_and_danger_actions(client, make_team, make_user, make_deidentification_provider):

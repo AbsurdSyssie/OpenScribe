@@ -104,6 +104,15 @@ def _owner_key_record(db: Session, *, owner_user_id: UUID, create_if_missing: bo
     return existing
 
 
+
+def owner_dek_is_cached(db: Session, *, owner_user_id: UUID) -> bool:
+    """Check the established session cache without contacting Vault or making keys."""
+    record = get_active_user_key(db, user_id=owner_user_id)
+    if record is None:
+        return False
+    key = (owner_user_id, record.kek_mount, record.kek_key_name, record.wrapped_dek)
+    return key in _session_dek_cache(db)
+
 def _owner_dek(db: Session, *, owner_user_id: UUID, create_if_missing: bool) -> tuple[UserEncryptionKey, bytes]:
     key_record = _owner_key_record(db, owner_user_id=owner_user_id, create_if_missing=create_if_missing)
     cache_key = (owner_user_id, key_record.kek_mount, key_record.kek_key_name, key_record.wrapped_dek)

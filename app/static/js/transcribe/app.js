@@ -4948,6 +4948,12 @@ let statusDetailsHideTimer = null;
           }
         }
         transcriptId = transcript?.id || null;
+        document.dispatchEvent(new CustomEvent('transcribe:workspace-applied', {
+          detail: {
+            transcriptId,
+            generationTraceEnabled: Boolean(workspace.generation_trace_enabled),
+          },
+        }));
         document.dispatchEvent(new CustomEvent('transcribe:active-transcript-changed'));
         consultationSplittingEnabled = Boolean(workspace.consultation_splitting_enabled);
         consultationSplittingAvailable = Boolean(workspace.consultation_splitting_available);

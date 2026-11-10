@@ -1,5 +1,25 @@
 # Discovered issues
 
+### GENERATION-BACKUP-INVALID-JSON-RECOVERY — 2026-11-10
+
+- Status: Backup repair resolved locally on 10 November 2026; provider-specific constrained-output capability remains a separate follow-up. Confirmed in deployed code and local baseline `9b4c39d`.
+- Discovery commit: `9b4c39d`.
+- Locations: `app/services/templates.py::_retry_generated_note_after_invalid_json`, `_try_backup_generated_document`, `_process_generated_document_impl`; `app/services/llm_adapters/runtime.py::generation_request_snapshot`.
+- Evidence: the one same-primary retry is called only for the first submitted primary attempt. After primary failover, `_try_backup_generated_document` validates backup output but does not invoke the same-primary retry helper. In addition, `generation_request_snapshot` does not serialize `response_json_schema` for `openai_chat` or `bedrock_chat`; the schema is encoded only for Gemini. The current retry contract is documented in `docs/testing.md` and intentionally excludes backup output.
+- Impact: malformed JSON from a backup ends the generation even when the configured backup could potentially produce valid output after one correction. OpenAI-compatible and Bedrock requests rely on the textual JSON instruction and local strict validation; the adapter code does not request constrained JSON output. This finding does not establish whether the particular Bedrock gateway/model supports a schema mode.
+- Resolution: user authorized one separately accounted same-backup repair of invalid Template note JSON, with the existing validation and lifecycle protections.
+- Follow-up: confirm supported JSON-mode capabilities for each OpenAI-compatible provider before adding provider-specific request parameters.
+
+### GENERATION-FAILED-BACKUP-USAGE-ATTRIBUTION — 2026-11-10
+
+- Status: Resolved locally on 10 November 2026; confirmed by code-path inspection at baseline `9b4c39d`.
+- Discovery commit: `9b4c39d`.
+- Location: `app/services/templates.py::_fail_generated_document_after_submit` and `_persist_generation_usage_event`.
+- Evidence: `_fail_generated_document_after_submit` supplies the backup `config` when recording a failed backup attempt, but `_persist_generation_usage_event` takes `model_name` from `document.model_used`. `_try_backup_generated_document` updates `document.model_used` only after backup output passes validation. The failure helper does not pass the measured backup usage to `_record_generation_usage_event`.
+- Impact: the terminal failed-generation usage event can pair the backup adapter with the primary model name and omit backup token counts, although provider-attempt settlement receives the backup usage. Operational reporting can therefore misattribute a failed backup and under-report its usage.
+- Resolution: backup identity is recorded before submission and failed usage events include safe measured counts.
+- Verification: focused backup failure tests check the attempted model and measured usage.
+
 ### TELEHEALTH-SUBMITTED-FAILURE-RESOLUTION — 2026-11-07
 
 - Status: Resolved locally on 8 November 2026 under the approved [implementation plan](plans/telehealth-partial-salvage-2026-11-07.md). Explicit partial acceptance preserves successful results and automatically adds later recovery in a new source version without replacing clinician edits or generated notes. The combined regression run passed 514 tests with one environment-dependent skip; the API authorization audit passed. Remote CI still needs a run containing these local fixes; see the [dated review record](docs/reviews/telehealth-merge-review-2026-11-07.md#8-november-addendum--approved-partial-salvage).

@@ -3209,6 +3209,8 @@ class ProviderAttempt(Base):
         ),
         UniqueConstraint("correlation_id", "attempt_number", name="uq_provider_attempts_correlation_attempt"),
         UniqueConstraint("backup_of_attempt_id", name="uq_provider_attempts_backup_of"),
+        UniqueConstraint("repair_of_attempt_id", name="uq_provider_attempts_repair_of"),
+        CheckConstraint("repair_of_attempt_id IS NULL OR (backup_of_attempt_id IS NULL AND resource = 'tokens' AND attempt_kind = 'llm_generation' AND attempt_number = 1 AND correlation_id = repair_of_attempt_id AND id <> repair_of_attempt_id AND consultation_split_execution_id IS NULL AND transcript_ingestion_job_id IS NULL AND transcript_stream_session_id IS NULL)", name="ck_provider_attempts_repair_identity"),
         CheckConstraint("backup_of_attempt_id IS NULL OR (resource = 'tokens' AND attempt_number = 1 AND correlation_id = backup_of_attempt_id AND id <> backup_of_attempt_id)", name="ck_provider_attempts_backup_identity"),
         Index("uq_provider_attempts_split_execution", "consultation_split_execution_id", unique=True, postgresql_where=text("backup_of_attempt_id IS NULL")),
         Index("ix_provider_attempts_owner_resource_authorized", "owner_user_id", "resource", "authorized_at"),
@@ -3232,6 +3234,7 @@ class ProviderAttempt(Base):
         nullable=True,
     )
     backup_of_attempt_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("provider_attempts.id", ondelete="CASCADE"), nullable=True)
+    repair_of_attempt_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("provider_attempts.id", ondelete="CASCADE"), nullable=True)
     correlation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
     attempt_kind: Mapped[AttemptKind] = mapped_column(Enum(AttemptKind), nullable=False)

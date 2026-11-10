@@ -105,7 +105,10 @@ def _validated_main_checkpoint(
     if root is None or root.owner_user_id != attempt.owner_user_id or root.retention_expires_at <= now:
         return False, None, None, None
 
-    primary_id = attempt.backup_of_attempt_id or attempt.id
+    backup_parent = db.get(ProviderAttempt, attempt.repair_of_attempt_id) if attempt.repair_of_attempt_id else attempt
+    if backup_parent is None:
+        return False, None, None, None
+    primary_id = backup_parent.backup_of_attempt_id or backup_parent.id
     primary = db.get(ProviderAttempt, primary_id)
     if (
         primary is None
@@ -124,7 +127,8 @@ def _validated_main_checkpoint(
     if latest_primary is None or latest_primary.id != primary.id:
         return False, None, None, None
     backup = db.scalar(select(ProviderAttempt).where(ProviderAttempt.backup_of_attempt_id == primary.id))
-    effective = backup or primary
+    repair = db.scalar(select(ProviderAttempt).where(ProviderAttempt.repair_of_attempt_id == backup.id)) if backup else None
+    effective = repair or backup or primary
     if (
         attempt.id != effective.id
         or effective.provider_model is None
@@ -157,7 +161,7 @@ def _record_checkpoint_completion_event(
         owner_user_id=attempt.owner_user_id,
         generated_document_id=document.id,
         transcript_id=document.transcript_id,
-        llm_config_id=(document.backup_llm_config_id if attempt.backup_of_attempt_id is not None else document.llm_config_id),
+        llm_config_id=(document.backup_llm_config_id if attempt.backup_of_attempt_id is not None or attempt.repair_of_attempt_id is not None else document.llm_config_id),
         feature_type=ProviderFeatureType.llm_generation,
         event_type=ProviderUsageEventType.completed,
         provider_adapter=attempt.provider_adapter,

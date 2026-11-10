@@ -132,6 +132,10 @@ def copy_backup_selection(db: Session, *, source: object, target: object) -> Non
 
 def effective_provider_attempt(db: Session, *, primary: ProviderAttempt, lock: bool = False) -> ProviderAttempt:
     """Select one logical call's child; source locks must already be held."""
+    if primary.repair_of_attempt_id is not None:
+        primary = db.get(ProviderAttempt, primary.repair_of_attempt_id)
+        if primary is None:
+            raise AppError(409, "llm_attempt_inactive", "The generation attempt is no longer active")
     primary_id = primary.backup_of_attempt_id or primary.id
     if lock:
         primary = db.scalar(select(ProviderAttempt).where(ProviderAttempt.id == primary_id)
@@ -141,7 +145,13 @@ def effective_provider_attempt(db: Session, *, primary: ProviderAttempt, lock: b
     statement = select(ProviderAttempt).where(ProviderAttempt.backup_of_attempt_id == primary_id)
     if lock:
         statement = statement.execution_options(populate_existing=True).with_for_update()
-    return db.scalar(statement) or primary
+    backup = db.scalar(statement)
+    if backup is None:
+        return primary
+    repair_statement = select(ProviderAttempt).where(ProviderAttempt.repair_of_attempt_id == backup.id)
+    if lock:
+        repair_statement = repair_statement.execution_options(populate_existing=True).with_for_update()
+    return db.scalar(repair_statement) or backup
 
 
 def provider_result_is_current(
@@ -150,7 +160,7 @@ def provider_result_is_current(
 ) -> bool:
     """Fence a result to the exact dispatch; callers first lock source and root."""
     primary = db.get(ProviderAttempt, primary_id)
-    if primary is None or primary.backup_of_attempt_id is not None:
+    if primary is None or primary.backup_of_attempt_id is not None or primary.repair_of_attempt_id is not None:
         return False
     active = effective_provider_attempt(db, primary=primary, lock=True)
     current = now or utcnow()

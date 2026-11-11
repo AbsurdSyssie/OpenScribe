@@ -10,6 +10,18 @@
       <div><h3>Diarise consultation recordings</h3><p>Show anonymous speaker labels and separate turns when the selected speech service and recording type support it. Changes apply to your next recording. Dictation is never diarised. Labels may change after a recording resumes or reconnects; they do not identify clinical roles.</p><p class="setting-save-state" data-diarization-save-state role="status" aria-live="polite"></p></div>
       <label class="switch-compact"><input type="checkbox" aria-label="Diarise consultation recordings" data-diarization-preference {% if user_app_preferences_json.get('diarization_enabled', false) %}checked{% endif %}><span class="switch-compact__track" aria-hidden="true"></span></label>
     </div>
+    {% if telehealth_feature_enabled %}
+    <div class="setting-row setting-row--toggle">
+      <div><h3>Show Telehealth recording button</h3><p>Show the compact phone icon beside the Scribe recording controls. Recorded audio and completed consultations are not affected when the button is hidden.</p>
+        <p class="setting-save-state" data-telehealth-visibility-save-state role="status" aria-live="polite"></p>
+      </div>
+      <label class="switch-compact">
+        <input type="checkbox" data-telehealth-visibility-preference aria-label="Show Telehealth recording button"
+          {% if user_app_preferences_json.get('show_telehealth_control', true) %}checked{% endif %}>
+        <span class="switch-compact__track" aria-hidden="true"></span>
+      </label>
+    </div>
+    {% endif %}
     {% endif %}
     {% if llm_selection %}
     {% set home_note_length = user_app_preferences_json.get('note_generation_length', 'normal') %}

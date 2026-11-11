@@ -863,8 +863,8 @@ def test_note_regeneration_controls_and_scroll_rail_contract():
 
     app = (root / "app/static/js/transcribe/app.js").read_text(encoding="utf-8")
     shell = (root / "app/templates/transcribe/_shell_extras.html").read_text(encoding="utf-8")
-    assert "actions.js?v=20261021-example-consultation" in app
-    assert "documents.js?v=20261103-working-note-revision" in app
+    assert "actions.js?v=20261108-final-merge-review" in app
+    assert "documents.js?v=20261108-final-merge-review" in app
     assert "structured.js?v=20260918-retired-note-workspace" in app
     assert re.search(r"app\.js\?v=[^\"\s]+", shell)
 

@@ -52,6 +52,13 @@ export function createMicVisualizer(element, { AudioContextCtor = null } = {}) {
     render();
   };
 
+  const updateLevel = (rms) => {
+    if (!Number.isFinite(rms)) return;
+    const level = Math.min(1, Math.max(0.12, rms * 7));
+    levels = levels.map((previous) => (previous * 0.45) + (level * 0.55));
+    render();
+  };
+
   const setVadActive = (active) => {
     if (element) element.dataset.vadActive = active ? 'true' : 'false';
   };
@@ -161,5 +168,5 @@ export function createMicVisualizer(element, { AudioContextCtor = null } = {}) {
 
   ensureBars();
   reset();
-  return { updateFrame, setVadActive, reset, startStream, pause, resume, stop };
+  return { updateFrame, updateLevel, setVadActive, reset, startStream, pause, resume, stop };
 }

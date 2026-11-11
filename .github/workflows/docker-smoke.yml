@@ -49,11 +49,21 @@ on:
 jobs:
   smoke-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      - name: Set up runtime Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
 
       - name: Validate operational documentation links
         run: python .github/scripts/check-operational-docs.py
@@ -65,6 +75,19 @@ jobs:
           bash -n scripts/test_file_ingestion.sh
           bash -n .github/scripts/wait-for-openscribe-health.sh
           python -m py_compile scripts/security/xss_probe.py .github/scripts/check-operational-docs.py
+
+      - name: Validate Telehealth Python and browser module syntax
+        run: |
+          python -m py_compile app/models_telehealth.py app/services/telehealth_*.py app/schemas/telehealth.py tests/test_telehealth_*.py
+          for module in app/static/js/transcribe/telehealth*.js; do
+            node --input-type=module --check < "$module"
+          done
+
+      - name: Exercise Telehealth browser capture and diagnostics in Node
+        run: node tests/telehealth-browser-smoke.mjs
+
+      - name: Exercise Telehealth Stop UI progress and recovery
+        run: python scripts/smoke_telehealth_stop_ui.py
 
       - name: Audit Python runtime dependencies
         run: |
@@ -86,6 +109,28 @@ jobs:
       - name: Wait for OpenScribe health
         shell: bash
         run: bash .github/scripts/wait-for-openscribe-health.sh
+
+      - name: Run focused Telehealth tests in isolated runtime infrastructure
+        run: |
+          # The runtime image contains pinned application dependencies. Add
+          # pytest only in this ephemeral CI container; do not alter releases.
+          docker compose cp tests openscribe:/app/tests
+          docker compose cp docker-compose.yml openscribe:/app/docker-compose.yml
+          docker compose exec -T -u root openscribe python -m pip install --quiet pytest==9.0.2 pytest-xdist==3.8.0
+          docker compose exec -T \
+            -e APP_ENV=test \
+            -e TEST_DATABASE_URL=postgresql+psycopg://ambient:ambient@postgres:5432/ambient_scribe_test \
+            -e TEST_RATE_LIMIT_STORAGE_URL=redis://redis:6379/15 \
+            openscribe sh -c 'python -m pytest -q tests/test_telehealth_*.py'
+
+      - name: Audit API route authorization in isolated runtime infrastructure
+        run: |
+          # Sequential with pytest: both own the same test DB/Redis lock.
+          docker compose exec -T \
+            -e APP_ENV=test \
+            -e TEST_DATABASE_URL=postgresql+psycopg://ambient:ambient@postgres:5432/ambient_scribe_test \
+            -e TEST_RATE_LIMIT_STORAGE_URL=redis://redis:6379/15 \
+            openscribe python scripts/audit_api_auth.py
 
       - name: Restart runtime on persistent volumes
         run: |

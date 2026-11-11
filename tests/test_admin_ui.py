@@ -4337,7 +4337,7 @@ def test_transcribe_documents_show_hallucination_check_panel():
 
     assert "Hallucination check" in documents_js
     assert "Debug payload not available" not in documents_js
-    assert "documents.js?v=20261103-working-note-revision" in app_js
+    assert "documents.js?v=20261108-final-merge-review" in app_js
 
 
 def test_admin_llm_draft_flow_hides_key_after_saved_and_shows_pending_state(
@@ -5363,7 +5363,7 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
 
     assert page.status_code == 200
     assert "/static/css/tokens.css?v=20260902-control-height" in page.text
-    assert "/static/css/transcribe.css?v=20261027-live-dictation" in page.text
+    assert "/static/css/transcribe.css?v=20261111-template-picker-merge" in page.text
     assert "/static/css/transcribe-mobile.css" in page.text
     assert "/static/js/workspace/app.js" in page.text
     assert page.text.count("/static/js/transcribe/mobile.js?v=20260823-mobile-toast") == 1
@@ -7255,7 +7255,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "dictation-record-highlight" in app_js
     assert "const activeStatusPill = document.querySelector('[data-active-status-pill]');" in app_js
     assert "const statusLabelForRecordingProgress = (message) => {" in app_js
-    assert "getIsRecordingSwitchBlocked: () => Boolean(captureController?.isLiveCaptureUiActive?.()) || currentTranscriptStatus === 'recording'," in app_js
+    assert "getIsRecordingSwitchBlocked: () => Boolean(telehealthUi?.isUnresolved?.()) || Boolean(captureController?.isLiveCaptureUiActive?.()) || currentTranscriptStatus === 'recording'," in app_js
     assert "if (getIsRecordingSwitchBlocked?.()) {" in actions_js
     assert "Stop recording before switching consultations." in actions_js
     assert "Stop recording before creating a new consultation." in actions_js
@@ -7300,7 +7300,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "runQuickActionTrigger.disabled = !canUsePrimaryFollowupAction;" in app_js
     assert "if (!dom.quickActionContextInput?.value?.trim()) {" in actions_js
     assert "showFlash('Choose a quick action or add context.', 'warning');" in actions_js
-    assert "./actions.js?v=20261021-example-consultation" in app_js
+    assert "./actions.js?v=20261108-final-merge-review" in app_js
     assert "const isDiscardableEmptyWorkingNoteDraft = () => (" in app_js
     assert "return { kind: 'working_note_empty_draft_discarded' };" in app_js
     assert "Empty working-note draft ignored." in app_js

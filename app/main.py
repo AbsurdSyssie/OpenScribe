@@ -410,6 +410,10 @@ limiter = Limiter(
 )
 app.state.limiter = limiter
 app.state.db_session_factory = SessionLocal
+TELEHEALTH_DIAGNOSTICS_RATE_LIMIT = limiter.shared_limit(
+    "12/minute", scope="telehealth_capture_diagnostics",
+    key_func=whole_file_upload_rate_limit_key,
+)
 LOGIN_RATE_LIMIT = limiter.shared_limit("5/5 minutes", scope="login")
 MFA_RATE_LIMIT = limiter.shared_limit("10/10 minutes", scope="mfa_totp")
 ACCOUNT_SECURITY_RATE_LIMIT = limiter.shared_limit("5/5 minutes", scope="account_security")

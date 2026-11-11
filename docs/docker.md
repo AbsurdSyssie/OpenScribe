@@ -59,7 +59,7 @@ Ten generation slots are configurable but require measured CPU, memory, and prov
 
 If any supervised long-running process exits, the container stops and `restart: unless-stopped` restarts the complete runtime consistently.
 
-The entrypoint never purges Redis/Celery queues. Queued work resumes after restart. Beat publishes pending durable task-dispatch rows every second and runs transcript-root retention, failed-ingestion source expiry, transcript-audio cleanup, security-audit expiry, legal-document retention, provider-secret cleanup, and quota lifecycle processing every 10 seconds.
+The entrypoint never purges Redis/Celery queues. Queued work resumes after restart. Beat publishes pending durable task-dispatch rows every second and runs transcript-root retention, failed-ingestion source expiry, Telehealth capture reconciliation, transcript-audio cleanup, security-audit expiry, legal-document retention, provider-secret cleanup, and quota lifecycle processing every 10 seconds.
 
 ## Common operations
 

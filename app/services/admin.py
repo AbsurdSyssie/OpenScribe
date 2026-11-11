@@ -49,6 +49,7 @@ from app.models import (
     TeamHallucinationCheckSelection,
     TeamLlmBackupSelection,
     TeamLlmConfig,
+    TeamLlmProviderModelPolicy,
     TeamLlmSelection,
     TeamRole,
     TeamSttConfig,
@@ -2151,6 +2152,13 @@ def _delete_user_rows(db: Session, actor: User, *, user: User) -> list[UUID]:
     for config in llm_configs_updated:
         config.updated_by_user_id = actor.id
         db.add(config)
+
+    llm_policies_updated = db.scalars(select(TeamLlmProviderModelPolicy).where(
+        TeamLlmProviderModelPolicy.updated_by_user_id == user.id
+    ))
+    for policy in llm_policies_updated:
+        policy.updated_by_user_id = actor.id
+        db.add(policy)
 
     llm_selections = db.scalars(select(TeamLlmSelection).where(TeamLlmSelection.selected_by_user_id == user.id))
     for selection in llm_selections:

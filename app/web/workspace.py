@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from typing import Final
 
 from sqlalchemy.orm import Session
@@ -124,6 +126,14 @@ def render_workspace(
         )
     context["preferred_recording_mode"] = user_app_preferences_json.get(
         "preferred_recording_mode"
+    )
+    context["telehealth_feature_enabled"] = (
+        os.getenv("TELEHEALTH_API_ENABLED", "false").lower() in ("1", "true", "yes")
+        and not current_user.is_system_admin
+    )
+    context["telehealth_diagnostics_debug_ui"] = (
+        context["telehealth_feature_enabled"]
+        and os.getenv("TELEHEALTH_DIAGNOSTICS_DEBUG_UI", "false").lower() in ("1", "true", "yes")
     )
     # Shell authority wins over legacy section context.
     context["active_workspace_section"] = active_section

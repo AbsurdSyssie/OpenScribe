@@ -280,6 +280,7 @@ def reserve_provider_attempt(
     stream_received_samples: int | None = None,
     stream_authorized_samples: int | None = None,
     backup_of_attempt_id: UUID | None = None,
+    repair_of_attempt_id: UUID | None = None,
 ) -> ProviderAttempt:
     """Reserve units under locked owner row. Does not commit."""
     if reserved_units <= 0 or attempt_number < 1:
@@ -322,6 +323,7 @@ def reserve_provider_attempt(
             and existing.correlation_id == correlation_id
             and existing.attempt_number == attempt_number
             and existing.backup_of_attempt_id == backup_of_attempt_id
+            and existing.repair_of_attempt_id == repair_of_attempt_id
             and existing.reserved_units == reserved_units
             and _utc(existing.authorized_at) == authorized_at
             and _utc(existing.reservation_valid_until) == reservation_valid_until
@@ -349,6 +351,20 @@ def reserve_provider_attempt(
         if matches_existing(existing):
             return existing
         raise AppError(409, "provider_attempt_idempotency_conflict", "Provider attempt idempotency key conflicts")
+
+    if repair_of_attempt_id is not None:
+        backup = db.get(ProviderAttempt, repair_of_attempt_id)
+        if (backup is None or backup.backup_of_attempt_id is None or backup.repair_of_attempt_id is not None
+            or backup_of_attempt_id is not None or attempt_kind is not AttemptKind.llm_generation
+            or resource is not QuotaResource.tokens or correlation_id != backup.id or attempt_number != 1
+            or backup.team_id != team_id or backup.owner_user_id != owner_user_id
+            or backup.attempt_kind is not attempt_kind or backup.transcript_id != transcript_id
+            or backup.generated_document_id != generated_document_id or generated_document_id is None
+            or backup.provider_adapter != provider_adapter or backup.provider_model != provider_model
+            or backup.consultation_split_execution_id is not None or consultation_split_execution_id is not None
+            or backup.transcript_ingestion_job_id is not None or transcript_ingestion_job_id is not None
+            or transcript_stream_session_id is not None or backup.status is not AttemptStatus.settled):
+            raise AppError(409, "provider_attempt_repair_identity_invalid", "Repair attempt identity conflicts")
 
     if backup_of_attempt_id is not None:
         primary = db.get(ProviderAttempt, backup_of_attempt_id)
@@ -460,7 +476,7 @@ def reserve_provider_attempt(
     attempt = ProviderAttempt(
         team_id=team_id, owner_user_id=owner_user_id, resource=resource, attempt_kind=attempt_kind,
         correlation_id=correlation_id, attempt_number=attempt_number, reserved_units=reserved_units,
-        backup_of_attempt_id=backup_of_attempt_id,
+        backup_of_attempt_id=backup_of_attempt_id, repair_of_attempt_id=repair_of_attempt_id,
         status=AttemptStatus.reserved, authorized_at=authorized_at,
         reservation_valid_until=reservation_valid_until, transcript_id=transcript_id,
         transcript_ingestion_job_id=transcript_ingestion_job_id, generated_document_id=generated_document_id,

@@ -1,5 +1,36 @@
 # Discovered issues
 
+### GENERATION-BACKUP-INVALID-JSON-RECOVERY — 2026-11-10
+
+- Status: Backup repair resolved locally on 10 November 2026; provider-specific constrained-output capability remains a separate follow-up. Confirmed in deployed code and local baseline `9b4c39d`.
+- Discovery commit: `9b4c39d`.
+- Locations: `app/services/templates.py::_retry_generated_note_after_invalid_json`, `_try_backup_generated_document`, `_process_generated_document_impl`; `app/services/llm_adapters/runtime.py::generation_request_snapshot`.
+- Evidence: the one same-primary retry is called only for the first submitted primary attempt. After primary failover, `_try_backup_generated_document` validates backup output but does not invoke the same-primary retry helper. In addition, `generation_request_snapshot` does not serialize `response_json_schema` for `openai_chat` or `bedrock_chat`; the schema is encoded only for Gemini. The current retry contract is documented in `docs/testing.md` and intentionally excludes backup output.
+- Impact: malformed JSON from a backup ends the generation even when the configured backup could potentially produce valid output after one correction. OpenAI-compatible and Bedrock requests rely on the textual JSON instruction and local strict validation; the adapter code does not request constrained JSON output. This finding does not establish whether the particular Bedrock gateway/model supports a schema mode.
+- Resolution: user authorized one separately accounted same-backup repair of invalid Template note JSON, with the existing validation and lifecycle protections.
+- Follow-up: confirm supported JSON-mode capabilities for each OpenAI-compatible provider before adding provider-specific request parameters.
+
+### GENERATION-FAILED-BACKUP-USAGE-ATTRIBUTION — 2026-11-10
+
+- Status: Resolved locally on 10 November 2026; confirmed by code-path inspection at baseline `9b4c39d`.
+- Discovery commit: `9b4c39d`.
+- Location: `app/services/templates.py::_fail_generated_document_after_submit` and `_persist_generation_usage_event`.
+- Evidence: `_fail_generated_document_after_submit` supplies the backup `config` when recording a failed backup attempt, but `_persist_generation_usage_event` takes `model_name` from `document.model_used`. `_try_backup_generated_document` updates `document.model_used` only after backup output passes validation. The failure helper does not pass the measured backup usage to `_record_generation_usage_event`.
+- Impact: the terminal failed-generation usage event can pair the backup adapter with the primary model name and omit backup token counts, although provider-attempt settlement receives the backup usage. Operational reporting can therefore misattribute a failed backup and under-report its usage.
+- Resolution: backup identity is recorded before submission and failed usage events include safe measured counts.
+- Verification: focused backup failure tests check the attempted model and measured usage.
+
+### TELEHEALTH-SUBMITTED-FAILURE-RESOLUTION — 2026-11-07
+
+- Status: Resolved locally on 8 November 2026 under the approved [implementation plan](plans/telehealth-partial-salvage-2026-11-07.md). Explicit partial acceptance preserves successful results and automatically adds later recovery in a new source version without replacing clinician edits or generated notes. The combined regression run passed 514 tests with one environment-dependent skip; the API authorization audit passed. Remote CI still needs a run containing these local fixes; see the [dated review record](docs/reviews/telehealth-merge-review-2026-11-07.md#8-november-addendum--approved-partial-salvage).
+- Discovery commit: `923db5d19c5d37cf18a7b69cbcdcacf8c9d87ea7`.
+- Locations: `app/services/telehealth_apply.py::apply_completed_telehealth_capture`, `app/services/telehealth_capture.py::discard_unsubmitted_telehealth_capture`, and `app/services/transcripts.py::assert_no_unresolved_stream_session` / `retry_failed_audio_ingestion`.
+- Exact boundaries: an all-silent result sets `session.status = "failed"`; discard rejects `any(part.ingestion_job_id is not None for part in parts)`; the unresolved barrier includes `"failed"`.
+- Impact: submitted captures with valid silent results or an expired failed source cannot be retried or discarded. Their unresolved state blocks further recording, uploads, editing, and generation on the consultation, including work on earlier saved content.
+- Initial decision boundary: resolving submitted captures required an explicit lifecycle decision. The maintainer subsequently selected partial salvage rather than abandonment; unsubmitted-only discard remains unchanged.
+- Subsequent direction: prefer applying successful results with an explicit incomplete-recording warning while keeping failed captured audio retryable within the original deadline. Do not implement abandonment as the default recovery path or silently overwrite clinician edits when later speech is recovered.
+- Resolution: implemented owner/expiry checks, concurrent-worker fencing, scoped readiness reconciliation, protected incomplete-source notices, paginated retry metadata, and silent/failed/expired-source regressions. Maintained capture/API documentation is aligned. Retention and provider accounting remain unchanged.
+
 ### SPLIT-SUGGESTION-MISSING-PROPOSAL-RECOVERY — 2026-11-04
 
 - Status: Open; defensive recovery follow-up, not reproduced through a valid provider-completion flow.
@@ -811,11 +842,28 @@ Reconciled on 19 October 2026 against `97da191926db1da74fdf741e01f4f8490d60f6c8`
 
 ### SETTINGS-CONTROLS-ASSET-VERSION-EXPECTATION-DRIFT — 2026-11-11
 
-- Status: Open; pre-existing test/asset-version mismatch, confirmed on `master` and `feat/improve-template-selector`.
+- Status: Resolved by integrating master during the 2026-11-11 merge.
 - Discovery commit: `adc380a52c8935f241150b8edd963dc7f1e72364`.
 - Location: `tests/test_template_suggestions_js.py::test_template_suggestion_preference_precedes_advanced_settings_and_stays_in_its_row`, exact assertions at lines 60–61.
 - Exact excerpt: `assert 'settings/controls.js?v=20260911-split-preferences' in settings_page` and the equivalent assertion for `workspace_page`.
 - Observation: both maintained templates currently reference `/static/js/settings/controls.js?v=20261022-diarization-preferences`; the test expects the older cache-busting token. The test and both templates are unchanged between `master` and this branch.
 - Impact: the focused template-suggestion test fails on an asset-version assertion despite the settings script being included; this does not indicate a template-picker regression.
-- Not fixed now: the mismatch predates this branch and is unrelated to its selector changes.
-- Follow-up: update the stale test expectation (and check `tests/test_shared_control_css_contract.py` for the same token) to match the maintained asset references, or restore the older token only if its cache invalidation is intentionally required.
+- Resolution: master updates the stale cache-token assertions in `tests/test_template_suggestions_js.py` and `tests/test_shared_control_css_contract.py` to match the maintained template asset references. The issue was unrelated to this branch’s selector changes.
+
+### ADMIN-DELETE-LLM-MODEL-POLICY-FK — 2026-11-08
+
+- Current status: Resolved in the Telehealth merge review; focused test passed on 8 November 2026. Reproduced on master baseline `bf63c2879dd8526db582a9598663db92df13642b`.
+- Locations: `app/services/admin.py::_delete_user_rows`; `app/models.py::TeamLlmProviderModelPolicy.updated_by_user_id`; `tests/test_api.py::test_system_admin_delete_reassigns_metadata_foreign_keys`.
+- The model declares `updated_by_user_id = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)`. The deletion service reassigns LLM configuration and selection metadata but does not reassign this policy reference.
+- Observed problem: deleting a system administrator referenced by a team LLM model policy fails on that foreign key. The integration review reproduced the same test failure on master using `APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_api.py::test_system_admin_delete_reassigns_metadata_foreign_keys`.
+- Likely impact: an affected system administrator account cannot be deleted until its policy metadata reference is resolved.
+- Resolution: the deletion service now reassigns the policy updater to the authorized deletion actor alongside other provider metadata; the existing deletion test asserts the policy reference. This does not transfer clinical content ownership.
+- Verification: `tests/test_api.py::test_system_admin_delete_reassigns_metadata_foreign_keys` passed (1 passed, 2 warnings).
+
+### ADMIN-QUOTA-INLINE-STYLE-CSP — 2026-11-08
+
+- Current status: Resolved during the Telehealth merge review; focused admin CSP browser verification passed on 9 November 2026. Present on master baseline `bf63c2879dd8526db582a9598663db92df13642b`.
+- Locations: `app/templates/admin_quota_panel.html` and `app/templates/_admin_quota_usage_detail_row.html`.
+- The quota bars included inline `style="width: ..."` attributes, which strict style-attribute CSP blocks and the existing security test detects.
+- Resolution: removed the redundant inline attributes while retaining the bounded `data-style-width-pct` values and progress-bar ARIA. Existing `applyPercentageStyle` and `setQuotaBarWidths` code in `app/templates/admin_mockup.html` applies these values through CSSOM for initial and dynamically loaded quota views.
+- Verification: `tests/test_csrf_browser.py::test_dynamic_cssom_mutations_work_under_strict_style_attribute_csp` passed as part of the final browser pair (2 passed, 4 warnings).

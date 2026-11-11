@@ -128,12 +128,17 @@ def test_invalid_outputs_account_each_response_and_never_replay_delivery(
     monkeypatch.setattr(templates, "_invoke_frozen_llm", invoke)
     result = process_generated_document(db_session, document_id=backup_job.document.id)
 
-    assert calls == [backup_job.primary.id, backup_job.primary.id, backup_job.backup.id]
+    expected_calls = [backup_job.primary.id, backup_job.primary.id, backup_job.backup.id]
+    if not backup_valid:
+        expected_calls.append(backup_job.backup.id)
+    assert calls == expected_calls
     assert requests[0] == requests[1] == requests[2]
+    if not backup_valid:
+        assert "still-not-json" in str(requests[3])
     assert result.status is (GeneratedDocumentStatus.ready if backup_valid else GeneratedDocumentStatus.failed)
     attempts = _attempts(db_session, result.id)
-    assert len(attempts) == 3
-    primary = next(item for item in attempts if item.backup_of_attempt_id is None and item.attempt_number == 1)
+    assert len(attempts) == len(expected_calls)
+    primary = next(item for item in attempts if item.correlation_id == result.id and item.attempt_number == 1)
     retry = next(item for item in attempts if item.backup_of_attempt_id is None and item.attempt_number == 2)
     child = next(item for item in attempts if item.backup_of_attempt_id is not None)
     assert child.backup_of_attempt_id == retry.id
@@ -144,11 +149,14 @@ def test_invalid_outputs_account_each_response_and_never_replay_delivery(
     assert child.settled_units == 12
     assert primary.settlement_basis is retry.settlement_basis is child.settlement_basis is ProviderSettlementBasis.reported
     assert child.outcome is (AttemptOutcome.succeeded if backup_valid else AttemptOutcome.failed)
+    if not backup_valid:
+        repair = next(item for item in attempts if item.repair_of_attempt_id == child.id)
+        assert repair.status is AttemptStatus.settled and repair.settled_units == 12
 
     repeated = process_generated_document(db_session, document_id=result.id)
     assert repeated.status is result.status
-    assert calls == [backup_job.primary.id, backup_job.primary.id, backup_job.backup.id]
-    assert len(_attempts(db_session, result.id)) == 3
+    assert calls == expected_calls
+    assert len(_attempts(db_session, result.id)) == len(expected_calls)
 
 
 def test_retry_provider_failure_can_fall_back_to_frozen_backup(

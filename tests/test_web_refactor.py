@@ -299,7 +299,7 @@ def test_generation_loading_replaces_plain_text_placeholders():
     assert "Your follow-up is being written." not in app_js
     assert "generationLoadingHtml" in documents_js
     assert "structured.js?v=20260918-retired-note-workspace" in app_js
-    assert "documents.js?v=20261103-working-note-revision" in app_js
+    assert "documents.js?v=20261108-final-merge-review" in app_js
     assert re.search(r"/static/js/transcribe/app\.js\?v=[^\"\s]+", shell_extras)
     assert ".note-generation-loading" in transcribe_css
     assert "@keyframes note-generation-orbit" in transcribe_css

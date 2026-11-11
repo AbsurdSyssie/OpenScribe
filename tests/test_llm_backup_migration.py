@@ -5,6 +5,7 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from sqlalchemy import inspect
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import AttemptKind, AttemptStatus, ProviderAttempt, QuotaResource, Team, utcnow
@@ -28,6 +29,10 @@ def test_backup_migration_round_trip_and_retained_attempt_downgrade_guard():
     primary_index = indexes["uq_provider_attempts_split_execution"]
     assert primary_index["unique"]
     assert "backup_of_attempt_id IS NULL" in str(primary_index["dialect_options"]["postgresql_where"])
+    assert "repair_of_attempt_id" in {item["name"] for item in inspector.get_columns("provider_attempts")}
+    assert "uq_provider_attempts_repair_of" in {item["name"] for item in inspector.get_unique_constraints("provider_attempts")}
+    repair_check = next(item["sqltext"] for item in inspector.get_check_constraints("provider_attempts") if item["name"] == "ck_provider_attempts_repair_identity")
+    assert "repair_of_attempt_id" in repair_check and "consultation_split_execution_id IS NULL" in repair_check
 
     # Metadata-only attempts suffice to prove the downgrade cannot discard
     # durable provider accounting. No content or credentials enter these rows.
@@ -51,8 +56,30 @@ def test_backup_migration_round_trip_and_retained_attempt_downgrade_guard():
             authorized_at=now, reservation_valid_until=now + timedelta(minutes=1),
         )
         db.add(child)
+        db.flush()
+        repair = ProviderAttempt(
+            team_id=team.id, correlation_id=child.id, repair_of_attempt_id=child.id,
+            attempt_number=1, attempt_kind=AttemptKind.llm_generation,
+            resource=QuotaResource.tokens, status=AttemptStatus.reserved, reserved_units=1,
+            authorized_at=now, reservation_valid_until=now + timedelta(minutes=1),
+        )
+        db.add(repair)
         db.commit()
         parent_id = parent.id
+        repair_id = repair.id
+        with pytest.raises(IntegrityError), db.begin_nested():
+            db.add(ProviderAttempt(
+                team_id=team.id, correlation_id=child.id, repair_of_attempt_id=child.id,
+                attempt_number=1, attempt_kind=AttemptKind.llm_generation,
+                resource=QuotaResource.tokens, status=AttemptStatus.reserved, reserved_units=1,
+                authorized_at=now, reservation_valid_until=now + timedelta(minutes=1),
+            ))
+            db.flush()
+    with pytest.raises(RuntimeError, match="durable repair provider attempts"):
+        command.downgrade(config, "eafc081108b1")
+    with Session(engine) as db:
+        db.delete(db.get(ProviderAttempt, repair_id))
+        db.commit()
     with pytest.raises(RuntimeError, match="durable backup provider attempts"):
         command.downgrade(config, "d3e4f5a6b7c8")
     with Session(engine) as db:

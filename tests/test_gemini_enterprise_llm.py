@@ -13,6 +13,7 @@ from app.models import LlmAdapterKind
 from app.schemas.templates import StructuredTemplateConfig
 from app.services.llm_adapters import LlmGenerationRequest
 from app.services.llm_adapters import gemini_enterprise as adapter
+from app.services.llm_execution import ExecutionBudget, bounded_request, execution_policy
 from app.services.templates import (
     _generation_request_snapshot,
     _gemini_request_from_snapshot,
@@ -441,9 +442,93 @@ def test_provider_failure_is_translated_and_client_closes(monkeypatch):
         )
 
     assert caught.value.code == "llm_provider_rate_limited"
-    assert caught.value.details == {"provider_http_status": 429}
+    assert caught.value.details == {
+        "provider_http_status": 429,
+        "temporary_capacity": True,
+    }
     assert "sensitive" not in caught.value.message
     assert client.close_calls == 1
+
+
+def test_generic_resource_exhausted_429_retries_with_bounded_backoff(monkeypatch):
+    from app.services import llm_execution
+
+    response = SimpleNamespace(headers={})
+    sdk_error = genai_errors.ClientError(
+        429,
+        {
+            "error": {
+                "code": 429,
+                "status": "RESOURCE_EXHAUSTED",
+                "message": "Resource exhausted, please try again later.",
+            }
+        },
+        response,
+    )
+    attempts = 0
+    events = []
+    sleeps = []
+
+    def observe(event):
+        events.append(event)
+        return True
+
+    def provider_call(_budget):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise adapter.translate_gemini_error(sdk_error)
+        return "ok"
+
+    monkeypatch.setattr(llm_execution.time, "sleep", sleeps.append)
+    with execution_policy(budget=ExecutionBudget.seconds(60), observer=observe):
+        result = bounded_request(provider_call)
+
+    assert result == "ok"
+    assert attempts == 2
+    assert len(sleeps) == 1
+    assert 1 <= sleeps[0] <= 2
+    assert events[0]["http_status"] == 429
+    assert 1000 <= events[0]["retry_wait_ms"] <= 2000
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"error": {"details": [{"reason": "QUOTA_EXCEEDED"}]}},
+        {"error": {"details": [{"reason": "BILLING_DISABLED"}]}},
+        {
+            "error": {
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                        "violations": [{"subject": "projects/123"}],
+                    }
+                ]
+            }
+        },
+    ],
+)
+def test_gemini_hard_quota_429_does_not_retry(payload, monkeypatch):
+    from app.services import llm_execution
+
+    sdk_error = genai_errors.ClientError(429, payload)
+    attempts = 0
+    sleeps = []
+
+    def provider_call(_budget):
+        nonlocal attempts
+        attempts += 1
+        raise adapter.translate_gemini_error(sdk_error)
+
+    monkeypatch.setattr(llm_execution.time, "sleep", sleeps.append)
+    with execution_policy(budget=ExecutionBudget.seconds(60)):
+        with pytest.raises(AppError) as caught:
+            bounded_request(provider_call)
+
+    assert caught.value.code == "llm_provider_rate_limited"
+    assert attempts == 1
+    assert sleeps == []
 
 
 @pytest.mark.parametrize(

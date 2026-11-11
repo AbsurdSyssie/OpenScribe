@@ -2,6 +2,9 @@
 from datetime import timedelta
 from uuid import uuid4
 
+import pytest
+
+from app.errors import AppError
 from app.models import (
     SttAdapterKind, SttProviderPreset, TeamRole, Transcript, TranscriptStatus,
     TranscriptVersion, UserAppPreference, utcnow,
@@ -11,6 +14,7 @@ from app.services.structured_transcripts import (
     canonical_transcript_projection,
     edit_transcript_turn,
     render_redacted_diarised_transcript,
+    _normalize_turn,
     store_turns_on_version,
     turns_for_version,
 )
@@ -118,6 +122,58 @@ def test_redaction_span_crossing_turn_boundary_fails_closed(db_session, make_use
         redacted_text="Synthetic [PHI-1] attended",
         phi_index=[{"placeholder": "[PHI-1]", "value": "Alice\nSmith"}],
     ) is None
+
+
+def test_saved_telehealth_role_is_added_after_phi_mapping_and_generic_ids_stay_numbered():
+    from app.services.structured_transcripts import render_redacted_turn_snapshot
+
+    scope = str(uuid4())
+    base = {
+        "id": str(uuid4()), "scope_id": scope, "speaker_id": "patient",
+        "speaker_number": 1, "start_ms": 0, "end_ms": 1000,
+        "text": "Synthetic Alice reported pain.", "edited": False,
+    }
+    source = base["text"]
+    redacted = "Synthetic [PHI-1] reported pain."
+    turns = [{**base, "speaker_role": "patient", "speaker_text_prefix": ""}]
+    rendered = render_redacted_turn_snapshot(
+        source_text=source, turns=turns, redacted_text=redacted,
+        phi_index=[{"placeholder": "[PHI-1]", "value": "Alice"}],
+    )
+    assert rendered == "Recording 1\nPatient: Synthetic [PHI-1] reported pain."
+
+    generic = [{**base, "speaker_role": None, "speaker_text_prefix": ""}]
+    generic_rendered = render_redacted_turn_snapshot(
+        source_text=source, turns=generic, redacted_text=redacted,
+        phi_index=[{"placeholder": "[PHI-1]", "value": "Alice"}],
+    )
+    assert generic_rendered == "Recording 1\nSpeaker 1: Synthetic [PHI-1] reported pain."
+
+
+@pytest.mark.parametrize("prefix_length", range(len("Patient: ") + 1))
+def test_frozen_legacy_excerpt_can_end_inside_exact_role_prefix(prefix_length):
+    from app.services.structured_transcripts import render_redacted_turn_snapshot
+
+    prefix = "Patient: "
+    source = prefix[:prefix_length] if prefix_length < len(prefix) else prefix + "Synthetic answer."
+    turns = [{
+        "id": str(uuid4()), "scope_id": str(uuid4()), "speaker_id": "patient",
+        "speaker_role": "patient", "speaker_text_prefix": prefix,
+        "speaker_number": 1, "text": source, "edited": False,
+    }]
+    original = source
+    assert render_redacted_turn_snapshot(
+        source_text=source, turns=turns, redacted_text=source, phi_index=[],
+    ) == "Recording 1\nPatient: " + ("Synthetic answer." if prefix_length == len(prefix) else "")
+    assert turns[0]["text"] == original
+
+
+def test_role_prefix_metadata_requires_matching_role():
+    with pytest.raises(AppError):
+        _normalize_turn({
+            "scope_id": uuid4(), "speaker_id": "patient", "speaker_role": None,
+            "speaker_text_prefix": "Patient: ", "text": "Patient: Synthetic.",
+        })
 
 
 def test_generation_guidance_is_added_only_for_diarised_sources():

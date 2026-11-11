@@ -1,12 +1,15 @@
 """Synthetic source tests for the structured transcript ownership/version boundary."""
 from datetime import timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
 
 from app.errors import AppError
-from app.models import Transcript, TranscriptStatus, TranscriptVersion, utcnow
+from app.models import (
+    TelehealthCapturePart, TelehealthCaptureSession, Transcript, TranscriptStatus,
+    TranscriptVersion, utcnow,
+)
 from app.services.content_crypto import decrypt_text_for_owner
 from app.services.structured_transcripts import (
     append_transcript_turns,
@@ -14,6 +17,8 @@ from app.services.structured_transcripts import (
     delete_transcript_turn,
     edit_transcript_turn,
     load_current_turns,
+    render_redacted_turn_snapshot,
+    _restore_legacy_telehealth_roles,
     store_turns_on_version,
     turns_for_version,
 )
@@ -271,3 +276,117 @@ def test_deleting_first_speaker_keeps_remaining_label_in_response_and_snapshot(d
         db_session, version=latest, redacted_text="Synthetic response.", phi_index=[],
     )
     assert rendered == "Recording 1\nSpeaker 2: Synthetic response."
+
+
+def test_legacy_telehealth_role_uses_owner_root_scope_and_exact_prefix(db_session, make_user):
+    owner = make_user(email="legacy-telehealth-role@example.com")
+    transcript = Transcript(
+        owner_user_id=owner.id, team_id=owner.team_id, status=TranscriptStatus.ready,
+        retention_days_applied=30, retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add(transcript)
+    db_session.flush()
+    session = TelehealthCaptureSession(
+        transcript_id=transcript.id, owner_user_id=owner.id, team_id=owner.team_id,
+        timeline_sample_rate=48_000, status="completed",
+    )
+    db_session.add(session)
+    db_session.flush()
+    db_session.add(TelehealthCapturePart(
+        session_id=session.id, transcript_id=transcript.id, owner_user_id=owner.id,
+        team_id=owner.team_id, channel="patient", sequence_no=0, idempotency_key=uuid4(),
+        status="transcribed", timeline_start_frame=0, timeline_end_frame=48_000,
+        timeline_sample_rate=48_000, file_sample_rate=16_000, file_samples=16_000,
+        timing_spans_json=[], source_audio_size_bytes=100,
+        source_audio_fingerprint="a" * 64, source_audio_duration_seconds=1.0,
+    ))
+    turns = append_transcript_turns(
+        db_session, transcript=transcript, scope_id=session.id,
+        turns=[{"speaker_id": "patient", "text": "Patient: Synthetic answer."}],
+    )
+    version = _create_transcript_version_from_text(
+        db_session, transcript=transcript, owner_user_id=owner.id,
+        plaintext=canonical_transcript_projection(turns),
+    )
+    store_turns_on_version(db_session, version=version, owner_user_id=owner.id, turns=turns)
+    db_session.commit()
+
+    loaded = turns_for_version(db_session, version=version)[0]
+    assert loaded["text"] == "Patient: Synthetic answer."
+    assert loaded["speaker_role"] == "patient"
+    assert loaded["speaker_text_prefix"] == "Patient: "
+    current = load_current_turns(db_session, transcript=transcript)[0]
+    assert current["speaker_role"] == "patient"
+    assert current["speaker_text_prefix"] == "Patient: "
+    assert render_redacted_turn_snapshot(
+        source_text="Patient: Synthetic answer.", turns=[loaded],
+        redacted_text="Patient: Synthetic answer.", phi_index=[],
+    ) == "Recording 1\nPatient: Synthetic answer."
+
+    # Provider-style IDs alone do not acquire trusted telehealth roles.
+    generic = dict(loaded, scope_id=str(uuid4()), speaker_text_prefix="", speaker_role=None)
+    assert render_redacted_turn_snapshot(
+        source_text="Patient: Synthetic answer.", turns=[generic],
+        redacted_text="Patient: Synthetic answer.", phi_index=[],
+    ) == "Recording 1\nSpeaker 1: Patient: Synthetic answer."
+
+    edit_transcript_turn(
+        db_session, owner, transcript_id=transcript.id, turn_id=UUID(current["id"]),
+        expected_version_id=version.id, text="Patient: Synthetic revised answer.",
+    )
+    latest = db_session.scalar(select(TranscriptVersion).where(
+        TranscriptVersion.transcript_id == transcript.id,
+    ).order_by(TranscriptVersion.version_no.desc()))
+    edited = turns_for_version(db_session, version=latest)[0]
+    assert edited["speaker_role"] == "patient"
+    assert edited["speaker_text_prefix"] == "Patient: "
+    assert edited["text"] == "Patient: Synthetic revised answer."
+    assert turns_for_version(db_session, version=version)[0]["text"] == "Patient: Synthetic answer."
+
+
+def test_legacy_role_lookup_rejects_wrong_owner_and_wrong_root(db_session, make_user):
+    owner = make_user(email="legacy-role-root@example.com")
+    another_owner = make_user(email="legacy-role-other@example.com", team=owner.team)
+    transcript = Transcript(
+        owner_user_id=owner.id, team_id=owner.team_id, status=TranscriptStatus.ready,
+        retention_days_applied=30, retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    other_transcript = Transcript(
+        owner_user_id=owner.id, team_id=owner.team_id, status=TranscriptStatus.ready,
+        retention_days_applied=30, retention_expires_at=utcnow() + timedelta(days=30),
+    )
+    db_session.add_all([transcript, other_transcript])
+    db_session.flush()
+
+    def add_session(*, root, session_owner):
+        session = TelehealthCaptureSession(
+            transcript_id=root.id, owner_user_id=session_owner.id,
+            team_id=session_owner.team_id, timeline_sample_rate=48_000, status="completed",
+        )
+        db_session.add(session)
+        db_session.flush()
+        db_session.add(TelehealthCapturePart(
+            session_id=session.id, transcript_id=root.id, owner_user_id=session_owner.id,
+            team_id=session_owner.team_id, channel="patient", sequence_no=0,
+            idempotency_key=uuid4(), status="transcribed", timeline_start_frame=0,
+            timeline_end_frame=48_000, timeline_sample_rate=48_000,
+            file_sample_rate=16_000, file_samples=16_000, timing_spans_json=[],
+            source_audio_size_bytes=100, source_audio_fingerprint="b" * 64,
+            source_audio_duration_seconds=1.0,
+        ))
+        return session
+
+    wrong_owner_session = add_session(root=transcript, session_owner=another_owner)
+    wrong_root_session = add_session(root=other_transcript, session_owner=owner)
+    db_session.flush()
+    turns = [{
+        "scope_id": str(wrong_owner_session.id), "speaker_id": "patient",
+        "speaker_role": None, "text": "Patient: Synthetic.", "speaker_text_prefix": "",
+    }, {
+        "scope_id": str(wrong_root_session.id), "speaker_id": "patient",
+        "speaker_role": None, "text": "Patient: Synthetic.", "speaker_text_prefix": "",
+    }]
+    restored = _restore_legacy_telehealth_roles(
+        db_session, transcript=transcript, turns=turns,
+    )
+    assert [turn["speaker_role"] for turn in restored] == [None, None]

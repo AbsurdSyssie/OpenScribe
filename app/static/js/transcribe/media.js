@@ -1,6 +1,6 @@
 import { csrfFetch, csrfToken } from '../csrf.js';
 import { DeepgramLiveStream, trimPinnedVadSpeechBuffer } from './deepgramLiveStream.js?v=20261017-deepgram-live-stream';
-import { createMicVisualizer } from './micVisualizer.js?v=20261026-shared-mic-visualizer';
+import { createMicVisualizer } from './micVisualizer.js?v=20261106-patient-audio-meter';
 import { createOwnedMicStream, createVadCaptureCallbacks, createVadCaptureOptions } from './vadCapture.js?v=20261027-shared-vad-capture';
 
 const createWavPcmBuffer = (sampleCount, sampleRate) => {
@@ -72,6 +72,12 @@ export function createAudioCaptureController({
   };
   const RECORDING_DURATION_STORAGE_KEY = 'openscribe-glm2-recording-durations';
   const micVisualizer = createMicVisualizer(dom.micVisualizer);
+  const setExternalMicLevel = (rms, speechDetected = false) => {
+    if (!Number.isFinite(rms)) return;
+    micVisualizer.setVadActive(Boolean(speechDetected));
+    micVisualizer.updateLevel(rms);
+  };
+  const resetExternalMicLevel = () => micVisualizer.reset();
   const VAD_SILENCE_PROMPT_MS = 30000;
   let mediaStream = null;
   let captureMode = 'batch';
@@ -1828,6 +1834,8 @@ export function createAudioCaptureController({
     attachDomListeners,
     handlePageLifecycleExit,
     syncDisplayedDuration: renderTimer,
+    setExternalMicLevel,
+    resetExternalMicLevel,
     isCaptureUiActive: () => (
       (
         captureMode === 'live'

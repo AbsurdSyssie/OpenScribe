@@ -18,8 +18,25 @@ function turnTime(turn) {
 }
 
 function speakerTone(turn) {
+  const role = String(turn.speaker_label || '').toLowerCase();
+  if (role === 'clinician') return '1';
+  if (role === 'patient') return '2';
   const match = String(turn.speaker_label || '').match(/^Speaker ([1-4])$/);
   return match ? match[1] : 'neutral';
+}
+
+function trustedPrefix(turn) {
+  const role = turn?.speaker_label;
+  const expected = role === 'Patient' || role === 'Clinician' ? `${role}: ` : '';
+  const prefix = turn?.speaker_text_prefix;
+  if (!['Patient: ', 'Clinician: '].includes(prefix)) return '';
+  return expected === prefix || turn.orphaned === true ? prefix : '';
+}
+
+function visibleTurnText(turn, value, canonicalValue = value) {
+  const text = String(value ?? '');
+  const prefix = trustedPrefix(turn);
+  return prefix && String(canonicalValue ?? '').startsWith(prefix) ? text.slice(prefix.length) : text;
 }
 
 export function createTranscriptTurnsEditor({
@@ -72,7 +89,7 @@ export function createTranscriptTurnsEditor({
     for (const id of dirtyTexts.keys()) {
       if (!serverIds.has(id)) {
         const previous = turnById(id);
-        if (previous) orphaned.push({ ...previous, speaker_id: null, speaker_label: '?', text: dirtyTexts.get(id) });
+        if (previous) orphaned.push({ ...previous, orphaned: true, speaker_id: null, speaker_label: '?', text: dirtyTexts.get(id) });
         remoteConflict = true;
       }
     }
@@ -105,7 +122,9 @@ export function createTranscriptTurnsEditor({
 
   const maskedTurnText = (turn, value) => {
     if (!masked) return value;
-    const codepoints = Array.from(value);
+    const fullCodepoints = Array.from(value);
+    const prefix = trustedPrefix(turn);
+    const prefixLength = prefix && String(value).startsWith(prefix) ? Array.from(prefix).length : 0;
     const ranges = [];
     if (isDirty() || piiRevisionId !== revisionId) return value.replace(/\S/gu, '•');
     const canonicalCodepoints = Array.from(projectStructuredTurns(turns));
@@ -115,27 +134,30 @@ export function createTranscriptTurnsEditor({
         && Number.isInteger(turn.start_index) && Number.isInteger(turn.end_index)
         && entity.start_index < turn.end_index && entity.end_index > turn.start_index) {
         if (canonicalCodepoints.slice(entity.start_index, entity.end_index).join('') !== entity.value) continue;
-        const localStart = Math.max(0, entity.start_index - turn.start_index);
-        const localEnd = Math.min(codepoints.length, entity.end_index - turn.start_index);
-        ranges.push([localStart, localEnd]);
+        const localStart = Math.max(prefixLength, entity.start_index - turn.start_index);
+        const localEnd = Math.min(fullCodepoints.length, entity.end_index - turn.start_index);
+        if (localEnd > localStart) ranges.push([localStart, localEnd]);
       } else if (entity?.source === 'manual' && entity.value) {
         const needle = Array.from(entity.value);
-        for (let index = 0; needle.length && index <= codepoints.length - needle.length; index += 1) {
-          if (codepoints.slice(index, index + needle.length).join('').toLowerCase() === entity.value.toLowerCase()) ranges.push([index, index + needle.length]);
+        for (let index = 0; needle.length && index <= fullCodepoints.length - needle.length; index += 1) {
+          if (fullCodepoints.slice(index, index + needle.length).join('').toLowerCase() === entity.value.toLowerCase()) ranges.push([Math.max(index, prefixLength), Math.min(index + needle.length, fullCodepoints.length)]);
         }
       }
     }
     for (const [start, end] of ranges) {
-      for (let index = Math.max(0, start); index < Math.min(codepoints.length, end); index += 1) {
-        if (!/\s/u.test(codepoints[index])) codepoints[index] = '•';
+      for (let index = Math.max(prefixLength, start); index < Math.min(fullCodepoints.length, end); index += 1) {
+        if (!/\s/u.test(fullCodepoints[index])) fullCodepoints[index] = '•';
       }
     }
-    return codepoints.join('');
+    return fullCodepoints.join('');
   };
 
   const highlightedTurnHtml = (turn, value) => {
-    if (dirtyTexts.has(turn.id)) return escapeHtml(maskedTurnText(turn, value));
-    const codepoints = Array.from(value);
+    if (dirtyTexts.has(turn.id)) return escapeHtml(visibleTurnText(turn, maskedTurnText(turn, value), value));
+    const fullCodepoints = Array.from(value);
+    const prefix = trustedPrefix(turn);
+    const prefixLength = prefix && value.startsWith(prefix) ? Array.from(prefix).length : 0;
+    const codepoints = fullCodepoints.slice(prefixLength);
     const ranges = [];
     const canonicalCodepoints = Array.from(projectStructuredTurns(turns));
     for (const entity of piiEntities) {
@@ -144,13 +166,17 @@ export function createTranscriptTurnsEditor({
         && Number.isInteger(turn.start_index) && Number.isInteger(turn.end_index)
         && entity.start_index < turn.end_index && entity.end_index > turn.start_index) {
         if (canonicalCodepoints.slice(entity.start_index, entity.end_index).join('') !== entity.value) continue;
-        const localStart = Math.max(0, entity.start_index - turn.start_index);
-        const localEnd = Math.min(codepoints.length, entity.end_index - turn.start_index);
-        ranges.push([localStart, localEnd]);
+        const localStart = Math.max(prefixLength, entity.start_index - turn.start_index) - prefixLength;
+        const localEnd = Math.min(fullCodepoints.length, entity.end_index - turn.start_index) - prefixLength;
+        if (localEnd > localStart) ranges.push([localStart, localEnd]);
       } else if (entity?.source === 'manual' && entity.value) {
         const needle = Array.from(entity.value);
-        for (let index = 0; needle.length && index <= codepoints.length - needle.length; index += 1) {
-          if (codepoints.slice(index, index + needle.length).join('').toLowerCase() === entity.value.toLowerCase()) ranges.push([index, index + needle.length]);
+        for (let index = 0; needle.length && index <= fullCodepoints.length - needle.length; index += 1) {
+          if (fullCodepoints.slice(index, index + needle.length).join('').toLowerCase() === entity.value.toLowerCase()) {
+            const localStart = Math.max(index, prefixLength) - prefixLength;
+            const localEnd = Math.min(index + needle.length, fullCodepoints.length) - prefixLength;
+            if (localEnd > localStart) ranges.push([localStart, localEnd]);
+          }
         }
       }
     }
@@ -239,19 +265,20 @@ export function createTranscriptTurnsEditor({
           <section class="transcript-turn-scope" data-turn-scope="${escapeHtml(group.scope_id)}">
             ${showScopeHeadings ? `<h3 class="transcript-turn-scope__heading">Recording ${group.number}${group.number > 1 ? ' · speakers not matched to previous recording' : ''}</h3>` : ''}
             ${group.turns.map((turn) => {
+              const turnCanEdit = canEdit && !turn.source_warning;
               const rawValue = dirtyTexts.has(turn.id) ? dirtyTexts.get(turn.id) : turn.text;
               const value = maskedTurnText(turn, rawValue);
               const startTime = turnTime({ start_ms: turn.start_ms });
               const endTime = turnTime({ start_ms: turn.end_ms });
-              return `<article class="transcript-turn" data-turn-id="${escapeHtml(turn.id)}" data-speaker-tone="${speakerTone(turn)}">
-                <header class="transcript-turn__meta"><span class="transcript-turn__speaker">${escapeHtml(turn.speaker_label || '?')}</span>${startTime ? `<time title="Original audio interval; edited words are not word-timed">${escapeHtml(startTime)}${endTime ? `–${escapeHtml(endTime)}` : ''}</time>` : ''}${turn.edited ? '<span class="transcript-turn__edited">Edited</span>' : ''}
-                  ${canEdit ? `<details class="transcript-turn__actions"><summary aria-label="Turn actions" title="Turn actions">⋯</summary><button type="button" data-turn-delete="${escapeHtml(turn.id)}">Delete turn</button></details>` : ''}
+              return `<article class="transcript-turn${turn.source_warning ? ' transcript-turn--source-warning' : ''}" data-turn-id="${escapeHtml(turn.id)}" data-speaker-tone="${speakerTone(turn)}"${turn.source_warning ? ' role="note" aria-label="Recording coverage warning"' : ''}>
+                <header class="transcript-turn__meta"><span class="transcript-turn__speaker">${escapeHtml(turn.speaker_label || '?')}</span>${startTime ? `<time title="Original audio interval; edited words are not word-timed">${escapeHtml(startTime)}${endTime ? `–${escapeHtml(endTime)}` : ''}</time>` : ''}${turn.edited ? '<span class="transcript-turn__edited">Edited</span>' : ''}${turn.source_warning ? '<span class="transcript-turn__source-warning">Recording coverage warning</span>' : ''}
+                  ${turnCanEdit ? `<details class="transcript-turn__actions"><summary aria-label="Turn actions" title="Turn actions">⋯</summary><button type="button" data-turn-delete="${escapeHtml(turn.id)}">Delete turn</button></details>` : ''}
                 </header>
-                ${canEdit && editingTurnId === turn.id
-                  ? `<textarea class="transcript-turn__text" data-turn-text="${escapeHtml(turn.id)}" aria-label="${escapeHtml(turn.speaker_label || '?')} transcript turn" rows="${Math.max(2, Math.min(12, String(value).split('\n').length + 1))}">${escapeHtml(value)}</textarea>`
-                  : canEdit
+                ${turnCanEdit && editingTurnId === turn.id
+                  ? `<textarea class="transcript-turn__text" data-turn-text="${escapeHtml(turn.id)}" aria-label="${escapeHtml(turn.speaker_label || '?')} transcript turn" rows="${Math.max(2, Math.min(12, String(value).split('\n').length + 1))}">${escapeHtml(visibleTurnText(turn, value, rawValue))}</textarea>`
+                  : turnCanEdit
                     ? `<button type="button" class="transcript-turn__display" data-turn-display="${escapeHtml(turn.id)}" aria-label="Edit ${escapeHtml(turn.speaker_label || '?')} transcript turn">${highlightedTurnHtml(turn, value).replace(/\n/g, '<br>')}</button>`
-                    : `<div class="transcript-turn__display">${masked ? escapeHtml(value).replace(/\n/g, '<br>') : highlightedTurnHtml(turn, value).replace(/\n/g, '<br>')}</div>`}
+                    : `<div class="transcript-turn__display">${masked ? escapeHtml(visibleTurnText(turn, value, rawValue)).replace(/\n/g, '<br>') : highlightedTurnHtml(turn, value).replace(/\n/g, '<br>')}</div>`}
               </article>`;
             }).join('')}
           </section>`).join('')}
@@ -288,9 +315,12 @@ export function createTranscriptTurnsEditor({
     const input = event.target instanceof HTMLTextAreaElement ? event.target : null;
     if (!input?.matches('[data-turn-text]')) return;
     const id = input.dataset.turnText;
-    dirtyTexts.set(id, input.value);
     const turn = turnById(id);
-    if (turn) turn.text = input.value;
+    if (turn?.source_warning) return;
+    const prefix = trustedPrefix(turn || {});
+    const rawValue = prefix && String(turn?.text || '').startsWith(prefix) ? `${prefix}${input.value}` : input.value;
+    dirtyTexts.set(id, rawValue);
+    if (turn) turn.text = rawValue;
     autosave.markDirty();
     setStatus('Unsaved transcript edits', 'dirty');
     updateCanonical();
@@ -312,6 +342,7 @@ export function createTranscriptTurnsEditor({
     const display = event.target instanceof Element ? event.target.closest('[data-turn-display]') : null;
     if (!target && display) {
       if (actionPending) return;
+      if (turnById(display.dataset.turnDisplay)?.source_warning) return;
       editingTurnId = display.dataset.turnDisplay;
       renderTurns();
       const input = root.querySelector(`[data-turn-text="${CSS.escape(editingTurnId)}"]`);
@@ -324,6 +355,7 @@ export function createTranscriptTurnsEditor({
     target.disabled = true;
     try {
       if (target.hasAttribute('data-turn-delete')) {
+        if (turnById(target.dataset.turnDelete)?.source_warning) return;
         await persistAction((id) => `/api/v1/transcripts/${encodeURIComponent(id)}/turns/${encodeURIComponent(target.dataset.turnDelete)}`, 'DELETE', {});
       } else if (target.hasAttribute('data-turn-add')) {
         const existingIds = new Set(turns.map((turn) => turn.id));
@@ -363,8 +395,15 @@ export function createTranscriptTurnsEditor({
     renderTurns();
     const input = root?.querySelector(`[data-turn-text="${CSS.escape(target.id)}"]`);
     if (!(input instanceof HTMLTextAreaElement)) return false;
-    const startLocal = codepointToUtf16(target.text || '', start - target.start_index);
-    const endLocal = codepointToUtf16(target.text || '', end - target.start_index);
+    const fullText = String(target.text || '');
+    const prefix = trustedPrefix(target);
+    const prefixLength = prefix && fullText.startsWith(prefix) ? Array.from(prefix).length : 0;
+    const displayText = visibleTurnText(target, fullText);
+    const localLength = Array.from(displayText).length;
+    const startCodepoint = Math.max(0, Math.min(localLength, start - target.start_index - prefixLength));
+    const endCodepoint = Math.max(startCodepoint, Math.min(localLength, end - target.start_index - prefixLength));
+    const startLocal = codepointToUtf16(displayText, startCodepoint);
+    const endLocal = codepointToUtf16(displayText, endCodepoint);
     input.focus();
     input.setSelectionRange(startLocal, endLocal);
     input.scrollIntoView({ block: 'center' });

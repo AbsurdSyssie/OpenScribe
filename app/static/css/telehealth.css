@@ -1,0 +1,164 @@
+/* Small, opt-in Telehealth controls. Loaded only for the enabled rollout. */
+.telehealth-toggle[hidden] { display: none !important; }
+.telehealth-toggle {
+  display: inline-flex;
+  flex: 0 0 2.75rem;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  box-sizing: border-box;
+  width: 2.75rem;
+  height: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0;
+  border: 1px solid var(--stone, #c7c8c6);
+  border-radius: .7rem;
+  background: var(--white, #fff);
+  color: var(--slate, #53616a);
+  transition: background-color .15s, border-color .15s, color .15s;
+}
+.telehealth-toggle [data-lucide] { width: 1.05rem; height: 1.05rem; }
+.telehealth-toggle:hover, .telehealth-toggle:focus-visible {
+  border-color: #168572; color: #087762;
+}
+.telehealth-toggle[aria-pressed="true"] {
+  border-color: #16745c; background: #e4f5ec; color: #115e47;
+}
+.telehealth-toggle:disabled { opacity: .5; cursor: not-allowed; }
+.telehealth-receipt {
+  display: flex;
+  flex: 1 0 18rem;
+  flex-direction: column;
+  justify-content: center;
+  min-width: min(100%, 18rem);
+  max-width: 32rem;
+  padding: .5rem .75rem;
+  border: 1px solid var(--stone, #d4d7d4);
+  border-radius: .75rem;
+  background: var(--white, #fff);
+  gap: .3rem;
+  transition: border-color .3s, box-shadow .3s;
+}
+.telehealth-receipt[hidden],
+.telehealth-receipt [hidden] { display: none !important; }
+.telehealth-receipt.is-verified { border-color: #168362; }
+.telehealth-receipt.is-glowing {
+  box-shadow: 0 0 0 .2rem rgb(35 169 97 / .16), 0 0 1rem rgb(35 169 97 / .22);
+}
+.telehealth-receipt.is-interrupted {
+  border-color: #bd4141;
+  box-shadow: 0 0 0 .1rem rgb(189 65 65 / .15);
+}
+.telehealth-receipt__channels { display: grid; gap: .3rem; }
+.telehealth-receipt__source {
+  display: grid;
+  grid-template-columns: 4.2rem minmax(4rem, 1fr) 7rem;
+  gap: .6rem;
+  align-items: center;
+  font-size: .72rem;
+  color: var(--slate, #53616a);
+}
+.telehealth-receipt__state { text-align: right; }
+.telehealth-receipt__track {
+  height: .42rem;
+  border-radius: 999px;
+  display: block;
+  background: #e4e9e7;
+  overflow: hidden;
+}
+.telehealth-receipt__track > span {
+  display: block;
+  height: 100%;
+  width: 3%;
+  border-radius: inherit;
+  background: #cd5555;
+  transition: width .1s ease, background-color .2s ease;
+}
+.telehealth-receipt__source.is-heard .telehealth-receipt__track > span {
+  background: #198a63;
+}
+.telehealth-receipt__actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.telehealth-receipt p {
+  margin: 0;
+  color: var(--slate, #53616a);
+  font-size: .74rem;
+}
+.telehealth-receipt [data-telehealth-gap-list] {
+  display: grid;
+  gap: .3rem;
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--slate, #53616a);
+  font-size: .74rem;
+}
+.telehealth-receipt [data-telehealth-gap-list] li { line-height: 1.4; }
+.telehealth-receipt.is-interrupted p { color: #993d3d; }
+.telehealth-guidance {
+  width: min(28rem, calc(100% - 2rem));
+  max-height: calc(100dvh - 2rem);
+  overflow: auto;
+  border: 1px solid #c7d3cb;
+  border-radius: .9rem;
+  background: #fff;
+  color: #22342d;
+  padding: 1.5rem;
+  box-shadow: 0 1.5rem 4rem rgb(0 0 0 / .2);
+}
+.telehealth-guidance::backdrop { background: rgb(24 35 29 / .55); }
+.telehealth-guidance h2 { font-size: 1.15rem; font-weight: 700; margin: 0 0 .75rem; }
+.telehealth-guidance p { margin: .6rem 0; line-height: 1.5; }
+.telehealth-guidance__audio-scope { border: 0; padding: 0; margin: .8rem 0; min-width: 0; }
+.telehealth-guidance__audio-scope legend { font-weight: 650; margin-bottom: .35rem; }
+.telehealth-guidance__audio-scope label {
+  display: flex; gap: .65rem; align-items: flex-start;
+  padding: .55rem .6rem; border: 1px solid #c7d3cb; border-radius: .55rem;
+  margin: .4rem 0; cursor: pointer;
+}
+.telehealth-guidance__audio-scope input { flex: none; margin-top: .25rem; }
+.telehealth-guidance__audio-scope span { display: grid; gap: .2rem; }
+.telehealth-guidance__audio-scope small { line-height: 1.35; color: #53616a; }
+.telehealth-guidance [data-telehealth-system-audio-warning] {
+  border-left: 3px solid #9b661a; padding: .55rem .7rem; background: #fff5df;
+}
+.telehealth-guidance [data-telehealth-system-audio-warning][hidden] { display: none; }
+.telehealth-guidance__actions { display: flex; justify-content: flex-end; gap: .75rem; margin-top: 1.25rem; }
+.telehealth-guidance__actions button {
+  border: 1px solid #7b9186; border-radius: .6rem;
+  padding: .6rem .9rem;
+}
+.telehealth-guidance__actions [data-telehealth-guidance-continue] {
+  background: #16745c; border-color: #16745c; color: #fff;
+}
+@media (prefers-reduced-motion: reduce) {
+  .telehealth-toggle, .telehealth-receipt, .telehealth-receipt__track > span { transition: none; }
+}
+@media (max-width: 35rem) {
+  .telehealth-receipt { flex-basis: 100%; max-width: 100%; }
+  .telehealth-receipt__source { grid-template-columns: 3.8rem minmax(2rem,1fr) 6rem; gap: .35rem; }
+}
+/* Only rendered when the server's developer diagnostics flag is enabled. */
+.telehealth-debug { margin-top: .5rem; font-size: .8rem; }
+.telehealth-debug summary { cursor: pointer; font-weight: 600; }
+.telehealth-debug pre {
+  margin: .35rem 0;
+  padding: .5rem;
+  max-height: 11rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: .7rem;
+  background: var(--surface-muted, #f4f5f4);
+  border-radius: .35rem;
+}
+
+/* Stop is acknowledged immediately; show progress while the two sources are
+   flushing/uploading/sealing without suggesting it is still recording. */
+@keyframes telehealth-stop-spinner {
+  to { transform: rotate(360deg); }
+}
+.record-split-button__main .lucide-loader-circle {
+  animation: telehealth-stop-spinner 1.1s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .record-split-button__main .lucide-loader-circle { animation: none; }
+}

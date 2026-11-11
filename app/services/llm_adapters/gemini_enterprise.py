@@ -330,8 +330,8 @@ def translate_gemini_error(exc: Exception, *, operation: str = "generation") -> 
         return AppError(504, "llm_provider_timeout", "The Gemini request timed out.", details)
     if status_code == 429:
         details = dict(details or {})
-        # Explicit capacity reasons only; generic RESOURCE_EXHAUSTED can mean
-        # a hard quota and must not trigger replay.
+        # Generic RESOURCE_EXHAUSTED is retryable capacity exhaustion unless
+        # structured details identify a hard quota or billing failure.
         if _temporary_gemini_capacity(exc, reason_codes):
             details["temporary_capacity"] = True
             response = getattr(exc, "response", None)
@@ -443,9 +443,11 @@ def _temporary_gemini_capacity(exc: Exception, reasons: set[str]) -> bool:
         return isinstance(value, list) and any(has_quota_failure(item) for item in value)
     if has_quota_failure(payload):
         return False
-    if reasons & {"RATE_LIMIT_EXCEEDED", "CAPACITY_EXHAUSTED", "SERVER_OVERLOADED"}:
-        return True
-    return False
+    # Gemini Enterprise uses a generic RESOURCE_EXHAUSTED response for
+    # transient PayGo capacity exhaustion. Google recommends truncated
+    # exponential backoff for these 429s. Retry unless structured details
+    # identify a hard quota/billing failure above.
+    return True
 
 
 def _gemini_hard_quota(reason_codes: set[str]) -> bool:

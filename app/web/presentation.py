@@ -325,6 +325,7 @@ def llm_config_response(config) -> LlmConfigDetail:
             else "service_account_json" if config.auth_mode is LlmAuthMode.google_service_account else None
         ),
         capacity_mode=provider_config.get("capacity_mode") if config.adapter_kind is LlmAdapterKind.gemini_enterprise else None,
+        priority_on_capacity_429=provider_config.get("priority_on_capacity_429", False) is True if config.adapter_kind is LlmAdapterKind.gemini_enterprise else False,
         created_by_user_id=config.created_by_user_id,
         updated_by_user_id=config.updated_by_user_id,
         created_at=config.created_at,

@@ -2101,6 +2101,15 @@
         background: var(--card);
         color: var(--ink);
       }
+      .priority-policy-setting input[type="checkbox"] {
+        width: auto;
+        min-height: 0;
+        margin: 3px 0 0;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+      }
       .field-help {
         color: var(--muted);
         font-size: 12px;
@@ -3888,8 +3897,8 @@
                   <a class="btn small" href="/admin/usage?range={{ usage_range_key }}{% if selected_team_id %}&amp;team_id={{ selected_team_id }}{% endif %}">Clear</a>
                 </form>
                 {% if usage_monitor_lookup_error %}<p class="usage-detail" role="alert">{{ usage_monitor_lookup_error }}</p>{% endif %}
-                {% if usage_recent_operational_rows %}<div class="usage-table-wrap table-scroll-region" tabindex="0" role="region" aria-label="Scrollable usage table"><table class="usage-table" data-sortable-table><thead><tr><th scope="col" data-sort-type="date">Time (UTC)</th><th scope="col" data-sort-type="text">Stage</th><th scope="col" data-sort-type="text">Reference</th><th scope="col" data-sort-type="text">Outcome</th><th scope="col" data-sort-type="number">Retries</th><th scope="col" data-sort-type="text">Error</th><th scope="col" data-sort-type="text" title="Sorts by provider error code, or HTTP status when no code is present">Provider / HTTP</th><th scope="col" data-sort-type="text" title="Sorts by provider, then model">Provider / model / latency</th></tr></thead><tbody>
-                  {% for row in usage_recent_operational_rows %}<tr><td data-sort-value="{{ row.timestamp.isoformat() }}">{{ row.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td><td data-sort-value="{{ row.stage|lower }}">{{ row.stage }}</td><td data-sort-value="{{ row.reference_id }}"><code>{{ row.reference_id }}</code></td><td data-sort-value="{{ row.outcome|lower }}">{{ row.outcome }}</td><td data-sort-value="{{ row.retry_count }}">{{ row.retry_count }}</td><td data-sort-value="{{ row.error_code|default('', true)|lower }}">{{ row.error_code }}</td><td data-sort-value="{{ row.provider_error_code|default('HTTP ' ~ (row.provider_http_status|string) if row.provider_http_status else '', true)|lower }}">{% if row.provider_error_code %}{{ row.provider_error_code }}{% else %}—{% endif %}{% if row.provider_http_status %}<br><small>HTTP {{ row.provider_http_status }}</small>{% endif %}</td><td data-sort-value="{{ (row.provider_adapter or '')|lower }}" data-sort-secondary="{{ (row.model or '')|lower }}">{% if row.provider_adapter %}{{ row.provider_adapter }}<br>{% endif %}{% if row.model %}{{ row.model }}{% else %}—{% endif %}{% if row.duration_ms is not none %}<br><small>{{ row.duration_ms }} ms</small>{% endif %}</td></tr>{% endfor %}
+                {% if usage_recent_operational_rows %}<div class="usage-table-wrap table-scroll-region" tabindex="0" role="region" aria-label="Scrollable usage table"><table class="usage-table" data-sortable-table><thead><tr><th scope="col" data-sort-type="date">Time (UTC)</th><th scope="col" data-sort-type="text">Stage</th><th scope="col" data-sort-type="text">Reference</th><th scope="col" data-sort-type="text">Outcome</th><th scope="col" data-sort-type="number">Retries</th><th scope="col" data-sort-type="text">Gemini tier</th><th scope="col" data-sort-type="text">Error</th><th scope="col" data-sort-type="text" title="Sorts by provider error code, or HTTP status when no code is present">Provider / HTTP</th><th scope="col" data-sort-type="text" title="Sorts by provider, then model">Provider / model / latency</th></tr></thead><tbody>
+                  {% for row in usage_recent_operational_rows %}<tr><td data-sort-value="{{ row.timestamp.isoformat() }}">{{ row.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td><td data-sort-value="{{ row.stage|lower }}">{{ row.stage }}</td><td data-sort-value="{{ row.reference_id }}"><code>{{ row.reference_id }}</code></td><td data-sort-value="{{ row.outcome|lower }}">{{ row.outcome }}</td><td data-sort-value="{{ row.retry_count }}">{{ row.retry_count }}</td><td data-sort-value="{{ row.requested_tier or '' }} {{ row.priority_attempt_outcome or '' }} {{ row.served_tier or '' }}">{% if row.priority_attempt_outcome %}Priority {{ row.priority_attempt_outcome }}{% if row.priority_attempt_http_status %} · HTTP {{ row.priority_attempt_http_status }}{% endif %}<br><small>Served {{ row.served_tier|title if row.served_tier else 'Unknown' }}</small>{% elif row.requested_tier %}Requested {{ row.requested_tier|title }}<br><small>Served {{ row.served_tier|title if row.served_tier else 'Unknown' }}</small>{% elif row.served_tier %}Served {{ row.served_tier|title }}{% else %}—{% endif %}</td><td data-sort-value="{{ row.error_code|default('', true)|lower }}">{{ row.error_code }}</td><td data-sort-value="{{ row.provider_error_code|default('HTTP ' ~ (row.provider_http_status|string) if row.provider_http_status else '', true)|lower }}">{% if row.provider_error_code %}{{ row.provider_error_code }}{% else %}—{% endif %}{% if row.provider_http_status %}<br><small>HTTP {{ row.provider_http_status }}</small>{% endif %}</td><td data-sort-value="{{ (row.provider_adapter or '')|lower }}" data-sort-secondary="{{ (row.model or '')|lower }}">{% if row.provider_adapter %}{{ row.provider_adapter }}<br>{% endif %}{% if row.model %}{{ row.model }}{% else %}—{% endif %}{% if row.duration_ms is not none %}<br><small>{{ row.duration_ms }} ms</small>{% endif %}</td></tr>{% endfor %}
                 </tbody></table></div>{% else %}<div class="usage-empty">No matching failures or recovered retries in this range.</div>{% endif %}
               </section>
               <section class="usage-panel">
@@ -4862,7 +4871,7 @@
                         ><span class="configured" data-enabled="{{ 'true' if config.is_active else 'false' }}">{{ 'Enabled' if config.is_active else 'Disabled' }}</span><small class="provider-check-status" data-check-status="{{ config.last_connection_check_status or '' }}" data-check-error="{{ config.last_connection_check_error_code or '' }}" data-check-http="{{ config.last_connection_check_http_status or '' }}" data-check-at="{{ config.last_connection_check_at.isoformat() if config.last_connection_check_at else '' }}">{% if config.last_connection_check_status == 'passed' %}Last check passed{% elif config.last_connection_check_status == 'failed' %}Last check failed{% else %}Not checked{% endif %}{% if config.last_connection_check_at %} · {{ config.last_connection_check_at.strftime('%d %b %Y %H:%M UTC') }}{% endif %}{% if config.last_connection_check_status == 'failed' %} · {% if config.last_connection_check_error_code == 'permission_denied' or config.last_connection_check_http_status == 403 %}Provider denied access{% elif config.last_connection_check_error_code in ['authentication_error','invalid_api_key'] or config.last_connection_check_http_status == 401 %}Saved credential rejected{% else %}Check needs attention{% endif %}{% endif %}{% if config.last_connection_check_http_status %} · HTTP {{ config.last_connection_check_http_status }}{% endif %}</small><small class="provider-role-warning" data-provider-role-warnings>{% set policy_state = llm_model_policy_by_config_id.get(config.id|string, {}) %}{% for warning in policy_state.get('role_warnings', []) %}<span><i data-lucide="triangle-alert" aria-hidden="true"></i>{{ {'writing':'Writing','backup':'Backup','checker':'Checking'}.get(warning.role, warning.role|title) }}: {{ {'provider_unavailable':'provider unavailable','no_enabled_models':'no models enabled','default_unavailable':'default unavailable','model_disabled':'assigned model is disabled','model_unavailable':'assigned model unavailable'}.get(warning.reason, 'needs attention') }}{% if warning.model_name %} ({{ warning.model_name }}){% endif %}.</span>{% endfor %}</small></div
                       >
                       <div class="provider-row-actions">
-                        {% if config.setup_status == 'ready' or config.setup_status.value == 'ready' %}<button class="btn provider-edit-button" type="button" title="Edit {{ config.label }}" aria-label="Edit {{ config.label }}" data-edit-llm-provider data-config-id="{{ config.id }}" data-provider-preset="{{ config.provider_preset or '' }}" data-provider-label="{{ config.label }}" data-base-url="{{ config.base_url }}" data-bedrock-region="{% if config.adapter_kind.value == 'bedrock_chat' %}{{ config.base_url.split('.')[1] }}{% endif %}" data-google-project-id="{{ config.provider_config_json.get('project_id', '') }}" data-google-location="{{ config.provider_config_json.get('location', '') }}" data-google-auth-method="{{ 'application_default' if config.auth_mode.value == 'google_adc' else 'service_account_json' if config.auth_mode.value == 'google_service_account' else '' }}" data-capacity-mode="{{ config.provider_config_json.get('capacity_mode', 'auto') }}" data-model-name="{{ config.model_name or '' }}" data-available-models='{{ config.available_models_json|tojson }}' data-policy-enabled='{{ (config.model_policy.enabled_models_json if config.model_policy else [])|tojson }}' data-policy-default="{{ config.model_policy.default_model_name if config.model_policy else '' }}" data-is-active="{{ 'true' if config.is_active else 'false' }}" data-auth-mode="{{ config.auth_mode.value }}" data-has-secret="{{ 'true' if config.vault_secret_ref else 'false' }}" data-is-selected="{{ 'true' if llm_selection and llm_selection.llm_config_id == config.id else 'false' }}"><i data-lucide="pencil" aria-hidden="true"></i></button>{% else %}<span class="field-help">Setup incomplete</span>{% endif %}
+                        {% if config.setup_status == 'ready' or config.setup_status.value == 'ready' %}<button class="btn provider-edit-button" type="button" title="Edit {{ config.label }}" aria-label="Edit {{ config.label }}" data-edit-llm-provider data-config-id="{{ config.id }}" data-provider-preset="{{ config.provider_preset or '' }}" data-provider-label="{{ config.label }}" data-base-url="{{ config.base_url }}" data-bedrock-region="{% if config.adapter_kind.value == 'bedrock_chat' %}{{ config.base_url.split('.')[1] }}{% endif %}" data-google-project-id="{{ config.provider_config_json.get('project_id', '') }}" data-google-location="{{ config.provider_config_json.get('location', '') }}" data-google-auth-method="{{ 'application_default' if config.auth_mode.value == 'google_adc' else 'service_account_json' if config.auth_mode.value == 'google_service_account' else '' }}" data-capacity-mode="{{ config.provider_config_json.get('capacity_mode', 'auto') }}" data-gemini-priority-enabled="{{ 'true' if config.provider_config_json.get('priority_on_capacity_429', false) else 'false' }}" data-model-name="{{ config.model_name or '' }}" data-available-models='{{ config.available_models_json|tojson }}' data-policy-enabled='{{ (config.model_policy.enabled_models_json if config.model_policy else [])|tojson }}' data-policy-default="{{ config.model_policy.default_model_name if config.model_policy else '' }}" data-is-active="{{ 'true' if config.is_active else 'false' }}" data-auth-mode="{{ config.auth_mode.value }}" data-has-secret="{{ 'true' if config.vault_secret_ref else 'false' }}" data-is-selected="{{ 'true' if llm_selection and llm_selection.llm_config_id == config.id else 'false' }}"><i data-lucide="pencil" aria-hidden="true"></i></button>{% else %}<span class="field-help">Setup incomplete</span>{% endif %}
                         <div data-provider-menu><button type="button" class="provider-more-button" data-provider-menu-trigger aria-label="More actions for {{ config.label }}" aria-expanded="false" aria-controls="llm-actions-{{ config.id }}"><i data-lucide="ellipsis-vertical" aria-hidden="true"></i></button>
                         <div class="provider-actions-menu" id="llm-actions-{{ config.id }}" data-provider-menu-panel popover="manual" hidden>
                         <form
@@ -6189,6 +6198,10 @@
                     <option value="dedicated">Dedicated</option>
                   </select>
                 </div>
+                <div class="field full priority-policy-setting" id="llm-google-priority-field" hidden>
+                  <label class="checkbox-row"><input id="llm-google-priority-on-capacity-429" type="checkbox" /><span>Retry Gemini capacity 429s with Priority PayGo</span></label>
+                  <p class="field-help">Priority requests can cost more. OpenScribe uses one Priority request only after a temporary capacity 429; dedicated capacity mode does not use this fallback.</p>
+                </div>
               </div>
             </section>
             <section class="wizard-panel" data-llm-wizard-step="3" hidden>
@@ -7238,7 +7251,7 @@
         const fieldName = typeof safeError.details?.field === "string"
           ? safeError.details.field.split(".").pop()
           : "";
-        const allowedFields = new Set(["label", "base_url", "openapi_path", "bedrock_region", "bearer_token", "model_name", "language", "provider_preset", "google_project_id", "google_location", "google_auth_method", "capacity_mode", "google_service_account_json"]);
+        const allowedFields = new Set(["label", "base_url", "openapi_path", "bedrock_region", "bearer_token", "model_name", "language", "provider_preset", "google_project_id", "google_location", "google_auth_method", "capacity_mode", "priority_on_capacity_429", "google_service_account_json"]);
         const form = element.closest("form");
         const frozen = wizardPendingStates.get(form);
         const field = allowedFields.has(fieldName)
@@ -7638,7 +7651,7 @@
       }
       function detailsRevisionValues() {
         const value = (id) => detailsNode(id)?.value.trim() || "";
-        return JSON.stringify({baseUrl: value("provider-details-base-url"), openapiPath: value("provider-details-openapi-path"), region: value("provider-details-region"), project: value("provider-details-project"), location: value("provider-details-location"), capacity: value("provider-details-capacity"), auth: value("provider-details-google-auth"), removeSavedKey: providerDetailsRemoveSavedKey, replacementCredentialEntered: Boolean(value("provider-details-token") || value("provider-details-google-credential"))});
+        return JSON.stringify({baseUrl: value("provider-details-base-url"), openapiPath: value("provider-details-openapi-path"), region: value("provider-details-region"), project: value("provider-details-project"), location: value("provider-details-location"), capacity: value("provider-details-capacity"), priorityOnCapacity429: detailsNode("provider-details-priority-on-capacity-429")?.checked || false, auth: value("provider-details-google-auth"), removeSavedKey: providerDetailsRemoveSavedKey, replacementCredentialEntered: Boolean(value("provider-details-token") || value("provider-details-google-credential"))});
       }
       function detailsModelValues() {
         if (providerDetailsKind === "llm") return JSON.stringify({default: detailsNode("provider-details-llm-default")?.value || "", allowed: [...(detailsNode("provider-details-llm-allowed")?.querySelectorAll('input[type="checkbox"]:checked') || [])].map((input) => input.value)});
@@ -7717,6 +7730,13 @@
           const capacity = document.createElement("select"); capacity.className = "select-like"; capacity.id = "provider-details-capacity";
           for (const mode of ["auto", "shared", "dedicated"]) capacity.add(new Option(mode[0].toUpperCase() + mode.slice(1), mode));
           capacity.value = button.dataset.capacityMode || "auto"; capacityLabel.append(capacity); container.append(capacityLabel);
+          const priorityLabel = document.createElement("label"); priorityLabel.className = "checkbox-row priority-policy-setting";
+          const priority = document.createElement("input"); priority.type = "checkbox"; priority.id = "provider-details-priority-on-capacity-429";
+          priority.checked = button.dataset.geminiPriorityEnabled === "true"; priority.addEventListener("change", markConnectionChanged);
+          const priorityText = document.createElement("span"); priorityText.textContent = "Retry Gemini capacity 429s with Priority PayGo";
+          priorityLabel.append(priority, priorityText); container.append(priorityLabel);
+          const priorityHelp = document.createElement("p"); priorityHelp.className = "field-help";
+          priorityHelp.textContent = "Priority requests can cost more. One Priority request follows a temporary capacity 429; this fallback does not apply to dedicated capacity mode."; container.append(priorityHelp);
         } else if ((providerDetailsKind === "llm" && preset !== "gemini_enterprise" && preset !== "ollama") || (providerDetailsKind === "stt" && preset !== "custom_rest_openapi")) {
           const authHeading = document.createElement("h3"); authHeading.textContent = "Authentication"; container.append(authHeading);
           const key = addDetailsField(container, "API key", "provider-details-token", "", "password", "new-password");
@@ -7822,6 +7842,7 @@
         providerDetailsOpener.dataset.modelName = config.model_name || "";
         providerDetailsOpener.dataset.availableModels = JSON.stringify(config.available_models_json || []);
         providerDetailsOpener.dataset.isActive = String(Boolean(config.is_active));
+        if (config.provider_preset === "gemini_enterprise") providerDetailsOpener.dataset.geminiPriorityEnabled = String(config.priority_on_capacity_429 === true);
         const row = providerDetailsOpener.closest(".llm-provider-row");
         const availability = row?.querySelector("[data-llm-availability] > span");
         if (availability) {
@@ -8186,6 +8207,7 @@
             payload.google_location = value("provider-details-location") || null;
             payload.google_auth_method = value("provider-details-google-auth");
             payload.capacity_mode = value("provider-details-capacity") || "auto";
+            payload.priority_on_capacity_429 = detailsNode("provider-details-priority-on-capacity-429")?.checked || false;
             const credentialText = value("provider-details-google-credential");
             if (payload.google_auth_method === "service_account_json" && credentialText) { try { payload.google_service_account_json = JSON.parse(credentialText); } catch (_error) { const error = new Error("Enter valid service-account JSON."); error.field = "provider-details-google-credential"; throw error; } }
           }
@@ -8300,7 +8322,7 @@
           if (providerDetailsKind === "llm" && config.provider_preset === "bedrock_http_gateway") providerDetailsOpener.dataset.bedrockRegion = config.base_url.match(/^https:\/\/bedrock-mantle\.([^.]+)\.api\.aws\/v1$/)?.[1] || providerDetailsOpener.dataset.bedrockRegion || "";
           if (providerDetailsModal.dataset.llmSelectedId === providerDetailsOpener.dataset.configId) providerDetailsModal.dataset.currentLlmLabel = config.label;
           updateProviderDetailsHeader();
-          if (providerDetailsKind === "llm") { providerDetailsOpener.dataset.googleProjectId = config.google_project_id || ""; providerDetailsOpener.dataset.googleLocation = config.google_location || ""; providerDetailsOpener.dataset.googleAuthMethod = config.google_auth_method || ""; providerDetailsOpener.dataset.capacityMode = config.capacity_mode || "auto"; }
+          if (providerDetailsKind === "llm") { providerDetailsOpener.dataset.googleProjectId = config.google_project_id || ""; providerDetailsOpener.dataset.googleLocation = config.google_location || ""; providerDetailsOpener.dataset.googleAuthMethod = config.google_auth_method || ""; providerDetailsOpener.dataset.capacityMode = config.capacity_mode || "auto"; providerDetailsOpener.dataset.geminiPriorityEnabled = String(config.priority_on_capacity_429 === true); }
           else syncSttProviderButton(config);
           updateDetailsModelButton(); renderProviderCatalog(providerDetailsModels); renderConnectionFields(providerDetailsOpener);
           let selectionRefreshFailed = false;
@@ -8840,6 +8862,7 @@
         ["project", "location", "auth", "capacity"].forEach((name) => {
           document.getElementById(`llm-google-${name}-field`).hidden = !gemini;
         });
+        document.getElementById("llm-google-priority-field").hidden = !gemini;
         const serviceAccount = gemini && document.getElementById("llm-google-auth").value === "service_account_json";
         document.getElementById("llm-google-service-account-field").hidden = !serviceAccount;
         document.getElementById("llm-connection-help").textContent = gemini
@@ -9020,6 +9043,7 @@
           document.getElementById("llm-google-location").value = editButton.dataset.googleLocation || "";
           document.getElementById("llm-google-auth").value = editButton.dataset.googleAuthMethod || "application_default";
           document.getElementById("llm-google-capacity").value = editButton.dataset.capacityMode || "auto";
+          document.getElementById("llm-google-priority-on-capacity-429").checked = editButton.dataset.geminiPriorityEnabled === "true";
           llmFields({ resetValues: false });
           document.getElementById("llm-default-active").checked = editButton.dataset.isActive === "true";
         }
@@ -9113,6 +9137,7 @@
                 google_auth_method: value("google_auth_method") || null,
                 google_service_account_json: googleCredential,
                 capacity_mode: value("capacity_mode") || "auto",
+                priority_on_capacity_429: document.getElementById("llm-google-priority-on-capacity-429").checked,
               });
             }
             const result = await apiJson("/api/v1/llm-configs/drafts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });

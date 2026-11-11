@@ -123,11 +123,22 @@ def test_provider_snapshot_allowlists_config_and_omits_secrets():
             "location": "europe-west2",
             "api_version": "v1",
             "capacity_mode": "shared",
+            "priority_on_capacity_429": False,
         },
     }
     assert "vault" not in json.dumps(payload).lower()
     assert "credential" not in json.dumps(payload).lower()
     assert json.loads(json.dumps(payload)) == payload
+
+
+def test_legacy_gemini_snapshot_defaults_priority_escalation_off():
+    snapshot = {
+        "llm_config_id": str(_USER_ID), "provider_preset": "gemini_enterprise",
+        "adapter_kind": "gemini_enterprise", "base_url": "https://eu-aiplatform.googleapis.com",
+        "model": "publishers/google/models/gemini-test", "auth_mode": "google_adc",
+        "provider_config": {"project_id": "project-1", "location": "eu", "api_version": "v1", "capacity_mode": "auto"},
+    }
+    assert runtime.validate_provider_snapshot_shape(snapshot)["provider_config"]["priority_on_capacity_429"] is False
 
 
 def test_provider_snapshot_rejects_unsafe_base_url():

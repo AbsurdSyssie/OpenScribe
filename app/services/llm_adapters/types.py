@@ -22,6 +22,7 @@ class LlmGenerationResult:
     duration_ms: int
     provider_duration_ms: int | None
     finish_reason: str | None
+    served_tier: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +35,7 @@ class LlmProviderSnapshot:
     base_url: str
     model: str
     auth_mode: str
-    provider_config: Mapping[str, str]
+    provider_config: Mapping[str, str | bool]
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-safe representation without credentials or Vault references."""

@@ -192,6 +192,28 @@ with synthetic fixtures:
 APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_admin_provider_details.py
 ```
 
+Gemini Priority PayGo capacity escalation requires focused adapter, retry,
+snapshot, telemetry and admin Usage checks. Use synthetic provider responses;
+do not send live generation requests to verify retry behaviour:
+
+```bash
+APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_gemini_enterprise_llm.py tests/test_gemini_priority_policy.py tests/test_llm_execution.py tests/test_llm_runtime.py tests/test_llm_backup_policy.py
+APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/test_admin_ui.py -k 'priority or operational'
+```
+
+Cover the disabled default, saved opt-in and queued snapshot compatibility,
+exact shared/Priority headers, one escalation after temporary-capacity 429,
+hard-quota exclusion, deadline and active-attempt guards, and existing backup
+eligibility. Requested and served tier observations must stay allowlisted and
+must distinguish a failed Priority request from recovery by another provider.
+Run the additive transport-constraint migration checks and the API authorization
+audit sequentially with these tests, following [dbtesting.md](dbtesting.md).
+The rendered settings and tier table use the isolated browser fixture:
+
+```bash
+APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q --accessibility-audit tests/accessibility/test_admin_provider_edit.py::test_gemini_priority_fallback_setting_renders_and_roundtrips_in_provider_details
+```
+
 The admin provider feedback regression opens the rendered STT and LLM dialogs
 in Playwright and uses synthetic provider responses. It checks visible errors,
 upstream status/code guidance, safe handling of a malicious provider-message

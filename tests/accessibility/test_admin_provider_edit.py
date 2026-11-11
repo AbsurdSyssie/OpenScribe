@@ -2,20 +2,31 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import timedelta
 from urllib.parse import urlparse
 
 import pytest
 
 from app.models import (
+    AttemptKind,
+    AttemptOutcome,
     LlmAdapterKind,
+    LlmAuthMode,
     SttAdapterKind,
     SttProviderPreset,
     SttSelectionPurpose,
+    QuotaResource,
     TeamHallucinationCheckSelection,
     TeamLlmBackupSelection,
     TeamLlmSelection,
     TeamSttSelection,
 )
+from app.services.quotas import (
+    mark_provider_attempt_submitted,
+    reserve_provider_attempt,
+    settle_provider_attempt_tokens,
+)
+from app.models import utcnow
 
 
 pytestmark = [pytest.mark.real_db_connections, pytest.mark.accessibility_audit]
@@ -1793,3 +1804,104 @@ def test_saved_provider_pending_revision_conflict_has_explicit_safe_recovery(
     submitted = json.loads(explicit_test.value.request.post_data or "{}")
     assert submitted["base_url"] == "https://new.synthetic.example/v1"
     assert submitted["bearer_token"] == "synthetic-new-key"
+
+
+def test_gemini_priority_fallback_setting_renders_and_roundtrips_in_provider_details(
+    provider_edit_page, live_audit_server, db_session, make_team, make_user, make_llm_config,
+):
+    team = make_team(name="Priority setting visual QA")
+    admin = make_user(email="priority-setting@example.test", password="synthetic-priority-password",
+                      is_system_admin=True, mfa_required=False, mfa_enabled=False)
+    config = make_llm_config(
+        team=team, actor=admin, label="Synthetic Gemini", provider_preset="gemini_enterprise",
+        adapter_kind=LlmAdapterKind.gemini_enterprise, base_url="https://aiplatform.googleapis.com",
+        model_name="gemini-3.8-flash", available_models_json=["gemini-3.8-flash"], has_secret=False,
+    )
+    config.auth_mode = LlmAuthMode.google_adc
+    config.provider_config_json = {
+        "project_id": "synthetic-project", "location": "eu", "capacity_mode": "auto",
+        "priority_on_capacity_429": True,
+    }
+    db_session.commit()
+
+    page = provider_edit_page
+    page.context.route("**/api/v1/**", lambda route: route.abort())
+    _login_and_open_admin(page, base_url=live_audit_server, email=admin.email,
+                          password="synthetic-priority-password", team_id=str(team.id), tab="llm")
+    opener = _provider_button(page, "llm", config.id)
+    assert opener.get_attribute("data-gemini-priority-enabled") == "true"
+    opener.click()
+    dialog = page.locator("#provider-details-modal")
+    dialog.wait_for(state="visible")
+    page.locator("#provider-details-tab-connection").click()
+    fallback = dialog.locator("#provider-details-priority-on-capacity-429")
+    fallback.wait_for(state="visible")
+    assert fallback.is_checked()
+    assert "can cost more" in dialog.inner_text()
+    assert "dedicated capacity mode" in dialog.inner_text()
+    fallback.uncheck()
+    assert not fallback.is_checked()
+    fallback.check()
+    assert fallback.is_checked()
+    page.set_viewport_size({"width": 1440, "height": 900})
+    dialog.screenshot(path="/tmp/openscribe-gemini-priority-setting-desktop.png")
+    page.set_viewport_size({"width": 390, "height": 844})
+    dialog.screenshot(path="/tmp/openscribe-gemini-priority-setting-mobile.png")
+
+    owner = make_user(email="priority-telemetry-owner@example.test", password="synthetic-owner-password", team=team)
+    now = utcnow() - timedelta(seconds=10)
+    from uuid import uuid4
+    correlation_id = uuid4()
+    attempt = reserve_provider_attempt(
+        db_session, team_id=team.id, owner_user_id=owner.id, resource=QuotaResource.tokens,
+        attempt_kind=AttemptKind.llm_generation, correlation_id=correlation_id, attempt_number=2,
+        reserved_units=10, authorized_at=now, reservation_valid_until=now + timedelta(minutes=5),
+        provider_adapter="gemini_enterprise", provider_model="gemini-3.8-flash",
+    )
+    attempt.transport_events_json = [
+        {"occurred_at": now.isoformat(), "request_ordinal": 1, "duration_ms": 20,
+         "code": "rate_limited", "http_status": 429, "retry_wait_ms": 0, "request_tier": "standard", "served_tier": None},
+        {"occurred_at": now.isoformat(), "request_ordinal": 2, "duration_ms": 30,
+         "code": "provider_error", "http_status": 429, "retry_wait_ms": 0, "request_tier": "priority", "served_tier": None},
+    ]
+    mark_provider_attempt_submitted(db_session, attempt_id=attempt.id, deadline_at=now + timedelta(minutes=2), now=now)
+    settle_provider_attempt_tokens(
+        db_session, attempt_id=attempt.id, reported_total_tokens=0,
+        outcome=AttemptOutcome.failed, now=now,
+    )
+    backup = reserve_provider_attempt(
+        db_session, team_id=team.id, owner_user_id=owner.id, resource=QuotaResource.tokens,
+        attempt_kind=AttemptKind.llm_generation, correlation_id=attempt.id, attempt_number=1,
+        reserved_units=10, authorized_at=now + timedelta(seconds=1),
+        reservation_valid_until=now + timedelta(minutes=5),
+        provider_adapter="openai_chat", provider_model="synthetic-backup-model",
+        backup_of_attempt_id=attempt.id,
+    )
+    mark_provider_attempt_submitted(
+        db_session, attempt_id=backup.id, deadline_at=now + timedelta(minutes=2, seconds=1), now=now + timedelta(seconds=1),
+    )
+    backup.transport_events_json = [
+        {"occurred_at": (now + timedelta(seconds=2)).isoformat(), "request_ordinal": 1,
+         "duration_ms": 40, "code": "success", "http_status": 200, "retry_wait_ms": 0},
+    ]
+    settle_provider_attempt_tokens(
+        db_session, attempt_id=backup.id, reported_total_tokens=5, now=now + timedelta(seconds=3),
+    )
+    db_session.commit()
+    page.goto(f"/admin/usage?view=team&range=30d&team_id={team.id}", wait_until="domcontentloaded")
+    page.get_by_role("heading", name="Recent failures and retries").scroll_into_view_if_needed()
+    panel_text = page.locator(".usage-panel").filter(has=page.get_by_role("heading", name="Recent failures and retries")).inner_text()
+    assert "Priority failed" in panel_text, f"Priority row was not rendered. Recent failures panel text: {panel_text}"
+    tier_row = page.locator(".usage-table tbody tr").filter(has_text="Priority failed")
+    tier_row.wait_for(state="visible")
+    assert "HTTP 429" in tier_row.inner_text()
+    assert "Served Unknown" in tier_row.inner_text()
+    assert tier_row.locator("td").nth(3).inner_text().strip() == "Recovered after retry"
+    usage_panel = page.locator(".usage-panel").filter(has=page.get_by_role("heading", name="Recent failures and retries"))
+    tier_cell = tier_row.locator("td").nth(5)
+    tier_cell.scroll_into_view_if_needed()
+    page.set_viewport_size({"width": 1440, "height": 900})
+    usage_panel.screenshot(path="/tmp/openscribe-gemini-priority-tier-table-desktop.png")
+    page.set_viewport_size({"width": 390, "height": 844})
+    tier_cell.scroll_into_view_if_needed()
+    usage_panel.screenshot(path="/tmp/openscribe-gemini-priority-tier-table-mobile.png")

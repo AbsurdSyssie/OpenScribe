@@ -6,10 +6,10 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import DateTime, Integer, cast, func, select, true, update
+from sqlalchemy import DateTime, Integer, and_, cast, func, select, true, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, aliased, joinedload
 
 from app.cookie_security import app_environment
 from app.errors import AppError
@@ -414,6 +414,10 @@ class AdminUsageOperationalRow:
     model: str | None = None
     provider_adapter: str | None = None
     duration_ms: int | None = None
+    requested_tier: str | None = None
+    served_tier: str | None = None
+    priority_attempt_outcome: str | None = None
+    priority_attempt_http_status: int | None = None
 
 
 _SAFE_SPLIT_APPLICATION_ERROR_CODES = frozenset(
@@ -487,6 +491,10 @@ def _safe_operational_code(value: object) -> str:
     return value if isinstance(value, str) and value in _SAFE_OPERATIONAL_CODES else "other_failure"
 
 
+def _safe_serving_tier(value: object) -> str | None:
+    return value if isinstance(value, str) and value in {"standard", "priority"} else None
+
+
 def _recent_operational_rows(
     db: Session, *, since: datetime, until: datetime, team_id: UUID | None, reference: str | None = None,
 ) -> list[AdminUsageOperationalRow]:
@@ -500,11 +508,26 @@ def _recent_operational_rows(
         except (ValueError, AttributeError):
             return []
 
+    parent_attempt = aliased(ProviderAttempt)
+    grandparent_attempt = aliased(ProviderAttempt)
+    parent_link_id = func.coalesce(ProviderAttempt.backup_of_attempt_id, ProviderAttempt.repair_of_attempt_id)
+    grandparent_link_id = func.coalesce(parent_attempt.backup_of_attempt_id, parent_attempt.repair_of_attempt_id)
+    root_correlation_id = func.coalesce(
+        grandparent_attempt.correlation_id, parent_attempt.correlation_id, ProviderAttempt.correlation_id,
+    )
     stmt = select(
-        ProviderAttempt.correlation_id, ProviderAttempt.attempt_number, ProviderAttempt.attempt_kind,
+        root_correlation_id.label("root_correlation_id"),
+        ProviderAttempt.id, ProviderAttempt.backup_of_attempt_id, ProviderAttempt.correlation_id,
+        ProviderAttempt.authorized_at, ProviderAttempt.attempt_number, ProviderAttempt.attempt_kind,
         ProviderAttempt.status, ProviderAttempt.outcome, ProviderAttempt.error_code, ProviderAttempt.provider_error_code,
         ProviderAttempt.provider_http_status, ProviderAttempt.settled_at, ProviderAttempt.provider_model,
         ProviderAttempt.transport_events_json, ProviderAttempt.provider_adapter,
+    ).outerjoin(
+        parent_attempt,
+        and_(parent_attempt.id == parent_link_id, parent_attempt.team_id == ProviderAttempt.team_id),
+    ).outerjoin(
+        grandparent_attempt,
+        and_(grandparent_attempt.id == grandparent_link_id, grandparent_attempt.team_id == ProviderAttempt.team_id),
     ).where(
         func.coalesce(ProviderAttempt.settled_at, ProviderAttempt.authorized_at) >= since,
         func.coalesce(ProviderAttempt.settled_at, ProviderAttempt.authorized_at) < until,
@@ -513,11 +536,12 @@ def _recent_operational_rows(
     if team_id is not None:
         stmt = stmt.where(ProviderAttempt.team_id == team_id)
     if reference_uuid is not None:
-        stmt = stmt.where(ProviderAttempt.correlation_id == reference_uuid)
+        stmt = stmt.where(root_correlation_id == reference_uuid)
     stmt = stmt.order_by(ProviderAttempt.authorized_at.desc(), ProviderAttempt.attempt_number.desc()).limit(500)
+    attempt_rows = list(db.execute(stmt))
     grouped: dict[tuple[UUID, AttemptKind], list[object]] = {}
-    for row in db.execute(stmt):
-        grouped.setdefault((row.correlation_id, row.attempt_kind), []).append(row)
+    for row in attempt_rows:
+        grouped.setdefault((row.root_correlation_id, row.attempt_kind), []).append(row)
 
     labels = {
         AttemptKind.llm_generation: "Generation",
@@ -529,7 +553,7 @@ def _recent_operational_rows(
     }
     result: list[AdminUsageOperationalRow] = []
     for (correlation_id, attempt_kind), attempts in grouped.items():
-        attempts.sort(key=lambda item: (item.attempt_number, item.settled_at or until))
+        attempts.sort(key=lambda item: (item.authorized_at, item.settled_at or until))
         final = attempts[-1]
         events = [event for item in attempts for event in (item.transport_events_json or []) if isinstance(event, dict)]
         transport_retry_count = sum(
@@ -579,6 +603,30 @@ def _recent_operational_rows(
         provider_error = _safe_split_provider_error_code(source.provider_error_code)
         if event_code:
             provider_error = event_code if event_code in _SAFE_SPLIT_PROVIDER_ERROR_CODES else provider_error
+        gemini_events = [
+            event
+            for item in attempts
+            if item.provider_adapter == "gemini_enterprise"
+            for event in (item.transport_events_json or [])
+            if isinstance(event, dict)
+        ]
+        priority_events = [event for event in gemini_events if _safe_serving_tier(event.get("request_tier")) == "priority"]
+        requested_tier = "priority" if priority_events else (
+            "standard" if any(_safe_serving_tier(event.get("request_tier")) == "standard" for event in gemini_events) else None
+        )
+        priority_event = priority_events[-1] if priority_events else None
+        served_tier = (
+            _safe_serving_tier(priority_event.get("served_tier"))
+            if priority_event
+            else next(
+                (
+                    safe_tier
+                    for event in reversed(gemini_events)
+                    if (safe_tier := _safe_serving_tier(event.get("served_tier"))) is not None
+                ),
+                None,
+            )
+        )
         result.append(AdminUsageOperationalRow(
             timestamp=event_time or final.settled_at or source.settled_at or until,
             stage=stage,
@@ -591,6 +639,10 @@ def _recent_operational_rows(
             model=final.provider_model,
             provider_adapter=final.provider_adapter,
             duration_ms=sum(int(event.get("duration_ms", 0)) for event in events if isinstance(event.get("duration_ms"), int)),
+            requested_tier=requested_tier,
+            served_tier=served_tier,
+            priority_attempt_outcome=("succeeded" if priority_event.get("code") == "success" else "failed") if priority_event else None,
+            priority_attempt_http_status=_safe_split_provider_http_status(priority_event.get("http_status")) if priority_event else None,
         ))
 
     doc_stmt = select(

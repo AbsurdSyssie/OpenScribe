@@ -221,6 +221,12 @@ does not hide a generation failure. It shows time, stage, operation reference,
 final outcome, retry count, allowlisted error category, safe provider status,
 provider adapter, model metadata, and duration. A controlled terminal transport failure appears as Failed even when quota settlement remains conservative. A successful transport with uncertain usage appears as Usage unknown; legacy attempts without evidence retain Unknown outcome. Search accepts a UUID operation reference and/or
 a UTC start time within the selected reporting range. It is capped at 50 rows.
+When Gemini tier telemetry is available, the table reports whether a Priority
+attempt succeeded or failed, its HTTP status when present, and the served tier
+reported for that Priority request. Unknown served tier is shown explicitly;
+the final outcome column remains the outcome of the overall operation, which
+may have recovered through another provider. Tier values are allowlisted
+metadata only.
 The separate detailed split table also shows terminal split failures, including
 failures recorded without a provider attempt.
 

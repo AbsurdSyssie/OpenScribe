@@ -66,6 +66,11 @@ def _attempts(db, document_id):
     return list(db.scalars(select(ProviderAttempt).where(
         ProviderAttempt.generated_document_id == document_id,
         ProviderAttempt.attempt_kind == AttemptKind.llm_generation,
+    ).order_by(
+        ProviderAttempt.authorized_at,
+        ProviderAttempt.attempt_number,
+        ProviderAttempt.backup_of_attempt_id.is_not(None),
+        ProviderAttempt.id,
     )))
 
 

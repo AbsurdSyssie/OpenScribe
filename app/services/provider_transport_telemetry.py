@@ -14,11 +14,13 @@ from sqlalchemy.orm import Session
 from app.db import SessionLocal
 from app.models import AttemptKind, AttemptStatus, ProviderAttempt, Transcript
 
-from app.provider_transport_schema import EVENT_CODES, EVENT_KEYS
+from app.provider_transport_schema import EVENT_CODES, EVENT_KEYS, LEGACY_EVENT_KEYS
 
 
 def validate_transport_event(event: dict[str, object]) -> dict[str, object]:
-    if set(event) != EVENT_KEYS or not isinstance(event.get("code"), str) or event["code"] not in EVENT_CODES:
+    keys = set(event)
+    if (not LEGACY_EVENT_KEYS <= keys <= EVENT_KEYS
+            or not isinstance(event.get("code"), str) or event["code"] not in EVENT_CODES):
         raise ValueError("Invalid transport event")
     for key, minimum, maximum in (("request_ordinal", 1, 4), ("duration_ms", 0, 150000), ("retry_wait_ms", 0, 30000)):
         if type(event[key]) is not int or not minimum <= event[key] <= maximum:
@@ -32,6 +34,11 @@ def validate_transport_event(event: dict[str, object]) -> dict[str, object]:
     parsed = datetime.fromisoformat(occurred)
     if parsed.utcoffset() != timezone.utc.utcoffset(parsed):
         raise ValueError("Invalid transport event")
+    for key in ("request_tier", "served_tier"):
+        if key in event and event[key] is not None and (
+            not isinstance(event[key], str) or event[key] not in {"standard", "priority"}
+        ):
+            raise ValueError("Invalid transport event")
     return dict(event)
 
 

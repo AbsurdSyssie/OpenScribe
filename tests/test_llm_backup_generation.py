@@ -16,6 +16,7 @@ from app.models import (
 from app.services import templates
 from app.services.llm_backup_policy import tag_provider_failure
 from app.services.llm_backup import read_backup_provider
+from app.services.admin import admin_usage_overview
 from app.services.templates import (
     process_generated_document, queue_document_generation_from_template,
 )
@@ -112,6 +113,12 @@ def test_backup_invalid_json_repaired_once_with_separate_claim(
         assert _validated_main_checkpoint(db_session, repair, utcnow())[0]
         assert not _validated_main_checkpoint(db_session, backup_attempt, utcnow())[0]
     assert templates.generated_document_llm_request_payload(db_session, document=result) == calls[-1]["request_body"]
+    usage = admin_usage_overview(
+        db_session, team_id=team.id, monitor_reference=str(document.id),
+    )
+    generation_rows = [row for row in usage["usage_recent_operational_rows"] if row.stage == "Generation"]
+    assert len(generation_rows) == 1
+    assert generation_rows[0].outcome == "Recovered after retry"
     assert malformed not in str(result.llm_request_payload_json_encrypted)
     assert process_generated_document(db_session, document_id=document.id).status is result.status
     assert sum(c["config"].id == backup.id for c in calls) == 2

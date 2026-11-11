@@ -11150,7 +11150,7 @@ def test_admin_usage_keeps_legacy_unknown_outcomes_without_transport_metadata(db
     attempt = reserve_provider_attempt(
         db_session, team_id=team.id, owner_user_id=owner.id, resource=QuotaResource.tokens,
         attempt_kind=AttemptKind.llm_generation, correlation_id=correlation_id,
-        attempt_number=1, reserved_units=10, authorized_at=now,
+        attempt_number=2, reserved_units=10, authorized_at=now,
         reservation_valid_until=now + timedelta(minutes=5),
         provider_adapter='openai_chat', provider_model='synthetic-test-model',
     )
@@ -11167,6 +11167,135 @@ def test_admin_usage_keeps_legacy_unknown_outcomes_without_transport_metadata(db
     assert rows[0].error_code == 'other_failure'
     assert rows[0].provider_error_code is None
     assert rows[0].provider_http_status is None
+
+
+def test_admin_usage_reports_priority_attempt_separately_from_final_outcome(db_session, make_team, make_user):
+    team = make_team(name='Priority tier monitoring')
+    owner = make_user(email='priority-monitor-owner@example.com', password='password-1', team=team)
+    now = utcnow() - timedelta(seconds=10)
+    correlation_id = uuid4()
+    attempt = reserve_provider_attempt(
+        db_session, team_id=team.id, owner_user_id=owner.id, resource=QuotaResource.tokens,
+        attempt_kind=AttemptKind.llm_generation, correlation_id=correlation_id,
+        attempt_number=2, reserved_units=10, authorized_at=now,
+        reservation_valid_until=now + timedelta(minutes=5),
+        provider_adapter='gemini_enterprise', provider_model='gemini-3.8-flash',
+    )
+    mark_provider_attempt_submitted(db_session, attempt_id=attempt.id, deadline_at=now + timedelta(minutes=2), now=now)
+    attempt.transport_events_json = [
+        dict(occurred_at=now.isoformat(), request_ordinal=1, duration_ms=20,
+             code='rate_limited', http_status=429, retry_wait_ms=0, request_tier='standard'),
+        dict(occurred_at=(now + timedelta(seconds=1)).isoformat(), request_ordinal=2, duration_ms=30,
+             code='provider_error', http_status=429, retry_wait_ms=0, request_tier='priority'),
+    ]
+    settle_provider_attempt_tokens(
+        db_session, attempt_id=attempt.id, reported_total_tokens=0,
+        outcome=AttemptOutcome.failed, now=now + timedelta(seconds=2),
+    )
+    backup = reserve_provider_attempt(
+        db_session, team_id=team.id, owner_user_id=owner.id, resource=QuotaResource.tokens,
+        attempt_kind=AttemptKind.llm_generation, correlation_id=attempt.id, attempt_number=1,
+        reserved_units=10, authorized_at=now + timedelta(seconds=3),
+        reservation_valid_until=now + timedelta(minutes=5),
+        provider_adapter='gemini_enterprise', provider_model='synthetic-backup-model',
+        backup_of_attempt_id=attempt.id,
+    )
+    mark_provider_attempt_submitted(
+        db_session, attempt_id=backup.id, deadline_at=now + timedelta(minutes=2, seconds=3), now=now + timedelta(seconds=3),
+    )
+    backup.transport_events_json = [
+        dict(occurred_at=(now + timedelta(seconds=4)).isoformat(), request_ordinal=1,
+             duration_ms=40, code='success', http_status=200, retry_wait_ms=0,
+             served_tier='standard'),
+    ]
+    settle_provider_attempt_tokens(
+        db_session, attempt_id=backup.id, reported_total_tokens=5,
+        outcome=AttemptOutcome.succeeded, now=now + timedelta(seconds=5),
+    )
+    db_session.commit()
+
+    overview = admin_usage_overview(db_session, team_id=team.id, monitor_reference=str(correlation_id))
+
+    row = overview['usage_recent_operational_rows'][0]
+    assert row.outcome == 'Recovered after retry'
+    assert row.provider_adapter == 'gemini_enterprise'
+    assert row.requested_tier == 'priority'
+    assert row.priority_attempt_outcome == 'failed'
+    assert row.priority_attempt_http_status == 429
+    assert row.served_tier is None
+    other_team = make_team(name='Unrelated priority monitoring team')
+    unrelated_scope = admin_usage_overview(
+        db_session, team_id=other_team.id, monitor_reference=str(correlation_id),
+    )
+    assert unrelated_scope['usage_recent_operational_rows'] == []
+
+
+def test_admin_usage_reports_priority_success_served_at_standard_tier(db_session, make_team, make_user):
+    team = make_team(name='Priority downgrade monitoring')
+    owner = make_user(email='priority-downgrade-owner@example.com', password='password-1', team=team)
+    now = utcnow() - timedelta(seconds=10)
+    correlation_id = uuid4()
+    attempt = reserve_provider_attempt(
+        db_session, team_id=team.id, owner_user_id=owner.id, resource=QuotaResource.tokens,
+        attempt_kind=AttemptKind.llm_generation, correlation_id=correlation_id,
+        attempt_number=1, reserved_units=10, authorized_at=now,
+        reservation_valid_until=now + timedelta(minutes=5),
+        provider_adapter='gemini_enterprise', provider_model='gemini-3.8-flash',
+    )
+    mark_provider_attempt_submitted(db_session, attempt_id=attempt.id, deadline_at=now + timedelta(minutes=2), now=now)
+    attempt.transport_events_json = [
+        dict(occurred_at=now.isoformat(), request_ordinal=1, duration_ms=20,
+             code='rate_limited', http_status=429, retry_wait_ms=0, request_tier='standard'),
+        dict(occurred_at=(now + timedelta(seconds=1)).isoformat(), request_ordinal=2, duration_ms=30,
+             code='success', http_status=200, retry_wait_ms=0, request_tier='priority', served_tier='standard'),
+    ]
+    settle_provider_attempt_tokens(
+        db_session, attempt_id=attempt.id, reported_total_tokens=5,
+        outcome=AttemptOutcome.succeeded, now=now + timedelta(seconds=2),
+    )
+    db_session.commit()
+
+    overview = admin_usage_overview(db_session, team_id=team.id, monitor_reference=str(correlation_id))
+
+    row = overview['usage_recent_operational_rows'][0]
+    assert row.outcome == 'Recovered after retry'
+    assert row.priority_attempt_outcome == 'succeeded'
+    assert row.served_tier == 'standard'
+
+
+@pytest.mark.parametrize('request_tier', ['standard', None], ids=['explicit-standard', 'automatic'])
+def test_admin_usage_reports_known_served_tier_without_priority_attempt(db_session, make_team, make_user, request_tier):
+    team = make_team(name='Standard tier monitoring')
+    owner = make_user(email='standard-tier-owner@example.com', password='password-1', team=team)
+    now = utcnow() - timedelta(seconds=10)
+    correlation_id = uuid4()
+    attempt = reserve_provider_attempt(
+        db_session, team_id=team.id, owner_user_id=owner.id, resource=QuotaResource.tokens,
+        attempt_kind=AttemptKind.llm_generation, correlation_id=correlation_id,
+        attempt_number=1, reserved_units=10, authorized_at=now,
+        reservation_valid_until=now + timedelta(minutes=5),
+        provider_adapter='gemini_enterprise', provider_model='gemini-3.8-flash',
+    )
+    mark_provider_attempt_submitted(db_session, attempt_id=attempt.id, deadline_at=now + timedelta(minutes=2), now=now)
+    attempt.transport_events_json = [
+        dict(occurred_at=now.isoformat(), request_ordinal=1, duration_ms=20,
+             code='rate_limited', http_status=429, retry_wait_ms=0, request_tier=request_tier),
+        dict(occurred_at=(now + timedelta(seconds=1)).isoformat(), request_ordinal=2, duration_ms=30,
+             code='success', http_status=200, retry_wait_ms=0, request_tier=request_tier, served_tier='standard'),
+    ]
+    settle_provider_attempt_tokens(
+        db_session, attempt_id=attempt.id, reported_total_tokens=5,
+        outcome=AttemptOutcome.succeeded, now=now + timedelta(seconds=2),
+    )
+    db_session.commit()
+
+    overview = admin_usage_overview(db_session, team_id=team.id, monitor_reference=str(correlation_id))
+
+    row = overview['usage_recent_operational_rows'][0]
+    assert row.outcome == 'Recovered after retry'
+    assert row.requested_tier == request_tier
+    assert row.priority_attempt_outcome is None
+    assert row.served_tier == 'standard'
 
 
 @pytest.mark.parametrize('transport_metadata', [True, False])

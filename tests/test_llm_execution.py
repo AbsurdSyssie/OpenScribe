@@ -59,6 +59,46 @@ def test_temporary_429_retries_four_calls_and_records_before_sleep(monkeypatch):
         assert validate_transport_event(event) == event
 
 
+def test_priority_escalation_uses_one_request_after_temporary_capacity_429(monkeypatch):
+    events, calls, sleeps = [], [], []
+    monkeypatch.setattr(execution.random, "uniform", lambda lower, upper: lower)
+    monkeypatch.setattr(execution.time, "sleep", lambda seconds: sleeps.append(seconds))
+    def standard(_budget):
+        calls.append("standard")
+        raise AppError(502, "llm_generation_failed", "capacity", {
+            "provider_http_status": 429, "temporary_capacity": True, "retry_after_seconds": 1.5,
+        })
+    def priority(_budget):
+        calls.append("priority")
+        return ("synthetic", {"served_tier": "priority"})
+    with execution.execution_policy(budget=execution.ExecutionBudget.seconds(30), observer=lambda event: events.append(event) or True):
+        result = execution.bounded_request(standard, priority_fallback=priority, record_request_tier=True)
+    assert result[0] == "synthetic"
+    assert calls == ["standard", "priority"]
+    assert sleeps == [1.5]
+    assert [(event["request_tier"], event["served_tier"]) for event in events] == [
+        ("standard", None), ("priority", "priority")
+    ]
+    for event in events:
+        assert validate_transport_event(event) == event
+
+
+def test_priority_escalation_does_not_retry_priority_failure(monkeypatch):
+    calls, events = [], []
+    monkeypatch.setattr(execution.random, "uniform", lambda lower, upper: lower)
+    monkeypatch.setattr(execution.time, "sleep", lambda _seconds: None)
+    def standard(_budget):
+        calls.append("standard")
+        raise AppError(502, "llm_generation_failed", "capacity", {"provider_http_status": 429, "temporary_capacity": True})
+    def priority(_budget):
+        calls.append("priority")
+        raise AppError(502, "llm_generation_failed", "priority rejected", {"provider_http_status": 429, "temporary_capacity": True})
+    with execution.execution_policy(budget=execution.ExecutionBudget.seconds(30), observer=lambda event: events.append(event) or True), pytest.raises(AppError):
+        execution.bounded_request(standard, priority_fallback=priority, record_request_tier=True)
+    assert calls == ["standard", "priority"]
+    assert len(events) == 2
+
+
 @pytest.mark.parametrize("status,temporary,retry_after", [(429, False, None), (503, True, None), (429, True, 31), (429, True, 900)])
 def test_no_replay_for_hard_quota_ambiguous_or_excess_retry_after(monkeypatch, status, temporary, retry_after):
     calls, events = [], []
@@ -337,7 +377,7 @@ def test_checkpoint_without_selected_checker_does_not_report_checker_failure(db_
     assert document.hallucination_check_status is HallucinationCheckStatus(status)
 
 
-@pytest.mark.parametrize("mutation", [{"code": 123}, {"prompt": "synthetic"}, {"duration_ms": 0.5}, {"http_status": "429"}])
+@pytest.mark.parametrize("mutation", [{"code": 123}, {"prompt": "synthetic"}, {"duration_ms": 0.5}, {"http_status": "429"}, {"request_tier": {"unexpected": "value"}}])
 def test_postgresql_rejects_unsafe_transport_metadata(db_session, make_user, make_generated_document, mutation):
     from sqlalchemy import update
     from sqlalchemy.exc import IntegrityError
@@ -353,7 +393,7 @@ def test_migration_constraint_is_frozen_and_matches_current_metadata():
     import runpy
     from pathlib import Path
     from app.provider_transport_schema import TRANSPORT_EVENTS_CONSTRAINT
-    migration = runpy.run_path(str(Path(__file__).parents[1] / "alembic/versions/b9c0d1e2f3a6_add_provider_transport_events.py"))
+    migration = runpy.run_path(str(Path(__file__).parents[1] / "alembic/versions/02b3c4d5e6f7_add_priority_tiers_to_transport_events.py"))
     assert migration["TRANSPORT_EVENTS_CONSTRAINT"] == TRANSPORT_EVENTS_CONSTRAINT
 
 

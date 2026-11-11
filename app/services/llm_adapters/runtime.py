@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, NotRequired, TypedDict
 from uuid import UUID
 
 import httpx
@@ -42,7 +42,7 @@ DEFAULT_OUTPUT_TOKEN_CAP = 1600
 OLLAMA_STREAM_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 OLLAMA_STREAM_MAX_FRAGMENTS = 10_000
 OLLAMA_STREAM_RAW_CHUNK_BYTES = 64 * 1024
-_PROVIDER_CONFIG_ALLOWLIST = frozenset({"project_id", "location", "api_version", "capacity_mode"})
+_PROVIDER_CONFIG_ALLOWLIST = frozenset({"project_id", "location", "api_version", "capacity_mode", "priority_on_capacity_429"})
 _PROVIDER_SNAPSHOT_KEYS = frozenset(
     {"llm_config_id", "provider_preset", "adapter_kind", "base_url", "model", "auth_mode", "provider_config"}
 )
@@ -57,6 +57,7 @@ class GenerationUsage(TypedDict):
     total_tokens: int | None
     duration_ms: int | None
     provider_duration_ms: int | None
+    served_tier: NotRequired[str]
 
 
 def provider_output_token_cap(*, adapter_kind: LlmAdapterKind, model: str, nominal_cap: int) -> int:
@@ -171,8 +172,12 @@ def build_provider_snapshot(
     provider_config = {
         key: value
         for key, value in raw_provider_config.items()
-        if key in _PROVIDER_CONFIG_ALLOWLIST and isinstance(value, str)
+        if (key in _PROVIDER_CONFIG_ALLOWLIST - {"priority_on_capacity_429"} and isinstance(value, str))
+        or (key == "priority_on_capacity_429" and type(value) is bool)
     }
+    # Old queued snapshots predate this opt-in policy. Missing means disabled.
+    if str(getattr(config.adapter_kind, "value", config.adapter_kind)) == LlmAdapterKind.gemini_enterprise.value:
+        provider_config.setdefault("priority_on_capacity_429", False)
     return LlmProviderSnapshot(
         llm_config_id=str(config.id),
         provider_preset=str(getattr(config.provider_preset, "value", config.provider_preset)),
@@ -194,15 +199,25 @@ def validate_provider_snapshot_shape(snapshot: object) -> dict[str, object]:
     if not isinstance(provider_config, dict) or any(
         not isinstance(key, str)
         or key not in _PROVIDER_CONFIG_ALLOWLIST
-        or not isinstance(value, str)
-        or not value.strip()
+        or (key == "priority_on_capacity_429" and type(value) is not bool)
+        or (key != "priority_on_capacity_429" and (not isinstance(value, str) or not value.strip()))
         for key, value in provider_config.items()
+    ):
+        raise AppError(422, "llm_provider_snapshot_invalid", "The LLM provider snapshot is invalid")
+    if (
+        "priority_on_capacity_429" in provider_config
+        and snapshot.get("adapter_kind") != LlmAdapterKind.gemini_enterprise.value
     ):
         raise AppError(422, "llm_provider_snapshot_invalid", "The LLM provider snapshot is invalid")
     if snapshot_contains_secret_key(snapshot):
         raise AppError(422, "llm_provider_snapshot_invalid", "The LLM provider snapshot contains secret material")
     require_safe_provider_url(snapshot["base_url"])
-    return snapshot
+    normalized = dict(snapshot)
+    normalized_config = dict(provider_config)
+    if snapshot.get("adapter_kind") == LlmAdapterKind.gemini_enterprise.value:
+        normalized_config.setdefault("priority_on_capacity_429", False)
+    normalized["provider_config"] = normalized_config
+    return normalized
 
 
 def snapshot_contains_secret_key(value: object) -> bool:
@@ -485,17 +500,18 @@ def _invoke_ollama_once(
     )
 
 
-def _invoke_gemini_once(*, provider_config: Mapping[str, object], credential: object | None, request_body: dict[str, object]) -> tuple[str, GenerationUsage]:
+def _invoke_gemini_once(*, provider_config: Mapping[str, object], credential: object | None, request_body: dict[str, object], request_tier: str = "standard") -> tuple[str, GenerationUsage]:
     result = generate_gemini_text(
         project_id=str(provider_config.get("project_id") or ""),
         location=str(provider_config.get("location") or ""),
         credentials=credential,
         capacity_mode=str(provider_config.get("capacity_mode") or "auto"),
+        request_tier=request_tier,
         request=gemini_request_from_snapshot(request_body),
     )
     return result.text, generation_usage(
         input_tokens=result.input_tokens, output_tokens=result.output_tokens, total_tokens=result.total_tokens,
-        duration_ms=result.duration_ms, provider_duration_ms=result.provider_duration_ms,
+        duration_ms=result.duration_ms, provider_duration_ms=result.provider_duration_ms, served_tier=getattr(result, "served_tier", None),
     )
 
 
@@ -583,13 +599,16 @@ def translate_ollama_generation_error(
     return AppError(502, "llm_generation_failed", "LLM generation failed")
 
 
-def generation_usage(*, input_tokens: object = None, output_tokens: object = None, total_tokens: object = None, duration_ms: object = None, provider_duration_ms: object = None) -> GenerationUsage:
+def generation_usage(*, input_tokens: object = None, output_tokens: object = None, total_tokens: object = None, duration_ms: object = None, provider_duration_ms: object = None, served_tier: object = None) -> GenerationUsage:
     normalized_input = input_tokens if isinstance(input_tokens, int) else None
     normalized_output = output_tokens if isinstance(output_tokens, int) else None
     normalized_total = total_tokens if isinstance(total_tokens, int) else None
     if normalized_total is None and normalized_input is not None and normalized_output is not None:
         normalized_total = normalized_input + normalized_output
-    return {"input_tokens": normalized_input, "output_tokens": normalized_output, "total_tokens": normalized_total, "duration_ms": duration_ms if isinstance(duration_ms, int) else None, "provider_duration_ms": provider_duration_ms if isinstance(provider_duration_ms, int) else None}
+    result: GenerationUsage = {"input_tokens": normalized_input, "output_tokens": normalized_output, "total_tokens": normalized_total, "duration_ms": duration_ms if isinstance(duration_ms, int) else None, "provider_duration_ms": provider_duration_ms if isinstance(provider_duration_ms, int) else None}
+    if served_tier in {"standard", "priority"}:
+        result["served_tier"] = served_tier
+    return result
 
 
 def invoke_openai_compatible(
@@ -648,12 +667,25 @@ def invoke_ollama(
 
 def invoke_gemini(*, provider_config: Mapping[str, object], credential: object | None, request_body: dict[str, object]) -> tuple[str, GenerationUsage]:
     from app.services.generation_trace import request_context
+    capacity_mode = str(provider_config.get("capacity_mode") or "auto")
+    enabled = provider_config.get("priority_on_capacity_429") is True and capacity_mode != "dedicated"
     with request_context(request_body, credential):
-        return bounded_request(lambda budget: _invoke_gemini_once(
-        provider_config=provider_config,
-        credential=credential,
-        request_body=request_body,
-    ))
+        standard = lambda budget: _invoke_gemini_once(
+            provider_config=provider_config, credential=credential, request_body=request_body, request_tier="standard"
+        )
+        priority = None
+        if enabled:
+            priority = lambda budget: _invoke_gemini_once(
+                provider_config=provider_config, credential=credential, request_body=request_body, request_tier="priority"
+            )
+        result = bounded_request(
+            standard, priority_fallback=priority,
+            record_request_tier=enabled or capacity_mode == "shared",
+            standard_request_tier="standard" if capacity_mode == "shared" else None,
+        )
+        if isinstance(result, tuple) and len(result) > 1 and isinstance(result[1], dict):
+            result[1].pop("served_tier", None)
+        return result
 
 
 def _retry_details(exc: Exception, *, status_code: int | None, provider_error_code: str | None) -> dict[str, object]:

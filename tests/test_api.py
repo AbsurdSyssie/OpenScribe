@@ -4963,6 +4963,7 @@ def test_gemini_adc_draft_uses_runtime_identity_without_vault_secret(
             "google_location": "europe-west2",
             "google_auth_method": "application_default",
             "capacity_mode": "shared",
+            "priority_on_capacity_429": True,
         },
     )
 
@@ -4971,6 +4972,7 @@ def test_gemini_adc_draft_uses_runtime_identity_without_vault_secret(
     assert body["config"]["auth_mode"] == "google_adc"
     assert body["config"]["has_secret"] is False
     assert body["config"]["google_project_id"] == "clinical-platform-prod"
+    assert body["config"]["priority_on_capacity_429"] is True
     assert "credential_json" not in str(body)
     config = db_session.get(TeamLlmConfig, UUID(body["config"]["id"]))
     assert config.provider_config_json == {
@@ -4978,6 +4980,7 @@ def test_gemini_adc_draft_uses_runtime_identity_without_vault_secret(
         "location": "europe-west2",
         "api_version": "v1",
         "capacity_mode": "shared",
+        "priority_on_capacity_429": True,
     }
     assert config.vault_secret_ref == ""
     assert writes == []
@@ -5143,6 +5146,18 @@ def test_llm_schema_provider_defaults_use_shared_preset_catalog(monkeypatch):
 
     assert inspected.base_url == "https://router.test/v1"
     assert upserted.base_url == "https://router.test/v1"
+
+
+def test_gemini_priority_fallback_cannot_be_combined_with_dedicated_capacity():
+    with pytest.raises(ValueError, match="not available with dedicated capacity"):
+        LlmInspectRequest(
+            provider_preset="gemini_enterprise",
+            google_project_id="clinical-platform-prod",
+            google_location="europe-west2",
+            google_auth_method="application_default",
+            capacity_mode="dedicated",
+            priority_on_capacity_429=True,
+        )
 
 
 def test_mistral_model_discovery_uses_chat_capability_metadata(monkeypatch):

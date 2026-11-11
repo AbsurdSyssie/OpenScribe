@@ -149,13 +149,21 @@ def _emit(event: TransportEvent) -> bool:
     return observer is None or observer(event)
 
 
-def bounded_request(call: Callable[[ExecutionBudget], object]) -> object:
+def bounded_request(
+    call: Callable[[ExecutionBudget], object],
+    *,
+    priority_fallback: Callable[[ExecutionBudget], object] | None = None,
+    record_request_tier: bool = False,
+    standard_request_tier: str | None = "standard",
+) -> object:
     """Retry only explicit, temporary rejection of the frozen request."""
     # Unsupported worker setup is not an HTTP request observation. The caller
     # may already have submitted its durable attempt; settlement stays there.
     require_supported_execution_context()
     budget = current_budget()
     waited = 0.0
+    priority_pending = False
+    priority_used = False
     with execution_policy(budget=budget, observer=_observer.get()):
         for ordinal in range(1, 5):
             budget.remaining()
@@ -164,7 +172,10 @@ def bounded_request(call: Callable[[ExecutionBudget], object]) -> object:
             if callable(active) and not active():
                 raise AppError(409, "llm_attempt_inactive", "The generation attempt is no longer active")
             from app.services.generation_trace import start_transport, end_transport
-            trace_id = start_transport(ordinal)
+            request_tier = "priority" if priority_pending else "standard"
+            priority_pending = False
+            observed_request_tier = request_tier if request_tier == "priority" else standard_request_tier
+            trace_id = start_transport(ordinal, request_tier=observed_request_tier if record_request_tier else None)
             started = time.monotonic()
             status: int | None = None
             wait = 0.0
@@ -174,14 +185,26 @@ def bounded_request(call: Callable[[ExecutionBudget], object]) -> object:
             try:
                 # Restore signals before database telemetry or settlement.
                 with wall_deadline(budget):
-                    result = call(budget)
+                    result = priority_fallback(budget) if request_tier == "priority" and priority_fallback else call(budget)
             except AppError as exc:
                 error = exc
                 details = exc.details or {}
                 raw_status = details.get("provider_http_status")
                 status = raw_status if type(raw_status) is int and 100 <= raw_status <= 599 else None
                 code = "timeout" if exc.code == "llm_provider_timeout" else "connection_error" if exc.code == "llm_provider_unreachable" else "rate_limited" if status == 429 else "provider_error"
-                if status == 429 and details.get("temporary_capacity") is True and ordinal < 4:
+                if (status == 429 and details.get("temporary_capacity") is True and ordinal < 4
+                        and request_tier == "standard" and priority_fallback is not None and not priority_used):
+                    wait = random.uniform(1, 2)
+                    retry_after = details.get("retry_after_seconds")
+                    if isinstance(retry_after, (int, float)) and not isinstance(retry_after, bool) and math.isfinite(retry_after) and retry_after >= 0:
+                        wait = max(wait, float(retry_after))
+                    priority_pending = True
+                    priority_used = True
+                    remaining = max(0.0, budget.deadline - time.monotonic())
+                    if waited + wait > 30 or wait >= remaining:
+                        wait = 0.0
+                        priority_pending = False
+                elif status == 429 and details.get("temporary_capacity") is True and ordinal < 4 and request_tier == "standard":
                     wait = random.uniform(2 ** (ordinal - 1), 2 ** ordinal)
                     retry_after = details.get("retry_after_seconds")
                     if isinstance(retry_after, (int, float)) and not isinstance(retry_after, bool) and math.isfinite(retry_after) and retry_after >= 0:
@@ -206,7 +229,10 @@ def bounded_request(call: Callable[[ExecutionBudget], object]) -> object:
             except BaseException:
                 end_transport(trace_id, outcome="provider_error")
                 raise
-            end_transport(trace_id, outcome=code, http_status=status, retry_wait_ms=round(wait * 1000), error_code=error.code if error else None)
+            served_tier = _served_tier_from_result(result) if error is None else None
+            end_transport(trace_id, outcome=code, http_status=status, retry_wait_ms=round(wait * 1000), error_code=error.code if error else None,
+                          request_tier=observed_request_tier if record_request_tier else None,
+                          served_tier=served_tier if record_request_tier else None)
             if error is not None and error.details is not None:
                 details = {
                     key: value
@@ -217,9 +243,12 @@ def bounded_request(call: Callable[[ExecutionBudget], object]) -> object:
                 # backup decision. Raw retry controls are transient transport
                 # details and must not escape this bounded request boundary.
                 error.details = details
-            active = _emit({"occurred_at": datetime.now(timezone.utc).isoformat(), "request_ordinal": ordinal,
+            event = {"occurred_at": datetime.now(timezone.utc).isoformat(), "request_ordinal": ordinal,
                    "duration_ms": min(150000, max(0, round((time.monotonic() - started) * 1000))),
-                   "code": code, "http_status": status, "retry_wait_ms": round(wait * 1000)})
+                   "code": code, "http_status": status, "retry_wait_ms": round(wait * 1000)}
+            if record_request_tier:
+                event.update({"request_tier": observed_request_tier, "served_tier": served_tier})
+            active = _emit(event)
             if not active:
                 if error is not None:
                     raise error
@@ -228,6 +257,8 @@ def bounded_request(call: Callable[[ExecutionBudget], object]) -> object:
                 return result
             if wait <= 0:
                 raise error
+            if request_tier == "priority":
+                raise error
             # Telemetry commits before sleeping. Check remaining again in case
             # persistence was slow; a timeout never triggers another HTTP call.
             if wait >= budget.remaining():
@@ -235,6 +266,13 @@ def bounded_request(call: Callable[[ExecutionBudget], object]) -> object:
             time.sleep(wait)
             waited += wait
     raise AssertionError("bounded provider loop exhausted")
+
+
+def _served_tier_from_result(result: object) -> str | None:
+    if isinstance(result, tuple) and len(result) > 1 and isinstance(result[1], dict):
+        tier = result[1].get("served_tier")
+        return tier if tier in {"standard", "priority"} else None
+    return None
 
 
 def retry_after_seconds(value: object) -> float | None:

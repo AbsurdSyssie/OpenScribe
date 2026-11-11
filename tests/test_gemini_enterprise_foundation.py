@@ -64,6 +64,7 @@ def test_gemini_input_paths_derive_typed_non_secret_config(schema, extra):
         "location": LOCATION,
         "api_version": "v1",
         "capacity_mode": "dedicated",
+        "priority_on_capacity_429": False,
     }
     if hasattr(payload, "auth_mode"):
         assert payload.auth_mode == LlmAuthMode.google_adc

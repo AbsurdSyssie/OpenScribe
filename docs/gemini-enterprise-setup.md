@@ -203,6 +203,23 @@ An HTTP 400 without a structured model- or location-unavailable reason is classi
 
 For `gemini-3.8-flash`, Google lists the `eu` multi-region endpoint for Standard PayGo and Provisioned Throughput. EU support does not guarantee available capacity: the EU pool is separate from Google's global pool. Standard PayGo uses shared capacity, and a 429 can indicate temporary shared-pool contention rather than a fixed project quota. With capacity mode `auto`, OpenScribe omits the explicit shared/dedicated request header; use Google's `PublisherModel` monitoring `request_type` and `shared_request_type` metrics to see how requests were actually served. See Google's [Standard PayGo](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/standard-paygo), [Gemini 3.8 Flash](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-8-flash), and [Cloud Monitoring metric catalog](https://docs.cloud.google.com/monitoring/api/metrics_gcp_a_b).
 
+System administrators can enable **Retry Gemini capacity 429s with Priority
+PayGo** in a team's Gemini provider settings. This policy is off by default.
+For a temporary capacity 429, OpenScribe may make one bounded retry with the
+Priority service tier before existing backup handling. It can cost more, is
+snapshotted with queued work, and does not apply in dedicated capacity mode.
+Each new generation starts with the configured usual tier. The Usage page's
+Recent failures and retries panel reports the Priority attempt result and
+served tier when Google returns that metadata; a missing served tier is shown
+as unknown. A Priority request can still fail or be served at another tier, so
+this setting does not guarantee capacity or remove the need to validate EU
+production reliability.
+
+Apply migration `02b3c4d5e6f7` before starting updated workers. It extends the
+strict transport-event constraint for optional tier metadata and accepts older
+events unchanged. The policy remains off until a system administrator enables
+it for the team's Gemini configuration.
+
 To investigate a fixed quota, query `serviceruntime.googleapis.com/quota/exceeded` for the `consumer_quota` resource and `aiplatform.googleapis.com` service, then inspect its `quota_metric`, `limit_name`, and location labels around the event time. A positive point is evidence of a fixed quota limit being exceeded. No returned series does not rule out shared-capacity contention or establish that the account has no quota constraints; Google notes that quota metrics are not supported by every service. See [Chart and monitor quota metrics](https://docs.cloud.google.com/monitoring/alerts/using-quota-metrics). Use aggregated status, capacity-class, and latency metrics only; do not log or inspect prompts, generated responses, or raw provider error bodies.
 
 ### Gemini generation returns HTTP 504

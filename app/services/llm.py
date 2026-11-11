@@ -98,6 +98,7 @@ def _gemini_provider_config(payload) -> dict[str, object]:
         "location": str(config.get("location") or payload.google_location),
         "api_version": "v1",
         "capacity_mode": str(config.get("capacity_mode") or payload.capacity_mode or "auto"),
+        "priority_on_capacity_429": config.get("priority_on_capacity_429") is True,
     }
 
 
@@ -701,6 +702,7 @@ def inspect_llm_contract(
         google_location=getattr(payload, "google_location", None) if adapter_kind is LlmAdapterKind.gemini_enterprise else None,
         google_auth_method=getattr(payload, "google_auth_method", None) if adapter_kind is LlmAdapterKind.gemini_enterprise else None,
         capacity_mode=getattr(payload, "capacity_mode", None) if adapter_kind is LlmAdapterKind.gemini_enterprise else None,
+        priority_on_capacity_429=getattr(payload, "priority_on_capacity_429", False) is True if adapter_kind is LlmAdapterKind.gemini_enterprise else False,
     )
 
 
@@ -1052,6 +1054,7 @@ def create_llm_config_draft(db: Session, actor: User, payload: LlmConfigDraftCre
             google_auth_method=payload.google_auth_method,
             google_service_account_json=google_credential_json,
             capacity_mode=payload.capacity_mode,
+            priority_on_capacity_429=payload.priority_on_capacity_429,
         ),
     )
     label = raw_label or (target.label if target is not None else default_llm_config_label(provider_display_name=inspection.provider_display_name, team_name=team.name))

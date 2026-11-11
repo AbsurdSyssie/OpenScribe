@@ -1,8 +1,9 @@
 """Safe bounded provider transport metadata schema."""
 EVENT_CODES = frozenset({"success", "rate_limited", "timeout", "connection_error", "provider_error"})
-EVENT_KEYS = frozenset({"occurred_at", "request_ordinal", "duration_ms", "code", "http_status", "retry_wait_ms"})
-# JSONPath excludes missing keys, extra keys, nested values and nonintegral
-# numbers. Keep the same expression in migration and canonical metadata.
+EVENT_KEYS = frozenset({"occurred_at", "request_ordinal", "duration_ms", "code", "http_status", "retry_wait_ms", "request_tier", "served_tier"})
+LEGACY_EVENT_KEYS = EVENT_KEYS - {"request_tier", "served_tier"}
+# Tier keys remain optional for existing observations. JSONPath excludes
+# missing required keys, extra keys, nested values and nonintegral numbers.
 TRANSPORT_EVENTS_CONSTRAINT = """jsonb_typeof(transport_events_json) = 'array'
 AND jsonb_array_length(transport_events_json) <= 4
 AND NOT jsonb_path_exists(transport_events_json, '$[*] ? (
@@ -15,9 +16,12 @@ AND NOT jsonb_path_exists(transport_events_json, '$[*] ? (
  @.retry_wait_ms.type() != "number" || @.retry_wait_ms < 0 || @.retry_wait_ms > 30000 || @.retry_wait_ms != @.retry_wait_ms.floor() ||
  (@.http_status.type() != "null" && (@.http_status.type() != "number" || @.http_status < 100 || @.http_status > 599 || @.http_status != @.http_status.floor())) ||
  @.code.type() != "string" ||
- (@.code != "success" && @.code != "rate_limited" && @.code != "timeout" && @.code != "connection_error" && @.code != "provider_error")
+ (@.code != "success" && @.code != "rate_limited" && @.code != "timeout" && @.code != "connection_error" && @.code != "provider_error") ||
+ (exists(@.request_tier) && @.request_tier.type() != "null" && (@.request_tier.type() != "string" || (@.request_tier != "standard" && @.request_tier != "priority"))) ||
+ (exists(@.served_tier) && @.served_tier.type() != "null" && (@.served_tier.type() != "string" || (@.served_tier != "standard" && @.served_tier != "priority")))
 )')
 AND NOT jsonb_path_exists(transport_events_json, '$[*].keyvalue() ? (
  @.key != "occurred_at" && @.key != "request_ordinal" && @.key != "duration_ms" &&
- @.key != "code" && @.key != "http_status" && @.key != "retry_wait_ms"
+ @.key != "code" && @.key != "http_status" && @.key != "retry_wait_ms" &&
+ @.key != "request_tier" && @.key != "served_tier"
 )')"""

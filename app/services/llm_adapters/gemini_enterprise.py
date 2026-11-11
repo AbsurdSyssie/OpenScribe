@@ -34,12 +34,26 @@ _CAPACITY_HEADERS = {
     "shared": {"X-Vertex-AI-LLM-Request-Type": "shared"},
     "dedicated": {"X-Vertex-AI-LLM-Request-Type": "dedicated"},
 }
+_PRIORITY_HEADERS = {
+    "X-Vertex-AI-LLM-Request-Type": "shared",
+    "X-Vertex-AI-LLM-Shared-Request-Type": "priority",
+}
 
 
 def gemini_output_token_cap(model: str, nominal_cap: int) -> int:
     """Return fixed provider ceiling; saved length metadata is currently advisory."""
     del model, nominal_cap
     return _GEMINI_MAX_OUTPUT_TOKENS
+
+
+def _served_gemini_tier(traffic_type: object) -> str | None:
+    """Map only known usage-metadata traffic tiers to safe UI values."""
+    normalized = str(getattr(traffic_type, "value", traffic_type) or "").strip().lower()
+    if normalized in {"on_demand_priority", "priority"}:
+        return "priority"
+    if normalized in {"on_demand", "standard", "shared"}:
+        return "standard"
+    return None
 
 
 def service_account_credentials_from_info(credential_info: Mapping[str, object]) -> Credentials:
@@ -64,6 +78,7 @@ def build_gemini_client(
     location: str,
     credentials: Credentials | None = None,
     capacity_mode: str = "auto",
+    request_tier: str = "standard",
     api_version: str = "v1",
 ) -> genai.Client:
     """Build Gemini Enterprise client using explicit credentials or ADC."""
@@ -71,7 +86,14 @@ def build_gemini_client(
         raise ValueError("Unsupported Gemini capacity mode")
     if api_version not in {"v1", "v1beta1"}:
         raise ValueError("Unsupported Gemini API version")
-    headers = _CAPACITY_HEADERS[capacity_mode]
+    if request_tier not in {"standard", "priority"}:
+        raise ValueError("Unsupported Gemini request tier")
+    if request_tier == "priority":
+        if capacity_mode == "dedicated":
+            raise ValueError("Priority PayGo cannot be combined with dedicated capacity")
+        headers = _PRIORITY_HEADERS
+    else:
+        headers = _CAPACITY_HEADERS[capacity_mode]
     http_options = types.HttpOptions(api_version=api_version, headers=headers or None,
         timeout=max(1, round(current_budget().remaining() * 1000)),
         retry_options=types.HttpRetryOptions(attempts=1),
@@ -180,6 +202,7 @@ def generate_gemini_text(
     credentials: Credentials | None,
     request: LlmGenerationRequest,
     capacity_mode: str = "auto",
+    request_tier: str = "standard",
 ) -> LlmGenerationResult:
     client = None
     started = time.monotonic()
@@ -189,6 +212,7 @@ def generate_gemini_text(
             location=location,
             credentials=credentials,
             capacity_mode=capacity_mode,
+            request_tier=request_tier,
         )
         config = types.GenerateContentConfig(
             system_instruction=request.system_message,
@@ -240,6 +264,8 @@ def generate_gemini_text(
                 "Gemini returned an invalid generation response.",
             )
         usage = getattr(response, "usage_metadata", None)
+        traffic_type = getattr(usage, "traffic_type", None)
+        served_tier = _served_gemini_tier(traffic_type)
         return LlmGenerationResult(
             text=text,
             input_tokens=_integer_attribute(usage, "prompt_token_count"),
@@ -248,6 +274,7 @@ def generate_gemini_text(
             duration_ms=max(0, round((time.monotonic() - started) * 1000)),
             provider_duration_ms=None,
             finish_reason=finish_reason,
+            served_tier=served_tier,
         )
     except AppError:
         raise

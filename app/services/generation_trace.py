@@ -166,13 +166,20 @@ def attempt_context(db: Session, attempt_id: UUID):
         _context.reset(token)
 
 
-def begin_request(request: dict, credential: object | None, ordinal: int) -> UUID | None:
+def begin_request(request: dict, credential: object | None, ordinal: int, request_tier: str | None = None) -> UUID | None:
     context = _context.get()
     if context is None:
         return None
     try:
         bind, attempt_id, cache = context
-        serialized = json.dumps(request, ensure_ascii=False, separators=(",", ":"))
+        trace_request = dict(request)
+        if request_tier == "priority":
+            # Preserve the exact escalation header set without any credentials.
+            trace_request["_transport_headers"] = {
+                "X-Vertex-AI-LLM-Request-Type": "shared",
+                "X-Vertex-AI-LLM-Shared-Request-Type": "priority",
+            }
+        serialized = json.dumps(trace_request, ensure_ascii=False, separators=(",", ":"))
         with Session(bind=bind, join_transaction_mode="create_savepoint") as db:
             db.info[DEK_CACHE_SESSION_KEY] = cache.copy()
             previous_timeouts = _trace_timeouts(db)
@@ -277,12 +284,12 @@ def request_context(request: dict, credential: object | None):
         _request.reset(token)
 
 
-def start_transport(ordinal):
+def start_transport(ordinal, *, request_tier: str | None = None):
     state = _request.get()
     if state is None:
         return None
     state["raw"] = None
-    return begin_request(state["request"], state["credential"], ordinal)
+    return begin_request(state["request"], state["credential"], ordinal, request_tier=request_tier)
 
 
 def capture_active() -> bool:
@@ -295,7 +302,8 @@ def raw_model_text(text: str) -> None:
         state["raw"] = text
 
 
-def end_transport(event_id, *, outcome=None, http_status=None, retry_wait_ms=0, error_code=None):
+def end_transport(event_id, *, outcome=None, http_status=None, retry_wait_ms=0, error_code=None, request_tier=None, served_tier=None):
+    del request_tier, served_tier  # Persisted in the content-free attempt observation.
     state = _request.get()
     if state is None:
         return

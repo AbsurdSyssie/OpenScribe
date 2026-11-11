@@ -5,7 +5,7 @@ from typing import Literal
 from uuid import UUID
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, Field, StrictBool, ValidationInfo, field_validator, model_validator
 
 from app.llm_provider_defaults import normalize_bedrock_region
 from app.models import LlmAdapterKind, LlmAuthMode, LlmConfigSetupStatus, LlmProviderPreset
@@ -21,6 +21,7 @@ class GeminiEnterpriseProviderConfig(BaseModel):
     location: str = Field(min_length=1, max_length=63)
     api_version: Literal["v1"] = "v1"
     capacity_mode: GeminiCapacityMode = "auto"
+    priority_on_capacity_429: StrictBool = False
 
     model_config = {"extra": "forbid"}
 
@@ -88,7 +89,7 @@ def _normalize_gemini_input(data: dict[str, object]) -> dict[str, object]:
             raise
     raw_provider_config = normalized.get("provider_config_json") or {}
     if isinstance(raw_provider_config, dict):
-        unexpected_keys = set(raw_provider_config) - {"project_id", "location", "api_version", "capacity_mode"}
+        unexpected_keys = set(raw_provider_config) - {"project_id", "location", "api_version", "capacity_mode", "priority_on_capacity_429"}
         if unexpected_keys:
             raise ValueError("Gemini Enterprise provider configuration contains unsupported fields")
         if raw_provider_config.get("api_version", "v1") != "v1":
@@ -96,6 +97,7 @@ def _normalize_gemini_input(data: dict[str, object]) -> dict[str, object]:
         normalized.setdefault("google_project_id", raw_provider_config.get("project_id"))
         normalized.setdefault("google_location", raw_provider_config.get("location"))
         normalized.setdefault("capacity_mode", raw_provider_config.get("capacity_mode", "auto"))
+        normalized.setdefault("priority_on_capacity_429", raw_provider_config.get("priority_on_capacity_429", False))
     location = normalized.get("google_location")
     if isinstance(location, str) and location.strip():
         normalized["base_url"] = gemini_enterprise_base_url(location.strip().lower())
@@ -120,6 +122,7 @@ def _validate_gemini_input(model: BaseModel, *, credential_required: bool) -> Ba
             model.google_service_account_json,
             provider_config,
             model.capacity_mode != "auto",
+            model.priority_on_capacity_429,
         )
     )
     if not is_gemini:
@@ -137,8 +140,11 @@ def _validate_gemini_input(model: BaseModel, *, credential_required: bool) -> Ba
             "location": model.google_location,
             "api_version": "v1",
             "capacity_mode": model.capacity_mode,
+            "priority_on_capacity_429": model.priority_on_capacity_429,
         }
     )
+    if model.priority_on_capacity_429 and config.capacity_mode == "dedicated":
+        raise ValueError("Priority PayGo escalation is not available with dedicated capacity")
     if model.google_auth_method == "application_default":
         if model.google_service_account_json is not None:
             raise ValueError("Application Default Credentials cannot include credential JSON")
@@ -151,6 +157,7 @@ def _validate_gemini_input(model: BaseModel, *, credential_required: bool) -> Ba
     model.google_project_id = config.project_id
     model.google_location = config.location
     model.capacity_mode = config.capacity_mode
+    model.priority_on_capacity_429 = config.priority_on_capacity_429
     model.provider_config_json = config.model_dump()
     model.base_url = gemini_enterprise_base_url(config.location)
     if hasattr(model, "auth_mode"):
@@ -202,6 +209,7 @@ class LlmConfigUpsert(BaseModel):
     google_auth_method: GoogleAuthMethod | None = None
     google_service_account_json: dict[str, object] | None = Field(default=None, repr=False)
     capacity_mode: GeminiCapacityMode = "auto"
+    priority_on_capacity_429: StrictBool = False
     model_name: str | None = Field(default=None, max_length=255)
     is_active: bool = True
 
@@ -270,6 +278,7 @@ class LlmConfigDetail(BaseModel):
     google_location: str | None = None
     google_auth_method: str | None = None
     capacity_mode: str | None = None
+    priority_on_capacity_429: bool = False
     created_by_user_id: UUID
     updated_by_user_id: UUID
     created_at: datetime
@@ -294,6 +303,7 @@ class LlmConfigDraftCreate(BaseModel):
     google_auth_method: GoogleAuthMethod | None = None
     google_service_account_json: dict[str, object] | None = Field(default=None, repr=False)
     capacity_mode: GeminiCapacityMode = "auto"
+    priority_on_capacity_429: StrictBool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -551,6 +561,7 @@ class LlmInspectRequest(BaseModel):
     google_auth_method: GoogleAuthMethod | None = None
     google_service_account_json: dict[str, object] | None = Field(default=None, repr=False)
     capacity_mode: GeminiCapacityMode = "auto"
+    priority_on_capacity_429: StrictBool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -608,6 +619,7 @@ class LlmInspectRequest(BaseModel):
                 ),
                 "google_service_account_json": google_service_account_json,
                 "capacity_mode": provider_config.get("capacity_mode", "auto"),
+                "priority_on_capacity_429": provider_config.get("priority_on_capacity_429", False),
             },
             context={"allow_disabled_provider": True},
         )
@@ -649,5 +661,6 @@ class LlmConfigInspectResult(BaseModel):
     google_location: str | None = None
     google_auth_method: str | None = None
     capacity_mode: str | None = None
+    priority_on_capacity_429: bool = False
 
     model_config = {"protected_namespaces": ()}

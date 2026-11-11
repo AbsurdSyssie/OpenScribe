@@ -109,6 +109,19 @@ def test_build_client_uses_enterprise_v1_and_explicit_settings(monkeypatch):
     assert captured["http_options"].headers == {"X-Vertex-AI-LLM-Request-Type": "dedicated"}
 
 
+def test_priority_client_uses_shared_priority_headers_and_tiers_are_allowlisted(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(adapter.genai, "Client", lambda **kwargs: captured.update(kwargs) or object())
+    adapter.build_gemini_client(project_id="clinical-prod", location="eu", capacity_mode="auto", request_tier="priority")
+    assert captured["http_options"].headers == {
+        "X-Vertex-AI-LLM-Request-Type": "shared",
+        "X-Vertex-AI-LLM-Shared-Request-Type": "priority",
+    }
+    assert adapter._served_gemini_tier(types.TrafficType.ON_DEMAND_PRIORITY) == "priority"
+    assert adapter._served_gemini_tier(types.TrafficType.ON_DEMAND) == "standard"
+    assert adapter._served_gemini_tier("UNRECOGNIZED") is None
+
+
 def test_service_account_conversion_uses_cloud_platform_scope(monkeypatch):
     captured = {}
     sentinel = object()

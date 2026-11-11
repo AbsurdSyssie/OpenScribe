@@ -70,6 +70,14 @@ Test engines use `NullPool` so connections do not retain stale cached plans acro
 
 The focused transport migration check in [test_llm_execution.py](../tests/test_llm_execution.py) runs the additive revision's upgrade and downgrade against PostgreSQL temporary tables that shadow only that fixture connection's table names. It checks the default empty event array and removal of the added column without altering the public schema. A separate test keeps the frozen migration constraint equal to canonical metadata. PostgreSQL persistence tests reject extra event keys, invalid code/status types and fractional durations; the constraint permits at most four allowlisted observations.
 
+The Priority PayGo transport-constraint extension must preserve legacy events
+while allowing only optional, controlled requested/served tier values. Exercise
+upgrade and downgrade against PostgreSQL, including rejection of arbitrary
+keys and invalid tier values. A downgrade must preserve the original constraint
+and remove tier metadata without discarding the underlying request observations.
+Priority escalation stays inside the existing provider attempt and reservation;
+only the established backup path creates its separate linked quota attempt.
+
 ## Redis isolation
 
 Sequential database-backed tests clear the configured test limiter store before and after each test.

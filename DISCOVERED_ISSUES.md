@@ -808,3 +808,14 @@ Reconciled on 19 October 2026 against `97da191926db1da74fdf741e01f4f8490d60f6c8`
 - Likely cause: the shared timer is cleared by each title input, while each callback promotes only its captured problem. This cause is inferred from the handler structure; the observed state was the earlier titled row remaining temporary.
 - Not fixed now: this is an incidental autosave issue outside the bounded layout review; broadening the implementation before the user validates the main flow could change autosave behavior.
 - Resolution: all titled temporary rows are promoted together; completed edits of existing rows still save. The focused controller regression passes standalone, including rapid multi-row entry without closing Review. The earlier scope decision above describes the initial layout-review stage.
+
+### SETTINGS-CONTROLS-ASSET-VERSION-EXPECTATION-DRIFT — 2026-11-11
+
+- Status: Open; pre-existing test/asset-version mismatch, confirmed on `master` and `feat/improve-template-selector`.
+- Discovery commit: `adc380a52c8935f241150b8edd963dc7f1e72364`.
+- Location: `tests/test_template_suggestions_js.py::test_template_suggestion_preference_precedes_advanced_settings_and_stays_in_its_row`, exact assertions at lines 60–61.
+- Exact excerpt: `assert 'settings/controls.js?v=20260911-split-preferences' in settings_page` and the equivalent assertion for `workspace_page`.
+- Observation: both maintained templates currently reference `/static/js/settings/controls.js?v=20261022-diarization-preferences`; the test expects the older cache-busting token. The test and both templates are unchanged between `master` and this branch.
+- Impact: the focused template-suggestion test fails on an asset-version assertion despite the settings script being included; this does not indicate a template-picker regression.
+- Not fixed now: the mismatch predates this branch and is unrelated to its selector changes.
+- Follow-up: update the stale test expectation (and check `tests/test_shared_control_css_contract.py` for the same token) to match the maintained asset references, or restore the older token only if its cache invalidation is intentionally required.

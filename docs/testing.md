@@ -204,8 +204,13 @@ APP_ENV=test COOKIE_SECURE_MODE=auto HSTS_SOURCE=app .venv/bin/pytest -q tests/t
 Cover the disabled default, saved opt-in and queued snapshot compatibility,
 exact shared/Priority headers, one escalation after temporary-capacity 429,
 hard-quota exclusion, deadline and active-attempt guards, and existing backup
-eligibility. Requested and served tier observations must stay allowlisted and
-must distinguish a failed Priority request from recovery by another provider.
+eligibility. Gemini's explicit upstream HTTP 504 gets at most one same-tier
+retry under the same attempt and deadline; local timeouts with no upstream
+status, exhausted budgets, and non-Gemini calls do not retry. Cover a 504 on
+Priority, one global 504 retry across Standard/Priority, and per-request
+transport telemetry. Requested and served tier observations must stay
+allowlisted and must distinguish a failed Priority request from recovery by
+another provider.
 Run the additive transport-constraint migration checks and the API authorization
 audit sequentially with these tests, following [dbtesting.md](dbtesting.md).
 The rendered settings and tier table use the isolated browser fixture:

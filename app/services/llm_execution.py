@@ -155,15 +155,17 @@ def bounded_request(
     priority_fallback: Callable[[ExecutionBudget], object] | None = None,
     record_request_tier: bool = False,
     standard_request_tier: str | None = "standard",
+    retry_upstream_504: bool = False,
 ) -> object:
-    """Retry only explicit, temporary rejection of the frozen request."""
+    """Apply bounded retry rules to the same frozen provider request."""
     # Unsupported worker setup is not an HTTP request observation. The caller
     # may already have submitted its durable attempt; settlement stays there.
     require_supported_execution_context()
     budget = current_budget()
     waited = 0.0
-    priority_pending = False
+    pending_tier: str | None = None
     priority_used = False
+    retried_upstream_504 = False
     with execution_policy(budget=budget, observer=_observer.get()):
         for ordinal in range(1, 5):
             budget.remaining()
@@ -172,8 +174,8 @@ def bounded_request(
             if callable(active) and not active():
                 raise AppError(409, "llm_attempt_inactive", "The generation attempt is no longer active")
             from app.services.generation_trace import start_transport, end_transport
-            request_tier = "priority" if priority_pending else "standard"
-            priority_pending = False
+            request_tier = pending_tier or "standard"
+            pending_tier = None
             observed_request_tier = request_tier if request_tier == "priority" else standard_request_tier
             trace_id = start_transport(ordinal, request_tier=observed_request_tier if record_request_tier else None)
             started = time.monotonic()
@@ -198,12 +200,13 @@ def bounded_request(
                     retry_after = details.get("retry_after_seconds")
                     if isinstance(retry_after, (int, float)) and not isinstance(retry_after, bool) and math.isfinite(retry_after) and retry_after >= 0:
                         wait = max(wait, float(retry_after))
-                    priority_pending = True
-                    priority_used = True
+                    next_tier = "priority"
                     remaining = max(0.0, budget.deadline - time.monotonic())
                     if waited + wait > 30 or wait >= remaining:
                         wait = 0.0
-                        priority_pending = False
+                    else:
+                        pending_tier = next_tier
+                        priority_used = True
                 elif status == 429 and details.get("temporary_capacity") is True and ordinal < 4 and request_tier == "standard":
                     wait = random.uniform(2 ** (ordinal - 1), 2 ** ordinal)
                     retry_after = details.get("retry_after_seconds")
@@ -212,6 +215,17 @@ def bounded_request(
                     remaining = max(0.0, budget.deadline - time.monotonic())
                     if waited + wait > 30 or wait >= remaining:
                         wait = 0.0
+                elif retry_upstream_504 and status == 504 and ordinal < 4 and not retried_upstream_504:
+                    # Retry an explicit upstream Gateway Timeout once on the
+                    # same Gemini tier. A local deadline/timeout has no HTTP
+                    # status and never enters this path.
+                    wait = random.uniform(1, 2)
+                    remaining = max(0.0, budget.deadline - time.monotonic())
+                    if waited + wait > 30 or wait >= remaining:
+                        wait = 0.0
+                    else:
+                        pending_tier = request_tier
+                        retried_upstream_504 = True
                 # The exception came from the bounded provider call itself.
                 # Preserve only a categorical decision after local retry
                 # controls are stripped below.
@@ -256,8 +270,6 @@ def bounded_request(
             if error is None:
                 return result
             if wait <= 0:
-                raise error
-            if request_tier == "priority":
                 raise error
             # Telemetry commits before sleeping. Check remaining again in case
             # persistence was slow; a timeout never triggers another HTTP call.

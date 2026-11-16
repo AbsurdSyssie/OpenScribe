@@ -147,6 +147,83 @@ def test_auto_mode_trace_records_priority_without_inventing_standard_header(monk
     assert request_body == frozen_copy
 
 
+def test_priority_upstream_504_retries_same_tier_and_records_each_transport(monkeypatch):
+    _patch_no_wait(monkeypatch)
+    from app.services import generation_trace
+
+    requests, transport_starts, transport_ends, events = [], [], [], []
+    request_body = _request_snapshot()
+    frozen_copy = copy.deepcopy(request_body)
+    monkeypatch.setattr(
+        generation_trace, "start_transport",
+        lambda ordinal, request_tier=None: transport_starts.append((ordinal, request_tier)) or ordinal,
+    )
+    monkeypatch.setattr(
+        generation_trace, "end_transport",
+        lambda event_id, **kwargs: transport_ends.append((event_id, kwargs)),
+    )
+
+    def fake_generate(**kwargs):
+        requests.append(kwargs)
+        if kwargs["request_tier"] == "standard":
+            raise AppError(429, "llm_provider_rate_limited", "synthetic capacity rejection", {
+                "provider_http_status": 429, "temporary_capacity": True,
+            })
+        if len([item for item in requests if item["request_tier"] == "priority"]) == 1:
+            raise AppError(504, "llm_provider_timeout", "synthetic upstream timeout", {
+                "provider_http_status": 504,
+            })
+        return _result("priority")
+
+    monkeypatch.setattr(runtime, "generate_gemini_text", fake_generate)
+    with llm_execution.execution_policy(
+        budget=llm_execution.ExecutionBudget.seconds(30),
+        observer=lambda event: events.append(event) or True,
+    ):
+        result = runtime.invoke_gemini(
+            provider_config={
+                "project_id": "synthetic-project", "location": "eu",
+                "capacity_mode": "shared", "priority_on_capacity_429": True,
+            },
+            credential=None,
+            request_body=request_body,
+        )
+
+    assert result[0] == "synthetic response"
+    assert [item["request_tier"] for item in requests] == ["standard", "priority", "priority"]
+    assert all(item["request"] == requests[0]["request"] for item in requests)
+    assert all(item["project_id"] == "synthetic-project" and item["location"] == "eu" for item in requests)
+    assert all(item["credentials"] is None for item in requests)
+    assert transport_starts == [(1, "standard"), (2, "priority"), (3, "priority")]
+    assert [(event["code"], event["http_status"], event["request_tier"]) for event in events] == [
+        ("rate_limited", 429, "standard"), ("timeout", 504, "priority"), ("success", None, "priority"),
+    ]
+    assert [(ordinal, details["http_status"], details["request_tier"], details["served_tier"])
+            for ordinal, details in transport_ends] == [
+        (1, 429, "standard", None), (2, 504, "priority", None), (3, None, "priority", "priority"),
+    ]
+    assert request_body == frozen_copy
+
+
+def test_non_gemini_bounded_request_does_not_retry_upstream_504(monkeypatch):
+    calls, events = [], []
+
+    def call(_budget):
+        calls.append(True)
+        raise AppError(504, "llm_provider_timeout", "synthetic upstream timeout", {
+            "provider_http_status": 504,
+        })
+
+    with llm_execution.execution_policy(
+        budget=llm_execution.ExecutionBudget.seconds(30),
+        observer=lambda event: events.append(event) or True,
+    ), pytest.raises(AppError):
+        # Other provider adapters omit Gemini's explicit retry opt-in.
+        llm_execution.bounded_request(call)
+    assert len(calls) == len(events) == 1
+    assert events[0]["http_status"] == 504
+
+
 def test_invoke_gemini_opt_out_keeps_four_standard_requests(monkeypatch):
     _patch_no_wait(monkeypatch)
     requests = []

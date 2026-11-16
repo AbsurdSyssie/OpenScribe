@@ -112,6 +112,118 @@ def test_no_replay_for_hard_quota_ambiguous_or_excess_retry_after(monkeypatch, s
     assert events[0]["retry_wait_ms"] == 0
 
 
+def test_explicit_upstream_504_retries_once_with_jitter(monkeypatch):
+    calls, events, sleeps = [], [], []
+    monkeypatch.setattr(execution.random, "uniform", lambda lower, upper: (lower + upper) / 2)
+    monkeypatch.setattr(execution.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    def call(_budget):
+        calls.append(True)
+        if len(calls) == 1:
+            raise AppError(504, "llm_provider_timeout", "timeout", {"provider_http_status": 504})
+        return "synthetic"
+
+    with execution.execution_policy(
+        budget=execution.ExecutionBudget.seconds(30),
+        observer=lambda event: events.append(event) or True,
+    ):
+        assert execution.bounded_request(call, retry_upstream_504=True) == "synthetic"
+    assert len(calls) == 2
+    assert sleeps == [1.5]
+    assert [(event["code"], event["http_status"]) for event in events] == [("timeout", 504), ("success", None)]
+    assert events[0]["retry_wait_ms"] == 1500
+
+
+def test_explicit_upstream_504_retry_exhaustion_keeps_backup_class(monkeypatch):
+    calls, events = [], []
+    monkeypatch.setattr(execution.random, "uniform", lambda lower, _upper: lower)
+    monkeypatch.setattr(execution.time, "sleep", lambda _seconds: None)
+
+    def call(_budget):
+        calls.append(True)
+        raise AppError(504, "llm_provider_timeout", "timeout", {"provider_http_status": 504})
+
+    with execution.execution_policy(
+        budget=execution.ExecutionBudget.seconds(30),
+        observer=lambda event: events.append(event) or True,
+    ), pytest.raises(AppError) as caught:
+        execution.bounded_request(call, retry_upstream_504=True)
+    assert len(calls) == len(events) == 2
+    assert caught.value.details["backup_failure_class"] == "provider_failure"
+    assert caught.value.details["provider_http_status"] == 504
+
+
+def test_only_one_upstream_504_retry_is_allowed_across_tiers(monkeypatch):
+    calls, events = [], []
+    monkeypatch.setattr(execution.random, "uniform", lambda lower, _upper: lower)
+    monkeypatch.setattr(execution.time, "sleep", lambda _seconds: None)
+
+    def standard(_budget):
+        calls.append("standard")
+        if len(calls) == 1:
+            raise AppError(504, "llm_provider_timeout", "timeout", {"provider_http_status": 504})
+        raise AppError(429, "llm_provider_rate_limited", "capacity", {
+            "provider_http_status": 429, "temporary_capacity": True,
+        })
+
+    def priority(_budget):
+        calls.append("priority")
+        raise AppError(504, "llm_provider_timeout", "timeout", {"provider_http_status": 504})
+
+    with execution.execution_policy(
+        budget=execution.ExecutionBudget.seconds(30),
+        observer=lambda event: events.append(event) or True,
+    ), pytest.raises(AppError) as caught:
+        execution.bounded_request(
+            standard, priority_fallback=priority, retry_upstream_504=True,
+            record_request_tier=True,
+        )
+    assert calls == ["standard", "standard", "priority"]
+    assert [(event["http_status"], event["request_tier"]) for event in events] == [
+        (504, "standard"), (429, "standard"), (504, "priority"),
+    ]
+    assert caught.value.details["provider_http_status"] == 504
+
+
+def test_upstream_504_retry_is_skipped_when_budget_cannot_cover_wait(monkeypatch):
+    calls, events = [], []
+    monkeypatch.setattr(execution.random, "uniform", lambda _lower, upper: upper)
+    monkeypatch.setattr(execution.time, "sleep", lambda _seconds: pytest.fail("must not wait"))
+
+    def call(_budget):
+        calls.append(True)
+        raise AppError(504, "llm_provider_timeout", "timeout", {"provider_http_status": 504})
+
+    with execution.execution_policy(
+        budget=execution.ExecutionBudget.seconds(.5),
+        observer=lambda event: events.append(event) or True,
+    ), pytest.raises(AppError):
+        execution.bounded_request(call, retry_upstream_504=True)
+    assert len(calls) == len(events) == 1
+    assert events[0]["retry_wait_ms"] == 0
+
+
+@pytest.mark.parametrize("error", [
+    AppError(504, "llm_provider_timeout", "local timeout"),
+    AppError(504, "llm_provider_timeout", "transport timeout", {"provider_http_status": None}),
+])
+def test_local_timeout_without_upstream_504_is_never_retried(monkeypatch, error):
+    calls, events = [], []
+    monkeypatch.setattr(execution.time, "sleep", lambda _seconds: pytest.fail("must not wait"))
+
+    def call(_budget):
+        calls.append(True)
+        raise error
+
+    with execution.execution_policy(
+        budget=execution.ExecutionBudget.seconds(30),
+        observer=lambda event: events.append(event) or True,
+    ), pytest.raises(AppError):
+        execution.bounded_request(call, retry_upstream_504=True)
+    assert len(calls) == len(events) == 1
+    assert events[0]["http_status"] is None
+
+
 def test_wall_timeout_closes_call_and_restores_signal_before_observation():
     original = signal.getsignal(signal.SIGALRM)
     events = []

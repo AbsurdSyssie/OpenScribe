@@ -682,6 +682,7 @@ def invoke_gemini(*, provider_config: Mapping[str, object], credential: object |
             standard, priority_fallback=priority,
             record_request_tier=enabled or capacity_mode == "shared",
             standard_request_tier="standard" if capacity_mode == "shared" else None,
+            retry_upstream_504=True,
         )
         if isinstance(result, tuple) and len(result) > 1 and isinstance(result[1], dict):
             result[1].pop("served_tier", None)

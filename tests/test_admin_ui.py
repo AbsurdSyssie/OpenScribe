@@ -4190,7 +4190,7 @@ def test_admin_provider_wizards_render_safe_contextual_errors(client, make_team,
     assert 'field.classList.add("wizard-field-error")' in markup
     assert 'field.removeAttribute("aria-invalid")' in markup
     assert 'typeof safeError.details?.field === "string"' in markup
-    assert 'new Set(["label", "base_url", "openapi_path", "bedrock_region", "bearer_token", "model_name", "language", "provider_preset", "google_project_id", "google_location", "google_auth_method", "capacity_mode", "google_service_account_json"])' in markup
+    assert 'new Set(["label", "base_url", "openapi_path", "bedrock_region", "bearer_token", "model_name", "language", "provider_preset", "google_project_id", "google_location", "google_auth_method", "capacity_mode", "priority_on_capacity_429", "google_service_account_json"])' in markup
     assert 'if (typeof sourceDetails?.field === "string") details = { field: sourceDetails.field };' in markup
     assert "error.status = response.status" in markup
     assert "error.code = code" in markup
@@ -5398,7 +5398,7 @@ def test_transcribe_page_includes_mobile_layout_assets(client, make_team, make_u
 
     assert page.status_code == 200
     assert "/static/css/tokens.css?v=20260902-control-height" in page.text
-    assert "/static/css/transcribe.css?v=20261108-source-warning" in page.text
+    assert "/static/css/transcribe.css?v=20261112-trace-template-picker" in page.text
     assert "/static/css/transcribe-mobile.css" in page.text
     assert "/static/js/workspace/app.js" in page.text
     assert page.text.count("/static/js/transcribe/mobile.js?v=20260823-mobile-toast") == 1
@@ -7339,7 +7339,9 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "const isDiscardableEmptyWorkingNoteDraft = () => (" in app_js
     assert "return { kind: 'working_note_empty_draft_discarded' };" in app_js
     assert "Empty working-note draft ignored." in app_js
-    assert "const handleOutputTemplateChange = async () => {" in app_js
+    assert "const handleOutputTemplateChange = () => {" in app_js
+    assert "const wrappedOperation = pendingOperation.finally(() => {" in app_js
+    assert "if (templateChangeInFlight) {" in app_js
     assert "generateOutputTemplateSelect?.addEventListener('change', syncTemplatePickerUi);" not in app_js
     assert "generateOutputTemplateSelect.dispatchEvent(new Event('change', { bubbles: true }));\n        syncTemplatePickerUi();" not in app_js
     assert "structuredEditor.syncTemplateModeBadge?.();" in app_js
@@ -7396,10 +7398,11 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "onNoteGenerationQueued" not in actions_js
     assert "silent: true" not in app_js
     assert "silent = false" not in app_js
-    assert "generateOutputButton.disabled = generationBusy || splitBatchActive || multipleProblemsSavePending || !canGenerateNote;" in app_js
-    assert "generateOutputTemplateSelect.disabled = generationBusy || splitBatchActive || !canChooseTemplate;" in app_js
-    assert "templatePickerButton.disabled = generationBusy || splitBatchActive || !canChooseTemplate;" in app_js
-    assert "button.disabled = generationBusy || splitBatchActive || !canChooseTemplate;" in app_js
+    assert "generateOutputButton.disabled = generationBusy || splitBatchActive || multipleProblemsSavePending || !canGenerateNote || templatePickerSelectionInFlight;" in app_js
+    assert "generateOutputTemplateSelect.disabled = generationBusy || splitBatchActive || !canChooseTemplate || templatePickerSelectionInFlight;" in app_js
+    assert "templatePickerButton.disabled = generationBusy || splitBatchActive || !canChooseTemplate || templatePickerSelectionInFlight;" in app_js
+    assert "button.disabled = generationBusy || splitBatchActive || !canChooseTemplate || templatePickerActionInFlight || templatePickerSelectionInFlight;" in app_js
+    assert "button.disabled = generationBusy || splitBatchActive || !canGenerateTemplateFromPicker || templatePickerActionInFlight || templatePickerSelectionInFlight;" in app_js
     assert "runQuickActionSelect.disabled = generationBusy || !canChooseQuickAction;" in app_js
     assert "quickActionContextInput.disabled = !canUseFollowupRequest;" in app_js
     assert "quickActionContextRecordButton.disabled = !canUseFollowupRequest || voiceUnavailable;" in app_js
@@ -7411,7 +7414,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "runQuickActionTrigger.disabled = generationBusy ||" not in app_js
     assert "quickActionContextInput.disabled = generationBusy ||" not in app_js
     assert "generateFollowupTrigger.disabled = generationBusy || !canGenerateFollowup;" not in app_js
-    assert "if (noteGenerationBusy || !generateOutputTemplateSelect || !templateId) return;" in app_js
+    assert "if (noteGenerationBusy || templatePickerActionInFlight || templatePickerSelectionInFlight || !generateOutputTemplateSelect || !templateId) return;" in app_js
     assert "syncGenerationAvailability," in actions_js
     assert "const NOTE_GENERATION_CLICK_GUARD_MS" not in actions_js
     assert "noteGenerationGuarded" not in app_js
@@ -7843,7 +7846,7 @@ def test_user_transcribe_page_hides_emis_context_for_freeform_template(
     page = client.get(f"/transcribe?transcript_id={transcript.id}&tab=output")
 
     assert page.status_code == 200
-    assert "Free text note" in page.text
+    assert "Free text" in page.text
     assert 'data-generated-freeform-panel' in page.text
     assert 'data-freeform-note-input' in page.text
     assert 'data-freeform-note-empty-state' not in page.text

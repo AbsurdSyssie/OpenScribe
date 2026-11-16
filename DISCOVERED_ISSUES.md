@@ -840,6 +840,16 @@ Reconciled on 19 October 2026 against `97da191926db1da74fdf741e01f4f8490d60f6c8`
 - Not fixed now: this is an incidental autosave issue outside the bounded layout review; broadening the implementation before the user validates the main flow could change autosave behavior.
 - Resolution: all titled temporary rows are promoted together; completed edits of existing rows still save. The focused controller regression passes standalone, including rapid multi-row entry without closing Review. The earlier scope decision above describes the initial layout-review stage.
 
+### SETTINGS-CONTROLS-ASSET-VERSION-EXPECTATION-DRIFT — 2026-11-11
+
+- Status: Resolved by integrating master during the 2026-11-11 merge.
+- Discovery commit: `adc380a52c8935f241150b8edd963dc7f1e72364`.
+- Location: `tests/test_template_suggestions_js.py::test_template_suggestion_preference_precedes_advanced_settings_and_stays_in_its_row`, exact assertions at lines 60–61.
+- Exact excerpt: `assert 'settings/controls.js?v=20260911-split-preferences' in settings_page` and the equivalent assertion for `workspace_page`.
+- Observation: both maintained templates currently reference `/static/js/settings/controls.js?v=20261022-diarization-preferences`; the test expects the older cache-busting token. The test and both templates are unchanged between `master` and this branch.
+- Impact: the focused template-suggestion test fails on an asset-version assertion despite the settings script being included; this does not indicate a template-picker regression.
+- Resolution: master updates the stale cache-token assertions in `tests/test_template_suggestions_js.py` and `tests/test_shared_control_css_contract.py` to match the maintained template asset references. The issue was unrelated to this branch’s selector changes.
+
 ### ADMIN-DELETE-LLM-MODEL-POLICY-FK — 2026-11-08
 
 - Current status: Resolved in the Telehealth merge review; focused test passed on 8 November 2026. Reproduced on master baseline `bf63c2879dd8526db582a9598663db92df13642b`.

@@ -88,6 +88,7 @@ Other files whose names contain `roadmap`, `plan`, `brief`, `todo`, or `design` 
 
 ## Engineering review records
 
+- [Owner generation trace merge review — 12 November 2026](reviews/owner-generation-trace-merge-review-2026-11-12.md) records the branch revisions, delegated review scope, asset integration fixes, and pending verification before a final merge decision.
 - [Telehealth final merge review — 8–9 November 2026](reviews/telehealth-final-merge-review-2026-11-08.md) records the final branch comparison, recovery fixes, independent re-review and regression verification before the merge decision.
 - [Telehealth merge review — 7 November 2026](reviews/telehealth-merge-review-2026-11-07.md) records branch review findings, bounded remediation, verification, and the subsequent partial-salvage work following the maintainer's lifecycle decision.
 - [Discovered issues remediation and regression review — 19 October 2026](reviews/discovered-issues-remediation-2026-10-19.md) records issue dispositions, bounded fixes, regression verification, and remaining policy/deployment work.

@@ -1,7 +1,9 @@
 from datetime import timedelta
+import json
 from uuid import uuid4
 
 import pytest
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from app.errors import AppError
@@ -62,6 +64,24 @@ def test_capture_roundtrip_owner_authorization_and_clear(db_session, make_user, 
     with trace.attempt_context(db_session, attempt.id), trace.request_context(request, None):
         trace.end_transport(event_id, outcome="success")
     assert db_session.get(GenerationTraceEvent, event_id) is None
+
+
+@pytest.mark.parametrize("raw", ['{"x":1e9999}', '{"nested":[{"negative":-1e9999}]}'])
+def test_non_finite_json_preview_is_unavailable_but_raw_response_is_preserved(db_session, trace_scope, raw):
+    owner, root, attempt = trace_scope
+    with trace.attempt_context(db_session, attempt.id), trace.request_context({"messages": []}, None):
+        event_id = trace.start_transport(1)
+        trace.raw_model_text(raw)
+        trace.end_transport(event_id, outcome="success")
+
+    detail = trace.get_trace(db_session, owner, root.id, event_id)
+    assert detail["response"] == raw
+    assert detail["parsed_json_available"] is False
+    assert detail["parsed_json_preview"] is None
+    serialized = json.loads(JSONResponse(detail).body)
+    assert serialized["response"] == raw
+    assert serialized["parsed_json_available"] is False
+    assert serialized["parsed_json_preview"] is None
 
 
 def test_disabled_and_expiry_sweep(db_session, trace_scope):

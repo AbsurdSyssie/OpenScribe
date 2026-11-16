@@ -9,6 +9,7 @@ from contextvars import ContextVar
 from datetime import timedelta
 import json
 import logging
+import math
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete, func, select, text
@@ -132,11 +133,19 @@ def get_trace(db: Session, actor: User, transcript_id: UUID, event_id: UUID) -> 
     if result["response"] is not None:
         try:
             result["parsed_json_preview"] = json.loads(result["response"], object_pairs_hook=reject_duplicate_json_keys,
+                parse_float=_finite_json_float,
                 parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("invalid constant")))
             result["parsed_json_available"] = True
         except (ValueError, RecursionError):
             pass
     return result
+
+
+def _finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("non-finite JSON number")
+    return parsed
 
 
 def clear_traces(db: Session, actor: User, transcript_id: UUID) -> None:

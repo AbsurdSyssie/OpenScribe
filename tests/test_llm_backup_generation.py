@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import json
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -47,7 +48,10 @@ def test_backup_invalid_json_repaired_once_with_separate_claim(
     db_session.commit()
     document = queue_document_generation_from_template(db_session, owner, transcript_id=transcript.id, template_id=template.id)
     calls = []
-    malformed = '{"title":"Synthetic","content":'
+    note_text = "Synthetic first line.\nSecond line.\n\n- Synthetic item.\n- Another item."
+    # Exercise both valid escaped breaks and malformed literal breaks inside a string.
+    malformed_content = json.dumps({"problem": note_text} if structured else note_text)
+    malformed = '{"title":"Synthetic","content":' + malformed_content.replace("\\n", "\n", 1)
     backup_credential = object()
 
     def resolve(config):
@@ -70,10 +74,14 @@ def test_backup_invalid_json_repaired_once_with_separate_claim(
                 db_session.commit()
             return malformed, {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7}
         body = kwargs["request_body"]
-        serialized = str(body)
-        assert malformed in serialized
-        assert "Expected JSON schema" in serialized
-        assert "Synthetic private source marker" not in serialized
+        messages = body["messages"]
+        system_message, user_message = (message["content"] for message in messages)
+        assert user_message.split("\n\nMalformed output:\n", 1)[1] == malformed
+        assert "Expected JSON schema" in user_message
+        assert "Synthetic private source marker" not in user_message
+        assert "Preserve existing line breaks, blank lines, paragraph and list layout, and list markers" in system_message
+        assert "Encode line breaks inside JSON strings as \\n escapes" in system_message
+        assert "Do not reflow text, merge paragraphs, or invent formatting" in system_message
         attempts_now = list(db_session.scalars(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == document.id)))
         backup_now = next(a for a in attempts_now if a.backup_of_attempt_id is not None)
         repair_now = next(a for a in attempts_now if a.repair_of_attempt_id is not None)
@@ -82,8 +90,8 @@ def test_backup_invalid_json_repaired_once_with_separate_claim(
         assert provider_result_is_current(db_session, primary_id=backup_now.backup_of_attempt_id, submitted_attempt_id=repair_now.id)
         if scenario == "timeout":
             raise AppError(504, "llm_provider_timeout", "Synthetic timeout")
-        content = '{"problem":"Synthetic note."}' if structured else '"Synthetic note."'
-        return '{"title":"Synthetic","content":' + content + '}', {"input_tokens": 4, "output_tokens": 5, "total_tokens": 9}
+        content = {"problem": note_text} if structured else note_text
+        return json.dumps({"title": "Synthetic", "content": content}), {"input_tokens": 4, "output_tokens": 5, "total_tokens": 9}
 
     monkeypatch.setattr(templates, "_resolve_generation_credential", resolve)
     monkeypatch.setattr(templates, "_invoke_frozen_llm", invoke)
@@ -100,6 +108,13 @@ def test_backup_invalid_json_repaired_once_with_separate_claim(
         assert repair.settled_units == 0
         return
     assert result.status is GeneratedDocumentStatus.ready
+    if structured:
+        assert len(result.sections) == 1
+        for field in ("original_text_encrypted", "edited_text_encrypted"):
+            assert templates.generated_document_section_text(db_session, section=result.sections[0], field=field) == note_text
+    else:
+        for field in ("original_output_text_encrypted", "edited_output_text_encrypted"):
+            assert templates.generated_document_text(db_session, document=result, field=field) == note_text
     assert result.model_used == "backup-model"
     assert sum(c["config"].id == backup.id for c in calls) == 2
     attempts = list(db_session.scalars(select(ProviderAttempt).where(ProviderAttempt.generated_document_id == document.id)))

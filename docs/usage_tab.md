@@ -214,6 +214,16 @@ thresholds concern transport failures; invalid generated output is reported sepa
 overdue counts describe current open work; request/error and latency summaries
 cover the trailing 15 minutes.
 
+**Generation provider latency** uses the selected team and reporting range. It
+groups recorded calls by provider adapter, model, and outcome. Each row shows
+the sample count, median (P50), 95th percentile (P95), and count over 20 seconds.
+Successes, HTTP 504 responses, local timeouts without an HTTP status, and other
+provider timeouts have separate rows. Each call is a sample, including calls
+from retries, backup generation, and repair. Durations exclude queue wait and
+retry backoff. A success here means the provider returned a response successfully.
+The note can still fail output validation. Calls without transport timing and
+other failures do not contribute to the percentiles.
+
 The bounded **Recent failures and retries** table covers generation, note
 checking, template suggestions, speech ingestion, split failures, and recovered retries.
 It groups provider attempts by correlation and operation kind so a failed check
@@ -332,7 +342,6 @@ existing quota-management route and does not carry a selected member.
 Potential improvements that are not part of the current contract include:
 
 - additional short/custom reporting ranges beyond the implemented `30d`, `90d`, `1y`, and `all` values;
-- P50/P95 latency reporting;
 - configurable table columns, filters, and grouping;
 - improved failed-token accounting where providers expose reliable usage on failures;
 - active-seat/login-adoption reporting after an intentional privacy-reviewed session-telemetry design;

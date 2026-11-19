@@ -3886,6 +3886,7 @@
                 <p class="usage-detail">{{ usage_operational_health.degraded_calls }} degraded requests / {{ usage_operational_health.observed_calls }} observed requests{% if usage_operational_health.degradation_pct is not none %} ({{ usage_operational_health.degradation_pct }}%){% endif %}.</p>
                 {% if usage_operational_health.alerts %}<p class="usage-detail">{% for alert in usage_operational_health.alerts %}{% if alert == 'queued_work_over_60_seconds' %}Queued work is older than 60 seconds.{% elif alert == 'provider_attempts_overdue' %}One or more provider attempts passed their deadline.{% elif alert == 'provider_errors_elevated' %}At least 5 provider errors occurred and reached 20% of observed attempts.{% endif %}{% if not loop.last %} {% endif %}{% endfor %}</p>{% else %}<p class="usage-detail">No operational warning thresholds were reached.</p>{% endif %}
               </section>
+              {% include "_admin_generation_latency.html" %}
               <section class="usage-panel">
                 <header><h2>Recent failures and retries</h2><p>Bounded operational metadata for support lookup. This table contains no clinical or provider response content.</p></header>
                 <form method="get" action="/admin/usage" class="usage-filter-form">

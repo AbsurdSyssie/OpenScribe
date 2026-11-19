@@ -11038,6 +11038,62 @@ def test_admin_usage_reports_recovered_transport_retry_and_recent_health(db_sess
     assert health["avg_provider_latency_ms"] == 210.0
 
 
+def test_admin_usage_generation_latency_groups_transport_outcomes_and_respects_scope(db_session, make_team, make_user):
+    team = make_team(name="Synthetic latency clinic")
+    owner = make_user(email="latency-owner@example.com", password="password-1", team=team)
+    other_team = make_team(name="Other synthetic latency clinic")
+    other_owner = make_user(email="other-latency-owner@example.com", password="password-1", team=other_team)
+    now = utcnow()
+
+    def record(*events, team=team, owner=owner, when=now, model="synthetic-flash", kind=AttemptKind.llm_generation):
+        attempt = reserve_provider_attempt(
+            db_session, team_id=team.id, owner_user_id=owner.id, resource=QuotaResource.tokens,
+            attempt_kind=kind, correlation_id=uuid4(), attempt_number=1, reserved_units=10,
+            authorized_at=when, reservation_valid_until=when + timedelta(minutes=5),
+            provider_adapter="gemini_enterprise", provider_model=model,
+        )
+        mark_provider_attempt_submitted(
+            db_session, attempt_id=attempt.id, deadline_at=when + timedelta(minutes=2), now=when,
+        )
+        attempt.transport_events_json = [
+            dict(occurred_at=when.isoformat(), request_ordinal=ordinal, duration_ms=duration,
+                 code=code, http_status=status, retry_wait_ms=0)
+            for ordinal, (code, status, duration) in enumerate(events, start=1)
+        ]
+        settle_provider_attempt_unknown_tokens(db_session, attempt_id=attempt.id, now=when)
+
+    record(("timeout", 504, 7_000), ("success", None, 8_000))
+    record(("success", None, 20_000))
+    record(("success", None, 24_000))
+    record(("timeout", None, 90_000))
+    record(("timeout", 408, 28_000))
+    record(("provider_error", 503, 500))
+    record(("success", None, 40_000), model="synthetic-pro")
+    record(("success", None, 50_000), when=now - timedelta(days=31))
+    record(("success", None, 60_000), team=other_team, owner=other_owner)
+    record(("success", None, 70_000), kind=AttemptKind.llm_hallucination_check)
+    db_session.commit()
+
+    def summary(**kwargs):
+        return {
+            (row.provider_adapter, row.model, row.outcome): (
+                row.sample_count, row.p50_seconds, row.p95_seconds, row.over_20_seconds,
+            )
+            for row in admin_usage_overview(db_session, **kwargs)["usage_generation_latency_rows"]
+        }
+
+    success_key = ("gemini_enterprise", "synthetic-flash", "Success")
+    assert summary(team_id=team.id) == {
+        success_key: (3, 20.0, 23.6, 1),
+        ("gemini_enterprise", "synthetic-flash", "HTTP 504"): (1, 7.0, 7.0, 0),
+        ("gemini_enterprise", "synthetic-flash", "Local timeout"): (1, 90.0, 90.0, 1),
+        ("gemini_enterprise", "synthetic-flash", "Other timeout"): (1, 28.0, 28.0, 1),
+        ("gemini_enterprise", "synthetic-pro", "Success"): (1, 40.0, 40.0, 1),
+    }
+    assert summary()[success_key][0] == 4
+    assert summary(team_id=team.id, range_key="all")[success_key][0] == 4
+
+
 def test_admin_usage_sanitizes_unknown_provider_failure_metadata(db_session, make_team, make_user):
     team = make_team(name="Unknown attempt monitoring")
     owner = make_user(

@@ -1192,6 +1192,7 @@ def render_admin(
         "usage_failure_rows": [],
         "usage_recent_split_failure_rows": [],
         "usage_recent_operational_rows": [],
+        "usage_generation_latency_rows": [],
         "usage_operational_health": {},
         "usage_monitor_reference": "",
         "usage_monitor_since": "",

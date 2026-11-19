@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import DateTime, Integer, and_, cast, func, select, true, update
+from sqlalchemy import DateTime, Integer, and_, case, cast, func, select, true, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, aliased, joinedload
@@ -420,6 +420,17 @@ class AdminUsageOperationalRow:
     priority_attempt_http_status: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class AdminUsageGenerationLatencyRow:
+    provider_adapter: str | None
+    model: str | None
+    outcome: str
+    sample_count: int
+    p50_seconds: float
+    p95_seconds: float
+    over_20_seconds: int
+
+
 _SAFE_SPLIT_APPLICATION_ERROR_CODES = frozenset(
     {
         "consultation_split_analysis_invalid_output",
@@ -747,6 +758,61 @@ def _recent_operational_rows(
         ))
     result.sort(key=lambda row: row.timestamp, reverse=True)
     return result[:RECENT_OPERATIONAL_LIMIT]
+
+
+def _generation_latency_rows(
+    db: Session, *, since: datetime, until: datetime, team_id: UUID | None,
+) -> list[AdminUsageGenerationLatencyRow]:
+    transport = func.jsonb_array_elements(ProviderAttempt.transport_events_json).table_valued("value").alias("transport_event")
+    event = cast(transport.c.value, JSONB)
+    event_code = event["code"].astext
+    event_status = cast(event["http_status"].astext, Integer)
+    duration_ms = cast(event["duration_ms"].astext, Integer)
+    event_time = cast(event["occurred_at"].astext, DateTime(timezone=True))
+    outcome = case(
+        (event_status == 504, "HTTP 504"),
+        (event_code == "success", "Success"),
+        (event_status.is_(None), "Local timeout"),
+        else_="Other timeout",
+    ).label("outcome")
+    statement = (
+        select(
+            ProviderAttempt.provider_adapter,
+            ProviderAttempt.provider_model,
+            outcome,
+            func.count().label("sample_count"),
+            func.percentile_cont(0.5).within_group(duration_ms).label("p50_ms"),
+            func.percentile_cont(0.95).within_group(duration_ms).label("p95_ms"),
+            func.count().filter(duration_ms > 20_000).label("over_20_seconds"),
+        )
+        .select_from(ProviderAttempt)
+        .join(transport, true())
+        .where(
+            ProviderAttempt.attempt_kind == AttemptKind.llm_generation,
+            # Include calls that finish in the window after submission just before it.
+            ProviderAttempt.submitted_at >= since - timedelta(seconds=180),
+            ProviderAttempt.submitted_at < until,
+            event_time >= since,
+            event_time < until,
+            (event_status == 504) | event_code.in_(("success", "timeout")),
+        )
+        .group_by(ProviderAttempt.provider_adapter, ProviderAttempt.provider_model, outcome)
+        .order_by(ProviderAttempt.provider_adapter, ProviderAttempt.provider_model, outcome)
+    )
+    if team_id is not None:
+        statement = statement.where(ProviderAttempt.team_id == team_id)
+    return [
+        AdminUsageGenerationLatencyRow(
+            provider_adapter=row.provider_adapter,
+            model=row.provider_model,
+            outcome=row.outcome,
+            sample_count=row.sample_count,
+            p50_seconds=round(float(row.p50_ms) / 1000, 3),
+            p95_seconds=round(float(row.p95_ms) / 1000, 3),
+            over_20_seconds=row.over_20_seconds,
+        )
+        for row in db.execute(statement)
+    ]
 
 
 def _operational_health(db: Session, *, team_id: UUID | None, now: datetime) -> dict[str, object]:
@@ -1711,6 +1777,7 @@ def admin_usage_overview(
         "usage_team_rows": _team_usage_rows(db, since=range_since, team_id=team_id),
         "usage_user_rows": _user_usage_rows(db, since=range_since, team_id=team_id) if team_id is not None else [],
         "usage_provider_rows": _provider_usage_rows(db, since=range_since, team_id=team_id),
+        "usage_generation_latency_rows": _generation_latency_rows(db, since=range_since, until=now, team_id=team_id),
         "usage_generator_rows": _generator_usage_rows(db, since=range_since, team_id=team_id),
         "usage_ingestion_rows": _ingestion_usage_rows(db, since=range_since, team_id=team_id),
         "usage_failure_rows": _failure_rows(db, since=range_since, team_id=team_id),

@@ -1,0 +1,37 @@
+<section class="usage-panel">
+  <header>
+    <h2>Generation provider latency</h2>
+    <p>{{ usage_range_label }}. Each sample is one provider call, including retries and backup calls. Queue time and retry pauses are excluded.</p>
+  </header>
+  {% if usage_generation_latency_rows %}
+  <div class="usage-table-wrap table-scroll-region" tabindex="0" role="region" aria-label="Scrollable generation provider latency table">
+    <table class="usage-table" data-sortable-table>
+      <thead>
+        <tr>
+          <th scope="col" data-sort-type="text">Provider / model</th>
+          <th scope="col" data-sort-type="text">Result</th>
+          <th scope="col" data-sort-type="number">Calls</th>
+          <th scope="col" data-sort-type="number">Median (s)</th>
+          <th scope="col" data-sort-type="number">P95 (s)</th>
+          <th scope="col" data-sort-type="number">Over 20 s</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in usage_generation_latency_rows %}
+        <tr>
+          <td data-sort-value="{{ (row.provider_adapter or '')|lower }}" data-sort-secondary="{{ (row.model or '')|lower }}">{{ row.provider_adapter or 'Unknown provider' }}<br><small>{{ row.model or 'Unknown model' }}</small></td>
+          <td>{{ row.outcome }}</td>
+          <td>{{ row.sample_count }}</td>
+          <td>{{ row.p50_seconds }}</td>
+          <td>{{ row.p95_seconds }}</td>
+          <td>{{ row.over_20_seconds }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="usage-detail">P95 is the time within which about 95% of calls in that row finished. A small sample can make this estimate unstable.</p>
+  {% else %}
+  <p class="usage-empty">No timed generation responses or timeouts recorded in this range.</p>
+  {% endif %}
+</section>

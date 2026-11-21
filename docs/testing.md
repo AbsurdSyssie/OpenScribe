@@ -80,13 +80,21 @@ DSPT legal-content and lifecycle controls:
 
 These checks cover restricted Markdown parsing into safe legal blocks, including bold, italics and bounded tables. They also cover harmless formatting removal and warnings, preview and rendering, full-session system-administrator writes, publication and versioning, legal retention and holds, the 24-hour failed-source deadline and durable Vault cleanup, six-calendar-month audit expiry, bounded audit holds, browser state, schedules and additive migrations. They use synthetic content only.
 
+Scribe Terms acceptance:
+
+```bash
+.venv/bin/pytest -q tests/test_scribe_terms_persistence.py tests/test_scribe_terms_access.py tests/test_scribe_terms_admin.py tests/test_scribe_terms_browser.py
+```
+
+Use synthetic Terms and accounts to check session versioning, server-side Scribe access, administrator evidence, and account deletion. Run the API authorization audit after pytest.
+
 API authorization manifest:
 
 ```bash
 ./.venv/bin/python scripts/audit_api_auth.py
 ```
 
-The audit compares the manifest with the live `/api/v1` route inventory, probes anonymous/invalid/partial/full/manager/admin session boundaries as applicable, exits `1` on behavior mismatch, and exits `2` when a route has no audit entry.
+The audit compares the manifest with the live `/api/v1` route inventory. It probes session and role boundaries, including a full session with unaccepted Terms on Scribe routes. It exits `1` on a behavior mismatch and `2` when a route has no audit entry.
 
 CSP and XSS coverage:
 

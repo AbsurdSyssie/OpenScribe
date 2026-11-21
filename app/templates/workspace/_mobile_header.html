@@ -1,4 +1,4 @@
-<header class="workspace-mobile-header">
+<header class="workspace-mobile-header"{% if scribe_terms_required %} inert{% endif %}>
   <button type="button" data-workspace-drawer-toggle aria-controls="workspace-sidebar" aria-expanded="false" aria-label="Open workspace navigation"><i data-lucide="menu" aria-hidden="true"></i></button>
   {% if active_workspace_section == 'scribe' %}
   <span class="workspace-mobile-header__consultation" data-mobile-session-title>{{ active_transcript.title if active_transcript and active_transcript.title else 'New consultation' }}</span>

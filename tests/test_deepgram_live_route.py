@@ -743,9 +743,10 @@ def test_stream_failure_diagnostics_are_safe_visible_and_bounded(
     preflight = live._Preflight(config=SimpleNamespace(), snapshot={}, api_key="synthetic-key")
     owner_calls = 0
 
-    async def fake_owner_call(_socket, _transcript_id, _operation):
+    async def fake_owner_call(_socket, _transcript_id, _operation, *, check_scribe_terms=False):
         nonlocal owner_calls
         owner_calls += 1
+        assert check_scribe_terms is (owner_calls == 1)
         if owner_calls == 2:
             return preflight
         if owner_calls == 3:

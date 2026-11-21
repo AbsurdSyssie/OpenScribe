@@ -2,14 +2,17 @@
 
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
+import csv
+import io
 import json
 import os
 from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import Depends, Form, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import main as main_module
@@ -35,6 +38,7 @@ from ..models import (
     QuotaPeriod,
     QuotaResource,
     SecurityAuditHoldReason,
+    ScribeTermsAcceptance,
     SttAdapterKind,
     SttConfigSetupStatus,
     SttSelectionPurpose,
@@ -3863,6 +3867,53 @@ def admin_delete_user(
     return RedirectResponse(
         url=_admin_redirect_url(return_view=return_view, return_tab=return_tab or "directory", team_id=return_team_id or None),
         status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def _scribe_terms_acceptances(db: Session, user_id: UUID) -> list[ScribeTermsAcceptance]:
+    return list(db.scalars(
+        select(ScribeTermsAcceptance)
+        .where(ScribeTermsAcceptance.user_id == user_id)
+        .order_by(ScribeTermsAcceptance.version_no)
+    ).all())
+
+
+def _csv_safe_cell(value: str) -> str:
+    """Prefix spreadsheet formula/control initiators so imported values stay text."""
+    if value.startswith(("\t", "\r", "\n")) or value.lstrip().startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
+@app.get("/admin/users/{user_id}/scribe-terms.csv")
+def admin_user_scribe_terms_csv(request: Request, user_id: UUID, db: Session = Depends(get_db)):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if not context.user.is_system_admin:
+        return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
+    user = db.get(User, user_id)
+    if user is None:
+        return HTMLResponse("Not found", status_code=status.HTTP_404_NOT_FOUND)
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\r\n")
+    writer.writerow(("Account name", "Full name", "Terms version", "Accepted at (UTC)"))
+    for acceptance in _scribe_terms_acceptances(db, user_id):
+        accepted_at = acceptance.accepted_at
+        if accepted_at.tzinfo is None:
+            accepted_at = accepted_at.replace(tzinfo=UTC)
+        writer.writerow(tuple(_csv_safe_cell(value) for value in (
+            user.email,
+            user.full_name or "",
+            str(acceptance.version_no),
+            accepted_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        )))
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="scribe-terms-{user_id}.csv"',
+        },
     )
 
 

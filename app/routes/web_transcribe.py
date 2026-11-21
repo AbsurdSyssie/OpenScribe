@@ -23,6 +23,11 @@ from ..main import (
     app,
 )
 from ..models import TeamRole, Transcript, TranscriptIngestionMode, User, UserStatus
+from ..services.scribe_terms import (
+    accept_scribe_terms,
+    read_scribe_terms_version,
+    required_scribe_terms_version,
+)
 from ..schemas import TranscriptStart
 from ..services.audio import enforce_whole_file_upload_size, read_whole_file_upload
 from ..services.dictations import (
@@ -71,6 +76,18 @@ def _render_transcribe_page(request: Request, db: Session, *, current_user: User
     )
 
 
+def _scribe_page_context_or_redirect(request: Request, db: Session):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return context, response
+    required_version = required_scribe_terms_version(
+        db, user=context.user, session=context.session
+    )
+    if required_version is not None:
+        return context, RedirectResponse(url="/workspace", status_code=status.HTTP_303_SEE_OTHER)
+    return context, None
+
+
 @app.get("/transcribe", response_class=HTMLResponse)
 def transcribe_page(
     request: Request,
@@ -99,6 +116,23 @@ def workspace_scribe_page(
         return response
     if context.user.is_system_admin:
         return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    required_version = required_scribe_terms_version(
+        db, user=context.user, session=context.session
+    )
+    if required_version is not None:
+        _, content = read_scribe_terms_version(db, version_no=required_version)
+        return render_workspace(
+            request,
+            db,
+            current_user=context.user,
+            active_section="preferences",
+            section_context={
+                "scribe_terms_required": True,
+                "scribe_terms_version_no": required_version,
+                "scribe_terms_blocks": content.blocks,
+                "workspace_page_title": "Scribe Terms",
+            },
+        )
     safe_message_kind = message_kind if message_kind in {"success", "error"} else "success"
     legacy_response = _render_transcribe_page(
         request,
@@ -123,6 +157,31 @@ def workspace_scribe_page(
     )
 
 
+@app.post("/workspace/scribe-terms/accept", response_class=HTMLResponse)
+def accept_workspace_scribe_terms(
+    request: Request,
+    version_no: int = Form(...),
+    accept_terms: str = Form(...),
+    csrf_protected: BrowserCsrf = None,
+    db: Session = Depends(get_db),
+):
+    context, response = _page_context_or_redirect(request, db, require_full=True)
+    if response is not None:
+        return response
+    if context.user.is_system_admin:
+        return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    if accept_terms != "yes":
+        raise AppError(422, "validation_error", "Confirm that you accept the Terms to continue")
+    accept_scribe_terms(
+        db,
+        user=context.user,
+        session=context.session,
+        version_no=version_no,
+    )
+    db.commit()
+    return RedirectResponse(url="/workspace", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @app.post("/home/transcripts/upload", response_class=HTMLResponse)
 @WHOLE_FILE_UPLOAD_DAILY_RATE_LIMIT
 @WHOLE_FILE_UPLOAD_BURST_RATE_LIMIT
@@ -133,7 +192,7 @@ def home_upload_transcript_file(
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
+    context, response = _scribe_page_context_or_redirect(request, db)
     if response is not None:
         return response
     if context.user.team_id is None:
@@ -213,7 +272,7 @@ def transcribe_upload_transcript_file(
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
+    context, response = _scribe_page_context_or_redirect(request, db)
     if response is not None:
         return response
     if context.user.team_id is None:
@@ -304,7 +363,7 @@ def transcribe_retry_file_ingestion(
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
+    context, response = _scribe_page_context_or_redirect(request, db)
     if response is not None:
         return response
     try:
@@ -349,7 +408,7 @@ def transcribe_upload_dictation_file(
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
+    context, response = _scribe_page_context_or_redirect(request, db)
     if response is not None:
         return response
     try:
@@ -381,7 +440,7 @@ def transcribe_save_dictation_text(
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
+    context, response = _scribe_page_context_or_redirect(request, db)
     if response is not None:
         return response
     try:
@@ -413,7 +472,7 @@ def transcribe_generate_output(
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
+    context, response = _scribe_page_context_or_redirect(request, db)
     if response is not None:
         return response
     try:
@@ -446,7 +505,7 @@ def transcribe_generate_followup(
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
+    context, response = _scribe_page_context_or_redirect(request, db)
     if response is not None:
         return response
     try:
@@ -473,7 +532,7 @@ def transcribe_run_quick_action(
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
+    context, response = _scribe_page_context_or_redirect(request, db)
     if response is not None:
         return response
     clean_context_text = (context_text or "").strip()
@@ -510,7 +569,7 @@ def transcribe_create_session(
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
+    context, response = _scribe_page_context_or_redirect(request, db)
     if response is not None:
         return response
     try:
@@ -541,7 +600,7 @@ def transcribe_delete_sessions(
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
+    context, response = _scribe_page_context_or_redirect(request, db)
     if response is not None:
         return response
 
@@ -573,7 +632,7 @@ def transcribe_update_session_title(
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
+    context, response = _scribe_page_context_or_redirect(request, db)
     if response is not None:
         return response
     try:
@@ -604,7 +663,7 @@ def transcribe_update_session_mode(
     csrf_protected: BrowserCsrf = None,
     db: Session = Depends(get_db),
 ):
-    context, response = _page_context_or_redirect(request, db, require_full=True)
+    context, response = _scribe_page_context_or_redirect(request, db)
     if response is not None:
         return response
     try:

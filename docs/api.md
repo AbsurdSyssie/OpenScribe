@@ -353,6 +353,8 @@ Structured EMIS templates use only: `problem`, `history`, `family_history`, `soc
 
 ## Transcript, workspace, and generated-content routes
 
+Clinical Scribe APIs require a full session and acceptance of the Terms version required for that session. The server returns `403 scribe_terms_required` when acceptance is pending. The same requirement applies to new workspace event streams and live audio connections. Users accept from the browser's Scribe page. See [Authentication and access control](auth.md#browser-destinations).
+
 Diarised transcript details include an immutable `structured_revision_id`, ordered `structured_turns`, and a server-derived `structured_editable` capability. Turns carry text, scoped anonymous speaker identity, original millisecond intervals where available, edited state, and canonical text offsets. These fields remain transcript-owner content.
 
 Structured source mutations use `POST /api/v1/transcripts/{id}/turns` to insert unattributed text and `PATCH`/`DELETE /api/v1/transcripts/{id}/turns/{turn_id}` to edit text or explicitly remove a turn. Every request supplies `expected_version_id`; stale revisions return a conflict rather than overwriting newer source. Clients cannot change speaker identity, recording scope, timing, or ownership through a text edit. Only stable, completed owner transcripts are editable. The flat-text commit endpoint cannot flatten a structured source.

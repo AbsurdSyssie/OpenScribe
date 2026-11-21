@@ -945,8 +945,24 @@ class UserSession(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoke_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    # NULL means an existing session has not resolved the Scribe Terms rollout;
+    # zero pins that no Terms publication existed; positive values pin a version.
+    scribe_terms_version_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     user: Mapped[User] = relationship(back_populates="sessions")
+
+
+class ScribeTermsAcceptance(Base):
+    __tablename__ = "scribe_terms_acceptances"
+    __table_args__ = (
+        UniqueConstraint("user_id", "version_no", name="uq_scribe_terms_acceptances_user_version"),
+        CheckConstraint("version_no > 0", name="ck_scribe_terms_acceptances_version_positive"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
 class UserOidcIdentity(Base):

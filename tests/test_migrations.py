@@ -319,6 +319,7 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "redaction_runs",
         "security_audit_events",
         "security_audit_event_holds",
+        "scribe_terms_acceptances",
         "smart_phrases",
         "transcript_manual_pii_entities",
         "transcript_capture_settings",

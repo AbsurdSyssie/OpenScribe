@@ -184,6 +184,8 @@ The profile and documents must not contain patient, transcript, provider-secret 
 
 Abandoned drafts expire after 12 calendar months. Superseded published versions remain for six years after replacement. An active system-administrator legal hold blocks scheduled deletion until release. Current published versions are never retention candidates.
 
+Scribe Terms acceptance stores one record per user and accepted version with a server-recorded timestamp. Existing document retention applies to the published text. Acceptance records keep their version number until account deletion. Only system administrators can view another user's acceptance history or download it as a CSV from the account deletion prompt. Deleting the account removes the acceptance records with it.
+
 ## Rate limiting and quotas
 
 Authentication and account-security endpoints use fixed SlowAPI limits. Upload and LLM generation routes use configurable burst/daily limits and owner/session/IP-aware keys. Redis is the limiter store; `RATE_LIMIT_KEY_PREFIX` can isolate deployments sharing Redis.

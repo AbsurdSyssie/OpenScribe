@@ -41,6 +41,8 @@ The admin UI must never expose raw provider credentials, unrestricted Vault refe
 
 Account management remains metadata-only and does not grant owner-content review.
 
+The account view shows which Scribe Terms versions the user accepted and when. Before confirming individual account deletion, use **Download acceptance history (CSV)** to save the account identifier, full name, accepted version, and UTC timestamp. Account deletion removes the in-app history.
+
 ### Provider provisioning
 
 System administrators provision and inspect credential-bearing configurations for:

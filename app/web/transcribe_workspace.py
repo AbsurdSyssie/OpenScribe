@@ -1622,6 +1622,11 @@ def open_realtime_workspace_db_session(request):
 
 
 def resolve_realtime_workspace_user(db: Session, *, raw_session_token: str | None) -> User | None:
+    resolved = resolve_realtime_workspace_context(db, raw_session_token=raw_session_token)
+    return resolved[0] if resolved is not None else None
+
+
+def resolve_realtime_workspace_context(db: Session, *, raw_session_token: str | None):
     if not raw_session_token:
         return None
     session = db.scalar(
@@ -1638,7 +1643,7 @@ def resolve_realtime_workspace_user(db: Session, *, raw_session_token: str | Non
         return None
     if determine_auth_level(user) is not SessionAuthLevel.full:
         return None
-    return user
+    return user, session
 
 
 def resolve_realtime_workspace_payload(

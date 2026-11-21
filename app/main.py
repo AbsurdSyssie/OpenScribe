@@ -820,7 +820,42 @@ def require_full_context(
     if context.session.auth_level.value != "full":
         _audit_request_rejected(db, request, action="access_denied", category="access_control", reason_code="onboarding_incomplete", status_code=403, actor=context.user)
         raise AppError(403, "onboarding_incomplete", "Complete onboarding before accessing this route")
+    if _is_scribe_clinical_api_path(request.url.path):
+        _require_scribe_terms_for_context(request, db, context)
     return context
+
+
+def _is_scribe_clinical_api_path(path: str) -> bool:
+    prefixes = (
+        "/api/v1/transcripts",
+        "/api/v1/transcribe",
+        "/api/v1/generated-documents",
+    )
+    return any(path == prefix or path.startswith(f"{prefix}/") for prefix in prefixes)
+
+
+def _require_scribe_terms_for_context(
+    request: Request,
+    db: Session,
+    context: AuthenticatedContext,
+) -> None:
+    from .services.scribe_terms import required_scribe_terms_version
+
+    if required_scribe_terms_version(
+        db,
+        user=context.user,
+        session=context.session,
+    ) is not None:
+        _audit_request_rejected(
+            db,
+            request,
+            action="access_denied",
+            category="access_control",
+            reason_code="scribe_terms_required",
+            status_code=403,
+            actor=context.user,
+        )
+        raise AppError(403, "scribe_terms_required", "Accept the Scribe Terms before accessing clinical data")
 
 
 def _require_full_context_from_token(request: Request, raw_session_token: str | None) -> AuthenticatedContext:

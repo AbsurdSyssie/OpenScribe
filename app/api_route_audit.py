@@ -7,9 +7,9 @@ from typing import Any
 from fastapi.routing import APIRoute
 
 # APIRoute excludes WebSockets; both owner Deepgram stream endpoints are
-# exercised separately for origin, session, ownership and CSRF in route tests.
+# exercised separately for origin, session, Terms, ownership and CSRF.
 
-from app.main import app
+from app.main import _is_scribe_clinical_api_path, app
 from app.services.csrf import CSRF_COOKIE_NAME, session_csrf_token
 from app.services.auth import SESSION_COOKIE_NAME
 
@@ -822,7 +822,10 @@ def run_negative_audit(client: Any, scenarios: dict[str, AuditScenario]) -> list
     results: list[AuditResult] = []
     for case in audit_cases():
         observations: list[AuditObservation] = []
-        for scenario_name, expectation in NEGATIVE_EXPECTATIONS[case.access_tier].items():
+        expectations = dict(NEGATIVE_EXPECTATIONS[case.access_tier])
+        if _is_scribe_clinical_api_path(case.path):
+            expectations["unaccepted_scribe_terms"] = AuditExpectation(403, "scribe_terms_required")
+        for scenario_name, expectation in expectations.items():
             response = send_case(client, case, scenarios[scenario_name])
             error_code, message = extract_error(response)
             ok = response.status_code == expectation.status_code and error_code == expectation.error_code

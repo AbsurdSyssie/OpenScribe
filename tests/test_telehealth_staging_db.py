@@ -153,6 +153,7 @@ def test_owner_bound_telehealth_session_and_idempotent_staging(
         db_session, owner, transcript_id=transcript.id, timeline_sample_rate=48000,
     )
     assert session.stt_config_id == config_id
+    assert transcript.first_content_at is None
     with pytest.raises(AppError):
         begin_telehealth_capture(
             db_session, owner, transcript_id=transcript.id, timeline_sample_rate=48000,
@@ -176,9 +177,14 @@ def test_owner_bound_telehealth_session_and_idempotent_staging(
     assert row.status == "staged"
     assert row.source_audio_vault_ref.endswith(f"{row.id}/source-audio")
     assert len(vault_writes) == 1
+    db_session.refresh(transcript)
+    first_content_at = transcript.first_content_at
+    assert first_content_at is not None
     assert stage_telehealth_audio_part(db_session, owner, **args).id == row.id
     assert len(vault_writes) == 1
     assert db_session.scalar(select(func.count()).select_from(TelehealthCapturePart)) == 1
+    db_session.refresh(transcript)
+    assert transcript.first_content_at == first_content_at
 
     with pytest.raises(AppError) as error:
         stage_telehealth_audio_part(db_session, owner, **{**args, "audio_bytes": _audio(first=999)})

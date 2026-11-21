@@ -7150,14 +7150,14 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "new URL('/api/v1/transcripts', window.location.origin)" in app_js
     assert "const setupSidebarInfiniteScroll = () => {" in app_js
     assert "data-session-list-sentinel" in session_panel_html
-    assert 'data-session-created-at="{{ transcript.created_at.isoformat() }}"' in session_panel_html
+    assert 'data-session-created-at="{{ consultation_at.isoformat() }}"' in session_panel_html
     assert "const linksById = new Map(currentSessionLinks().map((link) => [link.dataset.transcriptId, link]));" in app_js
     assert "const seenIds = new Set();" in app_js
     assert "sessionList.replaceChildren(fragment);" in app_js
     assert "sessionList.style.minHeight = `${previousListHeight}px`;" in app_js
     assert "sessionList.style.minHeight = '';" in app_js
     assert "const revealSessionRailTranscript = (transcriptIdToReveal, scrollContainer) => {" in app_js
-    assert "} from './sessionRail.js?v=20260920-session-sidebar-timestamp-skeleton';" in app_js
+    assert "} from './sessionRail.js?v=20261121-first-saved-content';" in app_js
     assert "keepSessionRailItemVisible({ scrollContainer, item, behavior });" in app_js
     assert "scrollContainer?.scrollTo({ top: previousScrollTop, behavior: 'auto' });" in app_js
     assert "document.addEventListener('transcribe:session-panel-opened'" in app_js
@@ -7168,7 +7168,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "if (structureChanged) renderSidebarTranscripts(options);" in app_js
     assert "preserveLoaded: sessionRailPaginationStarted && recentTranscriptsTopHasMore," in app_js
     assert "workspaceItems: incoming," in app_js
-    assert "sidebarTranscripts.slice(0, sessionRailPageSize).map" in app_js
+    assert "sidebarTranscripts.map" in app_js
     assert "node.dataset.statusTone === descriptor.tone" in app_js
     assert "if (titleNode && titleNode.textContent !== nextTitle)" in app_js
     assert "const syncSessionRailSentinel = () => {" in app_js

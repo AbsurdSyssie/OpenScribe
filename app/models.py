@@ -945,8 +945,24 @@ class UserSession(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoke_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    # NULL means an existing session has not resolved the Scribe Terms rollout;
+    # zero pins that no Terms publication existed; positive values pin a version.
+    scribe_terms_version_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     user: Mapped[User] = relationship(back_populates="sessions")
+
+
+class ScribeTermsAcceptance(Base):
+    __tablename__ = "scribe_terms_acceptances"
+    __table_args__ = (
+        UniqueConstraint("user_id", "version_no", name="uq_scribe_terms_acceptances_user_version"),
+        CheckConstraint("version_no > 0", name="ck_scribe_terms_acceptances_version_positive"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
 class UserOidcIdentity(Base):
@@ -1629,6 +1645,13 @@ class Transcript(Base):
     __tablename__ = "transcripts"
     __table_args__ = (
         CheckConstraint("working_note_revision >= 0", name="ck_transcripts_working_note_revision_nonnegative"),
+        CheckConstraint("track_first_content_at OR first_content_at IS NULL", name="ck_transcripts_first_content_tracking"),
+        Index(
+            "ix_transcripts_owner_sidebar_timestamp",
+            "owner_user_id",
+            text("coalesce(first_content_at, created_at) DESC"),
+            text("id DESC"),
+        ),
         Index(
             "uq_transcripts_owner_example",
             "owner_user_id",
@@ -1664,6 +1687,8 @@ class Transcript(Base):
     retention_days_applied: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     retention_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    track_first_content_at: Mapped[bool] = mapped_column(Boolean, server_default=text("true"), nullable=False)
+    first_content_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     owner: Mapped[User] = relationship(back_populates="transcripts")
     team: Mapped[Team] = relationship(back_populates="transcripts")

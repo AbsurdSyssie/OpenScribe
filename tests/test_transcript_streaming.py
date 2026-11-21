@@ -434,6 +434,7 @@ def test_recovery_audio_digest_mapping_allows_source_offset_gaps(
         connection_fence=started.connection_fence, fence_token=started.fence_token,
         first_sample_offset=8, sample_count=2, pcm_bytes=second_pcm,
     )
+    assert transcript.first_content_at is None
     recovery_audio = _synthetic_pcm_wav(5, first_pcm + second_pcm)
     vault_writes = []
     monkeypatch.setattr(
@@ -448,6 +449,8 @@ def test_recovery_audio_digest_mapping_allows_source_offset_gaps(
     assert result.recovery_available is True
     assert len(vault_writes) == 1
     assert first.dispatchable is True
+    db_session.refresh(transcript)
+    assert transcript.first_content_at is not None
 
 
 def test_repeated_or_late_stream_failure_preserves_existing_failed_gap_barrier(
@@ -747,6 +750,7 @@ def test_failed_window_commit_rollback_durably_queues_orphan_vault_cleanup(
     ))
     assert cleanup is not None
     assert window is not None and window.recovery_audio_vault_ref is None
+    assert transcript.first_content_at is None
 
 
 def test_dictation_stream_never_persists_preview_or_changes_transcript(db_session, make_team, make_user, monkeypatch):

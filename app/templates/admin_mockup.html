@@ -1934,6 +1934,22 @@
       .modal-backdrop[hidden] {
         display: none;
       }
+      .scribe-terms-delete-dialog:not([open]) {
+        display: none;
+      }
+      .scribe-terms-delete-dialog {
+        width: auto;
+        height: auto;
+        max-width: none;
+        max-height: none;
+        margin: 0;
+        padding: 20px;
+        border: 0;
+        color: inherit;
+      }
+      .scribe-terms-delete-dialog::backdrop {
+        background: transparent;
+      }
       .modal {
         width: min(560px, 100%);
         border: 1px solid var(--border-strong);
@@ -5113,6 +5129,17 @@
                       <div class="member-menu" id="member-menu-panel-{{ user.id }}" hidden>
                         <a class="btn small" href="/admin/usage?team_id={{ selected_team.id }}&amp;view=quotas&amp;member_id={{ user.id }}">Manage quotas</a>
                         {% if current_user.is_system_admin %}
+                        <details class="member-terms-history">
+                          <summary>Terms acceptance history</summary>
+                          {% set acceptances = scribe_terms_acceptances_by_user.get(user.id, []) %}
+                          {% if acceptances %}
+                          <ul>
+                            {% for acceptance in acceptances %}
+                            <li>Version {{ acceptance.version_no }} · {{ acceptance.accepted_at_utc }}</li>
+                            {% endfor %}
+                          </ul>
+                          {% else %}<p>No recorded acceptances.</p>{% endif %}
+                        </details>
                         <form method="post" action="/admin/users/{{ user.id }}/generation-trace">
                           <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
                           <input type="hidden" name="enabled" value="{{ 'false' if user.generation_trace_enabled|default(false) else 'true' }}">
@@ -5243,7 +5270,8 @@
                         <form
                           method="post"
                           action="/admin/users/{{ user.id }}/delete"
-                          data-confirm-submit="Delete this user immediately, including transcript-derived content and personal assets?"
+                          data-delete-csv="/admin/users/{{ user.id }}/scribe-terms.csv"
+                          data-delete-account="{{ user.full_name or user.email }}"
                         >
                           <input
                             type="hidden"
@@ -5257,7 +5285,7 @@
                             type="hidden"
                             name="return_team_id"
                             value="{{ selected_team.id }}"
-                          /><button class="danger" type="submit">
+                          /><button class="danger" type="button" data-scribe-terms-delete-open aria-haspopup="dialog">
                             ⌫ Delete permanently
                           </button>
                         </form>
@@ -5442,6 +5470,18 @@
     </div>
 
     {% if quota_table_flow and selected_quota_member and quota_detail %}{% include "admin_quota_limits_modal.html" %}{% endif %}
+
+    <dialog class="modal-backdrop scribe-terms-delete-dialog" id="scribe-terms-delete-modal" aria-labelledby="scribe-terms-delete-title" aria-describedby="scribe-terms-delete-copy">
+      <section class="modal">
+        <header><h2 id="scribe-terms-delete-title">Delete account</h2></header>
+        <p id="scribe-terms-delete-copy">Delete <strong id="scribe-terms-delete-account"></strong> and all owned transcript-derived content and personal assets? This cannot be undone.</p>
+        <div class="admin-create-team-actions">
+          <a class="btn" id="scribe-terms-delete-download" href="#">Download acceptance history (CSV)</a>
+          <button class="btn" type="button" data-scribe-terms-delete-cancel>Cancel</button>
+          <button class="btn danger" type="button" data-scribe-terms-delete-confirm>Delete permanently</button>
+        </div>
+      </section>
+    </dialog>
 
     <div class="modal-backdrop admin-create-team-modal" id="admin-create-team-modal"{% if not admin_create_team_open %} hidden{% endif %}>
       <section class="modal" role="dialog" aria-modal="true" aria-labelledby="admin-create-team-title"{% if admin_create_team_open and message_kind == 'error' and message %} aria-describedby="admin-create-team-error"{% endif %} tabindex="-1">
@@ -6303,6 +6343,32 @@
     </div>
 
     <script nonce="{{ request.state.csp_nonce }}">
+      (() => {
+        let pendingScribeTermsDeleteForm = null;
+        document.addEventListener("click", (event) => {
+          const trigger = event.target.closest("[data-scribe-terms-delete-open]");
+          if (!trigger) return;
+          const form = trigger.form;
+          document.getElementById("scribe-terms-delete-account").textContent = form.dataset.deleteAccount;
+          document.getElementById("scribe-terms-delete-download").href = form.dataset.deleteCsv;
+          pendingScribeTermsDeleteForm = form;
+          document.getElementById("scribe-terms-delete-modal").showModal();
+        });
+        document.querySelector("[data-scribe-terms-delete-cancel]")?.addEventListener("click", () => {
+          document.getElementById("scribe-terms-delete-modal").close();
+        });
+        document.getElementById("scribe-terms-delete-modal")?.addEventListener("close", () => {
+          pendingScribeTermsDeleteForm?.querySelector("[data-scribe-terms-delete-open]")?.focus();
+          pendingScribeTermsDeleteForm = null;
+        });
+        document.querySelector("[data-scribe-terms-delete-confirm]")?.addEventListener("click", () => {
+          const form = pendingScribeTermsDeleteForm;
+          if (!form) return;
+          pendingScribeTermsDeleteForm = null;
+          document.getElementById("scribe-terms-delete-modal").close();
+          form.requestSubmit();
+        });
+      })();
       document.addEventListener("submit", (event) => {
         const form = event.target.closest("form[data-confirm-submit]");
         if (form && !window.confirm(form.dataset.confirmSubmit))

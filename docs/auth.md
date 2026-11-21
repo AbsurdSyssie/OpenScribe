@@ -6,7 +6,7 @@ This document describes the implemented authentication, onboarding, account reco
 
 - Browser authentication uses an opaque `openscribe_session` cookie.
 - The browser never receives serialized user or permission state in that cookie.
-- PostgreSQL stores only the hashed session token plus explicit auth level, status, and expiry metadata.
+- PostgreSQL stores the hashed session token, auth level, status, expiry metadata, and the Terms version required for Scribe access in that session.
 - Login uses email and password. A deployment may also enable Google, Microsoft, NHS Care Identity (CIS2), and one custom OpenID Connect (OIDC) provider for accounts that users have linked themselves.
 - Completed MFA-enabled accounts normally require a TOTP challenge after password verification.
 - A fresh trusted-device record can skip the TOTP challenge after successful password or linked-OIDC primary authentication.
@@ -21,6 +21,12 @@ This document describes the implemented authentication, onboarding, account reco
 - System administrators go to `/admin`.
 - Full normal-user and team-leader sessions go directly to `/workspace`.
 - Legacy `GET /home` links redirect into the canonical workspace; `/home` is no longer a separately rendered landing page. See [workspace.md](workspace.md).
+
+When a signed-in page regains focus or becomes visible again, it checks the session using `GET /api/v1/auth/me`. A failed background request can trigger the same check. If the server confirms the session is no longer valid, the browser goes to `/login`. Existing leave-page prompts still apply to recordings and unsaved work. Signing in again follows the usual role-based destination.
+
+Normal users and team leaders must accept the session's Terms before using the Scribe. The session takes its requirement from the published Terms at sign-in and keeps it through session rotation. Sessions created before rollout resolve their requirement on first Scribe access. When no Terms are published at that point, the session can use the Scribe. A new publication applies at the next sign-in and leaves existing sessions' requirements in place. The browser checks acceptance after required onboarding and MFA. Preferences and library access use their normal full-session rules. System administrators are exempt.
+
+On initial rollout with published Terms, a session created before rollout can encounter the gate on its next clinical request. Deploy this first enforcement change during a window without active capture.
 
 ## Account requests and managed creation
 

@@ -1,5 +1,13 @@
 # Discovered issues
 
+### STT-CAPTURE-SNAPSHOT-TEST-DB-DOUBLE — 2026-11-21
+
+- Discovery baseline: `51de6ec` plus pre-existing first-content tracking changes in the working tree.
+- Locations: `tests/test_stt_diarization.py::test_audio_queue_uses_capture_snapshot_only_for_same_selected_config` and `app/services/transcripts.py::queue_audio_file_ingestion`.
+- Evidence: the ingestion path calls `mark_first_content_saved(db, transcript_id=transcript.id, owner_user_id=owner.id)`. The capture snapshot test's `FakeDb` has no `execute` method, which the helper now calls. The test stops before checking the provider snapshot.
+- Scope: the first-content tracking change is separate work already present in the checkout. The Scribe Terms change leaves the ingestion path and the test's provider assertions in place.
+- Resolution: the snapshot test now stubs the first-content persistence boundary. Dedicated first-content tests exercise timestamp persistence and rollback against PostgreSQL.
+
 ### GENERATION-BACKUP-INVALID-JSON-RECOVERY — 2026-11-10
 
 - Status: Backup repair resolved locally on 10 November 2026; provider-specific constrained-output capability remains a separate follow-up. Confirmed in deployed code and local baseline `9b4c39d`.

@@ -6,7 +6,7 @@ import os
 from contextlib import contextmanager
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..default_assets import PRIMARY_TEMPLATE_NAME
@@ -652,7 +652,7 @@ def _normalize_transcript_history_limit(limit: int | None) -> int:
 
 def _encode_transcript_history_cursor(transcript: Transcript) -> str:
     payload = {
-        "created_at": transcript.created_at.isoformat(),
+        "created_at": (transcript.first_content_at or transcript.created_at).isoformat(),
         "id": str(transcript.id),
     }
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -684,20 +684,21 @@ def list_transcript_history_page(
     decoded_cursor = _decode_transcript_history_cursor(cursor)
     from app.services.transcripts import active_transcript_condition, transcript_is_expired
 
+    history_at = func.coalesce(Transcript.first_content_at, Transcript.created_at)
     conditions = [Transcript.owner_user_id == current_user.id, active_transcript_condition()]
     if decoded_cursor is not None:
-        cursor_created_at, cursor_id = decoded_cursor
+        cursor_history_at, cursor_id = decoded_cursor
         conditions.append(
             or_(
-                Transcript.created_at < cursor_created_at,
-                and_(Transcript.created_at == cursor_created_at, Transcript.id < cursor_id),
+                history_at < cursor_history_at,
+                and_(history_at == cursor_history_at, Transcript.id < cursor_id),
             )
         )
     rows = list(
         db.scalars(
             select(Transcript)
             .where(*conditions)
-            .order_by(Transcript.created_at.desc(), Transcript.id.desc())
+            .order_by(history_at.desc(), Transcript.id.desc())
             .limit(page_limit + 1)
         )
     )
@@ -1622,6 +1623,11 @@ def open_realtime_workspace_db_session(request):
 
 
 def resolve_realtime_workspace_user(db: Session, *, raw_session_token: str | None) -> User | None:
+    resolved = resolve_realtime_workspace_context(db, raw_session_token=raw_session_token)
+    return resolved[0] if resolved is not None else None
+
+
+def resolve_realtime_workspace_context(db: Session, *, raw_session_token: str | None):
     if not raw_session_token:
         return None
     session = db.scalar(
@@ -1638,7 +1644,7 @@ def resolve_realtime_workspace_user(db: Session, *, raw_session_token: str | Non
         return None
     if determine_auth_level(user) is not SessionAuthLevel.full:
         return None
-    return user
+    return user, session
 
 
 def resolve_realtime_workspace_payload(

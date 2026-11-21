@@ -21,6 +21,7 @@ from app.services.content_crypto import (
     encrypt_text_for_owner,
 )
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
+from app.services.transcript_first_content import mark_first_content_saved
 
 STRUCTURED_TURNS_SCHEMA_VERSION = 1
 
@@ -206,6 +207,8 @@ def _encrypt_current_turns(db: Session, *, transcript: Transcript, turns: list[d
         field="current_draft_text_encrypted", record_id=transcript.id,
         plaintext=projection,
     )
+    if any(turn["text"].strip() and not turn.get("source_warning") for turn in turns):
+        mark_first_content_saved(db, transcript_id=transcript.id, owner_user_id=transcript.owner_user_id)
 
 
 def append_transcript_turns(

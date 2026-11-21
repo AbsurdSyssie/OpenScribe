@@ -91,6 +91,7 @@ class TranscriptListItem(BaseModel):
     retention_days_applied: int
     retention_expires_at: datetime
     created_at: datetime
+    first_content_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

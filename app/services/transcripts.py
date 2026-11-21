@@ -85,6 +85,7 @@ from app.services.task_outbox import (
     try_publish_task_dispatch_safely,
     try_wake_published_generation_task_dispatch_safely,
 )
+from app.services.transcript_first_content import mark_first_content_saved
 from app.services.quota_lifecycle import delete_dispatches_for_sources, terminalize_attempts_for_transcripts
 from app.services.vault import (
     delete_transcript_ingestion_source_audio,
@@ -661,6 +662,8 @@ def _create_transcript_row(
         retention_days_applied=retention_days,
         retention_expires_at=transcript_expiry(retention_days),
     )
+    if (current_draft_text_encrypted or "").strip() or normalized_structured_context is not None:
+        transcript.created_at = transcript.first_content_at = utcnow()
     db.add(transcript)
     if not is_example:
         owner.example_consultation_pending = False
@@ -913,6 +916,8 @@ def set_freeform_working_note_text(db: Session, *, transcript: Transcript, plain
         if plaintext is not None
         else None
     )
+    if plaintext and plaintext.strip():
+        mark_first_content_saved(db, transcript_id=transcript.id, owner_user_id=transcript.owner_user_id)
 
 
 def _normalize_working_note_line(value: object) -> str:
@@ -1195,6 +1200,8 @@ def set_transcript_draft_text(db: Session, *, transcript: Transcript, plaintext:
         if plaintext is not None
         else None
     )
+    if plaintext and plaintext.strip():
+        mark_first_content_saved(db, transcript_id=transcript.id, owner_user_id=transcript.owner_user_id)
 
 
 def set_transcript_structured_context(db: Session, *, transcript: Transcript, plaintext: dict | None) -> None:
@@ -1210,6 +1217,8 @@ def set_transcript_structured_context(db: Session, *, transcript: Transcript, pl
         if plaintext is not None
         else None
     )
+    if plaintext is not None:
+        mark_first_content_saved(db, transcript_id=transcript.id, owner_user_id=transcript.owner_user_id)
 
 
 def transcript_version_text(db: Session, *, transcript_version: TranscriptVersion) -> str:
@@ -2488,6 +2497,7 @@ def queue_audio_chunk_ingestion(
         _queue_ingestion_attempt_and_dispatch(
             db, job=job, transcript=transcript, measured_duration_seconds=measured_duration_seconds,
         )
+        mark_first_content_saved(db, transcript_id=transcript.id, owner_user_id=owner.id)
         db.commit()
     except Exception:
         db.rollback()
@@ -2712,6 +2722,8 @@ def queue_audio_file_ingestion(
             db, job=job, transcript=transcript,
             measured_duration_seconds=resolved_source_audio_duration_seconds,
         )
+        if source_audio_vault_ref is None:
+            mark_first_content_saved(db, transcript_id=transcript.id, owner_user_id=owner.id)
         db.commit()
     except Exception:
         db.rollback()

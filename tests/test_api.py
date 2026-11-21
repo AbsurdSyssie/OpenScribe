@@ -11,7 +11,7 @@ from contextlib import nullcontext
 from math import ceil
 from types import SimpleNamespace
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 import wave
 from concurrent.futures import ThreadPoolExecutor
@@ -16421,6 +16421,8 @@ def test_transcript_list_endpoint_pages_owner_consults_by_keyset(
     owner = make_user(email="paged-consults@example.com", password="password-1", team=team, team_role=TeamRole.user)
     other = make_user(email="paged-consults-other@example.com", password="password-2", team=team, team_role=TeamRole.user)
     base_time = utcnow() - timedelta(days=1)
+    later_first_save = base_time + timedelta(hours=1)
+    boundary_first_save = base_time + timedelta(minutes=4, seconds=30)
     owner_transcripts = []
     for index in range(15):
         owner_transcripts.append(
@@ -16433,6 +16435,7 @@ def test_transcript_list_endpoint_pages_owner_consults_by_keyset(
                 retention_days_applied=30,
                 retention_expires_at=base_time + timedelta(days=30),
                 created_at=base_time + timedelta(minutes=index),
+                first_content_at={0: later_first_save, 3: boundary_first_save}.get(index),
             )
         )
     db_session.add_all(owner_transcripts)
@@ -16458,7 +16461,14 @@ def test_transcript_list_endpoint_pages_owner_consults_by_keyset(
     first_payload = first_page.json()
     assert first_payload["has_more"] is True
     assert first_payload["next_cursor"]
-    assert [item["title"] for item in first_payload["items"]] == [f"Owner consult {index}" for index in range(14, 2, -1)]
+    assert [item["title"] for item in first_payload["items"]] == [
+        "Owner consult 0",
+        *(f"Owner consult {index}" for index in range(14, 4, -1)),
+        "Owner consult 3",
+    ]
+    assert datetime.fromisoformat(first_payload["items"][0]["created_at"]) == base_time
+    assert datetime.fromisoformat(first_payload["items"][0]["first_content_at"]) == later_first_save
+    assert first_payload["items"][1]["first_content_at"] is None
     assert "current_draft_text" not in first_payload["items"][0]
 
     second_page = client.get(f"/api/v1/transcripts?limit=12&cursor={first_payload['next_cursor']}")
@@ -16467,7 +16477,7 @@ def test_transcript_list_endpoint_pages_owner_consults_by_keyset(
     second_payload = second_page.json()
     assert second_payload["has_more"] is False
     assert second_payload["next_cursor"] is None
-    assert [item["title"] for item in second_payload["items"]] == ["Owner consult 2", "Owner consult 1", "Owner consult 0"]
+    assert [item["title"] for item in second_payload["items"]] == ["Owner consult 4", "Owner consult 2", "Owner consult 1"]
 
     client.post("/api/v1/auth/logout")
     login(client, email="paged-consults-other@example.com", password="password-2")
@@ -18933,6 +18943,8 @@ def test_ingestion_normalization_failure_cancels_reserved_attempt(
         db_session, owner, transcript_id=transcript.id, filename="chunk.webm", source_audio_bytes=b"audio",
         chunk_sequence_no=1, declared_duration_seconds=99,
     )
+    first_content_at = transcript.first_content_at
+    assert first_content_at is not None
     monkeypatch.setattr(
         "app.services.transcripts.normalize_audio_to_wav_16k_mono",
         lambda **kwargs: (_ for _ in ()).throw(AppError(422, "audio_normalization_failed", "normalization failed")),
@@ -18941,6 +18953,7 @@ def test_ingestion_normalization_failure_cancels_reserved_attempt(
     processed = process_transcript_ingestion_job(db_session, job_id=job.id)
 
     assert processed is not None and processed.status is TranscriptIngestionJobStatus.failed
+    assert transcript.first_content_at == first_content_at
     attempt = db_session.scalar(select(ProviderAttempt).where(ProviderAttempt.correlation_id == job.id))
     assert attempt is not None and attempt.status is AttemptStatus.cancelled
 
@@ -18985,6 +18998,7 @@ def test_live_audio_chunk_commit_failure_queues_written_vault_audio_for_cleanup(
     cleanup_job = db_session.scalar(select(TranscriptAudioCleanupJob).where(TranscriptAudioCleanupJob.secret_ref == secret_ref))
     assert cleanup_job is not None
     assert db_session.scalar(select(TranscriptIngestionJob).where(TranscriptIngestionJob.transcript_id == transcript.id)) is None
+    assert transcript.first_content_at is None
 
 
 def test_audio_chunk_route_enforces_owner_scope_and_live_chunk_mode(client, make_team, make_user):
@@ -20302,6 +20316,8 @@ def test_audio_file_upload_queues_job_for_whole_file_mode(
     persisted = db_session.get(Transcript, UUID(transcript_id))
     assert persisted is not None
     assert persisted.current_draft_text_encrypted is None
+    assert persisted.first_content_at is not None
+    assert persisted.first_content_at >= persisted.created_at
     job = db_session.get(TranscriptIngestionJob, UUID(uploaded.json()["job"]["id"]))
     assert job is not None
     assert job.status is TranscriptIngestionJobStatus.queued

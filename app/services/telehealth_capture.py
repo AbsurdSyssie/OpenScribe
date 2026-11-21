@@ -54,6 +54,7 @@ from app.services.transcripts import (
     queue_orphan_transcript_audio_after_rollback,
 )
 from app.services.telehealth_partial import job_is_not_accepted_partial
+from app.services.transcript_first_content import mark_first_content_saved
 from app.services.vault import write_transcript_ingestion_source_audio
 
 
@@ -351,6 +352,7 @@ def stage_telehealth_audio_part(
     )
     db.add(part)
     try:
+        mark_first_content_saved(db, transcript_id=transcript.id, owner_user_id=owner.id)
         db.commit()
     except Exception:
         db.rollback()

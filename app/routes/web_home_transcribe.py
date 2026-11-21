@@ -555,7 +555,12 @@ def _account_success_redirect(message: str) -> RedirectResponse:
 def _rotate_account_session(request: Request, db: Session, context, *, reason: str) -> RedirectResponse:
     revoke_sessions_for_user(db, context.user, reason=reason)
     revoke_trusted_devices_for_user(db, context.user, reason=reason)
-    token = create_session(db, context.user, auth_level=context.session.auth_level)
+    token = create_session(
+        db,
+        context.user,
+        auth_level=context.session.auth_level,
+        previous_session=context.session,
+    )
     response = _account_success_redirect("Account security updated")
     _set_session_cookie(request, response, token)
     _clear_trusted_device_cookie(response)

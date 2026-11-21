@@ -114,7 +114,13 @@ def authenticate_user(db: Session, email: str, password: str) -> User:
     return get_user_by_id(db, user.id) or user
 
 
-def create_session(db: Session, user: User, *, auth_level: SessionAuthLevel | None = None) -> str:
+def create_session(
+    db: Session,
+    user: User,
+    *,
+    auth_level: SessionAuthLevel | None = None,
+    previous_session: UserSession | None = None,
+) -> str:
     token = secrets.token_urlsafe(32)
     session = UserSession(
         user_id=user.id,
@@ -123,6 +129,18 @@ def create_session(db: Session, user: User, *, auth_level: SessionAuthLevel | No
         status=SessionStatus.active,
         expires_at=utcnow() + SESSION_LIFETIME,
     )
+    # New authenticated sessions pin the currently published Terms. Existing
+    # sessions with a NULL snapshot resolve once on first Scribe access.
+    if previous_session is None:
+        from app.services.scribe_terms import current_scribe_terms_version_no
+
+        scribe_terms_version_no = current_scribe_terms_version_no(db) or 0
+    else:
+        # Rotations revoke/commit the source first. Refresh its snapshot after
+        # that commit so a concurrent legacy resolver's winning pin is copied.
+        db.refresh(previous_session, attribute_names=["scribe_terms_version_no"])
+        scribe_terms_version_no = previous_session.scribe_terms_version_no
+    session.scribe_terms_version_no = scribe_terms_version_no
     db.add(session)
     db.commit()
     return token
@@ -209,8 +227,16 @@ def resolve_authenticated_session(db: Session, raw_token: str) -> tuple[User, Us
 
 
 def rotate_session(db: Session, current_token: str, user: User, *, auth_level: SessionAuthLevel | None = None) -> str:
+    current = db.scalar(select(UserSession).where(UserSession.session_token_hash == session_token_hash(current_token)))
     revoke_session_by_token(db, current_token, reason="rotated")
-    return create_session(db, user, auth_level=auth_level)
+    if current is None:
+        return create_session(db, user, auth_level=auth_level)
+    return create_session(
+        db,
+        user,
+        auth_level=auth_level,
+        previous_session=current,
+    )
 
 
 def resolve_trusted_device(db: Session, user: User, raw_token: str | None) -> UserTrustedDevice | None:

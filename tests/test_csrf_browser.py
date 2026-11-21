@@ -4,6 +4,7 @@ from datetime import timedelta
 from urllib.parse import urlparse
 
 import pytest
+from sqlalchemy import update
 from sqlalchemy.orm import sessionmaker
 
 playwright_sync = pytest.importorskip("playwright.sync_api")
@@ -23,8 +24,11 @@ from app.models import (
     TranscriptIngestionMode,
     TranscriptStatus,
     TranscriptVersion,
+    UserSession,
     utcnow,
 )
+from app.schemas.transcripts import TranscriptStart
+from app.services.transcripts import start_transcript
 
 
 @pytest.fixture
@@ -121,6 +125,129 @@ def test_browser_transcribe_start_sends_csrf_header(live_server, make_team, make
     finally:
         browser.close()
         playwright.stop()
+
+
+@pytest.mark.parametrize("trigger", ["tab_focus", "workspace_action"])
+def test_browser_returns_to_login_after_session_expires(live_server, db_session, make_user, trigger):
+    user = make_user(
+        email="browser-expiry@example.com",
+        password="password-1",
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+
+    with playwright_sync.sync_playwright() as playwright:
+        try:
+            browser = playwright.chromium.launch()
+        except playwright_sync.Error as exc:
+            pytest.skip(f"Playwright browser unavailable: {exc}")
+
+        try:
+            page = browser.new_page(base_url=live_server)
+            page.goto("/login")
+            page.locator('form[action="/login"] input[name="email"]').fill(user.email)
+            page.locator('form[action="/login"] input[name="password"]').fill("password-1")
+            page.get_by_role("button", name="Sign in").click()
+            page.wait_for_url("**/workspace")
+            workspace_url = page.url
+
+            if trigger == "tab_focus":
+                with page.expect_response("**/api/v1/auth/me") as session_check:
+                    page.evaluate("window.dispatchEvent(new Event('focus'))")
+                assert session_check.value.status == 200
+            else:
+                assert page.evaluate("async () => (await fetch('/api/v1/users')).status") == 403
+                page.route(
+                    "**/api/v1/app-preferences",
+                    lambda route: route.fulfill(status=401, json={"error": {"code": "unauthorized"}}),
+                )
+                with page.expect_response("**/api/v1/auth/me") as session_check:
+                    status_code = page.evaluate("async () => (await fetch('/api/v1/app-preferences')).status")
+                assert status_code == 401
+                assert session_check.value.status == 200
+            assert page.url == workspace_url
+
+            db_session.execute(
+                update(UserSession)
+                .where(UserSession.user_id == user.id)
+                .values(expires_at=utcnow() - timedelta(seconds=1))
+            )
+            db_session.commit()
+
+            if trigger == "tab_focus":
+                page.evaluate("window.dispatchEvent(new Event('focus'))")
+            else:
+                with page.expect_response("**/api/v1/transcripts/start") as action_response:
+                    page.locator("[data-new-session-button]").click()
+                assert action_response.value.status == 401
+
+            page.wait_for_url(f"{live_server}/login")
+            expect(page.get_by_role("button", name="Sign in")).to_be_visible()
+        finally:
+            browser.close()
+
+
+def test_first_save_moves_open_consultation_in_sidebar(live_server, db_session, make_user):
+    owner = make_user(
+        email="browser-sidebar-date@example.com",
+        password="password-1",
+        mfa_required=False,
+        mfa_enabled=False,
+    )
+    newer = start_transcript(
+        db_session, owner, TranscriptStart(title="Already saved", current_draft_text_encrypted="Synthetic transcript.")
+    )
+    selected = start_transcript(db_session, owner, TranscriptStart(title="First save pending"))
+    newer.created_at = newer.first_content_at = utcnow() - timedelta(days=1)
+    selected.created_at = utcnow() - timedelta(days=2)
+    db_session.commit()
+
+    with playwright_sync.sync_playwright() as playwright:
+        try:
+            browser = playwright.chromium.launch()
+        except playwright_sync.Error as exc:
+            pytest.skip(f"Playwright browser unavailable: {exc}")
+
+        try:
+            page = browser.new_page(base_url=live_server, timezone_id="UTC")
+            page.goto("/login")
+            page.locator('form[action="/login"] input[name="email"]').fill(owner.email)
+            page.locator('form[action="/login"] input[name="password"]').fill("password-1")
+            page.get_by_role("button", name="Sign in").click()
+            page.wait_for_url("**/workspace")
+            page.goto(f"/workspace?transcript_id={selected.id}&open_recent=1")
+
+            panel = page.locator("[data-session-panel]")
+            expect(panel).to_have_attribute("aria-hidden", "false")
+            rows = panel.locator(".session-item")
+            expect(rows.locator(".session-title")).to_have_text(["Already saved", "First save pending"])
+            for row in rows.all():
+                row.locator("[data-session-select]").check()
+            active = panel.locator(".session-item.active")
+            expect(active.locator(".session-title")).to_have_text("First save pending")
+            workspace_url = page.url
+
+            saved_status = page.evaluate(
+                """async (id) => {
+                    const response = await window.OpenScribeCSRF.fetch(`/api/v1/transcripts/${id}/working-note`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ mode: 'freeform', freeform_text: 'Synthetic first Working note.' }),
+                    });
+                    return response.status;
+                }""",
+                str(selected.id),
+            )
+            assert saved_status == 200
+            expect(rows.locator(".session-title")).to_have_text(["First save pending", "Already saved"])
+            expect(active.locator(".session-title")).to_have_text("First save pending")
+            expect(panel.locator("[data-session-select]:checked")).to_have_count(2)
+            db_session.refresh(selected)
+            expect(active.locator("[data-session-created-at]")).to_have_text(selected.first_content_at.strftime("%H:%M"))
+            expect(panel.locator(".session-date-divider").first).to_have_text(selected.first_content_at.strftime("%d/%m/%Y"))
+            assert page.url == workspace_url
+        finally:
+            browser.close()
 
 
 def test_first_scribe_visit_opens_editable_fictional_example(live_server, db_session, make_team, make_user):

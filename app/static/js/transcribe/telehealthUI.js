@@ -1,4 +1,4 @@
-import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261108-final-merge-review';
+import { createTelehealthRecordingClient } from './telehealthRecordingClient.js?v=20261121-first-audio-save';
 import { prepareTelehealthDisplaySource } from './telehealthCapture.js?v=20261108-system-audio';
 import { createTelehealthDiagnostics } from './telehealthDiagnostics.js?v=20261108-audio-scope';
 import {
@@ -846,6 +846,9 @@ export function attachTelehealthControls({
       client = startingClient = createTelehealthRecordingClient({
         transcriptId: startTranscriptId,
         csrfFetch, onLevel, onSourceState, onWarning,
+        onFirstAudioSaved: () => {
+          if (getTranscriptId() === startTranscriptId) void refreshWorkspace?.();
+        },
         onStateChange: (next) => {
           if (['stopping', 'sealed', 'transcribing', 'completed', 'failed', 'discarded', 'incomplete', 'recovery_required'].includes(next)) {
             telehealthMeterActive = false;

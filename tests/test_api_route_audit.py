@@ -1,6 +1,7 @@
 from app.api_route_audit import AuditScenario, missing_route_specs, run_negative_audit
-from app.models import SessionAuthLevel, TeamRole, UserOnboardingState
+from app.models import LegalDocumentKind, SessionAuthLevel, TeamRole, UserOnboardingState
 from app.services.auth import create_session
+from tests.test_legal_content import _publish
 
 
 def test_api_route_audit_manifest_covers_every_api_route():
@@ -68,6 +69,10 @@ def test_api_route_audit_negative_expectations_hold(client, db_session, make_tea
         "leader": AuditScenario(name="leader", session_cookie=create_session(db_session, leader)),
         "admin": AuditScenario(name="admin", session_cookie=create_session(db_session, admin)),
     }
+    _publish(db_session, actor=admin, kind=LegalDocumentKind.terms)
+    scenarios["unaccepted_scribe_terms"] = AuditScenario(
+        name="unaccepted_scribe_terms", session_cookie=create_session(db_session, full_user)
+    )
 
     results = run_negative_audit(client, scenarios)
 

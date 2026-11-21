@@ -51,6 +51,7 @@ from app.services.quotas import (
     settle_provider_attempt_stream_audio,
     settle_provider_attempt_stream_unknown,
 )
+from app.services.transcript_first_content import mark_first_content_saved
 
 
 PCM_SAMPLE_RATE = 16_000
@@ -889,6 +890,8 @@ def fail_transcript_stream(
     _resolve_transcript_after_stream_change(db, transcript=transcript, now=now)
     db.add(session)
     try:
+        if newly_written_recovery_ref:
+            mark_first_content_saved(db, transcript_id=transcript.id, owner_user_id=owner_user_id)
         db.commit()
     except Exception:
         db.rollback()

@@ -6,6 +6,7 @@ import json
 import os
 import sys
 from dataclasses import asdict
+from datetime import date
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -36,10 +37,12 @@ os.environ["RATE_LIMIT_STORAGE_URL"] = TEST_RATE_LIMIT_STORAGE_URL
 from app.api_route_audit import AuditScenario, missing_route_specs, run_negative_audit
 from app.db import Base, get_db
 from app.main import app
-from app.models import SessionAuthLevel, Team, TeamRole, TeamStatus, User, UserOnboardingState
+from app.models import LegalDocumentKind, SessionAuthLevel, Team, TeamRole, TeamStatus, User, UserOnboardingState
 from app.normalization import normalize_email, normalize_team_name_key
+from app.schemas.legal_content import LegalDocumentContent, LegalDocumentDraftCreate
 from app.services.admin import hash_password
 from app.services.auth import create_session
+from app.services.legal_content import create_legal_document_draft, publish_legal_document_draft
 
 
 engine = create_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
@@ -123,13 +126,27 @@ def seed_users(db: Session) -> dict[str, str]:
     )
     db.add_all([onboarding_user, pending_mfa_user, full_user, leader, admin])
     db.commit()
-    return {
+    tokens = {
         "onboarding": create_session(db, onboarding_user),
         "pending_mfa": create_session(db, pending_mfa_user, auth_level=SessionAuthLevel.pending_mfa),
         "full_user": create_session(db, full_user),
         "leader": create_session(db, leader),
         "admin": create_session(db, admin),
     }
+    draft = create_legal_document_draft(
+        db,
+        actor=admin,
+        payload=LegalDocumentDraftCreate(
+            kind=LegalDocumentKind.terms,
+            effective_on=date(2026, 1, 1),
+            content=LegalDocumentContent.model_validate({
+                "blocks": [{"type": "paragraph", "text": "Synthetic Scribe Terms for the authorization audit."}],
+            }),
+        ),
+    )
+    publish_legal_document_draft(db, actor=admin, version_id=draft.id, expected_revision=draft.revision)
+    tokens["unaccepted_scribe_terms"] = create_session(db, full_user)
+    return tokens
 
 
 def build_client() -> TestClient:
@@ -154,6 +171,9 @@ def build_scenarios(session_tokens: dict[str, str]) -> dict[str, AuditScenario]:
         "full_user": AuditScenario(name="full_user", session_cookie=session_tokens["full_user"]),
         "leader": AuditScenario(name="leader", session_cookie=session_tokens["leader"]),
         "admin": AuditScenario(name="admin", session_cookie=session_tokens["admin"]),
+        "unaccepted_scribe_terms": AuditScenario(
+            name="unaccepted_scribe_terms", session_cookie=session_tokens["unaccepted_scribe_terms"]
+        ),
     }
 
 

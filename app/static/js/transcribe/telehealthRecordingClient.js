@@ -47,6 +47,7 @@ export function createTelehealthRecordingClient({
   transcriptId, csrfFetch, onLevel = () => {}, onSourceState = () => {},
   onWarning = () => {}, onStateChange = () => {}, onSpeechFrame = () => {},
   onVadState = () => {}, onStopProgress = () => {}, onDiagnostic = () => {},
+  onFirstAudioSaved = () => {},
   preparedSource = null,
   mediaDevices, AudioContextCtor, AudioWorkletNodeCtor,
   recoveryJournal = null, pacedUpload = null,
@@ -79,6 +80,7 @@ export function createTelehealthRecordingClient({
   const earlyPackets = [];
   const sequence = { clinician: 0, patient: 0 };
   const accepted = { clinician: 0, patient: 0 };
+  let notifiedFirstAudioSaved = false;
 
   const resolveSession = (id) => {
     if (readyResolved) return;
@@ -174,6 +176,10 @@ export function createTelehealthRecordingClient({
     } catch (error) {
       log('upload_failed', { channel: part.channel, part: part.sequence, code: 'upload_failed' });
       throw error;
+    }
+    if (!notifiedFirstAudioSaved) {
+      notifiedFirstAudioSaved = true;
+      try { onFirstAudioSaved(); } catch (_) {}
     }
     try {
       await journal.remove(part);

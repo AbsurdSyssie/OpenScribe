@@ -53,14 +53,67 @@
         return;
       }
       const originalFetch = window.fetch.bind(window);
-      const csrfFetch = (input, init = {}) => {
-        if (!isUnsafeApiRequest(input, init)) {
-          return originalFetch(input, init);
+      {% if current_user %}
+      let checkingSession = false;
+      let loginRedirectRequested = false;
+      async function checkSession() {
+        if (checkingSession || loginRedirectRequested || document.visibilityState !== "visible") {
+          return;
         }
-        return originalFetch(input, {
+        checkingSession = true;
+        try {
+          const response = await originalFetch("/api/v1/auth/me", {
+            cache: "no-store",
+            credentials: "same-origin",
+            redirect: "error",
+          });
+          if (response.status === 401 && document.visibilityState === "visible") {
+            loginRedirectRequested = true;
+            window.location.replace("/login");
+          }
+        } catch {
+          // A connection failure cannot establish that the session has ended.
+        } finally {
+          checkingSession = false;
+        }
+      }
+
+      window.addEventListener("focus", checkSession);
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") {
+          // Allow the next visit to retry if a leave-page prompt was dismissed.
+          loginRedirectRequested = false;
+        } else {
+          void checkSession();
+        }
+      });
+      window.addEventListener("pageshow", (event) => {
+        if (event.persisted) {
+          loginRedirectRequested = false;
+          void checkSession();
+        }
+      });
+      {% endif %}
+      const csrfFetch = (input, init = {}) => {
+        const requestInit = isUnsafeApiRequest(input, init) ? {
           ...init,
           headers: csrfHeaders(init.headers || (input instanceof Request ? input.headers : undefined)),
+        } : init;
+        const request = originalFetch(input, requestInit);
+        {% if current_user %}
+        return request.then((response) => {
+          const denied = response.status === 401 || response.status === 403;
+          if (response.url && (denied || response.redirected)) {
+            const url = new URL(response.url);
+            if (url.origin === window.location.origin && (denied || url.pathname === "/login")) {
+              void checkSession();
+            }
+          }
+          return response;
         });
+        {% else %}
+        return request;
+        {% endif %}
       };
       window.fetch = csrfFetch;
       window.OpenScribeCSRF = {

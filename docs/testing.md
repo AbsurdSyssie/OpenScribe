@@ -80,13 +80,21 @@ DSPT legal-content and lifecycle controls:
 
 These checks cover restricted Markdown parsing into safe legal blocks, including bold, italics and bounded tables. They also cover harmless formatting removal and warnings, preview and rendering, full-session system-administrator writes, publication and versioning, legal retention and holds, the 24-hour failed-source deadline and durable Vault cleanup, six-calendar-month audit expiry, bounded audit holds, browser state, schedules and additive migrations. They use synthetic content only.
 
+Scribe Terms acceptance:
+
+```bash
+.venv/bin/pytest -q tests/test_scribe_terms_persistence.py tests/test_scribe_terms_access.py tests/test_scribe_terms_admin.py tests/test_scribe_terms_browser.py
+```
+
+Use synthetic Terms and accounts to check session versioning, server-side Scribe access, administrator evidence, and account deletion. Run the API authorization audit after pytest.
+
 API authorization manifest:
 
 ```bash
 ./.venv/bin/python scripts/audit_api_auth.py
 ```
 
-The audit compares the manifest with the live `/api/v1` route inventory, probes anonymous/invalid/partial/full/manager/admin session boundaries as applicable, exits `1` on behavior mismatch, and exits `2` when a route has no audit entry.
+The audit compares the manifest with the live `/api/v1` route inventory. It probes session and role boundaries, including a full session with unaccepted Terms on Scribe routes. It exits `1` on a behavior mismatch and `2` when a route has no audit entry.
 
 CSP and XSS coverage:
 
@@ -289,9 +297,11 @@ The browser checks use a local static server, installed Playwright Chromium, and
 
 Also run the affected Deepgram stream, ingestion/snapshot, Working-note autosave, dictation, PII override, and consultation-split suites. Apply the route authorization audit after pytest, never concurrently. New source text and speaker metadata must remain owner-encrypted, generated requests must use immutable redacted source, and recording-start settings must survive rollover and retry without a client permission flag.
 
-## Browser CSRF regression
+## Browser session and CSRF regressions
 
 `tests/test_csrf_browser.py` is an optional Playwright-backed regression. It starts FastAPI on localhost, logs in through the real browser form, follows the compatibility `/transcribe` redirect into the canonical `/workspace` Scribe shell, creates a consultation, and verifies that the browser sends the current session-bound `X-CSRF-Token` to the transcript-start API without rotating it during ordinary same-session navigation.
+
+The suite also expires a session in PostgreSQL and verifies that returning to the tab or starting a consultation sends the user to sign-in. Authorization and provider errors during a valid session leave the user on the workspace.
 
 Run it with:
 

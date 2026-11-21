@@ -145,7 +145,12 @@ def _rotate_after_oidc_account_change(
 ) -> None:
     revoke_sessions_for_user(db, context.user, reason=reason)
     revoke_trusted_devices_for_user(db, context.user, reason=reason)
-    token = create_session(db, context.user, auth_level=context.session.auth_level)
+    token = create_session(
+        db,
+        context.user,
+        auth_level=context.session.auth_level,
+        previous_session=context.session,
+    )
     _set_session_cookie(request, response, token)
     _clear_trusted_device_cookie(response)
 

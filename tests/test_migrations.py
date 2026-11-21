@@ -100,6 +100,57 @@ def _assert_integrity_error(
 
 
 @pytest.mark.migration
+def test_consultation_first_content_migration_keeps_legacy_dates():
+    reset_public_schema()
+    config = alembic_config()
+    command.upgrade(config, "02b3c4d5e6f7")
+    with engine.begin() as connection:
+        ids = _seed_problem_plan_owner(connection)
+
+    command.upgrade(config, "03c4d5e6f7a8")
+    with engine.begin() as connection:
+        legacy = connection.execute(text("""
+            SELECT track_first_content_at, first_content_at, created_at, retention_expires_at
+            FROM transcripts WHERE id = :id
+        """), {"id": ids["transcript"]}).one()
+        assert legacy.track_first_content_at is False
+        assert legacy.first_content_at is None
+        new_id = "00000000-0000-0000-0000-000000009205"
+        new = connection.execute(text("""
+            INSERT INTO transcripts (
+                id, owner_user_id, team_id, title, ingestion_mode, status,
+                next_live_chunk_sequence_no_applied, retention_days_applied,
+                retention_expires_at, created_at, multiple_problems, is_example
+            )
+            SELECT :new_id, owner_user_id, team_id, 'New synthetic transcript', ingestion_mode, status,
+                next_live_chunk_sequence_no_applied, retention_days_applied,
+                retention_expires_at, created_at, multiple_problems, is_example
+            FROM transcripts WHERE id = :legacy_id
+            RETURNING track_first_content_at, first_content_at
+        """), {"legacy_id": ids["transcript"], "new_id": new_id}).one()
+        assert new.track_first_content_at is True
+        assert new.first_content_at is None
+        _assert_integrity_error(
+            connection,
+            "UPDATE transcripts SET first_content_at = now() WHERE id = :id",
+            {"id": ids["transcript"]},
+            expected_constraint="ck_transcripts_first_content_tracking",
+        )
+        assert "ix_transcripts_owner_sidebar_timestamp" in {
+            index["name"] for index in inspect(connection).get_indexes("transcripts")
+        }
+
+    command.downgrade(config, "02b3c4d5e6f7")
+    with engine.connect() as connection:
+        columns = {column["name"] for column in inspect(connection).get_columns("transcripts")}
+        assert {"track_first_content_at", "first_content_at"}.isdisjoint(columns)
+        original_dates = connection.execute(text("""
+            SELECT created_at, retention_expires_at FROM transcripts WHERE id = :id
+        """), {"id": ids["transcript"]}).one()
+        assert original_dates == (legacy.created_at, legacy.retention_expires_at)
+
+
+@pytest.mark.migration
 def test_team_quota_defaults_migration_backfills_teams_without_changing_user_limits():
     reset_public_schema()
     config = alembic_config()
@@ -319,6 +370,7 @@ def test_alembic_upgrade_head_creates_expected_schema_and_provider_config_revisi
         "redaction_runs",
         "security_audit_events",
         "security_audit_event_holds",
+        "scribe_terms_acceptances",
         "smart_phrases",
         "transcript_manual_pii_entities",
         "transcript_capture_settings",

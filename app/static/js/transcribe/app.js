@@ -3,7 +3,7 @@ import { readTranscribeBootstrap } from './bootstrap.js?v=20261005-multiple-prob
 import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261108-final-merge-review';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
 import { createAudioCaptureController } from './media.js?v=20261106-patient-audio-meter';
-import { attachTelehealthControls } from './telehealthUI.js?v=20261108-final-merge-review';
+import { attachTelehealthControls } from './telehealthUI.js?v=20261121-first-audio-save';
 import { DeepgramLiveStream, trimPinnedVadSpeechBuffer } from './deepgramLiveStream.js?v=20261027-dictation-live-preview';
 import { createOwnedMicStream, createVadCaptureOptions } from './vadCapture.js?v=20261027-shared-vad-capture';
 import { createMicVisualizer } from './micVisualizer.js?v=20261106-patient-audio-meter';
@@ -23,11 +23,13 @@ import { createMultipleProblemsController, createSplitAnalysisRestorationPoller,
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,
+  mergeSessionRailItem,
   reconcileSessionRailItems,
   sessionRailGroup,
+  sessionRailTimestamp,
   sortSessionRailItems,
   syncSessionRailCreatedAt,
-} from './sessionRail.js?v=20260920-session-sidebar-timestamp-skeleton';
+} from './sessionRail.js?v=20261121-first-saved-content';
 
       const bootstrap = readTranscribeBootstrap();
       const shell = document.querySelector('[data-workspace-endpoint]');
@@ -970,6 +972,9 @@ let statusDetailsHideTimer = null;
                 noteAutosave.schedule({ immediate: true });
               }
               setWorkingNoteStatus(`Saved ${savedDocument.mode || selectedWorkingNoteMode()} working note`);
+              if (!keepalive && !sessionRailItems.find((item) => item.id === attempt.transcriptId)?.has_saved_content) {
+                void fetchWorkspace(attempt.transcriptId, { guardTranscriptId: attempt.transcriptId });
+              }
               return savedDocument;
             }
             workspaceNoteDocuments = workspaceNoteDocuments.map((document) => (
@@ -4077,9 +4082,10 @@ let statusDetailsHideTimer = null;
 
         const createdAt = document.createElement('span');
         createdAt.className = 'text-xs text-slate';
-        createdAt.dataset.sessionCreatedAt = item.created_at || '';
+        const consultationAt = sessionRailTimestamp(item);
+        createdAt.dataset.sessionCreatedAt = consultationAt;
         createdAt.setAttribute('aria-hidden', 'true');
-        createdAt.textContent = formatSessionRailCreatedAt(item.created_at);
+        createdAt.textContent = formatSessionRailCreatedAt(consultationAt);
 
         const status = document.createElement('span');
         status.dataset.sidebarStatus = item.id;
@@ -4170,7 +4176,8 @@ let statusDetailsHideTimer = null;
         sessionRailItems.forEach((item) => {
           if (!item?.id) return;
           seenIds.add(String(item.id));
-          const group = sessionRailGroup(item.created_at);
+          const consultationAt = sessionRailTimestamp(item);
+          const group = sessionRailGroup(consultationAt);
           if (group.dateKey !== previousDateKey) {
             fragment.append(createSidebarDateDivider(group.dateLabel));
             previousDateKey = group.dateKey;
@@ -4186,7 +4193,7 @@ let statusDetailsHideTimer = null;
             node = createSidebarSessionItem(item);
             link = node.querySelector('[data-session-link]');
           }
-          syncSessionRailCreatedAt(node, item.created_at);
+          syncSessionRailCreatedAt(node, consultationAt);
           fragment.append(node);
         });
         if (seenIds.size === 0) {
@@ -4220,11 +4227,9 @@ let statusDetailsHideTimer = null;
         if (!sessionList || !Array.isArray(items)) return false;
         const previousStructureSignature = workspaceRegionSignature(sessionRailItems.map((item) => ({
           id: item?.id || '',
-          createdAt: item?.created_at || '',
+          timestamp: sessionRailTimestamp(item),
         })));
         const incoming = items.filter((item) => item?.id);
-        const existingById = new Map(sessionRailItems.map((item) => [String(item.id), item]));
-        incoming.forEach((item) => existingById.set(String(item.id), { ...(existingById.get(String(item.id)) || {}), ...item }));
         if (options.replaceTop) {
           sessionRailItems = reconcileSessionRailItems({
             currentItems: sessionRailItems,
@@ -4233,11 +4238,16 @@ let statusDetailsHideTimer = null;
             preserveLoaded: options.preserveLoaded,
           });
         } else {
+          const existingById = new Map(sessionRailItems.map((item) => [String(item.id), item]));
+          incoming.forEach((item) => {
+            const id = String(item.id);
+            existingById.set(id, mergeSessionRailItem(existingById.get(id), item));
+          });
           sessionRailItems = sortSessionRailItems([...existingById.values()]);
         }
         const nextStructureSignature = workspaceRegionSignature(sessionRailItems.map((item) => ({
           id: item?.id || '',
-          createdAt: item?.created_at || '',
+          timestamp: sessionRailTimestamp(item),
         })));
         const structureChanged = previousStructureSignature !== nextStructureSignature;
         if (structureChanged) renderSidebarTranscripts(options);
@@ -5274,9 +5284,9 @@ let statusDetailsHideTimer = null;
           sessionRailNextCursor = workspace.recent_transcripts_next_cursor || null;
           sessionRailHasMore = recentTranscriptsTopHasMore;
         }
-        const sessionRailRegionSignature = workspaceRegionSignature(sidebarTranscripts.slice(0, sessionRailPageSize).map((item) => ({
+        const sessionRailRegionSignature = workspaceRegionSignature(sidebarTranscripts.map((item) => ({
           id: item?.id || '',
-          createdAt: item?.created_at || '',
+          timestamp: sessionRailTimestamp(item),
         })));
         const sessionRailRegionChanged = sessionRailRegionSignature !== lastSessionRailRegionSignature;
         lastSessionRailRegionSignature = sessionRailRegionSignature;
@@ -5302,10 +5312,6 @@ let statusDetailsHideTimer = null;
         sidebarTranscripts.forEach((item) => {
           const node = document.querySelector(`[data-sidebar-status="${item.id}"]`);
           if (node) setSidebarStatus(node, item.status, item.ingestion_mode, Boolean(item.has_transcript_content));
-          syncSessionRailCreatedAt(
-            document.querySelector(`[data-session-link][data-transcript-id="${item.id}"]`)?.closest('.session-item'),
-            item.created_at,
-          );
           const titleNode = document.querySelector(`[data-session-link][data-transcript-id="${item.id}"] .session-title`);
           const nextTitle = item.title || 'Untitled session';
           if (titleNode && titleNode.textContent !== nextTitle) titleNode.textContent = nextTitle;
@@ -6329,7 +6335,8 @@ let statusDetailsHideTimer = null;
 
       window.addEventListener('beforeunload', (event) => {
         if (!transcriptTurnsEditor?.dirty && !noteEditorDirty && !noteAutosave.pending
-          && !workingNoteSaveAttempts.pending && !workingNoteClearAttempts.pending) return;
+          && !workingNoteSaveAttempts.pending && !workingNoteClearAttempts.pending
+          && !followupEditorDirty && !followupSaveInFlight && !hasUnsavedDictationDraft()) return;
         event.preventDefault();
         event.returnValue = '';
       });

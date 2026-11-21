@@ -674,6 +674,7 @@ def test_audio_queue_uses_capture_snapshot_only_for_same_selected_config(monkeyp
     # Admission locking/barriers have committed-connection coverage; this fake
     # isolates the provider snapshot contract from database coordination.
     monkeypatch.setattr(transcript_service, "_lock_split_source_writer_transcript", lambda *_a, **_kw: transcript)
+    monkeypatch.setattr(transcript_service, "mark_first_content_saved", lambda *_a, **_kw: None)
     monkeypatch.setattr(transcript_service, "assert_no_unresolved_stream_session", lambda *_a, **_kw: None)
     monkeypatch.setattr(transcript_service, "resolve_selected_team_stt", lambda *_a, **_kw: (None, config, "synthetic", None))
     monkeypatch.setattr(transcript_service, "ensure_stt_config_credential_ready", lambda **_kw: None)

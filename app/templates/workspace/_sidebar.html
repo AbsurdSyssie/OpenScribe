@@ -1,4 +1,4 @@
-<aside id="workspace-sidebar" class="workspace-sidebar transcribe-sidebar" data-primary-sidebar aria-label="Workspace sidebar" tabindex="-1">
+<aside id="workspace-sidebar" class="workspace-sidebar transcribe-sidebar" data-primary-sidebar aria-label="Workspace sidebar" tabindex="-1"{% if scribe_terms_required %} inert{% endif %}>
   <div class="workspace-sidebar__brand-row">
     <a class="brand workspace-sidebar__brand" href="{{ back_to_scribe_url|default('/workspace?open_recent=1') }}" data-back-to-scribe data-recording-navigation aria-label="OpenScribe — Back to Scribe">
       <span class="brand-mark" aria-hidden="true"><i data-lucide="feather"></i></span>

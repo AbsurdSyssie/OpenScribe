@@ -12,6 +12,7 @@ from app.services.audio import enforce_whole_file_duration_limit, enforce_whole_
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.content_crypto import decrypt_text_for_owner, encrypt_text_for_owner
 from app.services.stt import transcribe_metered_team_stt
+from app.services.transcript_first_content import mark_first_content_saved
 from app.services.transcripts import get_active_owner_transcript
 
 
@@ -137,7 +138,7 @@ def update_post_consultation_dictation(
     combined_text: str,
     commit: bool = True,
 ) -> PostConsultationDictation:
-    _, dictation = _get_or_create_post_consultation_dictation(db, owner, transcript_id=transcript_id)
+    transcript, dictation = _get_or_create_post_consultation_dictation(db, owner, transcript_id=transcript_id)
     dictation.combined_edited_text_encrypted = encrypt_text_for_owner(
         db,
         owner_user_id=owner.id,
@@ -149,6 +150,8 @@ def update_post_consultation_dictation(
     dictation.is_combined_text_user_edited = True
     dictation.updated_at = utcnow()
     db.add(dictation)
+    if combined_text.strip():
+        mark_first_content_saved(db, transcript_id=transcript.id, owner_user_id=owner.id)
     if commit:
         db.commit()
         db.refresh(dictation)
@@ -250,6 +253,7 @@ def append_post_consultation_dictation_audio(
     dictation.updated_at = dictation.latest_appended_at
     db.add(segment)
     db.add(dictation)
+    mark_first_content_saved(db, transcript_id=transcript.id, owner_user_id=owner.id)
     db.commit()
     db.refresh(dictation)
     return dictation

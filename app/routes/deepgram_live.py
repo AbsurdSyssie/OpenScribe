@@ -25,7 +25,11 @@ from app.services.auth import SESSION_COOKIE_NAME
 from app.services.csrf import verify_csrf_token
 from app.services.stt import resolve_selected_team_stt, resolve_stt_snapshot_bearer_token
 from app.services.transcripts import get_active_owner_transcript
-from app.web.transcribe_workspace import open_realtime_workspace_db_session, resolve_realtime_workspace_user
+from app.web.transcribe_workspace import (
+    open_realtime_workspace_db_session,
+    resolve_realtime_workspace_context,
+    resolve_realtime_workspace_user,
+)
 from app.services import deepgram_diagnostics
 
 
@@ -76,22 +80,39 @@ def _same_origin(socket: WebSocket) -> bool:
     return bool(host and scheme in {"http", "https"} and socket.headers.get("origin") == f"{scheme}://{host}")
 
 
-def _with_owner(socket: WebSocket, transcript_id: UUID, operation):
+def _with_owner(socket: WebSocket, transcript_id: UUID, operation, *, check_scribe_terms: bool = False):
     from app.main import _enforce_localhost_only_dev_account
 
     with open_realtime_workspace_db_session(socket) as db:
-        owner = resolve_realtime_workspace_user(db, raw_session_token=socket.cookies.get(SESSION_COOKIE_NAME))
+        raw_session_token = socket.cookies.get(SESSION_COOKIE_NAME)
+        if check_scribe_terms:
+            resolved = resolve_realtime_workspace_context(db, raw_session_token=raw_session_token)
+            owner, session = resolved if resolved is not None else (None, None)
+        else:
+            owner = resolve_realtime_workspace_user(db, raw_session_token=raw_session_token)
+            session = None
         if owner is None:
             raise AppError(401, "unauthorized", "Authentication required")
         _enforce_localhost_only_dev_account(socket, owner)
+        if check_scribe_terms:
+            from app.services.scribe_terms import required_scribe_terms_version
+
+            if required_scribe_terms_version(db, user=owner, session=session) is not None:
+                raise AppError(403, "scribe_terms_required", "Accept the Scribe Terms before accessing clinical data")
         root = get_active_owner_transcript(db, owner, transcript_id=transcript_id)
         if owner.is_system_admin or owner.team_id is None or root.team_id != owner.team_id:
             raise AppError(403, "forbidden", "Transcript access denied")
         return operation(db, owner, root)
 
 
-async def _owner_call(socket: WebSocket, transcript_id: UUID, operation):
-    return await asyncio.to_thread(_with_owner, socket, transcript_id, operation)
+async def _owner_call(socket: WebSocket, transcript_id: UUID, operation, *, check_scribe_terms: bool = False):
+    return await asyncio.to_thread(
+        _with_owner,
+        socket,
+        transcript_id,
+        operation,
+        check_scribe_terms=check_scribe_terms,
+    )
 
 
 async def _send(socket: WebSocket, transcript_id: UUID, payload: dict) -> None:
@@ -720,6 +741,7 @@ async def deepgram_dictation_live(socket: WebSocket, transcript_id: UUID):
 async def _deepgram_live(socket: WebSocket, transcript_id: UUID, *, dictation: bool):
     relay = None
     accepted = False
+    close_code = 1008
     phase = "origin_check"
     phase_started = monotonic()
     try:
@@ -733,7 +755,7 @@ async def _deepgram_live(socket: WebSocket, transcript_id: UUID, *, dictation: b
         )
         phase = "owner_check"
         phase_started = monotonic()
-        await _owner_call(socket, transcript_id, lambda db, owner, root: None)
+        await _owner_call(socket, transcript_id, lambda db, owner, root: None, check_scribe_terms=True)
         deepgram_diagnostics.emit(
             "phase", phase="owner_check", outcome="success",
             duration_ms=min(3_600_000, round((monotonic() - phase_started) * 1000)),
@@ -783,7 +805,7 @@ async def _deepgram_live(socket: WebSocket, transcript_id: UUID, *, dictation: b
         # Never propagate raw SDK/DB exceptions through ASGI tracebacks: their
         # exception strings can include provider bodies or encrypted SQL binds.
         allowed_codes = {
-            "unauthorized", "forbidden", "not_found", "stream_csrf_invalid",
+            "unauthorized", "forbidden", "not_found", "stream_csrf_invalid", "scribe_terms_required",
             "stt_config_secret_missing", "stream_provider_ineligible", "stream_transcript_busy",
             "stream_frame_invalid", "stream_message_invalid", "stream_session_expired",
             "stream_result_invalid", "stream_finalization_failed", "stream_time_limit",
@@ -805,7 +827,11 @@ async def _deepgram_live(socket: WebSocket, transcript_id: UUID, *, dictation: b
             # A provider Metadata event before CloseStream is an upstream close.
             failure_code = "stream_provider_failed"
         if isinstance(exc, AppError):
-            if exc.code in {"quota_exceeded", "quota_disabled"}:
+            if exc.code == "scribe_terms_required":
+                close_code = 4403
+                code = exc.code
+                failure_code = exc.code
+            elif exc.code in {"quota_exceeded", "quota_disabled"}:
                 code = "quota_exceeded"
                 failure_code = "stream_quota_exceeded"
             elif exc.code == "stream_session_expired":
@@ -895,7 +921,7 @@ async def _deepgram_live(socket: WebSocket, transcript_id: UUID, *, dictation: b
             relay.audio.clear()
             relay.finals.clear()
         with contextlib.suppress(Exception):
-            await socket.close(code=1000 if relay is not None and relay.completed else 1008)
+            await socket.close(code=1000 if relay is not None and relay.completed else close_code)
 
 
 # Ordinary HTTP recovery requests use the same full-session, CSRF, upload bounds

@@ -131,12 +131,14 @@ const journal = {
   async clear() { durable.clear(); },
 };
 const stopPhases = [];
+let firstAudioSaves = 0;
 const client = createTelehealthRecordingClient({
   transcriptId: 'transcript-uuid',
   preparedSource: { audioScope: 'system', isLive: () => true, transfer() {}, release() {} },
   csrfFetch: fetcher, recoveryJournal: journal,
   pacedUpload: async () => {},
   onStopProgress: phase => stopPhases.push(phase),
+  onFirstAudioSaved: () => { firstAudioSaves += 1; },
 });
 const started = await client.start();
 assert.equal(started.status, 'active');
@@ -146,9 +148,11 @@ assert.deepEqual(stopPhases, ['flushing', 'uploading'],
   'source upload failure is never misrepresented as finalised audio');
 assert.equal(client.state, 'recovery_required');
 assert.equal(attempts.length, 1);
+assert.equal(firstAudioSaves, 0);
 await client.retryPendingUploads();
 assert.equal(client.state, 'sealed');
 assert.deepEqual(client.uploadedParts, { clinician: 1, patient: 1 });
+assert.equal(firstAudioSaves, 1);
 assert.equal(durable.size, 0);
 assert.deepEqual(attempts.map(([channel]) => channel), ['clinician','clinician','patient']);
 assert.equal(attempts[0][1], attempts[1][1]);

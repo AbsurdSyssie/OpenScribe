@@ -226,9 +226,44 @@ def test_session_rail_reconcile_preserves_loaded_rows_when_workspace_appends_old
             );
             assert.equal(reconciled.length, 23);
             assert.equal(reconciled[16].title, 'Updated selected consultation');
+
+            const firstContentAt = '2026-07-20T13:00:00.000Z';
+            const promoted = { ...selectedOld, first_content_at: firstContentAt };
+            const promotedItems = sandbox.reconcileSessionRailItems({
+              currentItems: [...loaded.slice(0, 12), selectedOld],
+              workspaceItems: [promoted, ...loaded.slice(0, 11)],
+              pageSize: 12,
+              preserveLoaded: false,
+            });
+
+            assert.equal(promotedItems[0].id, promoted.id);
+            assert.equal(sandbox.sessionRailTimestamp(promotedItems[0]), firstContentAt);
+            assert.equal(sandbox.sessionRailGroup(firstContentAt).dateKey, '2026-07-20');
+            assert.equal(promotedItems.at(-1).id, loaded[11].id);
+            assert.equal(
+              sandbox.mergeSessionRailItem(promotedItems[0], { ...selectedOld, first_content_at: null }).first_content_at,
+              firstContentAt,
+            );
+
+            const boundary = { id: '01', created_at: '2026-07-20T12:00:00.123900Z' };
+            const older = { id: '03', created_at: '2026-07-20T13:00:00.123100+01:00' };
+            const equivalent = { id: '02', created_at: '2026-07-20T13:00:00.1239+01:00' };
+            assert.deepEqual(
+              Array.from(sandbox.sortSessionRailItems([boundary, older, equivalent]), (entry) => entry.id),
+              ['02', '01', '03'],
+            );
+            assert.deepEqual(
+              Array.from(sandbox.reconcileSessionRailItems({
+                currentItems: [boundary, older],
+                workspaceItems: [boundary],
+                pageSize: 1,
+                preserveLoaded: true,
+              }), (entry) => entry.id),
+              ['01', '03'],
+            );
             """
         ).replace("__SOURCE_PATH__", repr(str(root / "app/static/js/transcribe/sessionRail.js"))),
         encoding="utf-8",
     )
 
-    subprocess.run(["node", str(runner)], check=True, cwd=root)
+    subprocess.run(["node", str(runner)], check=True, cwd=root, env={**os.environ, "TZ": "Europe/London"})

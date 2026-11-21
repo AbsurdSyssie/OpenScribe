@@ -26,6 +26,7 @@ from ..models import (
     QuickAction,
     SmartPhrase,
     SecurityAuditHoldReason,
+    ScribeTermsAcceptance,
     SttAdapterKind,
     SttConfigSetupStatus,
     SttProviderPreset,
@@ -1315,6 +1316,21 @@ def render_admin(
         for user in users
         if selected_team is not None and user.team_id == selected_team.id and not user.is_system_admin
     ]
+    scribe_terms_acceptances_by_user: dict[UUID, list[dict[str, object]]] = {}
+    if current_user.is_system_admin and workspace_team_tab == "members" and selected_team_users:
+        acceptance_rows = db.scalars(
+            select(ScribeTermsAcceptance)
+            .where(ScribeTermsAcceptance.user_id.in_([user.id for user in selected_team_users]))
+            .order_by(ScribeTermsAcceptance.user_id, ScribeTermsAcceptance.version_no)
+        ).all()
+        for acceptance in acceptance_rows:
+            accepted_at = acceptance.accepted_at
+            if accepted_at.tzinfo is None:
+                accepted_at = accepted_at.replace(tzinfo=UTC)
+            accepted_at_utc = accepted_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+            scribe_terms_acceptances_by_user.setdefault(acceptance.user_id, []).append(
+                {"version_no": acceptance.version_no, "accepted_at_utc": accepted_at_utc}
+            )
     selected_quota_member = None
     quota_detail = None
     eligible_quota_users = [user for user in selected_team_users if user.team_role is not None]
@@ -1365,6 +1381,7 @@ def render_admin(
         "users": users,
         "selected_team": selected_team,
         "selected_team_users": selected_team_users,
+        "scribe_terms_acceptances_by_user": scribe_terms_acceptances_by_user,
         "selected_quota_member": selected_quota_member,
         "eligible_quota_users": eligible_quota_users,
         "quota_selection_error": quota_selection_error,

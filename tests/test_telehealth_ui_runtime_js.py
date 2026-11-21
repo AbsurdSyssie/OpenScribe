@@ -13,7 +13,7 @@ NODE = shutil.which("node")
 def test_failed_sealed_submission_retries_from_rendered_control_and_discard_unlocks(tmp_path):
     source = (ROOT / "app/static/js/transcribe/telehealthUI.js").read_text(encoding="utf-8")
     source = source.replace(
-        "./telehealthRecordingClient.js?v=20261108-final-merge-review", "./fake.mjs"
+        "./telehealthRecordingClient.js?v=20261121-first-audio-save", "./fake.mjs"
     ).replace(
         "./telehealthCapture.js?v=20261108-system-audio", "./capture.mjs"
     ).replace(

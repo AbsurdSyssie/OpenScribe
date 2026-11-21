@@ -57,12 +57,32 @@ export function keepSessionRailItemVisible({ scrollContainer, item, inset = 12, 
   return nextTop;
 }
 
+export function sessionRailTimestamp(item) {
+  return item?.first_content_at || item?.created_at || '';
+}
+
+export function mergeSessionRailItem(previous, incoming) {
+  return { ...previous, ...incoming, first_content_at: previous?.first_content_at || incoming.first_content_at };
+}
+
+function subMillisecondMicroseconds(timestamp) {
+  const digits = /\.\d{3}(\d{1,3})(?:Z|[+-]\d{2}:?\d{2})?$/i.exec(timestamp)?.[1];
+  return Number(digits?.padEnd(3, '0') || 0);
+}
+
 function compareSessionRailItems(left, right) {
-  const leftTime = Date.parse(left?.created_at || '');
-  const rightTime = Date.parse(right?.created_at || '');
+  const leftTimestamp = sessionRailTimestamp(left);
+  const rightTimestamp = sessionRailTimestamp(right);
+  const leftTime = Date.parse(leftTimestamp);
+  const rightTime = Date.parse(rightTimestamp);
   const safeLeftTime = Number.isFinite(leftTime) ? leftTime : 0;
   const safeRightTime = Number.isFinite(rightTime) ? rightTime : 0;
   if (safeRightTime !== safeLeftTime) return safeRightTime - safeLeftTime;
+  if (leftTime === rightTime) {
+    // PostgreSQL history cursors use microsecond precision.
+    const microseconds = subMillisecondMicroseconds(rightTimestamp) - subMillisecondMicroseconds(leftTimestamp);
+    if (microseconds !== 0) return microseconds;
+  }
   return String(right?.id || '').localeCompare(String(left?.id || ''));
 }
 
@@ -85,13 +105,16 @@ export function reconcileSessionRailItems({
   const supplemental = incoming.slice(safePageSize);
   const topPageIds = new Set(topPage.map((item) => String(item.id)));
   const mergedById = new Map(current.map((item) => [String(item.id), item]));
+  const firstContentMovedIntoTop = topPage.some((item) => (
+    item.first_content_at && !mergedById.get(String(item.id))?.first_content_at
+  ));
   incoming.forEach((item) => {
     const id = String(item.id);
-    mergedById.set(id, { ...(mergedById.get(id) || {}), ...item });
+    mergedById.set(id, mergeSessionRailItem(mergedById.get(id), item));
   });
 
-  const topPageBoundary = sortSessionRailItems(topPage).at(-1);
-  const retained = preserveLoaded && topPageBoundary
+  const topPageBoundary = sortSessionRailItems(topPage.map((item) => mergedById.get(String(item.id)))).at(-1);
+  const retained = (preserveLoaded || firstContentMovedIntoTop) && topPageBoundary
     ? current.filter((item) => (
       !topPageIds.has(String(item.id))
       && compareSessionRailItems(item, topPageBoundary) > 0

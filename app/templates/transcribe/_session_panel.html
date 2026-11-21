@@ -1,4 +1,5 @@
 {% macro consultation_item(transcript) -%}
+{% set consultation_at = transcript.first_content_at or transcript.created_at %}
 <div class="session-item rounded-lg px-3 py-2.5 {% if active_transcript_id == transcript.id|string %}active{% endif %}">
   <div class="flex items-start gap-2">
     <input class="mt-1" type="checkbox" name="transcript_ids" form="bulk-delete-sessions" value="{{ transcript.id }}" data-has-saved-content="{{ 'true' if transcript.has_saved_content else 'false' }}" data-session-select>
@@ -12,7 +13,7 @@
         {% else %}{% set status_tone, status_icon, status_label = 'waiting', 'minus', 'Waiting' %}{% endif %}
         <span class="session-status-icon session-status-icon--{{ status_tone }}" data-sidebar-status="{{ transcript.id }}" aria-label="{{ status_label }}" title="{{ status_label }}"><i data-lucide="{{ status_icon }}" aria-hidden="true"></i><span class="sr-only">{{ status_label }}</span></span>
       </div>
-      <div class="flex items-center gap-2 mt-1"><span class="text-xs text-slate" data-session-created-at="{{ transcript.created_at.isoformat() }}" aria-hidden="true">{{ transcript.created_at.strftime('%H:%M') }}</span><noscript><span class="text-xs text-slate" aria-label="Time in UTC">{{ transcript.created_at.strftime('%H:%M') }} UTC</span></noscript></div>
+      <div class="flex items-center gap-2 mt-1"><span class="text-xs text-slate" data-session-created-at="{{ consultation_at.isoformat() }}" aria-hidden="true">{{ consultation_at.strftime('%H:%M') }}</span><noscript><span class="text-xs text-slate" aria-label="Time in UTC">{{ consultation_at.strftime('%H:%M') }} UTC</span></noscript></div>
     </a>
   </div>
 </div>
@@ -31,7 +32,8 @@
       {% if recent_transcripts %}
         {% set group = namespace(date=none, period=none) %}
         {% for transcript in recent_transcripts %}
-          {% set consultation_date = transcript.created_at.date() %}{% set consultation_period = 'morning' if transcript.created_at.hour < 12 else 'afternoon' %}
+          {% set consultation_at = transcript.first_content_at or transcript.created_at %}
+          {% set consultation_date = consultation_at.date() %}{% set consultation_period = 'morning' if consultation_at.hour < 12 else 'afternoon' %}
           {% if consultation_date != group.date %}<div class="session-date-divider"><span class="session-date-divider__text">{{ consultation_date.strftime('%d/%m/%Y') }}</span></div>{% set group.date = consultation_date %}{% set group.period = none %}{% endif %}
           {% if consultation_period != group.period %}<div class="session-time-divider"><i class="session-time-divider__icon" data-lucide="{{ 'sunrise' if consultation_period == 'morning' else 'sun' }}"></i><span class="session-time-divider__label">{{ consultation_period|title }}</span></div>{% set group.period = consultation_period %}{% endif %}
           {{ consultation_item(transcript) }}

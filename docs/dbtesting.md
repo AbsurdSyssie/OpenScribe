@@ -64,6 +64,10 @@ Migration tests own the `public` schema lifecycle and do not use the ordinary pr
 
 PostgreSQL enum additions are append-only; the accessibility legal-document label remains after downgrade and re-upgrade.
 
+The canonical migration path is `02b3c4d5e6f7` → `03c4d5e6f7a8` → `04d5e6f7a8b9` → `05e6f7a8b9c0`. The standalone Terms branch used `04d5e6f7a8b9` directly after `02b3c4d5e6f7`. When `track_first_content_at` is missing, `05e6f7a8b9c0` adds the first-content schema from `03` and preserves Terms acceptance rows. Existing consultations keep their creation date in the sidebar, and new consultations track their first save. Downgrading to canonical `04` keeps the schema owned by `03`.
+
+`test_standalone_terms_revision_repairs_first_content_schema_without_losing_evidence` models the standalone `04` stamp and acceptance table, upgrades to head, and verifies that acceptance evidence survives, legacy/new transcript defaults remain correct, and the index and tracking constraint exist. Keep this migration forward-only; do not rewrite the deployed `03` or `04` revisions.
+
 After a migration test, teardown invalidates the worker's canonical-schema readiness flag even if the test fails. The next ordinary database-backed test rebuilds canonical metadata before opening its rollback-isolated connection.
 
 Test engines use `NullPool` so connections do not retain stale cached plans across schema drops.

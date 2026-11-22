@@ -151,6 +151,95 @@ def test_consultation_first_content_migration_keeps_legacy_dates():
 
 
 @pytest.mark.migration
+def test_standalone_terms_revision_repairs_first_content_schema_without_losing_evidence():
+    reset_public_schema()
+    config = alembic_config()
+    command.upgrade(config, "04d5e6f7a8b9")
+    with engine.begin() as connection:
+        # Reproduce the standalone branch's schema: it applied the actual 04
+        # Terms migration directly after 02, so the 03-owned transcript schema
+        # is absent while the Alembic stamp and acceptance table remain real.
+        connection.execute(text("DROP INDEX ix_transcripts_owner_sidebar_timestamp"))
+        connection.execute(text(
+            "ALTER TABLE transcripts DROP CONSTRAINT ck_transcripts_first_content_tracking"
+        ))
+        connection.execute(text(
+            "ALTER TABLE transcripts DROP COLUMN track_first_content_at, DROP COLUMN first_content_at"
+        ))
+        ids = _seed_problem_plan_owner(connection)
+        connection.execute(text("""
+            INSERT INTO scribe_terms_acceptances (id, user_id, version_no, accepted_at)
+            VALUES (
+                '00000000-0000-0000-0000-000000009206',
+                :user_id,
+                7,
+                TIMESTAMPTZ '2026-11-20 10:11:12+00'
+            )
+        """), {"user_id": ids["owner"]})
+
+    command.upgrade(config, "head")
+    with engine.begin() as connection:
+        acceptance = connection.execute(text("""
+            SELECT version_no, accepted_at FROM scribe_terms_acceptances
+            WHERE user_id = :user_id
+        """), {"user_id": ids["owner"]}).one()
+        legacy = connection.execute(text("""
+            SELECT track_first_content_at, first_content_at, created_at
+            FROM transcripts WHERE id = :id
+        """), {"id": ids["transcript"]}).one()
+        assert acceptance.version_no == 7
+        assert acceptance.accepted_at.isoformat() == "2026-11-20T10:11:12+00:00"
+        assert legacy.track_first_content_at is False
+        assert legacy.first_content_at is None
+
+        new = connection.execute(text("""
+            INSERT INTO transcripts (
+                id, owner_user_id, team_id, title, ingestion_mode, status,
+                next_live_chunk_sequence_no_applied, retention_days_applied,
+                retention_expires_at, created_at, multiple_problems, is_example
+            )
+            SELECT '00000000-0000-0000-0000-000000009207', owner_user_id, team_id,
+                'New synthetic transcript', ingestion_mode, status,
+                next_live_chunk_sequence_no_applied, retention_days_applied,
+                retention_expires_at, created_at, multiple_problems, is_example
+            FROM transcripts WHERE id = :legacy_id
+            RETURNING track_first_content_at, first_content_at
+        """), {"legacy_id": ids["transcript"]}).one()
+        assert new.track_first_content_at is True
+        assert new.first_content_at is None
+        _assert_integrity_error(
+            connection,
+            "UPDATE transcripts SET first_content_at = now() WHERE id = :id",
+            {"id": ids["transcript"]},
+            expected_constraint="ck_transcripts_first_content_tracking",
+        )
+        assert "ix_transcripts_owner_sidebar_timestamp" in {
+            index["name"] for index in inspect(connection).get_indexes("transcripts")
+        }
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "05e6f7a8b9c0"
+
+    # On the canonical path, 03 already exists before 04. The reconciliation
+    # must leave a real first-content timestamp untouched.
+    reset_public_schema()
+    command.upgrade(config, "04d5e6f7a8b9")
+    with engine.begin() as connection:
+        canonical_ids = _seed_problem_plan_owner(connection)
+        first_content_at = connection.execute(text("""
+            UPDATE transcripts
+            SET first_content_at = TIMESTAMPTZ '2026-11-21 09:08:07+00'
+            WHERE id = :id
+            RETURNING first_content_at
+        """), {"id": canonical_ids["transcript"]}).scalar_one()
+
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        retained_first_content_at = connection.execute(text("""
+            SELECT first_content_at FROM transcripts WHERE id = :id
+        """), {"id": canonical_ids["transcript"]}).scalar_one()
+    assert retained_first_content_at == first_content_at
+
+
+@pytest.mark.migration
 def test_team_quota_defaults_migration_backfills_teams_without_changing_user_limits():
     reset_public_schema()
     config = alembic_config()

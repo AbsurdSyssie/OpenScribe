@@ -542,6 +542,8 @@ Before running it, add a synthetic, non-patient WAV file at `tests/example_audio
 
 `.github/workflows/docker-smoke.yml` uses the Dockerfile's Python 3.12 version for host-side syntax checks and the dependency audit, then validates Compose, builds the image, starts the `runtime` profile, waits for the `/health` healthcheck, and prints concise container diagnostics on failure. It does not prove provider connectivity or production readiness.
 
+Run the host-side Telehealth Stop UI check with `.venv/bin/python scripts/smoke_telehealth_stop_ui.py`. This check uses Node and the same synthetic fixtures as pytest. It matches JavaScript imports by module path and ignores cache-busting versions.
+
 Local equivalent:
 
 ```bash

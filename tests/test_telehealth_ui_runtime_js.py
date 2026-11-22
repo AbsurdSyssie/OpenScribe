@@ -5,22 +5,14 @@ from pathlib import Path
 
 import pytest
 
+from scripts.smoke_telehealth_stop_ui import telehealth_ui_source
+
 ROOT = Path(__file__).resolve().parents[1]
 NODE = shutil.which("node")
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js required")
 def test_failed_sealed_submission_retries_from_rendered_control_and_discard_unlocks(tmp_path):
-    source = (ROOT / "app/static/js/transcribe/telehealthUI.js").read_text(encoding="utf-8")
-    source = source.replace(
-        "./telehealthRecordingClient.js?v=20261121-first-audio-save", "./fake.mjs"
-    ).replace(
-        "./telehealthCapture.js?v=20261108-system-audio", "./capture.mjs"
-    ).replace(
-        "./telehealthRecoveryJournal.js?v=20261108-final-merge-review", "./fake.mjs"
-    ).replace(
-        "./telehealthDiagnostics.js?v=20261108-audio-scope", "./diagnostics.mjs"
-    )
     (tmp_path / "diagnostics.mjs").write_text(
         (ROOT / "app/static/js/transcribe/telehealthDiagnostics.js").read_text(encoding="utf-8"),
         encoding="utf-8",
@@ -43,7 +35,7 @@ export function prepareTelehealthDisplaySource(options = {}) {
   return f.selectionGate ? f.selectionGate.then(() => source) : Promise.resolve(source);
 }
 """, encoding="utf-8")
-    (tmp_path / "ui.mjs").write_text(source, encoding="utf-8")
+    (tmp_path / "ui.mjs").write_text(telehealth_ui_source(), encoding="utf-8")
     (tmp_path / "fake.mjs").write_text(r"""
 export function createTelehealthRecoveryJournal() {
   return { check:async()=>{}, list:async()=>[], clear:async()=>{} };

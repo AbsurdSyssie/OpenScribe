@@ -9,6 +9,7 @@ developer pytest and the GitHub Actions host Node step.
 from __future__ import annotations
 
 import ast
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -41,21 +42,26 @@ def fixture_code(filename: str) -> str:
     raise SystemExit(f"Could not find the expected synthetic {filename} fixture")
 
 
-def main() -> None:
+def telehealth_ui_source() -> str:
     ui = (JS / "telehealthUI.js").read_text(encoding="utf-8")
     imports = {
-        "./telehealthRecordingClient.js?v=20261108-final-merge-review": "./fake.mjs",
-        "./telehealthCapture.js?v=20261108-system-audio": "./capture.mjs",
-        "./telehealthRecoveryJournal.js?v=20261108-final-merge-review": "./fake.mjs",
-        "./telehealthDiagnostics.js?v=20261108-audio-scope": "./diagnostics.mjs",
+        "./telehealthRecordingClient.js": "./fake.mjs",
+        "./telehealthCapture.js": "./capture.mjs",
+        "./telehealthRecoveryJournal.js": "./fake.mjs",
+        "./telehealthDiagnostics.js": "./diagnostics.mjs",
     }
     for original, replacement in imports.items():
-        if original not in ui:
-            raise SystemExit("Browser module import changed; update CI smoke fixture")
-        ui = ui.replace(original, replacement)
+        specifier = rf"(?P<quote>['\"]){re.escape(original)}(?:\?v=[^'\"\s]+)?(?P=quote)"
+        ui, count = re.subn(specifier, f"'{replacement}'", ui)
+        if count != 1:
+            raise SystemExit(f"Expected one Telehealth UI import for {original}; found {count}")
+    return ui
+
+
+def main() -> None:
     with tempfile.TemporaryDirectory(prefix="openscribe-telehealth-stop-") as temp:
         directory = Path(temp)
-        (directory / "ui.mjs").write_text(ui, encoding="utf-8")
+        (directory / "ui.mjs").write_text(telehealth_ui_source(), encoding="utf-8")
         (directory / "fake.mjs").write_text(fixture_code("fake.mjs"), encoding="utf-8")
         (directory / "capture.mjs").write_text(fixture_code("capture.mjs"), encoding="utf-8")
         (directory / "test.mjs").write_text(fixture_code("test.mjs"), encoding="utf-8")

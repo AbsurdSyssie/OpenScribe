@@ -29,7 +29,7 @@ import {
   sessionRailTimestamp,
   sortSessionRailItems,
   syncSessionRailCreatedAt,
-} from './sessionRail.js?v=20261121-first-saved-content';
+} from './sessionRail.js?v=20261121-history-reconciliation';
 
       const bootstrap = readTranscribeBootstrap();
       const shell = document.querySelector('[data-workspace-endpoint]');
@@ -4235,6 +4235,7 @@ let statusDetailsHideTimer = null;
             currentItems: sessionRailItems,
             workspaceItems: incoming,
             pageSize: sessionRailPageSize,
+            topPageHasMore: options.topPageHasMore,
             preserveLoaded: options.preserveLoaded,
           });
         } else {
@@ -5284,16 +5285,20 @@ let statusDetailsHideTimer = null;
           sessionRailNextCursor = workspace.recent_transcripts_next_cursor || null;
           sessionRailHasMore = recentTranscriptsTopHasMore;
         }
-        const sessionRailRegionSignature = workspaceRegionSignature(sidebarTranscripts.map((item) => ({
-          id: item?.id || '',
-          timestamp: sessionRailTimestamp(item),
-        })));
+        const sessionRailRegionSignature = workspaceRegionSignature({
+          hasMore: recentTranscriptsTopHasMore,
+          items: sidebarTranscripts.map((item) => ({
+            id: item?.id || '',
+            timestamp: sessionRailTimestamp(item),
+          })),
+        });
         const sessionRailRegionChanged = sessionRailRegionSignature !== lastSessionRailRegionSignature;
         lastSessionRailRegionSignature = sessionRailRegionSignature;
         let sessionRailStructureChanged = false;
         if (sessionRailRegionChanged) {
           sessionRailStructureChanged = syncSidebarTranscripts(sidebarTranscripts, {
             replaceTop: true,
+            topPageHasMore: recentTranscriptsTopHasMore,
             preserveLoaded: sessionRailPaginationStarted && recentTranscriptsTopHasMore,
             revealTranscriptId: activeTranscriptChanged ? transcriptId : null,
           });

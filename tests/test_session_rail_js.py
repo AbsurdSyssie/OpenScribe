@@ -233,6 +233,7 @@ def test_session_rail_reconcile_preserves_loaded_rows_when_workspace_appends_old
               currentItems: [...loaded.slice(0, 12), selectedOld],
               workspaceItems: [promoted, ...loaded.slice(0, 11)],
               pageSize: 12,
+              topPageHasMore: true,
               preserveLoaded: false,
             });
 
@@ -244,6 +245,15 @@ def test_session_rail_reconcile_preserves_loaded_rows_when_workspace_appends_old
               sandbox.mergeSessionRailItem(promotedItems[0], { ...selectedOld, first_content_at: null }).first_content_at,
               firstContentAt,
             );
+
+            const completeHistory = sandbox.reconcileSessionRailItems({
+              currentItems: [loaded[0], loaded[11], selectedOld],
+              workspaceItems: [promoted, loaded[0]],
+              pageSize: 12,
+              topPageHasMore: false,
+              preserveLoaded: false,
+            });
+            assert.deepEqual(Array.from(completeHistory, (entry) => entry.id), [promoted.id, loaded[0].id]);
 
             const boundary = { id: '01', created_at: '2026-07-20T12:00:00.123900Z' };
             const older = { id: '03', created_at: '2026-07-20T13:00:00.123100+01:00' };

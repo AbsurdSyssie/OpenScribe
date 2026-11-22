@@ -7157,7 +7157,7 @@ def test_transcribe_frontend_uses_global_template_selector_for_generation_contro
     assert "sessionList.style.minHeight = `${previousListHeight}px`;" in app_js
     assert "sessionList.style.minHeight = '';" in app_js
     assert "const revealSessionRailTranscript = (transcriptIdToReveal, scrollContainer) => {" in app_js
-    assert "} from './sessionRail.js?v=20261121-first-saved-content';" in app_js
+    assert "} from './sessionRail.js?v=20261121-history-reconciliation';" in app_js
     assert "keepSessionRailItemVisible({ scrollContainer, item, behavior });" in app_js
     assert "scrollContainer?.scrollTo({ top: previousScrollTop, behavior: 'auto' });" in app_js
     assert "document.addEventListener('transcribe:session-panel-opened'" in app_js

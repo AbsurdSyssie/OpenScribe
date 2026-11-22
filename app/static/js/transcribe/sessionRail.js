@@ -94,6 +94,7 @@ export function reconcileSessionRailItems({
   currentItems,
   workspaceItems,
   pageSize,
+  topPageHasMore,
   preserveLoaded,
 }) {
   const current = Array.isArray(currentItems) ? currentItems.filter((item) => item?.id) : [];
@@ -114,7 +115,7 @@ export function reconcileSessionRailItems({
   });
 
   const topPageBoundary = sortSessionRailItems(topPage.map((item) => mergedById.get(String(item.id)))).at(-1);
-  const retained = (preserveLoaded || firstContentMovedIntoTop) && topPageBoundary
+  const retained = (preserveLoaded || (topPageHasMore && firstContentMovedIntoTop)) && topPageBoundary
     ? current.filter((item) => (
       !topPageIds.has(String(item.id))
       && compareSessionRailItems(item, topPageBoundary) > 0

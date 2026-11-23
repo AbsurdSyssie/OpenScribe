@@ -325,6 +325,14 @@ def test_recovery_expiry_schedules_reconcile_before_normal_active_deadline():
     interval = workspace.workspace_stream_reconcile_interval_seconds(payload)
     assert 1 <= interval <= 3.1
     assert interval < workspace.WORKSPACE_MAX_ACTIVE_RECONCILE_SECONDS
+    retention_deadline = (utcnow() + timedelta(seconds=4)).isoformat()
+    retention_interval = workspace.workspace_stream_reconcile_interval_seconds({
+        "active_transcript": {
+            "status": "ready", "retention_expires_at": retention_deadline,
+        },
+    })
+    assert 1 <= retention_interval <= 4.1
+    assert retention_interval < workspace.WORKSPACE_MAX_IDLE_RECONCILE_SECONDS
     assert workspace.workspace_stream_reconcile_interval_seconds({
         "active_transcript": {"status": "recording"},
     }) == workspace.WORKSPACE_MAX_ACTIVE_RECONCILE_SECONDS

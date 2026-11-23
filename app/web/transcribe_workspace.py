@@ -1768,7 +1768,7 @@ async def stream_transcribe_workspace_events(
         ):
             if now >= next_heartbeat_at:
                 next_heartbeat_at = now + heartbeat_interval_seconds
-                yield ": keepalive\\n\\n"
+                yield ": keepalive\n\n"
             await asyncio.sleep(WORKSPACE_REVISION_POLL_SECONDS)
             continue
 
@@ -1797,7 +1797,7 @@ async def stream_transcribe_workspace_events(
                 break
         elif current_time >= next_heartbeat_at:
             next_heartbeat_at = current_time + heartbeat_interval_seconds
-            yield ": keepalive\\n\\n"
+            yield ": keepalive\n\n"
 
         if revision is not None and workspace_stream_poll_interval_seconds(payload) == WORKSPACE_IDLE_POLL_SECONDS:
             await asyncio.sleep(WORKSPACE_REVISION_POLL_SECONDS)

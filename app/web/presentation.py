@@ -608,7 +608,18 @@ def generated_document_response(
     actor: User | None = None,
     include_content: bool = True,
 ) -> GeneratedDocumentDetail:
-    payload = GeneratedDocumentDetail.model_validate(document, from_attributes=True).model_dump()
+    if include_content:
+        payload = GeneratedDocumentDetail.model_validate(document, from_attributes=True).model_dump()
+    else:
+        # Avoid Pydantic traversing document.sections for summary-only rows.
+        # That relationship holds encrypted clinical text and would otherwise
+        # cause N lazy SQL reads when compact queries omit eager content loads.
+        metadata = {
+            name: getattr(document, name)
+            for name in GeneratedDocumentDetail.model_fields
+            if name not in {"sections", "pii_entities"} and hasattr(document, name)
+        }
+        payload = GeneratedDocumentDetail.model_validate(metadata).model_dump()
     # Failure guidance comes from the closed presentation mapping. Persisted
     # exception wording may include provider data and is never client-facing.
     payload["error_message"] = None
@@ -673,16 +684,19 @@ def generated_document_response(
             "hallucination_check_debug_json": None,
             "sections": [],
         })
-    redaction_run = document.redaction_run
-    payload["pii_entities"] = [
-        GeneratedDocumentPiiEntityDetail(
-            entity_type=entity.entity_type,
-            placeholder=entity.placeholder,
-            occurrence_count=entity.occurrence_count,
-            has_value=True,
-        ).model_dump()
-        for entity in sorted(getattr(redaction_run, "entities", []) or [], key=lambda item: item.entity_order)
-    ] if redaction_run is not None else []
+    if include_content:
+        redaction_run = document.redaction_run
+        payload["pii_entities"] = [
+            GeneratedDocumentPiiEntityDetail(
+                entity_type=entity.entity_type,
+                placeholder=entity.placeholder,
+                occurrence_count=entity.occurrence_count,
+                has_value=True,
+            ).model_dump()
+            for entity in sorted(getattr(redaction_run, "entities", []) or [], key=lambda item: item.entity_order)
+        ] if redaction_run is not None else []
+    else:
+        payload["pii_entities"] = []
     return GeneratedDocumentDetail.model_validate(payload)
 
 

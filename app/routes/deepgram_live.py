@@ -40,6 +40,9 @@ SAMPLE_RATE = 16000
 WINDOW_SAMPLES = 30 * SAMPLE_RATE
 CONTROL_WRITE_TIMEOUT_SECONDS = 1.0
 FINALIZE_ACK_TIMEOUT_SECONDS = 2.0
+# Provisional STT results can arrive more often than the browser needs to render.
+# Provider-final results and control messages are never rate-limited.
+INTERIM_PREVIEW_MIN_INTERVAL_SECONDS = 0.25
 CLOSE_DRAIN_TIMEOUT_SECONDS = 2.0
 PROVIDER_KEEPALIVE_INTERVAL_SECONDS = 1.0
 MAX_CONTROL_BYTES = 2048
@@ -116,8 +119,20 @@ async def _owner_call(socket: WebSocket, transcript_id: UUID, operation, *, chec
 
 
 async def _send(socket: WebSocket, transcript_id: UUID, payload: dict) -> None:
-    # Revocation and retention are rechecked before delivering any clinical text.
-    await _owner_call(socket, transcript_id, lambda db, owner, root: None)
+    # A numeric receipt acknowledges a batch that has *already* passed the
+    # owner/session/retention gate in authorize_stream_batch (and, if sent, in
+    # record_stream_batch_sent). The receipt contains no clinical text. Avoid a
+    # third DB session for that same batch. All other outbound messages retain
+    # a fresh owner check, including previews and finalized transcript data.
+    content_free_receipt = (
+        type(payload) is dict
+        and set(payload) == {"type", "next_sample_offset"}
+        and payload["type"] == "received"
+        and type(payload["next_sample_offset"]) is int
+        and payload["next_sample_offset"] >= 0
+    )
+    if not content_free_receipt:
+        await _owner_call(socket, transcript_id, lambda db, owner, root: None)
     await asyncio.wait_for(socket.send_json(payload), timeout=5)
 
 
@@ -187,10 +202,13 @@ class _Relay:
         self.audio = bytearray()
         self.finals: dict[tuple[int, int], str] = {}
         self.final_events: dict[tuple[int, int], object] = {}
+        self._final_char_count = 0
+        self._nonempty_final_count = 0
         self.scope_id = None
         self.diarization_enabled = False
         self.last_media_at = monotonic()
         self.last_heartbeat_at = monotonic()
+        self._next_interim_preview_at = 0.0
         self.completed = False
         self.active_phase = "session_start"
         self.last_completed_stage = "session_started"
@@ -317,20 +335,39 @@ class _Relay:
             for (previous_first, previous_last), _ in self.finals.items():
                 if identity != (previous_first, previous_last) and first < previous_last and last > previous_first:
                     raise AppError(502, "stream_result_invalid", "Overlapping finalized transcription")
+            if identity not in self.finals and event.text:
+                self._final_char_count += len(event.text)
+                self._nonempty_final_count += 1
             self.finals[identity] = event.text
             self.final_events[identity] = event
-        provisional = " ".join(text for _, text in sorted(self.finals.items()) if text)
+        # Reject oversized upstream events even when skipping a provisional
+        # preview. Final results must still be validated and delivered promptly.
+        if len(event.text) > 64000:
+            raise AppError(502, "stream_result_invalid", "Transcription checkpoint exceeds its limit")
+        # Preserve the original total-size invariant even for previews skipped
+        # by the rate limiter or events drained during finalization.
+        total_chars = self._final_char_count + max(0, self._nonempty_final_count - 1)
         if not event.is_final and event.text:
-            provisional = f"{provisional} {event.text}".strip()
-        if len(provisional) > 64000:
+            total_chars += len(event.text) + (1 if total_chars else 0)
+        if total_chars > 64000:
             raise AppError(502, "stream_result_invalid", "Transcription checkpoint exceeds its limit")
         if deliver_interim:
-            if self.dictation:
-                await self.send({"type": "dictation_preview", "window_no": self.window_no,
-                                 "confirmed_text": " ".join(text for _, text in sorted(self.finals.items()) if text),
-                                 "interim_text": "" if event.is_final else event.text})
-            else:
-                await self.send({"type": "interim", "text": provisional})
+            now = monotonic()
+            if event.is_final or now >= self._next_interim_preview_at:
+                confirmed = " ".join(text for _, text in sorted(self.finals.items()) if text)
+                provisional = confirmed
+                if not event.is_final and event.text:
+                    provisional = f"{confirmed} {event.text}".strip()
+                if len(provisional) > 64000:
+                    raise AppError(502, "stream_result_invalid", "Transcription checkpoint exceeds its limit")
+                if self.dictation:
+                    await self.send({"type": "dictation_preview", "window_no": self.window_no,
+                                     "confirmed_text": confirmed,
+                                     "interim_text": "" if event.is_final else event.text})
+                else:
+                    await self.send({"type": "interim", "text": provisional})
+                if not event.is_final:
+                    self._next_interim_preview_at = now + INTERIM_PREVIEW_MIN_INTERVAL_SECONDS
         return event
 
     def _window_has_final_coverage(self, start: int, end: int) -> bool:
@@ -488,6 +525,8 @@ class _Relay:
         self.audio.clear()
         self.finals.clear()
         self.final_events.clear()
+        self._final_char_count = 0
+        self._nonempty_final_count = 0
 
     async def checkpoint(self, *, closing: bool = False):
         from app.services.deepgram_streaming import DeepgramMetadataEvent

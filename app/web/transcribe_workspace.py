@@ -67,6 +67,7 @@ from ..services.llm import (
     get_user_llm_preference as get_user_llm_preference_service,
     resolve_user_llm as resolve_user_llm_service,
 )
+from ..services.workspace_revision_signals import read_workspace_revisions, revisions_enabled
 from ..services.preferences import (
     effective_consultation_splitting_enabled,
     get_user_app_preferences as get_user_app_preferences_service,
@@ -104,6 +105,7 @@ from ..services.transcripts import (
     manual_pii_entity_value as manual_pii_entity_value_service,
     transcript_is_expired as transcript_is_expired_service,
     transcript_draft_text as transcript_draft_text_service,
+    current_pii_transcript_version as current_pii_transcript_version_service,
     transcript_working_note_mode as transcript_working_note_mode_service,
     transcript_structured_context as transcript_structured_context_service,
     transcript_version_text as transcript_version_text_service,
@@ -483,15 +485,7 @@ def _generated_note_has_content(db: Session, document: GeneratedDocument | None)
 
 
 def _transcript_has_content(db: Session, transcript: Transcript) -> bool:
-    draft_text = transcript_draft_text_service(db, transcript=transcript) or ""
-    if draft_text.strip():
-        return True
-    versions = db.scalars(
-        select(TranscriptVersion)
-        .where(TranscriptVersion.transcript_id == transcript.id)
-    )
-    return any((transcript_version_text_service(db, transcript_version=version) or "").strip() for version in versions)
-
+    return _transcript_content_by_id_for_history_page(db, [transcript])[transcript.id]
 
 def _derived_content_by_transcript_id(
     db: Session,
@@ -577,36 +571,52 @@ def _transcript_content_by_id_for_history_page(
     db: Session,
     transcripts: list[Transcript],
 ) -> dict[UUID, bool]:
-    """Read page-row drafts once and batch only their blank-draft histories."""
-    content_by_id: dict[UUID, bool] = {}
-    blank_draft_ids: list[UUID] = []
+    """Use presence flags for saved text, with a decrypt fallback for legacy NULLs."""
+    result: dict[UUID, bool] = {}
+    missing: list[UUID] = []
     for transcript in transcripts:
-        draft_text = transcript_draft_text_service(db, transcript=transcript) or ""
-        has_content = bool(draft_text.strip())
-        content_by_id[transcript.id] = has_content
-        if not has_content:
-            blank_draft_ids.append(transcript.id)
+        draft_present = transcript.current_draft_has_content
+        if draft_present is None:
+            draft_present = bool((transcript_draft_text_service(db, transcript=transcript) or "").strip())
+        result[transcript.id] = draft_present
+        if not draft_present:
+            missing.append(transcript.id)
+    if not missing:
+        return result
 
-    if not blank_draft_ids:
-        return content_by_id
+    # Per-version flags preserve nonempty historical versions after blank draft
+    # edits, and disappear automatically when individual versions are deleted.
+    for transcript_id in db.scalars(
+        select(TranscriptVersion.transcript_id)
+        .where(
+            TranscriptVersion.transcript_id.in_(missing),
+            TranscriptVersion.has_content.is_(True),
+        )
+        .distinct()
+    ):
+        result[transcript_id] = True
 
+    unresolved = [tid for tid in missing if not result[tid]]
+    if not unresolved:
+        return result
     versions = db.scalars(
         select(TranscriptVersion)
-        .where(TranscriptVersion.transcript_id.in_(blank_draft_ids))
+        .where(
+            TranscriptVersion.transcript_id.in_(unresolved),
+            TranscriptVersion.has_content.is_(None),
+        )
         .execution_options(yield_per=100)
     )
     try:
-        for version_batch in versions.partitions(100):
-            for version in version_batch:
-                if content_by_id[version.transcript_id]:
-                    continue
-                content_by_id[version.transcript_id] = bool(
-                    (transcript_version_text_service(db, transcript_version=version) or "").strip()
-                )
+        for batch in versions.partitions(100):
+            for version in batch:
+                if not result[version.transcript_id]:
+                    result[version.transcript_id] = bool(
+                        (transcript_version_text_service(db, transcript_version=version) or "").strip()
+                    )
     finally:
         versions.close()
-    return content_by_id
-
+    return result
 
 def transcript_list_item_response(
     db: Session,
@@ -785,11 +795,7 @@ def _pii_entity_response(
 
 
 def _structured_current_version(db: Session, transcript: Transcript) -> TranscriptVersion | None:
-    from ..services.transcripts import _latest_matching_transcript_version
-
-    return _latest_matching_transcript_version(
-        db, transcript=transcript, plaintext=transcript_draft_text_service(db, transcript=transcript) or "",
-    )
+    return current_pii_transcript_version_service(db, transcript=transcript)
 
 
 def transcript_pii_entities_response(
@@ -800,46 +806,37 @@ def transcript_pii_entities_response(
 ) -> list[TranscriptPiiEntitySummary | TranscriptPiiEntityDetail]:
     if transcript is None:
         return []
+    current_text = transcript_draft_text_service(db, transcript=transcript) or ""
+    structured = transcript.current_draft_turns_encrypted is not None
+    current_version = (
+        current_pii_transcript_version_service(db, transcript=transcript, plaintext=current_text)
+        if structured or (transcript.status is TranscriptStatus.ready and current_text.strip())
+        else None
+    )
     query = select(RedactionRun).where(
         RedactionRun.transcript_id == transcript.id,
         RedactionRun.owner_user_id == transcript.owner_user_id,
     )
-    if transcript.current_draft_turns_encrypted is not None:
-        version = _structured_current_version(db, transcript)
-        query = query.where(RedactionRun.transcript_version_id == (version.id if version else None))
+    if structured:
+        query = query.where(RedactionRun.transcript_version_id == (current_version.id if current_version else None))
     redaction_run = db.scalar(
         query
         .order_by(RedactionRun.created_at.desc(), RedactionRun.id.desc())
         .limit(1)
     )
     actionable_run_id = None
-    if transcript.status is TranscriptStatus.ready:
-        current_text = (transcript_draft_text_service(db, transcript=transcript) or "").strip()
-        if current_text:
-            current_version = next(
-                (
-                    version
-                    for version in db.scalars(
-                        select(TranscriptVersion)
-                        .where(TranscriptVersion.transcript_id == transcript.id)
-                        .order_by(TranscriptVersion.version_no.desc(), TranscriptVersion.created_at.desc(), TranscriptVersion.id.desc())
-                    )
-                    if (transcript_version_text_service(db, transcript_version=version) or "").strip() == current_text
-                ),
-                None,
+    if transcript.status is TranscriptStatus.ready and current_text.strip() and current_version is not None:
+        actionable_run_id = db.scalar(
+            select(RedactionRun.id)
+            .where(
+                RedactionRun.transcript_id == transcript.id,
+                RedactionRun.transcript_version_id == current_version.id,
+                RedactionRun.owner_user_id == transcript.owner_user_id,
+                RedactionRun.status == RedactionRunStatus.succeeded,
             )
-            if current_version is not None:
-                actionable_run_id = db.scalar(
-                    select(RedactionRun.id)
-                    .where(
-                        RedactionRun.transcript_id == transcript.id,
-                        RedactionRun.transcript_version_id == current_version.id,
-                        RedactionRun.owner_user_id == transcript.owner_user_id,
-                        RedactionRun.status == RedactionRunStatus.succeeded,
-                    )
-                    .order_by(RedactionRun.created_at.desc(), RedactionRun.id.desc())
-                    .limit(1)
-                )
+            .order_by(RedactionRun.created_at.desc(), RedactionRun.id.desc())
+            .limit(1)
+        )
     if redaction_run is None or redaction_run.status is not RedactionRunStatus.succeeded:
         detected_entities = []
     else:
@@ -979,6 +976,7 @@ def resolve_transcribe_workspace(
     request_is_localhost_only=None,
     live_stt_health_check: bool = True,
     include_html_fields: bool = True,
+    compact_documents: bool = False,
 ) -> dict[str, object]:
     active_transcript = None
     requested_transcript_id = queued_transcript_id or transcript_id
@@ -1130,7 +1128,10 @@ def resolve_transcribe_workspace(
         user_app_preferences_json.get("default_quick_action_id"),
     )
     generated_documents = (
-        list_generated_documents_for_transcript_service(db, current_user, transcript_id=active_transcript.id)
+        list_generated_documents_for_transcript_service(
+            db, current_user, transcript_id=active_transcript.id,
+            load_content_relations=not compact_documents,
+        )
         if active_transcript is not None and not current_user.is_system_admin
         else []
     )
@@ -1314,8 +1315,11 @@ def resolve_transcribe_workspace(
     return workspace
 
 
-def transcript_detail_response(db: Session, transcript: Transcript) -> TranscriptDetail:
-    transcript = reconcile_transcript_status_service(db, transcript=transcript)
+def transcript_detail_response(
+    db: Session, transcript: Transcript, *, already_reconciled: bool = False
+) -> TranscriptDetail:
+    if not already_reconciled:
+        transcript = reconcile_transcript_status_service(db, transcript=transcript)
     latest_job = latest_ingestion_job_for_transcript_service(db, transcript_id=transcript.id)
     retry_job = _earliest_retryable_ingestion_job(db, transcript=transcript)
     payload = transcript_list_item_response(db, transcript).model_dump()
@@ -1351,11 +1355,63 @@ def transcript_detail_response(db: Session, transcript: Transcript) -> Transcrip
     return TranscriptDetail.model_validate(payload)
 
 
-def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, current_user: User | None = None) -> TranscribeWorkspaceDetail:
+def selected_workspace_document_ids(
+    documents: list[GeneratedDocument],
+    *,
+    selected_note_document_id: UUID | None = None,
+    selected_followup_document_id: UUID | None = None,
+) -> frozenset[UUID]:
+    """Only hydrate selected output types. Ignore missing or foreign IDs.
+
+    The list is already owner-scoped by list_generated_documents_for_transcript.
+    When a selection is absent, use the newest note/follow-up so an initial
+    page refresh still has visible document content.
+    """
+    note_documents = [
+        document for document in documents
+        if document.generator_type is GeneratedDocumentGeneratorType.template
+    ]
+    followup_documents = [
+        document for document in documents
+        if document.generator_type in {
+            GeneratedDocumentGeneratorType.followup,
+            GeneratedDocumentGeneratorType.quick_action,
+        }
+    ]
+    selected: set[UUID] = set()
+    for group, requested in (
+        (note_documents, selected_note_document_id),
+        (followup_documents, selected_followup_document_id),
+    ):
+        document = next((doc for doc in group if doc.id == requested), None)
+        if document is None and group:
+            document = group[0]
+        if document is not None:
+            selected.add(document.id)
+    return frozenset(selected)
+
+
+def transcribe_workspace_response(
+    db: Session,
+    workspace: dict[str, object],
+    *,
+    current_user: User | None = None,
+    compact_documents: bool = False,
+    selected_note_document_id: UUID | None = None,
+    selected_followup_document_id: UUID | None = None,
+) -> TranscribeWorkspaceDetail:
     active_transcript = workspace.get("active_transcript")
     post_consultation_dictation = workspace.get("post_consultation_dictation")
     recent_transcripts = workspace.get("recent_transcripts") or []
     generated_documents = workspace.get("generated_documents") or []
+    hydrated_document_ids = (
+        selected_workspace_document_ids(
+            generated_documents,
+            selected_note_document_id=selected_note_document_id,
+            selected_followup_document_id=selected_followup_document_id,
+        )
+        if compact_documents else None
+    )
     available_templates = workspace.get("available_templates") or []
     available_quick_actions = workspace.get("available_quick_actions") or []
     available_smart_phrases = workspace.get("available_smart_phrases") or []
@@ -1457,7 +1513,7 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, 
         ],
         recent_transcripts_next_cursor=workspace.get("recent_transcripts_next_cursor"),
         recent_transcripts_has_more=bool(workspace.get("recent_transcripts_has_more")),
-        active_transcript=transcript_detail_response(db, active_transcript) if isinstance(active_transcript, Transcript) else None,
+        active_transcript=transcript_detail_response(db, active_transcript, already_reconciled=True) if isinstance(active_transcript, Transcript) else None,
         active_transcript_pii_entities=list(workspace.get("active_transcript_pii_entities") or []),
         active_transcript_redaction_status=dict(workspace.get("active_transcript_redaction_status") or {}),
         active_transcript_clinical_nlp_status=dict(workspace.get("active_transcript_clinical_nlp_status") or {}),
@@ -1467,7 +1523,13 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, 
             else None
         ),
         active_working_note=workspace.get("active_working_note"),
-        generated_documents=[generated_document_response(db, document, actor=current_user) for document in generated_documents],
+        generated_documents=[
+            generated_document_response(
+                db, document, actor=current_user,
+                include_content=hydrated_document_ids is None or document.id in hydrated_document_ids,
+            )
+            for document in generated_documents
+        ],
         available_templates=[template_response(template) for template in available_templates],
         available_quick_actions=[quick_action_response(quick_action) for quick_action in available_quick_actions],
         smart_phrases=[smart_phrase_response(phrase) for phrase in available_smart_phrases],
@@ -1512,6 +1574,9 @@ def resolve_transcribe_workspace_detail(
     request=None,
     local_dev_emails: set[str] | None = None,
     request_is_localhost_only=None,
+    compact_documents: bool = False,
+    selected_note_document_id: UUID | None = None,
+    selected_followup_document_id: UUID | None = None,
 ) -> TranscribeWorkspaceDetail:
     workspace = resolve_transcribe_workspace(
         db,
@@ -1522,8 +1587,14 @@ def resolve_transcribe_workspace_detail(
         local_dev_emails=local_dev_emails,
         request_is_localhost_only=request_is_localhost_only,
         include_html_fields=False,
+        compact_documents=compact_documents,
     )
-    return transcribe_workspace_response(db, workspace, current_user=current_user)
+    return transcribe_workspace_response(
+        db, workspace, current_user=current_user,
+        compact_documents=compact_documents,
+        selected_note_document_id=selected_note_document_id,
+        selected_followup_document_id=selected_followup_document_id,
+    )
 
 
 def render_transcribe(
@@ -1560,7 +1631,7 @@ def render_transcribe(
         # resolver may have run before an expiry or ownership change.
         get_active_owner_transcript_service(db, current_user, transcript_id=active_transcript.id)
         workspace["active_working_note"] = _working_note_json_payload(workspace.get("active_working_note"))
-        workspace["active_transcript"] = transcript_detail_response(db, active_transcript)
+        workspace["active_transcript"] = transcript_detail_response(db, active_transcript, already_reconciled=True)
         workspace_endpoint = f"{workspace_endpoint}?transcript_id={active_transcript.id}"
         workspace_stream_endpoint = f"{workspace_stream_endpoint}?transcript_id={active_transcript.id}"
     recent_transcripts = workspace.get("recent_transcripts") or []
@@ -1653,6 +1724,9 @@ def resolve_realtime_workspace_payload(
     raw_session_token: str | None,
     transcript_id: str | None,
     queued_transcript_id: str | None,
+    compact_documents: bool = False,
+    selected_note_document_id: UUID | None = None,
+    selected_followup_document_id: UUID | None = None,
 ) -> dict[str, object] | None:
     with open_realtime_workspace_db_session(request) as db:
         current_user = resolve_realtime_workspace_user(db, raw_session_token=raw_session_token)
@@ -1663,7 +1737,90 @@ def resolve_realtime_workspace_payload(
             current_user=current_user,
             transcript_id=transcript_id,
             queued_transcript_id=queued_transcript_id,
+            compact_documents=compact_documents,
+            selected_note_document_id=selected_note_document_id,
+            selected_followup_document_id=selected_followup_document_id,
         ).model_dump(mode="json")
+
+
+# Active and idle workspaces both use advisory Redis revisions to avoid
+# unnecessary hydration. Bounded reconciles cover missed signals, time-derived
+# presentation state, and writes that bypass ORM revision notifications.
+WORKSPACE_ACTIVE_POLL_SECONDS = 1.0
+WORKSPACE_IDLE_POLL_SECONDS = 5.0
+WORKSPACE_REVISION_POLL_SECONDS = 1.0
+WORKSPACE_MAX_IDLE_RECONCILE_SECONDS = 15.0
+WORKSPACE_MAX_ACTIVE_RECONCILE_SECONDS = 15.0
+WORKSPACE_ACCESS_RECHECK_SECONDS = 5.0
+_WORKSPACE_BUSY_STATUSES = frozenset({
+    "recording", "transcribing", "queued", "processing", "active",
+    "finalizing", "recovering", "analysis_pending", "generation_queued", "generating", "verifying",
+})
+
+
+def workspace_stream_poll_interval_seconds(payload: dict[str, object]) -> float:
+    """Fallback full-refresh cadence when Redis revisions are unavailable."""
+    transcript = payload.get("active_transcript")
+    if isinstance(transcript, dict) and (
+        transcript.get("status") in _WORKSPACE_BUSY_STATUSES
+        or transcript.get("latest_ingestion_job_status") in _WORKSPACE_BUSY_STATUSES
+    ):
+        return WORKSPACE_ACTIVE_POLL_SECONDS
+    if payload.get("active_transcript_stream_gap") is not None:
+        return WORKSPACE_ACTIVE_POLL_SECONDS
+    for document in payload.get("generated_documents") or []:
+        if isinstance(document, dict) and document.get("status") in _WORKSPACE_BUSY_STATUSES:
+            return WORKSPACE_ACTIVE_POLL_SECONDS
+    for key in ("consultation_split_analysis", "consultation_split_intent", "consultation_split_batch"):
+        item = payload.get(key)
+        if isinstance(item, dict) and item.get("status") in _WORKSPACE_BUSY_STATUSES:
+            return WORKSPACE_ACTIVE_POLL_SECONDS
+    return WORKSPACE_IDLE_POLL_SECONDS
+
+
+def workspace_stream_reconcile_interval_seconds(payload: dict[str, object]) -> float:
+    """Bound revision-only waits, including expiry-driven recovery and retention.
+
+    These timestamps can change a projected workspace state without a database
+    commit. Redis revision equality must never defer those transitions past
+    their deadlines (or the normal bounded reconciliation interval).
+    """
+    interval = (
+        WORKSPACE_MAX_ACTIVE_RECONCILE_SECONDS
+        if workspace_stream_poll_interval_seconds(payload) == WORKSPACE_ACTIVE_POLL_SECONDS
+        else WORKSPACE_MAX_IDLE_RECONCILE_SECONDS
+    )
+    transcript = payload.get("active_transcript")
+    gap = payload.get("active_transcript_stream_gap")
+    deadlines = []
+    if isinstance(transcript, dict):
+        deadlines.append(transcript.get("retention_expires_at"))
+    if isinstance(gap, dict) and gap.get("recovery_available"):
+        deadlines.append(gap.get("recovery_expires_at"))
+
+    for raw_deadline in deadlines:
+        if not isinstance(raw_deadline, str):
+            continue
+        try:
+            deadline = datetime.fromisoformat(raw_deadline.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if deadline.tzinfo is None:
+            continue
+        remaining = (deadline - utcnow()).total_seconds()
+        # Clamp expired deadlines to one revision tick so that a just-expired
+        # snapshot cannot turn the stream into an unbounded busy loop.
+        interval = min(interval, max(WORKSPACE_REVISION_POLL_SECONDS, remaining))
+    return interval
+
+
+def realtime_workspace_revision_scope(*, request, raw_session_token: str | None) -> tuple[str, str | None] | None:
+    """Cheap periodic auth recheck while no full workspace is being built."""
+    with open_realtime_workspace_db_session(request) as db:
+        user = resolve_realtime_workspace_user(db, raw_session_token=raw_session_token)
+        if user is None:
+            return None
+        return str(user.id), str(user.team_id) if user.team_id is not None else None
 
 
 async def stream_transcribe_workspace_events(
@@ -1673,31 +1830,81 @@ async def stream_transcribe_workspace_events(
     transcript_id: str | None,
     queued_transcript_id: str | None,
     once: bool,
+    compact_documents: bool = False,
+    selected_note_document_id: UUID | None = None,
+    selected_followup_document_id: UUID | None = None,
 ):
-    last_event: str | None = None
+    last_payload: dict[str, object] | None = None
+    last_revision: tuple[int, ...] | None = None
+    revision_scope: tuple[str, str | None] | None = None
     sent_initial_event = False
     heartbeat_interval_seconds = 15.0
-    poll_interval_seconds = 1.0
-    next_heartbeat_at = asyncio.get_running_loop().time() + heartbeat_interval_seconds
+    loop = asyncio.get_running_loop()
+    next_heartbeat_at = loop.time() + heartbeat_interval_seconds
+    next_full_reconcile_at = 0.0
+    next_access_check_at = 0.0
 
     while True:
         if sent_initial_event and await request.is_disconnected():
             break
 
+        now = loop.time()
+        revision = None
+        revision_gate = revisions_enabled()
+        if revision_gate:
+            # Authorization checks remain independent of Redis. A revoked
+            # session must not retain a live stream indefinitely just because
+            # its workspace revision is unchanged.
+            if revision_scope is None or now >= next_access_check_at:
+                current_scope = await asyncio.to_thread(
+                    realtime_workspace_revision_scope,
+                    request=request,
+                    raw_session_token=raw_session_token,
+                )
+                if current_scope is None:
+                    break
+                if revision_scope is not None and current_scope != revision_scope:
+                    next_full_reconcile_at = 0.0
+                revision_scope = current_scope
+                next_access_check_at = now + WORKSPACE_ACCESS_RECHECK_SECONDS
+            revision = await asyncio.to_thread(read_workspace_revisions, *revision_scope)
+
+        # A revision check needs no transcript, document, redaction, template or
+        # history reads. A periodic full refresh still covers uninstrumented
+        # raw-SQL mutations, time-derived status, retention and Redis outages.
+        if (
+            last_payload is not None
+            and revision is not None
+            and revision == last_revision
+            and now < next_full_reconcile_at
+        ):
+            if now >= next_heartbeat_at:
+                next_heartbeat_at = now + heartbeat_interval_seconds
+                yield ": keepalive\n\n"
+            await asyncio.sleep(WORKSPACE_REVISION_POLL_SECONDS)
+            continue
+
+        # Read the revision before hydration, never after: a concurrent write
+        # during hydration will then be detected on the next revision check.
         payload = await asyncio.to_thread(
             resolve_realtime_workspace_payload,
             request=request,
             raw_session_token=raw_session_token,
             transcript_id=transcript_id,
             queued_transcript_id=queued_transcript_id,
+            compact_documents=compact_documents,
+            selected_note_document_id=selected_note_document_id,
+            selected_followup_document_id=selected_followup_document_id,
         )
         if payload is None:
             break
 
-        serialized_event = serialize_sse_event(event="workspace", payload=payload)
-        current_time = asyncio.get_running_loop().time()
-        if serialized_event != last_event:
-            last_event = serialized_event
+        current_time = loop.time()
+        last_revision = revision
+        next_full_reconcile_at = current_time + workspace_stream_reconcile_interval_seconds(payload)
+        if last_payload is None or payload != last_payload:
+            serialized_event = serialize_sse_event(event="workspace", payload=payload)
+            last_payload = payload
             next_heartbeat_at = current_time + heartbeat_interval_seconds
             yield serialized_event
             sent_initial_event = True
@@ -1707,4 +1914,9 @@ async def stream_transcribe_workspace_events(
             next_heartbeat_at = current_time + heartbeat_interval_seconds
             yield ": keepalive\n\n"
 
-        await asyncio.sleep(poll_interval_seconds)
+        if revision is not None:
+            await asyncio.sleep(WORKSPACE_REVISION_POLL_SECONDS)
+        else:
+            # Failed/disabled Redis retains the existing fast active-workflow
+            # fallback, including recovery polling, until revisions resume.
+            await asyncio.sleep(workspace_stream_poll_interval_seconds(payload))

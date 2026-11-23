@@ -112,6 +112,8 @@ Use the dedicated `CIS2_OIDC_*` settings, not the custom `OIDC_*` provider worka
 | `DATABASE_URL` | `postgresql+psycopg://ambient:ambient@localhost:5432/ambient_scribe` | Primary SQLAlchemy database URL. Compose uses service host `postgres`. |
 | `TEST_DATABASE_URL` | `postgresql+psycopg://ambient:ambient@localhost:5432/ambient_scribe_test` | Test database URL. It must never resolve to the application database. |
 | `RATE_LIMIT_STORAGE_URL` | `redis://localhost:6379/0` | Redis store used by SlowAPI. Compose uses service host `redis`. |
+| `WORKSPACE_REVISION_ENABLED` | `true` except `APP_ENV=test` | Best-effort Redis revision hints for idle workspace SSE. Disable to restore 5-second full workspace polling; active workflows always receive 1-second full refreshes. |
+| `WORKSPACE_REVISION_REDIS_URL` | `RATE_LIMIT_STORAGE_URL` | Optional Redis override for owner/team/global revision keys. Compose uses the rate-limit Redis endpoint. Stores only scope IDs and integer counters; never transcript contents. |
 | `TEST_RATE_LIMIT_STORAGE_URL` | `redis://localhost:6379/15` | Test rate-limit store. |
 | `RATE_LIMIT_KEY_PREFIX` | empty | Optional SlowAPI key namespace. The test harness sets per-worker prefixes; separate deployments sharing Redis should use distinct values. |
 | `CELERY_BROKER_URL` | `redis://localhost:6379/2` | Celery broker. Compose uses service host `redis`. |

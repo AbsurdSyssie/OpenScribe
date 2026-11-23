@@ -202,6 +202,9 @@ class GeneratedDocumentDetail(BaseModel):
     document_mode: TemplateMode
     original_output_text: str = ""
     edited_output_text: str = ""
+    # False means a workspace status snapshot intentionally omits clinical text.
+    # Only selected documents are hydrated on compact workspace responses.
+    content_hydrated: bool = True
     llm_request_payload_json: dict | None = None
     is_edited: bool
     retention_expires_at: datetime

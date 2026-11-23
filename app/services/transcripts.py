@@ -629,6 +629,7 @@ def _create_transcript_row(
         team_id=owner.team_id,
         title=title,
         is_example=is_example,
+        current_draft_has_content=bool((current_draft_text_encrypted or "").strip()),
         current_draft_text_encrypted=(
             encrypt_text_for_owner(
                 db,
@@ -736,6 +737,81 @@ def _append_chunk_text(existing_text: str | None, chunk_text: str) -> str:
     return f"{existing_text.rstrip()}\n{normalized_chunk}"
 
 
+_TRANSCRIPT_VERSION_CONTENT_DIGEST_PURPOSE = "transcript_versions.content_digest.v1"
+
+
+def _transcript_version_content_digest(
+    db: Session, *, owner_user_id: UUID, transcript_id: UUID, plaintext: str,
+) -> str:
+    # A transcript-specific purpose avoids correlating identical text across consultations.
+    return keyed_digest_for_owner(
+        db, owner_user_id=owner_user_id,
+        purpose=f"{_TRANSCRIPT_VERSION_CONTENT_DIGEST_PURPOSE}:{transcript_id}",
+        value=plaintext.strip(),
+    )
+
+
+def current_pii_transcript_version(
+    db: Session,
+    *,
+    transcript: Transcript,
+    plaintext: str | None = None,
+) -> TranscriptVersion | None:
+    """Resolve PII actionability without decrypting historical transcript versions.
+
+    New versions are matched by an owner-keyed digest. For legacy versions with
+    no digest, examine only the newest such version and fail closed on mismatch;
+    a later snapshot/reuse will persist its digest.
+    """
+    from app.services.structured_transcripts import load_current_turns, turns_for_version
+
+    current_text = transcript_draft_text(db, transcript=transcript) if plaintext is None else plaintext
+    current_text = current_text or ""
+    digest = _transcript_version_content_digest(
+        db, owner_user_id=transcript.owner_user_id, transcript_id=transcript.id,
+        plaintext=current_text,
+    )
+    candidates = list(db.scalars(
+        select(TranscriptVersion)
+        .where(
+            TranscriptVersion.transcript_id == transcript.id,
+            TranscriptVersion.content_digest == digest,
+        )
+        .order_by(TranscriptVersion.version_no.desc())
+    ))
+    latest_legacy = db.scalar(
+        select(TranscriptVersion)
+        .where(
+            TranscriptVersion.transcript_id == transcript.id,
+            TranscriptVersion.content_digest.is_(None),
+        )
+        .order_by(TranscriptVersion.version_no.desc())
+        .limit(1)
+    )
+    if latest_legacy is not None:
+        candidates.append(latest_legacy)
+    candidates.sort(key=lambda version: version.version_no, reverse=True)
+
+    current_turns = (
+        load_current_turns(db, transcript=transcript)
+        if transcript.current_draft_turns_encrypted is not None
+        else None
+    )
+    for version in candidates:
+        # For flat text the HMAC proves equality. Structured drafts require
+        # exact projection and turn equality to prevent a false-current result
+        # for identical text with different speaker/turn metadata.
+        if version.content_digest is not None and current_turns is None:
+            return version
+        version_text = transcript_version_text(db, transcript_version=version) or ""
+        if current_turns is not None:
+            if version_text == current_text and turns_for_version(db, version=version) == current_turns:
+                return version
+        elif version_text.strip() == current_text.strip():
+            return version
+    return None
+
+
 def _create_transcript_version_from_text(
     db: Session,
     *,
@@ -749,6 +825,10 @@ def _create_transcript_version_from_text(
         id=version_id,
         transcript_id=transcript.id,
         version_no=(current_max or 0) + 1,
+        has_content=bool(plaintext.strip()),
+        content_digest=_transcript_version_content_digest(
+            db, owner_user_id=owner_user_id, transcript_id=transcript.id, plaintext=plaintext,
+        ),
         text_encrypted=encrypt_text_for_owner(
             db,
             owner_user_id=owner_user_id,
@@ -805,6 +885,11 @@ def _create_or_reuse_transcript_version_from_text(
 ) -> TranscriptVersion:
     existing = _latest_matching_transcript_version(db, transcript=transcript, plaintext=plaintext)
     if existing is not None:
+        if existing.content_digest is None:
+            existing.content_digest = _transcript_version_content_digest(
+                db, owner_user_id=owner_user_id, transcript_id=transcript.id, plaintext=plaintext,
+            )
+            db.add(existing)
         return existing
     return _create_transcript_version_from_text(
         db,
@@ -1188,6 +1273,7 @@ def clear_working_note(
 
 
 def set_transcript_draft_text(db: Session, *, transcript: Transcript, plaintext: str | None) -> None:
+    transcript.current_draft_has_content = bool((plaintext or "").strip())
     transcript.current_draft_text_encrypted = (
         encrypt_text_for_owner(
             db,
@@ -1778,6 +1864,12 @@ def snapshot_current_transcript_version(
                 stored_value=existing_version.text_encrypted,
             )
             if existing_text == projection:
+                if existing_version.content_digest is None:
+                    existing_version.content_digest = _transcript_version_content_digest(
+                        db, owner_user_id=transcript.owner_user_id, transcript_id=transcript.id,
+                        plaintext=projection,
+                    )
+                    db.add(existing_version)
                 if mark_transcript_ready:
                     transcript.status = TranscriptStatus.ready
                     db.add(transcript)
@@ -1813,6 +1905,12 @@ def snapshot_current_transcript_version(
             or ""
         ).strip()
         if existing_text == current_text:
+            if existing_version.content_digest is None:
+                existing_version.content_digest = _transcript_version_content_digest(
+                    db, owner_user_id=transcript.owner_user_id, transcript_id=transcript.id,
+                    plaintext=current_text,
+                )
+                db.add(existing_version)
             if mark_transcript_ready:
                 transcript.status = TranscriptStatus.ready
                 db.add(transcript)
@@ -1824,6 +1922,11 @@ def snapshot_current_transcript_version(
         id=version_id,
         transcript_id=transcript.id,
         version_no=(current_max or 0) + 1,
+        has_content=bool(current_text.strip()),
+        content_digest=_transcript_version_content_digest(
+            db, owner_user_id=transcript.owner_user_id, transcript_id=transcript.id,
+            plaintext=current_text,
+        ),
         text_encrypted=encrypt_text_for_owner(
             db,
             owner_user_id=transcript.owner_user_id,

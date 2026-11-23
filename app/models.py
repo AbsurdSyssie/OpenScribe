@@ -1668,6 +1668,7 @@ class Transcript(Base):
     multiple_problems: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_example: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     current_draft_text_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_draft_has_content: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # NULL: legacy
     current_draft_turns_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     structured_context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     working_note_mode: Mapped[TranscriptWorkingNoteMode | None] = mapped_column(Enum(TranscriptWorkingNoteMode), nullable=True)
@@ -1970,12 +1971,18 @@ class PostConsultationDictationSegment(Base):
 
 class TranscriptVersion(Base):
     __tablename__ = "transcript_versions"
-    __table_args__ = (UniqueConstraint("transcript_id", "version_no", name="uq_transcript_version_number"),)
+    __table_args__ = (
+        UniqueConstraint("transcript_id", "version_no", name="uq_transcript_version_number"),
+        Index("ix_transcript_versions_transcript_content_digest", "transcript_id", "content_digest", "version_no"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     transcript_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("transcripts.id"), nullable=False)
     version_no: Mapped[int] = mapped_column(Integer, nullable=False)
     text_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    # Owner-keyed HMAC of the trimmed transcript text; NULL for legacy versions.
+    content_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    has_content: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # NULL: legacy
     structured_turns_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     structured_turns_schema_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

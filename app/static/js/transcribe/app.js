@@ -2636,8 +2636,16 @@ let statusDetailsHideTimer = null;
         );
       };
 
+      const shouldSuspendHiddenWorkspaceRealtime = () => (
+        document.visibilityState === 'hidden'
+        && !captureController?.isCaptureUiActive?.()
+        && !dictationLiveCapture
+        && !dictationLiveStartup
+        && !['starting', 'recording', 'paused', 'transcribing'].includes(dictationRecordingState)
+      );
+
       const shouldUseWorkspacePollingFallback = () => {
-        return !isWorkspaceRealtimeConnected();
+        return !shouldSuspendHiddenWorkspaceRealtime() && !isWorkspaceRealtimeConnected();
       };
 
       const scheduleWorkspaceRefreshBurst = ({ attempts = 25, intervalMs = 1500 } = {}) => {
@@ -4890,6 +4898,13 @@ let statusDetailsHideTimer = null;
         persistFollowupEditsSilently,
         hasPendingGeneratedFollowupEdits,
         shouldPreserveFollowupEditorRender,
+        loadSelectedDocument: async ({ needsHydration }) => {
+          // A selection changes the set of documents hydrated by the SSE
+          // stream. Reconnect with that selection before requesting a snapshot.
+          syncWorkspaceRealtimeConnection();
+          if (needsHydration) return fetchWorkspace();
+          return null;
+        },
       });
 
       const saveWorkingNoteBeforeGeneration = async (targetTranscriptId = transcriptId) => {
@@ -5055,18 +5070,31 @@ let statusDetailsHideTimer = null;
 
       const waitForGenerationSubmission = () => generationSubmissionBarrier?.accepted || Promise.resolve(true);
 
-      const workspaceEndpointForTranscript = (nextTranscriptId) => {
-        if (nextTranscriptId) {
-          return `/api/v1/transcribe/workspace?transcript_id=${nextTranscriptId}`;
+      const compactWorkspaceEndpoint = (endpoint) => {
+        const params = new URLSearchParams();
+        params.set('compact_documents', 'true');
+        const isUuid = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));
+        if (isUuid(selectedNoteDocumentId)) {
+          params.set('selected_note_document_id', selectedNoteDocumentId);
         }
-        return initialWorkspaceEndpoint || '/api/v1/transcribe/workspace';
+        if (isUuid(selectedFollowupDocumentId)) {
+          params.set('selected_followup_document_id', selectedFollowupDocumentId);
+        }
+        return `${endpoint}${endpoint.includes('?') ? '&' : '?'}${params.toString()}`;
+      };
+
+      const workspaceEndpointForTranscript = (nextTranscriptId) => {
+        const endpoint = nextTranscriptId
+          ? `/api/v1/transcribe/workspace?transcript_id=${nextTranscriptId}`
+          : (initialWorkspaceEndpoint || '/api/v1/transcribe/workspace');
+        return compactWorkspaceEndpoint(endpoint);
       };
 
       const workspaceStreamEndpointForTranscript = (nextTranscriptId) => {
-        if (nextTranscriptId) {
-          return `/api/v1/transcribe/workspace/stream?transcript_id=${nextTranscriptId}`;
-        }
-        return initialWorkspaceStreamEndpoint || '/api/v1/transcribe/workspace/stream';
+        const endpoint = nextTranscriptId
+          ? `/api/v1/transcribe/workspace/stream?transcript_id=${nextTranscriptId}`
+          : (initialWorkspaceStreamEndpoint || '/api/v1/transcribe/workspace/stream');
+        return compactWorkspaceEndpoint(endpoint);
       };
 
       const closeWorkspaceEventSource = () => {
@@ -5077,6 +5105,11 @@ let statusDetailsHideTimer = null;
       };
 
       const syncWorkspaceRealtimeConnection = () => {
+        if (shouldSuspendHiddenWorkspaceRealtime()) {
+          closeWorkspaceEventSource();
+          splitAnalysisRestorationPoller?.setRealtimeConnected(false);
+          return;
+        }
         if (!window.EventSource) {
           splitAnalysisRestorationPoller?.setRealtimeConnected(false);
           return;
@@ -6344,6 +6377,19 @@ let statusDetailsHideTimer = null;
           && !followupEditorDirty && !followupSaveInFlight && !hasUnsavedDictationDraft()) return;
         event.preventDefault();
         event.returnValue = '';
+      });
+
+      document.addEventListener('visibilitychange', () => {
+        if (shouldSuspendHiddenWorkspaceRealtime()) {
+          clearWorkspaceRefreshBurst();
+          closeWorkspaceEventSource();
+          splitAnalysisRestorationPoller?.setRealtimeConnected(false);
+          return;
+        }
+        if (document.visibilityState === 'visible') {
+          syncWorkspaceRealtimeConnection();
+          void fetchWorkspace();
+        }
       });
 
       window.addEventListener('pagehide', () => {

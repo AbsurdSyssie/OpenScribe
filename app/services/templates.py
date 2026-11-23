@@ -1567,20 +1567,25 @@ def fork_team_quick_action_to_personal(db: Session, actor: User, *, quick_action
     return forked
 
 
-def list_generated_documents_for_transcript(db: Session, actor: User, *, transcript_id: UUID) -> list[GeneratedDocument]:
+def list_generated_documents_for_transcript(
+    db: Session, actor: User, *, transcript_id: UUID,
+    load_content_relations: bool = True,
+) -> list[GeneratedDocument]:
     _require_team_member(actor)
     transcript = get_active_owner_transcript(db, actor, transcript_id=transcript_id)
-    return list(
-        db.scalars(
-            select(GeneratedDocument)
-            .options(
-                selectinload(GeneratedDocument.sections),
-                selectinload(GeneratedDocument.redaction_run).selectinload(RedactionRun.entities),
-            )
-            .where(GeneratedDocument.transcript_id == transcript_id, GeneratedDocument.owner_user_id == actor.id)
-            .order_by(GeneratedDocument.created_at.desc(), GeneratedDocument.id.desc())
+    statement = select(GeneratedDocument).where(
+        GeneratedDocument.transcript_id == transcript_id,
+        GeneratedDocument.owner_user_id == actor.id,
+    ).order_by(GeneratedDocument.created_at.desc(), GeneratedDocument.id.desc())
+    if load_content_relations:
+        # Full-document endpoints retain their existing batched fetch strategy.
+        statement = statement.options(
+            selectinload(GeneratedDocument.sections),
+            selectinload(GeneratedDocument.redaction_run).selectinload(RedactionRun.entities),
         )
-    )
+    # Compact status refreshes fetch only document rows. At most the two
+    # selected documents subsequently load their encrypted content relations.
+    return list(db.scalars(statement))
 
 
 def delete_generated_document(db: Session, actor: User, *, generated_document_id: UUID) -> None:

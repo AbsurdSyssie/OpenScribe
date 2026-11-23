@@ -601,7 +601,13 @@ def _hallucination_check_bucket(status: HallucinationCheckStatus | str | None) -
     return "unchecked"
 
 
-def generated_document_response(db: Session, document: GeneratedDocument, *, actor: User | None = None) -> GeneratedDocumentDetail:
+def generated_document_response(
+    db: Session,
+    document: GeneratedDocument,
+    *,
+    actor: User | None = None,
+    include_content: bool = True,
+) -> GeneratedDocumentDetail:
     payload = GeneratedDocumentDetail.model_validate(document, from_attributes=True).model_dump()
     # Failure guidance comes from the closed presentation mapping. Persisted
     # exception wording may include provider data and is never client-facing.
@@ -622,35 +628,48 @@ def generated_document_response(db: Session, document: GeneratedDocument, *, act
             # a response into an error or expose a title.  The generic stored
             # title remains the safe fallback.
             pass
-    payload["follow_up_prompt_text"] = generated_document_text_service(db, document=document, field="follow_up_prompt_text") or None
-    payload["original_output_text"] = generated_document_text_service(db, document=document, field="original_output_text_encrypted")
-    payload["edited_output_text"] = generated_document_text_service(db, document=document, field="edited_output_text_encrypted")
-    payload["llm_request_payload_json"] = generated_document_llm_request_payload_service(db, document=document)
-    payload["structured_section_definitions_json"] = document.structured_section_definitions_json if isinstance(document.structured_section_definitions_json, dict) else None
-    payload["hallucination_check_bucket"] = _hallucination_check_bucket(document.hallucination_check_status)
-    payload["hallucination_check_debug_json"] = None
-    if (
-        actor is not None
-        and actor.id == document.owner_user_id
-        and os.getenv("HALLUCINATION_CHECK_DEBUG_UI", "").lower() in {"1", "true", "yes"}
-    ):
-        from ..services.templates import generated_document_hallucination_check_debug
-
-        payload["hallucination_check_debug_json"] = generated_document_hallucination_check_debug(db, document=document)
-    payload["sections"] = [
-        GeneratedDocumentSectionDetail.model_validate(
-            {
-                "id": section.id,
-                "section_key": section.section_key,
-                "section_label": section.section_label,
-                "section_order": section.section_order,
-                "original_text_encrypted": generated_document_section_text_service(db, section=section, field="original_text_encrypted"),
-                "edited_text_encrypted": generated_document_section_text_service(db, section=section, field="edited_text_encrypted"),
-                "is_edited": section.is_edited,
-            }
-        )
-        for section in getattr(document, "sections", [])
-    ]
+    payload["content_hydrated"] = include_content
+    # Workspace summaries carry status and safe document metadata only.
+    # Decrypting all historical documents on every SSE tick scales with total
+    # consultation history, even when the clinician views only one document.
+    if include_content:
+        payload["follow_up_prompt_text"] = generated_document_text_service(db, document=document, field="follow_up_prompt_text") or None
+        payload["original_output_text"] = generated_document_text_service(db, document=document, field="original_output_text_encrypted")
+        payload["edited_output_text"] = generated_document_text_service(db, document=document, field="edited_output_text_encrypted")
+        payload["llm_request_payload_json"] = generated_document_llm_request_payload_service(db, document=document)
+        payload["structured_section_definitions_json"] = document.structured_section_definitions_json if isinstance(document.structured_section_definitions_json, dict) else None
+        payload["hallucination_check_bucket"] = _hallucination_check_bucket(document.hallucination_check_status)
+        payload["hallucination_check_debug_json"] = None
+        if (
+            actor is not None
+            and actor.id == document.owner_user_id
+            and os.getenv("HALLUCINATION_CHECK_DEBUG_UI", "").lower() in {"1", "true", "yes"}
+        ):
+            from ..services.templates import generated_document_hallucination_check_debug
+            payload["hallucination_check_debug_json"] = generated_document_hallucination_check_debug(db, document=document)
+        payload["sections"] = [
+            GeneratedDocumentSectionDetail.model_validate(
+                {
+                    "id": section.id,
+                    "section_key": section.section_key,
+                    "section_label": section.section_label,
+                    "section_order": section.section_order,
+                    "original_text_encrypted": generated_document_section_text_service(db, section=section, field="original_text_encrypted"),
+                    "edited_text_encrypted": generated_document_section_text_service(db, section=section, field="edited_text_encrypted"),
+                    "is_edited": section.is_edited,
+                }
+            )
+            for section in getattr(document, "sections", [])
+        ]
+    else:
+        payload.update({
+            "follow_up_prompt_text": None,
+            "original_output_text": "",
+            "edited_output_text": "",
+            "llm_request_payload_json": None,
+            "hallucination_check_debug_json": None,
+            "sections": [],
+        })
     redaction_run = document.redaction_run
     payload["pii_entities"] = [
         GeneratedDocumentPiiEntityDetail(

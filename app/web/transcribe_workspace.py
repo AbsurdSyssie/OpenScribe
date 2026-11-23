@@ -67,6 +67,7 @@ from ..services.llm import (
     get_user_llm_preference as get_user_llm_preference_service,
     resolve_user_llm as resolve_user_llm_service,
 )
+from ..services.workspace_revision_signals import read_workspace_revisions, revisions_enabled
 from ..services.preferences import (
     effective_consultation_splitting_enabled,
     get_user_app_preferences as get_user_app_preferences_service,
@@ -1669,10 +1670,14 @@ def resolve_realtime_workspace_payload(
         ).model_dump(mode="json")
 
 
-# Active workflows still get one-second updates. Idle workspaces trade at most
-# four additional seconds of external-change latency for 80% fewer full builds.
+# Active workflows retain one-second full refreshes. Idle workspaces use an
+# advisory Redis revision to avoid most full hydration; a bounded full-refresh
+# fallback handles missed signals and changes from bulk SQL writers.
 WORKSPACE_ACTIVE_POLL_SECONDS = 1.0
 WORKSPACE_IDLE_POLL_SECONDS = 5.0
+WORKSPACE_REVISION_POLL_SECONDS = 1.0
+WORKSPACE_MAX_IDLE_RECONCILE_SECONDS = 15.0
+WORKSPACE_ACCESS_RECHECK_SECONDS = 5.0
 _WORKSPACE_BUSY_STATUSES = frozenset({
     "recording", "transcribing", "queued", "processing", "active",
     "finalizing", "recovering", "analysis_pending", "generation_queued", "generating", "verifying",
@@ -1699,6 +1704,15 @@ def workspace_stream_poll_interval_seconds(payload: dict[str, object]) -> float:
     return WORKSPACE_IDLE_POLL_SECONDS
 
 
+def realtime_workspace_revision_scope(*, request, raw_session_token: str | None) -> tuple[str, str | None] | None:
+    """Cheap periodic auth recheck while no full workspace is being built."""
+    with open_realtime_workspace_db_session(request) as db:
+        user = resolve_realtime_workspace_user(db, raw_session_token=raw_session_token)
+        if user is None:
+            return None
+        return str(user.id), str(user.team_id) if user.team_id is not None else None
+
+
 async def stream_transcribe_workspace_events(
     *,
     request,
@@ -1708,14 +1722,58 @@ async def stream_transcribe_workspace_events(
     once: bool,
 ):
     last_payload: dict[str, object] | None = None
+    last_revision: tuple[int, ...] | None = None
+    revision_scope: tuple[str, str | None] | None = None
     sent_initial_event = False
     heartbeat_interval_seconds = 15.0
-    next_heartbeat_at = asyncio.get_running_loop().time() + heartbeat_interval_seconds
+    loop = asyncio.get_running_loop()
+    next_heartbeat_at = loop.time() + heartbeat_interval_seconds
+    next_full_reconcile_at = 0.0
+    next_access_check_at = 0.0
 
     while True:
         if sent_initial_event and await request.is_disconnected():
             break
 
+        now = loop.time()
+        revision = None
+        revision_gate = revisions_enabled()
+        if revision_gate:
+            # Authorization checks remain independent of Redis. A revoked
+            # session must not retain a live stream indefinitely just because
+            # its workspace revision is unchanged.
+            if revision_scope is None or now >= next_access_check_at:
+                current_scope = await asyncio.to_thread(
+                    realtime_workspace_revision_scope,
+                    request=request,
+                    raw_session_token=raw_session_token,
+                )
+                if current_scope is None:
+                    break
+                if revision_scope is not None and current_scope != revision_scope:
+                    next_full_reconcile_at = 0.0
+                revision_scope = current_scope
+                next_access_check_at = now + WORKSPACE_ACCESS_RECHECK_SECONDS
+            revision = await asyncio.to_thread(read_workspace_revisions, *revision_scope)
+
+        # A revision check needs no transcript, document, redaction, template or
+        # history reads. A periodic full refresh still covers uninstrumented
+        # raw-SQL mutations, time-derived status, retention and Redis outages.
+        if (
+            last_payload is not None
+            and revision is not None
+            and revision == last_revision
+            and now < next_full_reconcile_at
+            and workspace_stream_poll_interval_seconds(last_payload) == WORKSPACE_IDLE_POLL_SECONDS
+        ):
+            if now >= next_heartbeat_at:
+                next_heartbeat_at = now + heartbeat_interval_seconds
+                yield ": keepalive\\n\\n"
+            await asyncio.sleep(WORKSPACE_REVISION_POLL_SECONDS)
+            continue
+
+        # Read the revision before hydration, never after: a concurrent write
+        # during hydration will then be detected on the next revision check.
         payload = await asyncio.to_thread(
             resolve_realtime_workspace_payload,
             request=request,
@@ -1726,9 +1784,9 @@ async def stream_transcribe_workspace_events(
         if payload is None:
             break
 
-        current_time = asyncio.get_running_loop().time()
-        # Compare JSON-safe payloads before serializing. Unchanged payloads
-        # must not pay the sort_keys/json.dumps cost each polling cycle.
+        current_time = loop.time()
+        last_revision = revision
+        next_full_reconcile_at = current_time + WORKSPACE_MAX_IDLE_RECONCILE_SECONDS
         if last_payload is None or payload != last_payload:
             serialized_event = serialize_sse_event(event="workspace", payload=payload)
             last_payload = payload
@@ -1739,6 +1797,9 @@ async def stream_transcribe_workspace_events(
                 break
         elif current_time >= next_heartbeat_at:
             next_heartbeat_at = current_time + heartbeat_interval_seconds
-            yield ": keepalive\n\n"
+            yield ": keepalive\\n\\n"
 
-        await asyncio.sleep(workspace_stream_poll_interval_seconds(payload))
+        if revision is not None and workspace_stream_poll_interval_seconds(payload) == WORKSPACE_IDLE_POLL_SECONDS:
+            await asyncio.sleep(WORKSPACE_REVISION_POLL_SECONDS)
+        else:
+            await asyncio.sleep(workspace_stream_poll_interval_seconds(payload))

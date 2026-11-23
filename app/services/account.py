@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.errors import AppError
 from app.models import User
 from app.normalization import normalize_email
-from app.services.auth import active_primary_totp_method, verify_active_totp_for_user
+from app.services.auth import active_primary_totp_method, lock_user_credentials, revoke_credential_authority, verify_active_totp_for_user
 from app.services.passwords import hash_password, validate_password_strength, verify_password
 
 
@@ -61,7 +61,9 @@ def update_own_email(
     email: str,
     current_password: str,
     mfa_code: str = "",
+    commit: bool = True,
 ) -> User:
+    user = lock_user_credentials(db, user)
     _reauthenticate(db, user, current_password=current_password, mfa_code=mfa_code)
     try:
         validated_email = str(_email_adapter.validate_python(email))
@@ -74,11 +76,16 @@ def update_own_email(
     user.email = normalized_email
     db.add(user)
     try:
-        db.commit()
+        revoke_credential_authority(db, user, reason="email_changed")
+        if commit:
+            db.commit()
+        else:
+            db.flush()
     except IntegrityError as exc:
         db.rollback()
         raise AppError(409, "email_unavailable", "Email address is unavailable") from exc
-    db.refresh(user)
+    if commit:
+        db.refresh(user)
     return user
 
 
@@ -90,7 +97,9 @@ def update_own_password(
     new_password: str,
     confirm_password: str,
     mfa_code: str = "",
+    commit: bool = True,
 ) -> User:
+    user = lock_user_credentials(db, user)
     _reauthenticate(db, user, current_password=current_password, mfa_code=mfa_code)
     if new_password != confirm_password:
         raise AppError(422, "password_mismatch", "New passwords do not match")
@@ -101,6 +110,10 @@ def update_own_password(
     user.must_change_password = False
     user.temporary_password_expires_at = None
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    revoke_credential_authority(db, user, reason="password_changed")
+    if commit:
+        db.commit()
+        db.refresh(user)
+    else:
+        db.flush()
     return user

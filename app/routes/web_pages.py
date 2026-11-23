@@ -197,7 +197,7 @@ def login_page(request: Request, db: Session = Depends(get_db)):
 @LOGIN_RATE_LIMIT
 def login_submit(request: Request, email: str = Form(...), password: str = Form(...), csrf_protected: BrowserCsrf = None, db: Session = Depends(get_db)):
     try:
-        user = authenticate_user(db, email, password)
+        user = authenticate_user(db, email, password, commit=False)
         if user.recovery_mode is not None and user.must_change_password:
             record_security_event(
                 db,
@@ -222,10 +222,10 @@ def login_submit(request: Request, email: str = Form(...), password: str = Form(
             },
         )
         return render_auth_page(request, db, message=exc.message, message_kind="error", status_code=exc.status_code)
-    trusted_device = resolve_trusted_device(db, user, request.cookies.get(TRUSTED_DEVICE_COOKIE_NAME))
+    trusted_device = resolve_trusted_device(db, user, request.cookies.get(TRUSTED_DEVICE_COOKIE_NAME), commit=False)
     auth_level = login_auth_level(user, trusted_device)
     if trusted_device and auth_level is SessionAuthLevel.full:
-        touch_trusted_device_seen(db, trusted_device)
+        touch_trusted_device_seen(db, trusted_device, commit=False)
     token = create_session(db, user, auth_level=auth_level)
     record_security_event(
         db,
@@ -514,6 +514,8 @@ def mfa_challenge_submit(
             code=code,
             remember_device=remember_device == "true",
             device_label=request.headers.get("user-agent"),
+            current_session_id=context.session.id,
+            commit=False,
         )
         token = rotate_session(db, context.token, user, auth_level=determine_auth_level(user))
     except AppError as exc:
@@ -534,7 +536,7 @@ def onboarding_password_submit(request: Request, new_password: str = Form(...), 
         return response
     try:
         validate_password_strength(new_password)
-        user = update_password_for_onboarding(db, context.user, new_password_hash=hash_password(new_password))
+        user = update_password_for_onboarding(db, context.user, new_password_hash=hash_password(new_password), keep_session_id=context.session.id)
     except AppError as exc:
         return render_onboarding(request, current_user=context.user, message=exc.message, message_kind="error", status_code=exc.status_code)
     record_security_event(db, action="onboarding_password_changed", actor=user, target=user, request=request, details={"category": "account", "outcome": "success"})

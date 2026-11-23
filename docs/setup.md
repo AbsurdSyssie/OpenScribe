@@ -31,9 +31,11 @@ pip install -r requirements-dev.txt
 - applies Alembic migrations;
 - optionally clears queued development Celery work;
 - seeds reusable localhost-only development accounts by default;
-- starts the web process with reload, one Celery worker, and Celery Beat.
+- starts the web process with reload, one Celery worker, Celery Beat, and scoped Vault token renewal.
 
-Local Vault root-token and unseal material are stored under `.local/vault/`. They are ignored by Git and must not be used as production credentials.
+Local Vault root-token and unseal material are stored under `.local/vault/`; bootstrap writes the scoped application token to `.local/vault-runtime/token`. These directories are ignored by Git. Application processes use only the scoped token; do not point their configuration at the root token or use local credentials in production.
+
+For manual host launches, load the reviewed local `.env`, run `.venv/bin/python scripts/bootstrap_local_vault.py` before starting application processes, and keep `.venv/bin/python scripts/renew_vault_token.py` running alongside them. Stop the application processes if renewal exits. `start-dev.sh` supervises renewal automatically. Re-run bootstrap after a Vault restart to unseal it; a healthy scoped lease supports bootstrap without reading the root token. An expired lease or policy change requires privileged provisioning as described in [docker.md](docker.md#upgrading-the-vault-identity-boundary).
 
 For local Google or Microsoft login, register the HTTP localhost callback with the provider and set its response mode to `query`. The `form_post` mode requires HTTPS. Then use the hidden-input commands in [docker.md](docker.md#oidc-secrets-in-vault) to store each issued client secret in local Vault. Keep the corresponding client ID, callback URL, enable switch, and non-secret Vault reference in `.env`; do not put the client secret there.
 
@@ -52,7 +54,7 @@ DATABASE_URL=postgresql+psycopg://ambient:ambient@localhost:5432/ambient_scribe
 RATE_LIMIT_STORAGE_URL=redis://localhost:6379/0
 CELERY_BROKER_URL=redis://localhost:6379/2
 VAULT_ADDR=http://127.0.0.1:8200
-VAULT_TOKEN_FILE=.local/vault/root-token
+VAULT_TOKEN_FILE=.local/vault-runtime/token
 ```
 
 The application defaults to production behavior when `APP_ENV`, `ENVIRONMENT`, and `ENV` are all unset. Do not remove `APP_ENV=local` from a local configuration accidentally.

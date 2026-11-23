@@ -22,6 +22,7 @@ The persistent Compose runtime replaces only addresses that must use Docker serv
 | `ENVIRONMENT`, `ENV` | unset | Compatibility fallbacks used only when `APP_ENV` is unset. |
 | `APP_HOST` | `127.0.0.1` in host tooling | Host bind used by `start-dev.sh`. Compose binds the container internally to `0.0.0.0`. |
 | `APP_PORT` | `8080` | Host development port and Docker-published port. The application container listens on internal port `8080`. |
+| `DOCKER_TMPFS_SIZE` | `1g` | Compose-only shared `/tmp` tmpfs ceiling. Includes upload spools, audio conversion, and Beat state; raise with concurrent maximum-size jobs and provision RAM accordingly. |
 | `APP_PUBLIC_URL` | `http://127.0.0.1:8080` in local configuration | Canonical browser URL used in generated links and transactional email. |
 | `APP_SOURCE_REPOSITORY_URL` | `https://github.com/AbsurdSyssie/OpenScribe` | Public repository used by `scripts/deploy-compose.sh` to build the exact commit URL. Forks must set this to their public repository. The application container does not use this variable directly. |
 | `APP_SOURCE_CODE_URL` | `https://github.com/AbsurdSyssie/OpenScribe` | Source-code link shown in every application footer. Set it to complete corresponding source for the exact deployed release, including deployment modifications. Only absolute `http` or `https` URLs are used; an invalid value falls back to the default. |
@@ -137,7 +138,7 @@ Redis append-only persistence protects queued work, result data, and rate-limit 
 | --- | --- | --- |
 | `VAULT_ADDR` | `http://127.0.0.1:8200` | Vault API address. Compose uses `http://vault:8200`. |
 | `VAULT_TOKEN` | code fallback `root`; `.env.example` leaves it blank | Direct Vault token. Do not rely on the code fallback outside the local development server. |
-| `VAULT_TOKEN_FILE` | local bootstrap file when available | File containing the Vault token. Compose uses `/app/.local/vault/root-token`. |
+| `VAULT_TOKEN_FILE` | local bootstrap file when available | File containing the Vault token. Compose uses the read-only scoped identity at `/app/.local/vault-runtime/token`; only the isolated bootstrap service mounts root/unseal material. |
 | `VAULT_KV_MOUNT` | `secret` | KV-v2 mount for provider and platform secrets. |
 | `VAULT_TRANSIT_MOUNT` | `transit` | Transit mount used to wrap and unwrap user-content DEKs. |
 | `VAULT_USER_CONTENT_KEK_KEY_NAME` | `openscribe-user-content-kek` | Transit key used for user-content DEKs. |

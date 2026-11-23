@@ -445,7 +445,7 @@ def _break_glass_allowed() -> bool:
 @LOGIN_RATE_LIMIT
 def api_login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
     try:
-        user = authenticate_user(db, payload.email, payload.password)
+        user = authenticate_user(db, payload.email, payload.password, commit=False)
     except AppError as exc:
         record_security_event(
             db,
@@ -470,10 +470,10 @@ def api_login(payload: LoginRequest, request: Request, db: Session = Depends(get
             details={"recovery_mode": user.recovery_mode.value},
         )
     _enforce_localhost_only_dev_account(request, user)
-    trusted_device = resolve_trusted_device(db, user, request.cookies.get(TRUSTED_DEVICE_COOKIE_NAME))
+    trusted_device = resolve_trusted_device(db, user, request.cookies.get(TRUSTED_DEVICE_COOKIE_NAME), commit=False)
     auth_level = login_auth_level(user, trusted_device)
     if trusted_device and auth_level is SessionAuthLevel.full:
-        touch_trusted_device_seen(db, trusted_device)
+        touch_trusted_device_seen(db, trusted_device, commit=False)
     token = create_session(db, user, auth_level=auth_level)
     record_security_event(
         db,
@@ -603,6 +603,8 @@ def api_login_mfa_totp(
             code=payload.code,
             remember_device=payload.remember_device,
             device_label=request.headers.get("user-agent"),
+            current_session_id=context.session.id,
+            commit=False,
         )
     except AppError as exc:
         record_security_event(
@@ -684,7 +686,7 @@ def reject_account_request(request_id: UUID, payload: AccountRequestReject, cont
 
 @api.post("/onboarding/password", response_model=CurrentUserResponse, responses=error_responses)
 def api_onboarding_password(payload: PasswordChangeRequest, request: Request, context: AuthenticatedContext = Depends(require_authenticated_context), db: Session = Depends(get_db)):
-    user = update_password_for_onboarding(db, context.user, new_password_hash=hash_password(payload.new_password))
+    user = update_password_for_onboarding(db, context.user, new_password_hash=hash_password(payload.new_password), keep_session_id=context.session.id)
     record_security_event(db, action="onboarding_password_changed", actor=user, target=user, request=request, details={"category": "account", "outcome": "success"})
     return CurrentUserResponse(
         id=str(user.id),

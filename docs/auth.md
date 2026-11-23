@@ -53,7 +53,7 @@ Permanent passwords used by onboarding, activation, reset, and self-service pass
 
 New and re-enrolled TOTP seeds are stored as AES-GCM envelopes under the owning user's DEK. Associated data binds the envelope to the user and MFA-method row. Encrypted methods fail closed when Vault/key material is unavailable. Legacy plaintext Base32 seeds remain read-compatible only; see [mfa-secret-encryption.md](mfa-secret-encryption.md).
 
-Recovery codes are stored as one-way hashes and cannot be recovered from database state.
+Recovery codes are stored as one-way hashes and cannot be recovered from database state. Onboarding password changes invalidate outstanding setup and recovery links, revoke other sessions and all trusted devices, and preserve the initiating onboarding session.
 
 ## Login and MFA
 
@@ -141,7 +141,7 @@ The complete endpoint inventory and response contracts are in [api.md](api.md).
 
 ## Activation and recovery
 
-Activation and reset links use `auth_email_tokens`. Plaintext tokens are sent to the user and only token hashes are persisted.
+Activation and reset links use `auth_email_tokens`. Plaintext tokens are sent to the user and only token hashes are persisted. Issuance, redemption, and credential changes serialize on the owning user row. Password login holds the same lock through session creation; activation and self-service credential changes commit their replacement browser session with the credential mutation. Session rotation locks the owner and rejects an already revoked or expired source session. Redemption claims the link and commits the credential change, outstanding-link invalidation, and session/device revocation together. Email changes, password changes, and explicit MFA recovery also invalidate outstanding setup and recovery links. A failed transaction leaves the prior credentials and authority unchanged. Delivery happens after token issuance commits; failed delivery may leave an unused, expiring link.
 
 Self-service reset:
 
@@ -170,7 +170,7 @@ Normal users and team leaders can update their own account from `/workspace/acco
 - Email changes require the current password and a fresh TOTP code when TOTP is active.
 - Password changes require current password, confirmation, password-strength validation, and fresh TOTP when active.
 - Email uniqueness is checked against normalized database identity.
-- Successful email/password changes revoke all sessions and trusted devices and issue one replacement session to the initiating browser.
+- Successful email/password changes commit link invalidation and session/device revocation with the credential change, revoke all sessions and trusted devices and issue one replacement session to the initiating browser.
 - Audit events record action/outcome/field metadata, not submitted names, emails, passwords, or TOTP codes.
 
 When OIDC is enabled, normal users and team leaders can link or remove each configured provider from `/workspace/account`. One account may link Google, Microsoft, Care Identity, and a custom provider.

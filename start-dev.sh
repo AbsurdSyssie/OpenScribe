@@ -36,8 +36,8 @@ docker compose up -d postgres redis vault
 echo "Bootstrapping persistent local Vault..."
 .venv/bin/python scripts/bootstrap_local_vault.py
 
-if [[ -f ".local/vault/root-token" ]]; then
-  export VAULT_TOKEN_FILE="${ROOT_DIR}/.local/vault/root-token"
+if [[ -f ".local/vault-runtime/token" ]]; then
+  export VAULT_TOKEN_FILE="${ROOT_DIR}/.local/vault-runtime/token"
   unset VAULT_TOKEN
 fi
 
@@ -122,12 +122,14 @@ CELERY_WORKER_PIDS=()
 CELERY_BEAT_PID=""
 BRAVE_PID=""
 APP_PID=""
+VAULT_RENEWAL_PID=""
 
 cleanup() {
   echo "Cleaning up processes..."
 
   local -a pids=("${CELERY_WORKER_PIDS[@]}")
   [[ -z "$CELERY_BEAT_PID" ]] || pids+=("$CELERY_BEAT_PID")
+  [[ -z "$VAULT_RENEWAL_PID" ]] || pids+=("$VAULT_RENEWAL_PID")
   [[ -z "$APP_PID" ]] || pids+=("$APP_PID")
   [[ -z "$BRAVE_PID" ]] || pids+=("$BRAVE_PID")
   if (( ${#pids[@]} )); then
@@ -138,6 +140,9 @@ cleanup() {
 
 trap cleanup EXIT
 trap 'exit 143' INT TERM
+
+.venv/bin/python scripts/renew_vault_token.py &
+VAULT_RENEWAL_PID=$!
 
 if [[ "${DEV_START_CELERY:-true}" == "true" ]]; then
   if [[ "${DEV_PURGE_CELERY_QUEUE}" == "true" ]]; then
@@ -165,17 +170,19 @@ fi
 
 echo "Starting FastAPI on ${APP_BIND_HOST}:${APP_PORT} with trusted proxy ${DEV_FORWARDED_ALLOW_IPS}..."
 DEEPGRAM_LIVE_LOG_PATH="${DEEPGRAM_LIVE_LOG_PATH-${ROOT_DIR}/.local/logs/deepgram-live.jsonl}" \
-.venv/bin/fastapi dev app/main.py \
+.venv/bin/uvicorn app.main:app \
   --host "${APP_BIND_HOST}" \
   --port "${APP_PORT}" \
+  --reload \
   --reload-dir "${ROOT_DIR}/app" \
+  --no-access-log \
   --proxy-headers \
   --forwarded-allow-ips "${DEV_FORWARDED_ALLOW_IPS}" &
 APP_PID=$!
 
 # A failed worker or Beat stops the dev runtime instead of leaving queued work stranded.
 set +e
-wait -n "$APP_PID" "${CELERY_WORKER_PIDS[@]}" ${CELERY_BEAT_PID:+"$CELERY_BEAT_PID"}
+wait -n "$VAULT_RENEWAL_PID" "$APP_PID" "${CELERY_WORKER_PIDS[@]}" ${CELERY_BEAT_PID:+"$CELERY_BEAT_PID"}
 status=$?
 set -e
 exit "$status"

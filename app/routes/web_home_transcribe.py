@@ -39,8 +39,6 @@ from ..services.account import update_own_email, update_own_name, update_own_pas
 from ..services.auth import (
     active_primary_totp_method,
     create_session,
-    revoke_sessions_for_user,
-    revoke_trusted_devices_for_user,
 )
 from ..services.deidentification import (
     clear_team_clinical_nlp_selection as clear_team_clinical_nlp_selection_service,
@@ -553,8 +551,6 @@ def _account_success_redirect(message: str) -> RedirectResponse:
 
 
 def _rotate_account_session(request: Request, db: Session, context, *, reason: str) -> RedirectResponse:
-    revoke_sessions_for_user(db, context.user, reason=reason)
-    revoke_trusted_devices_for_user(db, context.user, reason=reason)
     token = create_session(
         db,
         context.user,
@@ -617,6 +613,7 @@ def settings_account_email(
             email=email,
             current_password=current_password,
             mfa_code=mfa_code,
+            commit=False,
         )
     except AppError as exc:
         return _render_account_error(
@@ -664,6 +661,7 @@ def settings_account_password(
             new_password=new_password,
             confirm_password=confirm_password,
             mfa_code=mfa_code,
+            commit=False,
         )
     except AppError as exc:
         return _render_account_error(request, db, context, exc, account_modal=account_modal)

@@ -81,11 +81,11 @@ def probe_audio_duration_seconds(*, audio_bytes: bytes, source_filename: str) ->
         raise AppError(422, "business_rule_violation", "Audio chunk is required", {"field": "audio"})
 
     source_suffix = Path(source_filename or "audio.bin").suffix or ".bin"
-    with tempfile.NamedTemporaryFile(suffix=source_suffix, delete=False, dir="/tmp") as source_file:
-        source_file.write(audio_bytes)
-        source_path = source_file.name
+    with tempfile.TemporaryDirectory(prefix="openscribe-audio-", dir="/tmp") as work_dir:
+        source_path = str(Path(work_dir) / f"source{source_suffix}")
+        with open(source_path, "wb") as source_file:
+            source_file.write(audio_bytes)
 
-    try:
         try:
             completed = subprocess.run(
                 [
@@ -118,11 +118,6 @@ def probe_audio_duration_seconds(*, audio_bytes: bytes, source_filename: str) ->
         if duration_seconds <= 0:
             raise AppError(502, "audio_duration_probe_failed", "Audio duration could not be inspected")
         return duration_seconds
-    finally:
-        try:
-            os.unlink(source_path)
-        except FileNotFoundError:
-            pass
 
 
 def inspect_audio_duration_seconds(*, audio_bytes: bytes, source_filename: str) -> float:
@@ -155,14 +150,12 @@ def normalize_audio_to_wav_16k_mono(*, audio_bytes: bytes, source_filename: str)
         raise AppError(422, "business_rule_violation", "Audio chunk is required", {"field": "audio"})
 
     source_suffix = Path(source_filename or "chunk.bin").suffix or ".bin"
-    with tempfile.NamedTemporaryFile(suffix=source_suffix, delete=False, dir="/tmp") as source_file:
-        source_file.write(audio_bytes)
-        source_path = source_file.name
+    with tempfile.TemporaryDirectory(prefix="openscribe-audio-", dir="/tmp") as work_dir:
+        source_path = str(Path(work_dir) / f"source{source_suffix}")
+        output_path = str(Path(work_dir) / "normalized.wav")
+        with open(source_path, "wb") as source_file:
+            source_file.write(audio_bytes)
 
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False, dir="/tmp") as output_file:
-        output_path = output_file.name
-
-    try:
         try:
             completed = subprocess.run(
                 [
@@ -193,12 +186,6 @@ def normalize_audio_to_wav_16k_mono(*, audio_bytes: bytes, source_filename: str)
 
         with open(output_path, "rb") as normalized_file:
             normalized_bytes = normalized_file.read()
-    finally:
-        for path in (source_path, output_path):
-            try:
-                os.unlink(path)
-            except FileNotFoundError:
-                pass
 
     return NormalizedAudio(
         filename=f"{Path(source_filename or 'chunk').stem or 'chunk'}.wav",

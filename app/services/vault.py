@@ -23,7 +23,7 @@ DEFAULT_CSRF_SECRET_REF = f"{VAULT_KV_MOUNT}:openscribe/platform/csrf"
 DEFAULT_OIDC_SUBJECT_HASH_SECRET_REF = (
     f"{VAULT_KV_MOUNT}:openscribe/platform/oidc-subject-hash"
 )
-DEFAULT_LOCAL_VAULT_TOKEN_FILE = Path(__file__).resolve().parents[2] / ".local" / "vault" / "root-token"
+DEFAULT_LOCAL_VAULT_TOKEN_FILE = Path(__file__).resolve().parents[2] / ".local" / "vault-runtime" / "token"
 
 
 def _default_local_vault_token_file() -> Path | None:

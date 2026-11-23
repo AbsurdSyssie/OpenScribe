@@ -35,7 +35,7 @@ x-openscribe-environment: &openscribe-environment
   CELERY_TASK_ALWAYS_EAGER: "false"
   TASK_OUTBOX_MAX_ATTEMPTS: "${TASK_OUTBOX_MAX_ATTEMPTS:-10}"
   VAULT_ADDR: http://vault:8200
-  VAULT_TOKEN_FILE: /app/.local/vault/root-token
+  VAULT_TOKEN_FILE: /app/.local/vault-runtime/token
   VAULT_KV_MOUNT: "${VAULT_KV_MOUNT:-secret}"
   VAULT_TRANSIT_MOUNT: "${VAULT_TRANSIT_MOUNT:-transit}"
   VAULT_USER_CONTENT_KEK_KEY_NAME: "${VAULT_USER_CONTENT_KEK_KEY_NAME:-openscribe-user-content-kek}"
@@ -80,7 +80,7 @@ x-openscribe-environment: &openscribe-environment
   DEMO_CLINICIAN_EMAIL: clinician@openscribe.local
 
 x-openscribe-volumes: &openscribe-volumes
-  - vault_bootstrap:/app/.local/vault
+  - vault_runtime:/app/.local/vault-runtime:ro
   - demo_state:/app/.local/demo
 
 services:
@@ -126,6 +126,37 @@ services:
       timeout: 5s
       retries: 20
 
+  vault-bootstrap:
+    build:
+      context: .
+    image: openscribe-demo:local
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'mkdir -p /app/.local/vault-runtime && chown 10001:10001 /app/.local/vault-runtime && python scripts/supervise_local_vault.py'
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_KV_MOUNT: "${VAULT_KV_MOUNT:-secret}"
+      VAULT_TRANSIT_MOUNT: "${VAULT_TRANSIT_MOUNT:-transit}"
+      VAULT_USER_CONTENT_KEK_KEY_NAME: "${VAULT_USER_CONTENT_KEK_KEY_NAME:-openscribe-user-content-kek}"
+      LOCAL_VAULT_FORCE_PROVISION: "${LOCAL_VAULT_FORCE_PROVISION:-false}"
+      OIDC_SUBJECT_HASH_SECRET_VAULT_REF: "${OIDC_SUBJECT_HASH_SECRET_VAULT_REF:-}"
+      RESEND_API_KEY_VAULT_REF: "${RESEND_API_KEY_VAULT_REF:-}"
+      CSRF_SECRET_VAULT_REF: "${CSRF_SECRET_VAULT_REF:-}"
+    healthcheck:
+      test: ["CMD", "python", "scripts/supervise_local_vault.py", "--check"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - vault_bootstrap:/app/.local/vault
+      - vault_runtime:/app/.local/vault-runtime
+    depends_on:
+      vault:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+
   openscribe:
     build:
       context: .
@@ -138,8 +169,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      vault:
+      vault-bootstrap:
         condition: service_healthy
+    tmpfs:
+      - /tmp:size=${DOCKER_TMPFS_SIZE:-1g},mode=1777,noexec,nosuid,nodev
     ports:
       - "127.0.0.1:8080:8080"
     volumes: *openscribe-volumes
@@ -177,4 +210,5 @@ volumes:
   redis_data:
   vault_data:
   vault_bootstrap:
+  vault_runtime:
   demo_state:

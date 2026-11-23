@@ -79,7 +79,7 @@ from app.schemas import (
     TeamCreate,
     UserCreate,
 )
-from app.services.auth import revoke_sessions_for_user, revoke_trusted_devices_for_user
+from app.services.auth import lock_user_credentials, revoke_credential_authority, revoke_sessions_for_user, revoke_trusted_devices_for_user
 from app.services.content_crypto import ensure_user_dek
 from app.services.default_assets import ensure_builtin_default_assets, seed_team_default_assets
 from app.services.passwords import hash_password, validate_password_strength
@@ -1811,6 +1811,7 @@ def reset_user_password_to_temporary(
     reset_mfa: bool = False,
     break_glass: bool = False,
 ) -> tuple[str, datetime]:
+    user = lock_user_credentials(db, user)
     if user.status is not UserStatus.active:
         raise AppError(403, "forbidden", "User account is not active", {"status": user.status.value})
 
@@ -1839,27 +1840,10 @@ def reset_user_password_to_temporary(
         for code in db.scalars(select(UserRecoveryCode).where(UserRecoveryCode.user_id == user.id)):
             db.delete(code)
 
-    reset_purposes = {
-        AuthEmailTokenPurpose.password_reset,
-        AuthEmailTokenPurpose.manager_password_reset,
-        AuthEmailTokenPurpose.manager_account_recovery,
-    }
-    active_tokens = db.scalars(
-        select(AuthEmailToken).where(
-            AuthEmailToken.user_id == user.id,
-            AuthEmailToken.purpose.in_(reset_purposes),
-            AuthEmailToken.used_at.is_(None),
-        )
-    )
-    for token in active_tokens:
-        token.used_at = now
-        db.add(token)
-
     db.add(user)
-    db.commit()
     revoke_reason = "break_glass_recovery" if break_glass else ("manager_account_recovery" if reset_mfa else "manager_password_reset")
-    revoke_sessions_for_user(db, user, reason=revoke_reason)
-    revoke_trusted_devices_for_user(db, user, reason=revoke_reason)
+    revoke_credential_authority(db, user, reason=revoke_reason)
+    db.commit()
     return temporary_password, expires_at
 
 

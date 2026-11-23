@@ -115,8 +115,38 @@ def test_demo_compose_is_isolated_and_publishes_only_local_web() -> None:
         "redis_data",
         "vault_data",
         "vault_bootstrap",
+        "vault_runtime",
         "demo_state",
     }
+
+
+@pytest.mark.parametrize("compose_path", ["docker-compose.yml", "docker-compose.demo.yml"])
+def test_application_vault_mount_is_scoped_read_only_and_tmpfs_is_bounded(compose_path: str) -> None:
+    compose = yaml.safe_load(Path(compose_path).read_text())
+    services = compose["services"]
+    app = services["openscribe"]
+    bootstrap = services["vault-bootstrap"]
+
+    assert app["environment"]["VAULT_TOKEN_FILE"] == "/app/.local/vault-runtime/token"
+    assert "vault_runtime:/app/.local/vault-runtime:ro" in app["volumes"] or (
+        "vault_runtime:/app/.local/vault-runtime:ro" in compose["x-openscribe-volumes"]
+    )
+    assert "vault_bootstrap:/app/.local/vault" not in app.get("volumes", [])
+    assert "vault_bootstrap:/app/.local/vault" in bootstrap["volumes"]
+    assert "vault_runtime:/app/.local/vault-runtime" in bootstrap["volumes"]
+    assert services["openscribe"]["depends_on"]["vault-bootstrap"]["condition"] == "service_healthy"
+    assert app["tmpfs"] == ["/tmp:size=${DOCKER_TMPFS_SIZE:-1g},mode=1777,noexec,nosuid,nodev"]
+    assert "DOCKER_TMPFS_SIZE=1g" in Path(".env.example").read_text().splitlines()
+
+
+@pytest.mark.parametrize("launcher", ["docker/entrypoint.sh", "start-dev.sh"])
+def test_supported_uvicorn_launchers_disable_sensitive_access_logging(launcher: str) -> None:
+    script = Path(launcher).read_text()
+    uvicorn = script.split("uvicorn app.main:app \\", 1)[1].split("&", 1)[0]
+    flags = [line.strip().removesuffix("\\").strip() for line in uvicorn.splitlines()]
+
+    assert "--no-access-log" in flags
+    assert "--access-log" not in flags
 
 
 def test_demo_compose_seeds_only_after_healthy_app() -> None:
@@ -333,7 +363,7 @@ def test_celery_redis_transport_publish_consume_result_and_reconnect(tmp_path) -
                         backend.client.connection_pool.disconnect()
 
 
-@pytest.mark.parametrize("exiting_child", ["web", "control", "generation", "ingestion", "beat"])
+@pytest.mark.parametrize("exiting_child", ["web", "control", "generation", "ingestion", "beat", "renewal"])
 def test_container_supervises_all_isolated_workers(tmp_path, exiting_child) -> None:
     import os
     import subprocess
@@ -348,6 +378,8 @@ def test_container_supervises_all_isolated_workers(tmp_path, exiting_child) -> N
         'if [[ "$(basename "$0")" == celery ]]; then\n'
         '  child=beat\n'
         '  while (( $# )); do if [[ "$1" == -Q ]]; then child="$2"; break; fi; shift; done\n'
+        'elif [[ "$(basename "$0")" == python && "${1:-}" == scripts/renew_vault_token.py ]]; then\n'
+        '  child=renewal\n'
         'fi\n'
         'if [[ "$child" == "$EXITING_CHILD" ]]; then sleep 0.3; exit 7; fi\n'
         'while true; do sleep 0.05; done\n'
@@ -356,6 +388,9 @@ def test_container_supervises_all_isolated_workers(tmp_path, exiting_child) -> N
         fake = tmp_path / command
         fake.write_text(fake_script)
         fake.chmod(0o755)
+    fake_python = tmp_path / "python"
+    fake_python.write_text(fake_script)
+    fake_python.chmod(0o755)
     environment = {key: value for key, value in os.environ.items() if not key.startswith("CELERY_")}
     environment.update(PATH=f"{tmp_path}:{environment['PATH']}", MARKER=str(marker), EXITING_CHILD=exiting_child, CELERY_WORKER_MODE="isolated")
     result = subprocess.run(
@@ -363,7 +398,7 @@ def test_container_supervises_all_isolated_workers(tmp_path, exiting_child) -> N
         env=environment, capture_output=True, text=True, timeout=10,
     )
     assert result.returncode == 7, result.stderr
-    assert marker.read_text().splitlines() == ["stopped"] * 4  # all four surviving processes
+    assert marker.read_text().splitlines() == ["stopped"] * 5  # all five surviving processes
 
 
 def test_container_signal_stops_workers_beat_and_web(tmp_path) -> None:
@@ -383,6 +418,9 @@ def test_container_signal_stops_workers_beat_and_web(tmp_path) -> None:
         fake = tmp_path / command
         fake.write_text(fake_script)
         fake.chmod(0o755)
+    fake_python = tmp_path / "python"
+    fake_python.write_text(fake_script)
+    fake_python.chmod(0o755)
     environment = {key: value for key, value in os.environ.items() if not key.startswith("CELERY_")}
     environment.update(PATH=f"{tmp_path}:{environment['PATH']}", MARKER=str(marker), READY=str(ready), CELERY_WORKER_MODE="isolated")
     process = subprocess.Popen(
@@ -392,15 +430,15 @@ def test_container_signal_stops_workers_beat_and_web(tmp_path) -> None:
     try:
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
-            if ready.exists() and len(ready.read_text().splitlines()) == 5:
+            if ready.exists() and len(ready.read_text().splitlines()) == 6:
                 break
             time.sleep(0.02)
         else:
-            raise AssertionError("The fake runtime did not start all five children")
+            raise AssertionError("The fake runtime did not start all six children")
         process.terminate()
         _, stderr = process.communicate(timeout=5)
         assert process.returncode == 143, stderr
-        assert marker.read_text().splitlines() == ["stopped"] * 5
+        assert marker.read_text().splitlines() == ["stopped"] * 6
     finally:
         if process.poll() is None:
             process.terminate()

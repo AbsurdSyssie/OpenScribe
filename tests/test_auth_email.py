@@ -283,18 +283,25 @@ def test_legacy_plaintext_totp_does_not_bypass_completed_account_activation(clie
     user = make_user(
         email="already-active@example.com",
         password="password-1",
-        onboarding_state=UserOnboardingState.complete,
-        must_change_password=False,
+        onboarding_state=UserOnboardingState.pending_password_change,
+        must_change_password=True,
         mfa_required=True,
-        mfa_enabled=True,
+        mfa_enabled=False,
     )
-    mfa_method, _ = make_totp_method(user=user, encrypted=False, verified_at=utcnow())
     from app.services.auth_email import issue_auth_email_token, send_account_activation_email
+
+    # Issue while activation is genuinely pending, then model a stale legacy
+    # link retained after the account has completed activation.
+    raw_token = issue_auth_email_token(db_session, user, purpose=AuthEmailTokenPurpose.account_activation)
+    user.onboarding_state = UserOnboardingState.complete
+    user.must_change_password = False
+    user.mfa_enabled = True
+    db_session.add(user)
+    db_session.commit()
+    mfa_method, _ = make_totp_method(user=user, encrypted=False, verified_at=utcnow())
 
     with pytest.raises(AppError) as exc:
         send_account_activation_email(db_session, user)
-
-    raw_token = issue_auth_email_token(db_session, user, purpose=AuthEmailTokenPurpose.account_activation)
 
     def fail_hash(_password):
         raise AssertionError("hash_password should not run for completed activation token")

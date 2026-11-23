@@ -1040,3 +1040,8 @@ from .routes import deepgram_live as _deepgram_live
 
 app.include_router(api)
 app.include_router(_deepgram_live.router)
+
+# Register last: body accounting must run before CSRF or route form parsing.
+from .request_limits import RequestSizeLimitMiddleware
+
+app.add_middleware(RequestSizeLimitMiddleware)

@@ -5,8 +5,6 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/celery-workers.sh"
 
 if [[ "$(id -u)" -eq 0 ]]; then
-  mkdir -p /app/.local/vault
-  chown -R openscribe:openscribe /app/.local/vault
   if [[ -d /app/.local/demo ]]; then
     chown -R openscribe:openscribe /app/.local/demo
   fi
@@ -69,8 +67,8 @@ bootstrap_runtime() {
   wait_for_postgres
   wait_for_redis
 
-  echo "Initializing or unsealing Vault..."
-  python scripts/bootstrap_local_vault.py
+  echo "Checking scoped Vault identity..."
+  python -c 'from scripts.renew_vault_token import renew_runtime_token; renew_runtime_token()'
 
   echo "Applying database migrations..."
   alembic upgrade head
@@ -85,8 +83,11 @@ run_runtime() {
   validate_celery_workers
   bootstrap_runtime
 
-  local beat_pid app_pid
+  local beat_pid app_pid renewal_pid
   local -a child_pids
+
+  python scripts/renew_vault_token.py &
+  renewal_pid=$!
 
   echo "Starting Celery workers ($CELERY_WORKER_MODE)..."
   start_celery_workers celery
@@ -102,13 +103,14 @@ run_runtime() {
     --host 0.0.0.0 \
     --port "${CONTAINER_APP_PORT:-8080}" \
     --log-level info \
+    --no-access-log \
     --ws-max-size 65536 \
     --ws-max-queue 4 \
     --proxy-headers \
     --forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-127.0.0.1}" &
   app_pid=$!
 
-  child_pids=("${CELERY_WORKER_PIDS[@]}" "$beat_pid" "$app_pid")
+  child_pids=("$renewal_pid" "${CELERY_WORKER_PIDS[@]}" "$beat_pid" "$app_pid")
 
   shutdown() {
     trap - INT TERM

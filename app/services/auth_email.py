@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.errors import AppError
 from app.models import AuthEmailToken, AuthEmailTokenPurpose, MfaMethodType, TeamRole, User, UserMfaMethod, UserOnboardingState, UserRecoveryCode, UserStatus, utcnow
 from app.normalization import normalize_email
-from app.services.auth import create_session, opaque_token_hash, revoke_sessions_for_user, revoke_trusted_devices_for_user
+from app.services.auth import create_session, lock_user_credentials, opaque_token_hash, revoke_credential_authority
 from app.services.mail import MAIL_TRANSPORT_DISABLED, MailMessage, load_mail_config_from_env, send_transactional_email, validate_mail_config
 from app.services.passwords import hash_password, validate_password_strength
 
@@ -45,6 +45,11 @@ def issue_auth_email_token(
     created_by: User | None = None,
     expires_in: timedelta = AUTH_EMAIL_TOKEN_LIFETIME,
 ) -> str:
+    user = lock_user_credentials(db, user)
+    if user.status is not UserStatus.active:
+        raise AppError(403, "forbidden", "User account is not active", {"status": user.status.value})
+    if purpose is AuthEmailTokenPurpose.account_activation and not _account_activation_allowed(user):
+        raise AppError(409, "activation_not_pending", "Account setup link is no longer valid for this user")
     now = utcnow()
     existing_tokens = db.scalars(
         select(AuthEmailToken).where(
@@ -196,10 +201,19 @@ def send_manager_account_recovery_email(db: Session, *, actor: User, target: Use
 
 
 def _consume_token(db: Session, *, raw_token: str, allowed_purposes: set[AuthEmailTokenPurpose]) -> AuthEmailToken:
+    token_hash = opaque_token_hash(raw_token)
+    user_id = db.scalar(select(AuthEmailToken.user_id).where(AuthEmailToken.token_hash == token_hash))
+    if user_id is None:
+        raise AppError(422, "token_invalid", "Reset or setup link is invalid")
+    user = db.get(User, user_id)
+    if user is None:
+        raise AppError(422, "token_invalid", "Reset or setup link is invalid")
+    lock_user_credentials(db, user)
+    # Lock the user before reading token state: issuance and every credential
+    # mutation use this same ordering, including different token purposes.
     token = db.scalar(
-        select(AuthEmailToken)
-        .options(joinedload(AuthEmailToken.user).joinedload(User.mfa_methods), joinedload(AuthEmailToken.user).joinedload(User.recovery_codes))
-        .where(AuthEmailToken.token_hash == opaque_token_hash(raw_token))
+        select(AuthEmailToken).where(AuthEmailToken.token_hash == token_hash)
+        .execution_options(populate_existing=True)
     )
     if token is None or token.purpose not in allowed_purposes:
         raise AppError(422, "token_invalid", "Reset or setup link is invalid")
@@ -230,11 +244,11 @@ def confirm_account_activation(db: Session, *, raw_token: str, new_password: str
     user.mfa_enabled = False
     _delete_mfa_state(db, user)
     db.add(user)
-    db.commit()
-    revoke_sessions_for_user(db, user, reason="account_activation_completed")
-    revoke_trusted_devices_for_user(db, user, reason="account_activation_completed")
-    refreshed = db.get(User, user.id) or user
-    return refreshed, create_session(db, refreshed)
+    revoke_credential_authority(db, user, reason="account_activation_completed")
+    # Session creation commits the new credential, revocations, and replacement
+    # session together while the owning-user lock remains held.
+    session_token = create_session(db, user)
+    return user, session_token
 
 
 def confirm_password_reset(db: Session, *, raw_token: str, new_password: str) -> User:
@@ -260,21 +274,20 @@ def confirm_password_reset(db: Session, *, raw_token: str, new_password: str) ->
         user.mfa_enabled = False
         _delete_mfa_state(db, user)
     db.add(user)
+    revoke_credential_authority(db, user, reason="password_reset")
     db.commit()
-    revoke_sessions_for_user(db, user, reason="password_reset")
-    revoke_trusted_devices_for_user(db, user, reason="password_reset")
     return db.get(User, user.id) or user
 
 
 def reset_user_mfa_for_reenrollment(db: Session, *, user: User) -> User:
+    user = lock_user_credentials(db, user)
     if user.onboarding_state is not UserOnboardingState.pending_password_change:
         user.onboarding_state = UserOnboardingState.pending_totp_enrollment
     user.mfa_enabled = False
     _delete_mfa_state(db, user)
     db.add(user)
+    revoke_credential_authority(db, user, reason="mfa_reset")
     db.commit()
-    revoke_sessions_for_user(db, user, reason="mfa_reset")
-    revoke_trusted_devices_for_user(db, user, reason="mfa_reset")
     return db.get(User, user.id) or user
 
 

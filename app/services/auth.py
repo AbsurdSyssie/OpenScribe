@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.errors import AppError
 from app.models import (
+    AuthEmailToken,
     MfaMethodType,
     SessionAuthLevel,
     SessionStatus,
@@ -81,12 +82,14 @@ def active_primary_totp_method(user: User) -> UserMfaMethod | None:
     return None
 
 
-def authenticate_user(db: Session, email: str, password: str) -> User:
+def authenticate_user(db: Session, email: str, password: str, *, commit: bool = True) -> User:
     normalized_email = normalize_email(email)
     stmt = (
         select(User)
         .options(joinedload(User.team), joinedload(User.mfa_methods))
         .where(User.email == normalized_email)
+        .with_for_update(of=User, key_share=True)
+        .execution_options(populate_existing=True)
     )
     user = db.scalar(stmt)
     password_hash = user.password_hash if user is not None else DUMMY_PASSWORD_HASH
@@ -109,9 +112,12 @@ def authenticate_user(db: Session, email: str, password: str) -> User:
         user.password_hash = hash_password(password)
     user.last_login_at = utcnow()
     db.add(user)
-    db.commit()
-    db.refresh(user)
-    return get_user_by_id(db, user.id) or user
+    if commit:
+        db.commit()
+        db.refresh(user)
+    else:
+        db.flush()
+    return user
 
 
 def create_session(
@@ -136,8 +142,9 @@ def create_session(
 
         scribe_terms_version_no = current_scribe_terms_version_no(db) or 0
     else:
-        # Rotations revoke/commit the source first. Refresh its snapshot after
-        # that commit so a concurrent legacy resolver's winning pin is copied.
+        # Flush staged revocations and copy the latest Terms snapshot within
+        # the same transaction as the replacement session.
+        db.flush()
         db.refresh(previous_session, attribute_names=["scribe_terms_version_no"])
         scribe_terms_version_no = previous_session.scribe_terms_version_no
     session.scribe_terms_version_no = scribe_terms_version_no
@@ -161,22 +168,53 @@ def revoke_session_by_token(db: Session, token: str, *, reason: str) -> None:
     db.commit()
 
 
-def revoke_sessions_for_user(db: Session, user: User, *, reason: str) -> None:
+def lock_user_credentials(db: Session, user: User) -> User:
+    """Serialize credentials without blocking audit foreign-key KEY SHARE locks."""
+    locked = db.scalar(
+        select(User).where(User.id == user.id).with_for_update(key_share=True)
+        .execution_options(populate_existing=True)
+    )
+    if locked is None:
+        raise AppError(404, "not_found", "User not found")
+    # These may already have been loaded by the authentication dependency.
+    db.expire(locked, ["mfa_methods", "recovery_codes"])
+    return locked
+
+
+def invalidate_auth_email_tokens(db: Session, user: User) -> None:
+    now = utcnow()
+    for token in db.scalars(select(AuthEmailToken).where(
+        AuthEmailToken.user_id == user.id, AuthEmailToken.used_at.is_(None)
+    )):
+        token.used_at = now
+        db.add(token)
+
+
+def revoke_credential_authority(db: Session, user: User, *, reason: str, keep_session_id: UUID | None = None) -> None:
+    """Stage invalidation and revocation in the credential mutation transaction."""
+    invalidate_auth_email_tokens(db, user)
+    revoke_sessions_for_user(db, user, reason=reason, commit=False, keep_session_id=keep_session_id)
+    revoke_trusted_devices_for_user(db, user, reason=reason, commit=False)
+
+
+def revoke_sessions_for_user(db: Session, user: User, *, reason: str, commit: bool = True, keep_session_id: UUID | None = None) -> None:
     sessions = db.scalars(
         select(UserSession).where(UserSession.user_id == user.id, UserSession.status == SessionStatus.active)
     )
     touched = False
     for session in sessions:
+        if session.id == keep_session_id:
+            continue
         session.status = SessionStatus.revoked
         session.revoked_at = utcnow()
         session.revoke_reason = reason
         db.add(session)
         touched = True
-    if touched:
+    if touched and commit:
         db.commit()
 
 
-def revoke_trusted_devices_for_user(db: Session, user: User, *, reason: str) -> None:
+def revoke_trusted_devices_for_user(db: Session, user: User, *, reason: str, commit: bool = True) -> None:
     devices = db.scalars(
         select(UserTrustedDevice).where(UserTrustedDevice.user_id == user.id, UserTrustedDevice.revoked_at.is_(None))
     )
@@ -186,7 +224,7 @@ def revoke_trusted_devices_for_user(db: Session, user: User, *, reason: str) -> 
         device.revoke_reason = reason
         db.add(device)
         touched = True
-    if touched:
+    if touched and commit:
         db.commit()
 
 
@@ -227,19 +265,20 @@ def resolve_authenticated_session(db: Session, raw_token: str) -> tuple[User, Us
 
 
 def rotate_session(db: Session, current_token: str, user: User, *, auth_level: SessionAuthLevel | None = None) -> str:
-    current = db.scalar(select(UserSession).where(UserSession.session_token_hash == session_token_hash(current_token)))
-    revoke_session_by_token(db, current_token, reason="rotated")
-    if current is None:
-        return create_session(db, user, auth_level=auth_level)
-    return create_session(
-        db,
-        user,
-        auth_level=auth_level,
-        previous_session=current,
-    )
+    user = lock_user_credentials(db, user)
+    current = db.scalar(select(UserSession).where(
+        UserSession.session_token_hash == session_token_hash(current_token)
+    ).execution_options(populate_existing=True))
+    if current is None or current.user_id != user.id or current.status is not SessionStatus.active or current.expires_at <= utcnow():
+        raise AppError(401, "unauthorized", "Session is no longer active")
+    current.status = SessionStatus.revoked
+    current.revoked_at = utcnow()
+    current.revoke_reason = "rotated"
+    db.add(current)
+    return create_session(db, user, auth_level=auth_level, previous_session=current)
 
 
-def resolve_trusted_device(db: Session, user: User, raw_token: str | None) -> UserTrustedDevice | None:
+def resolve_trusted_device(db: Session, user: User, raw_token: str | None, *, commit: bool = True) -> UserTrustedDevice | None:
     if not raw_token:
         return None
     device = db.scalar(
@@ -255,11 +294,13 @@ def resolve_trusted_device(db: Session, user: User, raw_token: str | None) -> Us
             device.revoked_at = utcnow()
             device.revoke_reason = "expired"
             db.add(device)
-            db.commit()
+            if commit:
+                db.commit()
         return None
     device.last_seen_at = utcnow()
     db.add(device)
-    db.commit()
+    if commit:
+        db.commit()
     return device
 
 
@@ -287,7 +328,8 @@ def login_auth_level(user: User, trusted_device: UserTrustedDevice | None) -> Se
     return SessionAuthLevel.full
 
 
-def update_password_for_onboarding(db: Session, user: User, *, new_password_hash: str) -> User:
+def update_password_for_onboarding(db: Session, user: User, *, new_password_hash: str, keep_session_id: UUID | None = None) -> User:
+    user = lock_user_credentials(db, user)
     if user.onboarding_state is not UserOnboardingState.pending_password_change:
         raise AppError(409, "conflict", "Password change is not pending for this user")
     user.password_hash = new_password_hash
@@ -302,6 +344,7 @@ def update_password_for_onboarding(db: Session, user: User, *, new_password_hash
         else UserOnboardingState.pending_totp_enrollment
     )
     db.add(user)
+    revoke_credential_authority(db, user, reason="onboarding_password_changed", keep_session_id=keep_session_id)
     db.commit()
     db.refresh(user)
     return user
@@ -393,7 +436,15 @@ def verify_login_totp(
     code: str,
     remember_device: bool,
     device_label: str | None = None,
+    current_session_id: UUID | None = None,
+    commit: bool = True,
 ) -> tuple[User, str | None]:
+    user = lock_user_credentials(db, user)
+    if current_session_id is not None:
+        current = db.scalar(select(UserSession).where(UserSession.id == current_session_id)
+                            .execution_options(populate_existing=True))
+        if current is None or current.user_id != user.id or current.status is not SessionStatus.active or current.expires_at <= utcnow():
+            raise AppError(401, "unauthorized", "Session is no longer active")
     method = active_primary_totp_method(user)
     if method is None:
         raise AppError(409, "conflict", "TOTP challenge is not available for this user")
@@ -413,15 +464,19 @@ def verify_login_totp(
             last_mfa_verified_at=utcnow(),
         )
         db.add(device)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     refreshed = get_user_by_id(db, user.id) or user
     return refreshed, trusted_device_token
 
 
-def touch_trusted_device_seen(db: Session, device: UserTrustedDevice) -> None:
+def touch_trusted_device_seen(db: Session, device: UserTrustedDevice, *, commit: bool = True) -> None:
     device.last_seen_at = utcnow()
     db.add(device)
-    db.commit()
+    if commit:
+        db.commit()
 
 
 def start_totp_enrollment(db: Session, user: User) -> UserMfaMethod:

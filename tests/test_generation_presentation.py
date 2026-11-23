@@ -9,6 +9,7 @@ from app.models import AttemptOutcome, AttemptStatus, GeneratedDocumentStatus, H
 from app.services.generation_presentation import (
     active_retry_presentation,
     generated_document_status_projection,
+    load_generated_document_status_attempts,
     generation_failure_presentation,
 )
 
@@ -122,3 +123,82 @@ def test_incomplete_provider_responses_use_safe_validation_failure_presentation(
     assert presentation['technical_details']['application_code'] == error_code
     assert presentation['technical_details']['provider_code'] is None
     assert 'incomplete_response' not in repr(presentation)
+
+
+def test_batched_attempt_projection_uses_three_queries_for_many_leader_documents():
+    """Batched status reads stay bounded and never use cross-transcript attempts."""
+    from app.models import AttemptKind
+
+    document, actor = document_and_actor(TeamRole.leader)
+    document.status = GeneratedDocumentStatus.processing
+    other, _ = document_and_actor(TeamRole.leader)
+    other.owner_user_id = document.owner_user_id
+    other.team_id = document.team_id
+    other.hallucination_check_status = HallucinationCheckStatus.failed_provider
+    other.status = GeneratedDocumentStatus.ready
+
+    retry_event = {
+        "code": "rate_limited", "http_status": 429, "retry_wait_ms": 60000,
+        "occurred_at": datetime.now(UTC).isoformat(),
+    }
+    main = SimpleNamespace(
+        generated_document_id=document.id, transcript_id=document.transcript_id,
+        status=AttemptStatus.submitted, attempt_kind=AttemptKind.llm_generation,
+        transport_events_json=[retry_event],
+    )
+    # This row matches the document ID but has another transcript; it must not
+    # influence the same-document projection.
+    wrong_transcript = SimpleNamespace(
+        generated_document_id=document.id, transcript_id=other.transcript_id,
+        status=AttemptStatus.submitted, attempt_kind=AttemptKind.llm_generation,
+        transport_events_json=[{"code": "success"}],
+    )
+    checker = SimpleNamespace(
+        generated_document_id=other.id, transcript_id=other.transcript_id,
+        status=AttemptStatus.settled, outcome=AttemptOutcome.failed,
+        settled_at=datetime.now(UTC), error_code=None, provider_error_code=None,
+        provider_http_status=None,
+        transport_events_json=[{"code": "provider_error", "http_status": 401}],
+    )
+
+    class BatchedDatabase:
+        def __init__(self):
+            self.queries = []
+
+        def scalars(self, statement):
+            self.queries.append(str(statement.compile(compile_kwargs={"literal_binds": True})))
+            return [
+                [wrong_transcript, main], [], [checker],
+            ][len(self.queries) - 1]
+
+        def scalar(self, _statement):
+            pytest.fail("per-document scalar query must not run")
+
+    db = BatchedDatabase()
+    cache = load_generated_document_status_attempts(db, [document, other], actor)
+    assert len(db.queries) == 3
+    assert all(
+        "provider_attempts.owner_user_id" in query
+        and "provider_attempts.team_id" in query
+        and "provider_attempts.generated_document_id IN" in query
+        for query in db.queries
+    )
+    assert cache[document.id]["generation_submitted"] is main
+    first = generated_document_status_projection(db, document, actor, attempts=cache[document.id])
+    second = generated_document_status_projection(db, other, actor, attempts=cache[other.id])
+    assert first["active_retry_presentation"]["technical_details"]["provider_http_status"] == 429
+    assert second["checker_failure_presentation"]["technical_details"]["provider_code"] == "authentication_error"
+    assert len(db.queries) == 3
+
+
+def test_batch_attempt_lookup_omits_nonleader_and_foreign_owner_documents():
+    document, actor = document_and_actor(TeamRole.user)
+
+    class Database:
+        def scalars(self, _statement):
+            pytest.fail("unauthorized attempt query")
+
+    assert load_generated_document_status_attempts(Database(), [document], actor) == {}
+    actor.team_role = TeamRole.leader
+    document.owner_user_id = uuid4()
+    assert load_generated_document_status_attempts(Database(), [document], actor) == {}

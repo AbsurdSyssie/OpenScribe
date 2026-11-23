@@ -73,7 +73,7 @@ from ..services.preferences import (
     get_user_app_preferences as get_user_app_preferences_service,
 )
 from ..services.consultation_split_gates import consultation_splitting_available as consultation_splitting_available_service, transcript_split_enabled
-from ..services.generation_presentation import generated_document_status_projection
+from ..services.generation_presentation import generated_document_status_projection, load_generated_document_status_attempts
 from ..services.dictations import (
     dictation_detail_response,
     dictation_effective_text,
@@ -1249,8 +1249,23 @@ def resolve_transcribe_workspace(
         ]
         latest_generated_document = note_documents[0] if note_documents else None
         latest_followup_document = followup_documents[0] if followup_documents else None
-        latest_generated_status = generated_document_status_projection(db, latest_generated_document, current_user) if latest_generated_document else {}
-        latest_followup_status = generated_document_status_projection(db, latest_followup_document, current_user) if latest_followup_document else {}
+        latest_documents = [document for document in (latest_generated_document, latest_followup_document) if document]
+        latest_attempts = (
+            load_generated_document_status_attempts(db, latest_documents, current_user)
+            if len(latest_documents) > 1 else {}
+        )
+        latest_generated_status = (
+            generated_document_status_projection(
+                db, latest_generated_document, current_user,
+                attempts=latest_attempts.get(latest_generated_document.id),
+            ) if latest_generated_document else {}
+        )
+        latest_followup_status = (
+            generated_document_status_projection(
+                db, latest_followup_document, current_user,
+                attempts=latest_attempts.get(latest_followup_document.id),
+            ) if latest_followup_document else {}
+        )
         selected_template = preferred_template or (available_templates[0] if available_templates else None)
         structured_section_definitions = (
             _structured_section_definitions_for_document(latest_generated_document)
@@ -1412,6 +1427,10 @@ def transcribe_workspace_response(
         )
         if compact_documents else None
     )
+    status_attempts = (
+        load_generated_document_status_attempts(db, generated_documents, current_user)
+        if len(generated_documents) > 1 else {}
+    )
     available_templates = workspace.get("available_templates") or []
     available_quick_actions = workspace.get("available_quick_actions") or []
     available_smart_phrases = workspace.get("available_smart_phrases") or []
@@ -1527,6 +1546,7 @@ def transcribe_workspace_response(
             generated_document_response(
                 db, document, actor=current_user,
                 include_content=hydrated_document_ids is None or document.id in hydrated_document_ids,
+                status_attempts=status_attempts.get(document.id),
             )
             for document in generated_documents
         ],
@@ -1654,7 +1674,17 @@ def render_transcribe(
         for phrase in available_smart_phrases
     ]
     if generated_documents:
-        generated_document_details = [generated_document_response(db, document, actor=current_user) for document in generated_documents]
+        status_attempts = (
+            load_generated_document_status_attempts(db, generated_documents, current_user)
+            if len(generated_documents) > 1 else {}
+        )
+        generated_document_details = [
+            generated_document_response(
+                db, document, actor=current_user,
+                status_attempts=status_attempts.get(document.id),
+            )
+            for document in generated_documents
+        ]
         workspace["generated_documents"] = generated_document_details
         note_documents = [document for document in generated_document_details if document.generator_type is GeneratedDocumentGeneratorType.template]
         followup_documents = [

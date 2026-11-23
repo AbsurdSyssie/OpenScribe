@@ -607,6 +607,7 @@ def generated_document_response(
     *,
     actor: User | None = None,
     include_content: bool = True,
+    status_attempts: dict[str, object] | None = None,
 ) -> GeneratedDocumentDetail:
     if include_content:
         payload = GeneratedDocumentDetail.model_validate(document, from_attributes=True).model_dump()
@@ -623,7 +624,7 @@ def generated_document_response(
     # Failure guidance comes from the closed presentation mapping. Persisted
     # exception wording may include provider data and is never client-facing.
     payload["error_message"] = None
-    payload.update(generated_document_status_projection(db, document, actor))
+    payload.update(generated_document_status_projection(db, document, actor, attempts=status_attempts))
     # Split-topic titles are transcript-derived content.  Keep the persisted
     # document title generic, and reveal this display-only title solely to the
     # exact owner after the split service has rechecked the full lineage.

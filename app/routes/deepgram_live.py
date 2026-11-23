@@ -190,6 +190,8 @@ class _Relay:
         self.audio = bytearray()
         self.finals: dict[tuple[int, int], str] = {}
         self.final_events: dict[tuple[int, int], object] = {}
+        self._final_char_count = 0
+        self._nonempty_final_count = 0
         self.scope_id = None
         self.diarization_enabled = False
         self.last_media_at = monotonic()
@@ -321,6 +323,9 @@ class _Relay:
             for (previous_first, previous_last), _ in self.finals.items():
                 if identity != (previous_first, previous_last) and first < previous_last and last > previous_first:
                     raise AppError(502, "stream_result_invalid", "Overlapping finalized transcription")
+            if identity not in self.finals and event.text:
+                self._final_char_count += len(event.text)
+                self._nonempty_final_count += 1
             self.finals[identity] = event.text
             self.final_events[identity] = event
         # Reject oversized upstream events even when skipping a provisional
@@ -329,8 +334,7 @@ class _Relay:
             raise AppError(502, "stream_result_invalid", "Transcription checkpoint exceeds its limit")
         # Preserve the original total-size invariant even for previews skipped
         # by the rate limiter or events drained during finalization.
-        finalized_lengths = [len(text) for text in self.finals.values() if text]
-        total_chars = sum(finalized_lengths) + max(0, len(finalized_lengths) - 1)
+        total_chars = self._final_char_count + max(0, self._nonempty_final_count - 1)
         if not event.is_final and event.text:
             total_chars += len(event.text) + (1 if total_chars else 0)
         if total_chars > 64000:
@@ -509,6 +513,8 @@ class _Relay:
         self.audio.clear()
         self.finals.clear()
         self.final_events.clear()
+        self._final_char_count = 0
+        self._nonempty_final_count = 0
 
     async def checkpoint(self, *, closing: bool = False):
         from app.services.deepgram_streaming import DeepgramMetadataEvent

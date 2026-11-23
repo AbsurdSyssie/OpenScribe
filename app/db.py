@@ -22,3 +22,10 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+# Lightweight, owner-scoped invalidation for the SSE workspace cache. Never
+# affects transaction success or writes clinical content to Redis.
+from .services.workspace_revision_signals import install_revision_events
+
+install_revision_events()

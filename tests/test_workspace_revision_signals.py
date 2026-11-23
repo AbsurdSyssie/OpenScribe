@@ -71,3 +71,25 @@ def test_revision_read_is_scoped_and_redis_outage_uses_full_refresh(monkeypatch)
     from redis import RedisError
     client.mget.side_effect = RedisError("synthetic outage")
     assert revisions.read_workspace_revisions("owner-one", "team-one") is None
+
+
+def test_child_section_uses_loaded_document_identity_without_database_reads(monkeypatch):
+    monkeypatch.setattr(revisions, "revisions_enabled", lambda: True)
+    from uuid import uuid4
+
+    document_id = uuid4()
+
+    class GeneratedDocumentSection:
+        generated_document_id = document_id
+
+    parent = SimpleNamespace(owner_user_id="owner-one", team_id="team-one")
+    session = SimpleNamespace(
+        new={GeneratedDocumentSection()}, dirty=set(), deleted=set(), info={},
+        identity_map={("GeneratedDocument", document_id): parent},
+        identity_key=lambda model, pk: (model.__name__, pk[0]),
+    )
+    revisions._capture_workspace_changes(session)
+    owners, teams, global_change = session.info["_workspace_revision_pending"]
+    assert owners == {"owner-one"}
+    assert teams == set()
+    assert global_change is False

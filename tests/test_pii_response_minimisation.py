@@ -280,3 +280,97 @@ def test_generated_document_pii_entities_do_not_include_values_by_default(client
     assert entities[0]["placeholder"] == "[PHI-1]"
     assert entities[0]["entity_type"] == "PERSON"
     assert entities[0]["has_value"] is True
+
+
+def test_pii_entities_digest_skips_decrypting_history(db_session, make_user, monkeypatch):
+    """Matching a fresh version should not decrypt any historical snapshot."""
+    from app.services import transcripts as transcript_service
+    from app.web.transcribe_workspace import transcript_pii_entities_response
+
+    owner = make_user(email="pii-digest-current@example.com")
+    transcript = _transcript_with_pii(db_session, owner=owner)
+    run = db_session.query(RedactionRun).filter(RedactionRun.transcript_id == transcript.id).one()
+    for index in range(12):
+        transcript_service._create_transcript_version_from_text(
+            db_session, transcript=transcript, owner_user_id=owner.id,
+            plaintext=f"Old unrelated draft {index}.",
+        )
+    latest = transcript_service._create_transcript_version_from_text(
+        db_session, transcript=transcript, owner_user_id=owner.id,
+        plaintext="John Smith reports asthma.",
+    )
+    run.transcript_version_id = latest.id
+    db_session.commit()
+    assert latest.content_digest is not None
+
+    original_decrypt = transcript_service.decrypt_text_for_owner
+
+    def deny_history_decryption(*args, **kwargs):
+        if kwargs.get("table") == "transcript_versions":
+            raise AssertionError("PII freshness must not decrypt saved transcript versions")
+        return original_decrypt(*args, **kwargs)
+
+    monkeypatch.setattr(transcript_service, "decrypt_text_for_owner", deny_history_decryption)
+    entities = transcript_pii_entities_response(db_session, transcript)
+    assert entities[0].id is not None
+    assert (entities[0].start_index, entities[0].end_index) == (0, len("John Smith"))
+
+
+def test_legacy_pii_lookup_checks_only_newest_unknown_version(db_session, make_user, monkeypatch):
+    """Legacy content without a digest is conservative rather than O(history)."""
+    from app.services import transcripts as transcript_service
+    from app.web.transcribe_workspace import transcript_pii_entities_response
+
+    owner = make_user(email="pii-digest-legacy@example.com")
+    transcript = _transcript_with_pii(db_session, owner=owner)
+    newest_id = None
+    for index in range(9):
+        version_id = uuid4()
+        db_session.add(TranscriptVersion(
+            id=version_id, transcript_id=transcript.id, version_no=index + 2,
+            text_encrypted=encrypt_text_for_owner(
+                db_session, owner_user_id=owner.id, table="transcript_versions",
+                field="text_encrypted", record_id=version_id,
+                plaintext=f"Different legacy revision {index}.",
+            ),
+        ))
+        newest_id = version_id
+    db_session.commit()
+
+    checked = []
+    original_decrypt = transcript_service.decrypt_text_for_owner
+
+    def bounded_decryption(*args, **kwargs):
+        if kwargs.get("table") == "transcript_versions":
+            checked.append(kwargs["record_id"])
+            assert kwargs["record_id"] == newest_id
+        return original_decrypt(*args, **kwargs)
+
+    monkeypatch.setattr(transcript_service, "decrypt_text_for_owner", bounded_decryption)
+    entities = transcript_pii_entities_response(db_session, transcript)
+    assert checked == [newest_id]
+    assert entities[0].id is None  # Cannot prove the earlier redaction is current.
+
+
+def test_pii_digest_invalidates_after_unsnapshotted_draft_edit(db_session, make_user):
+    from app.services import transcripts as transcript_service
+    from app.web.transcribe_workspace import transcript_pii_entities_response
+
+    owner = make_user(email="pii-digest-edited@example.com")
+    transcript = _transcript_with_pii(db_session, owner=owner)
+    latest = transcript_service._create_transcript_version_from_text(
+        db_session, transcript=transcript, owner_user_id=owner.id,
+        plaintext="John Smith reports asthma.",
+    )
+    run = db_session.query(RedactionRun).filter(RedactionRun.transcript_id == transcript.id).one()
+    run.transcript_version_id = latest.id
+    db_session.commit()
+
+    transcript_service.set_transcript_draft_text(
+        db_session, transcript=transcript, plaintext="John Smith reports a changed condition.",
+    )
+    db_session.commit()
+    entities = transcript_pii_entities_response(db_session, transcript)
+    assert entities[0].id is None
+    assert entities[0].start_index is None
+    assert entities[0].end_index is None

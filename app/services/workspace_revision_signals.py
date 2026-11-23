@@ -12,7 +12,7 @@ import os
 from functools import lru_cache
 
 from redis import Redis, RedisError
-from sqlalchemy import event, inspect
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 
@@ -29,9 +29,6 @@ _OWNER_MODELS = frozenset({
     "ConsultationSplitTopicOutcome", "ConsultationSplitExecution",
     "TemplateSuggestionJob", "SmartPhrase", "PromptTemplate", "QuickAction",
 })
-# Audio heartbeats, offsets and delivery counters change frequently but do not
-# require a workspace rebuild. Only lifecycle status transitions are signalled.
-_STREAM_LIFECYCLE_MODELS = frozenset({"TranscriptStreamSession", "TranscriptStreamWindow"})
 _USER_MODELS = frozenset({"User", "UserSession", "UserAppPreference", "UserLlmPreference"})
 _TEAM_MODELS = frozenset({
     "Team", "TeamSttConfig", "TeamSttSelection", "TeamLlmConfig",
@@ -106,24 +103,6 @@ def _capture_workspace_changes(session: Session, *_args) -> None:
         model = type(obj).__name__
         if model in _OWNER_MODELS:
             owner = getattr(obj, "owner_user_id", None)
-            if owner is not None:
-                owners.add(str(owner))
-        if model in _STREAM_LIFECYCLE_MODELS and (
-            obj in session.new
-            or obj in session.deleted
-            or inspect(obj).attrs.status.history.has_changes()
-        ):
-            owner = getattr(obj, "owner_user_id", None)
-            if owner is None and model == "TranscriptStreamWindow":
-                # Windows are session-owned; use the loaded parent to avoid an
-                # extra query on the high-frequency live-stream write path.
-                from app import models
-
-                parent = session.identity_map.get(
-                    session.identity_key(models.TranscriptStreamSession, (obj.session_id,))
-                )
-                if parent is not None:
-                    owner = parent.owner_user_id
             if owner is not None:
                 owners.add(str(owner))
         if model in _USER_MODELS:

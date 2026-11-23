@@ -741,26 +741,11 @@ def _owner_detected_pii_entity_for_dismissal(
         )
         or ""
     ).strip()
-    current_version_id = None
-    for version in db.scalars(
-        select(TranscriptVersion)
-        .where(TranscriptVersion.transcript_id == transcript.id)
-        .order_by(TranscriptVersion.version_no.desc(), TranscriptVersion.created_at.desc(), TranscriptVersion.id.desc())
-    ):
-        candidate_text = (
-            decrypt_text_for_owner(
-                db,
-                owner_user_id=owner_user_id,
-                table="transcript_versions",
-                field="text_encrypted",
-                record_id=version.id,
-                stored_value=version.text_encrypted,
-            )
-            or ""
-        ).strip()
-        if candidate_text == current_text:
-            current_version_id = version.id
-            break
+    # Dismissals must use the same bounded version check as workspace PII.
+    from app.services.transcripts import current_pii_transcript_version
+
+    current_version = current_pii_transcript_version(db, transcript=transcript, plaintext=current_text)
+    current_version_id = current_version.id if current_version is not None else None
     latest_run_id = db.scalar(
         select(RedactionRun.id)
         .where(

@@ -105,6 +105,7 @@ from ..services.transcripts import (
     manual_pii_entity_value as manual_pii_entity_value_service,
     transcript_is_expired as transcript_is_expired_service,
     transcript_draft_text as transcript_draft_text_service,
+    current_pii_transcript_version as current_pii_transcript_version_service,
     transcript_working_note_mode as transcript_working_note_mode_service,
     transcript_structured_context as transcript_structured_context_service,
     transcript_version_text as transcript_version_text_service,
@@ -786,11 +787,7 @@ def _pii_entity_response(
 
 
 def _structured_current_version(db: Session, transcript: Transcript) -> TranscriptVersion | None:
-    from ..services.transcripts import _latest_matching_transcript_version
-
-    return _latest_matching_transcript_version(
-        db, transcript=transcript, plaintext=transcript_draft_text_service(db, transcript=transcript) or "",
-    )
+    return current_pii_transcript_version_service(db, transcript=transcript)
 
 
 def transcript_pii_entities_response(
@@ -801,46 +798,37 @@ def transcript_pii_entities_response(
 ) -> list[TranscriptPiiEntitySummary | TranscriptPiiEntityDetail]:
     if transcript is None:
         return []
+    current_text = transcript_draft_text_service(db, transcript=transcript) or ""
+    structured = transcript.current_draft_turns_encrypted is not None
+    current_version = (
+        current_pii_transcript_version_service(db, transcript=transcript, plaintext=current_text)
+        if structured or (transcript.status is TranscriptStatus.ready and current_text.strip())
+        else None
+    )
     query = select(RedactionRun).where(
         RedactionRun.transcript_id == transcript.id,
         RedactionRun.owner_user_id == transcript.owner_user_id,
     )
-    if transcript.current_draft_turns_encrypted is not None:
-        version = _structured_current_version(db, transcript)
-        query = query.where(RedactionRun.transcript_version_id == (version.id if version else None))
+    if structured:
+        query = query.where(RedactionRun.transcript_version_id == (current_version.id if current_version else None))
     redaction_run = db.scalar(
         query
         .order_by(RedactionRun.created_at.desc(), RedactionRun.id.desc())
         .limit(1)
     )
     actionable_run_id = None
-    if transcript.status is TranscriptStatus.ready:
-        current_text = (transcript_draft_text_service(db, transcript=transcript) or "").strip()
-        if current_text:
-            current_version = next(
-                (
-                    version
-                    for version in db.scalars(
-                        select(TranscriptVersion)
-                        .where(TranscriptVersion.transcript_id == transcript.id)
-                        .order_by(TranscriptVersion.version_no.desc(), TranscriptVersion.created_at.desc(), TranscriptVersion.id.desc())
-                    )
-                    if (transcript_version_text_service(db, transcript_version=version) or "").strip() == current_text
-                ),
-                None,
+    if transcript.status is TranscriptStatus.ready and current_text.strip() and current_version is not None:
+        actionable_run_id = db.scalar(
+            select(RedactionRun.id)
+            .where(
+                RedactionRun.transcript_id == transcript.id,
+                RedactionRun.transcript_version_id == current_version.id,
+                RedactionRun.owner_user_id == transcript.owner_user_id,
+                RedactionRun.status == RedactionRunStatus.succeeded,
             )
-            if current_version is not None:
-                actionable_run_id = db.scalar(
-                    select(RedactionRun.id)
-                    .where(
-                        RedactionRun.transcript_id == transcript.id,
-                        RedactionRun.transcript_version_id == current_version.id,
-                        RedactionRun.owner_user_id == transcript.owner_user_id,
-                        RedactionRun.status == RedactionRunStatus.succeeded,
-                    )
-                    .order_by(RedactionRun.created_at.desc(), RedactionRun.id.desc())
-                    .limit(1)
-                )
+            .order_by(RedactionRun.created_at.desc(), RedactionRun.id.desc())
+            .limit(1)
+        )
     if redaction_run is None or redaction_run.status is not RedactionRunStatus.succeeded:
         detected_entities = []
     else:

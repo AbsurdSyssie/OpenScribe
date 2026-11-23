@@ -390,3 +390,19 @@ def test_legacy_role_lookup_rejects_wrong_owner_and_wrong_root(db_session, make_
         db_session, transcript=transcript, turns=turns,
     )
     assert [turn["speaker_role"] for turn in restored] == [None, None]
+
+
+def test_pii_version_digest_rejects_identical_text_with_different_turns(db_session, make_user):
+    from app.services.structured_transcripts import _encrypt_current_turns
+    from app.services.transcripts import current_pii_transcript_version
+
+    owner = make_user(email="pii-digest-structured@example.com")
+    transcript, version, original_turn = _source(db_session, owner)
+    assert version.content_digest is not None
+    assert current_pii_transcript_version(db_session, transcript=transcript).id == version.id
+
+    edited_turn = {**original_turn, "scope_id": str(uuid4())}
+    _encrypt_current_turns(db_session, transcript=transcript, turns=[edited_turn])
+    db_session.commit()
+    # Canonical text is unchanged, but the structured source is not the same.
+    assert current_pii_transcript_version(db_session, transcript=transcript) is None

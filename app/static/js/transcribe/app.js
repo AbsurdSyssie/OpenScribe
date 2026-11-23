@@ -2636,8 +2636,16 @@ let statusDetailsHideTimer = null;
         );
       };
 
+      const shouldSuspendHiddenWorkspaceRealtime = () => (
+        document.visibilityState === 'hidden'
+        && !captureController?.isCaptureUiActive?.()
+        && !dictationLiveCapture
+        && !dictationLiveStartup
+        && !['starting', 'recording', 'paused', 'transcribing'].includes(dictationRecordingState)
+      );
+
       const shouldUseWorkspacePollingFallback = () => {
-        return !isWorkspaceRealtimeConnected();
+        return !shouldSuspendHiddenWorkspaceRealtime() && !isWorkspaceRealtimeConnected();
       };
 
       const scheduleWorkspaceRefreshBurst = ({ attempts = 25, intervalMs = 1500 } = {}) => {
@@ -5077,6 +5085,11 @@ let statusDetailsHideTimer = null;
       };
 
       const syncWorkspaceRealtimeConnection = () => {
+        if (shouldSuspendHiddenWorkspaceRealtime()) {
+          closeWorkspaceEventSource();
+          splitAnalysisRestorationPoller?.setRealtimeConnected(false);
+          return;
+        }
         if (!window.EventSource) {
           splitAnalysisRestorationPoller?.setRealtimeConnected(false);
           return;
@@ -6344,6 +6357,19 @@ let statusDetailsHideTimer = null;
           && !followupEditorDirty && !followupSaveInFlight && !hasUnsavedDictationDraft()) return;
         event.preventDefault();
         event.returnValue = '';
+      });
+
+      document.addEventListener('visibilitychange', () => {
+        if (shouldSuspendHiddenWorkspaceRealtime()) {
+          clearWorkspaceRefreshBurst();
+          closeWorkspaceEventSource();
+          splitAnalysisRestorationPoller?.setRealtimeConnected(false);
+          return;
+        }
+        if (document.visibilityState === 'visible') {
+          syncWorkspaceRealtimeConnection();
+          void fetchWorkspace();
+        }
       });
 
       window.addEventListener('pagehide', () => {

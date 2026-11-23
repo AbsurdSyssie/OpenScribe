@@ -111,6 +111,12 @@ def test_workspace_response_only_requests_content_for_selected_documents(
     ]
     serialize_document = Mock(return_value=SimpleNamespace())
     monkeypatch.setattr(transcribe_workspace, "generated_document_response", serialize_document)
+    # Capture the composition boundary without requiring unrelated workspace
+    # response fields to satisfy the full API model in this focused unit test.
+    monkeypatch.setattr(
+        transcribe_workspace, "TranscribeWorkspaceDetail",
+        lambda **payload: SimpleNamespace(**payload),
+    )
 
     transcribe_workspace.transcribe_workspace_response(
         db_session, {"generated_documents": documents},

@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 # bookkeeping, which are not themselves visible workspace changes.
 _OWNER_MODELS = frozenset({
     "Transcript", "TranscriptVersion", "TranscriptIngestionJob",
-    "TranscriptStreamSession", "TranscriptStreamWindow", "TranscriptCaptureSettings",
+    "TranscriptCaptureSettings",
     "PostConsultationDictation", "PostConsultationDictationSegment",
     "GeneratedDocument", "RedactionRun", "ClinicalEntityRun",
     "TranscriptManualPiiEntity", "DetectedPiiDismissal",

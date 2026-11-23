@@ -114,6 +114,8 @@ Use the dedicated `CIS2_OIDC_*` settings, not the custom `OIDC_*` provider worka
 | `RATE_LIMIT_STORAGE_URL` | `redis://localhost:6379/0` | Redis store used by SlowAPI. Compose uses service host `redis`. |
 | `WORKSPACE_REVISION_ENABLED` | `true` except `APP_ENV=test` | Best-effort Redis revision hints for idle workspace SSE. Disable to restore 5-second full workspace polling; active workflows always receive 1-second full refreshes. |
 | `WORKSPACE_REVISION_REDIS_URL` | `RATE_LIMIT_STORAGE_URL` | Optional Redis override for owner/team/global revision keys. Compose uses the rate-limit Redis endpoint. Stores only scope IDs and integer counters; never transcript contents. |
+
+Workspace revision writes occur only after a successful transaction commit. ORM changes that do not alter mapped values, session `last_seen_at` heartbeats, and user `last_login_at` updates do not increment workspace revisions; session revocation, other meaningful updates, creation and deletion still do. The reader's separate authorization recheck and periodic database refresh remain mandatory. Owning team leaders' generated-document status projections now fetch provider-attempt metadata in bounded batches instead of querying attempts separately for every document; the same owner/team/transcript checks and role-gated technical fields remain in force.
 | `TEST_RATE_LIMIT_STORAGE_URL` | `redis://localhost:6379/15` | Test rate-limit store. |
 | `RATE_LIMIT_KEY_PREFIX` | empty | Optional SlowAPI key namespace. The test harness sets per-worker prefixes; separate deployments sharing Redis should use distinct values. |
 | `CELERY_BROKER_URL` | `redis://localhost:6379/2` | Celery broker. Compose uses service host `redis`. |

@@ -40,6 +40,9 @@ SAMPLE_RATE = 16000
 WINDOW_SAMPLES = 30 * SAMPLE_RATE
 CONTROL_WRITE_TIMEOUT_SECONDS = 1.0
 FINALIZE_ACK_TIMEOUT_SECONDS = 2.0
+# Provisional STT results can arrive more often than the browser needs to render.
+# Provider-final results and control messages are never rate-limited.
+INTERIM_PREVIEW_MIN_INTERVAL_SECONDS = 0.25
 CLOSE_DRAIN_TIMEOUT_SECONDS = 2.0
 PROVIDER_KEEPALIVE_INTERVAL_SECONDS = 1.0
 MAX_CONTROL_BYTES = 2048
@@ -191,6 +194,7 @@ class _Relay:
         self.diarization_enabled = False
         self.last_media_at = monotonic()
         self.last_heartbeat_at = monotonic()
+        self._next_interim_preview_at = 0.0
         self.completed = False
         self.active_phase = "session_start"
         self.last_completed_stage = "session_started"
@@ -319,18 +323,26 @@ class _Relay:
                     raise AppError(502, "stream_result_invalid", "Overlapping finalized transcription")
             self.finals[identity] = event.text
             self.final_events[identity] = event
-        provisional = " ".join(text for _, text in sorted(self.finals.items()) if text)
-        if not event.is_final and event.text:
-            provisional = f"{provisional} {event.text}".strip()
-        if len(provisional) > 64000:
+        # Reject oversized upstream events even when skipping a provisional
+        # preview. Final results must still be validated and delivered promptly.
+        if len(event.text) > 64000:
             raise AppError(502, "stream_result_invalid", "Transcription checkpoint exceeds its limit")
         if deliver_interim:
-            if self.dictation:
-                await self.send({"type": "dictation_preview", "window_no": self.window_no,
-                                 "confirmed_text": " ".join(text for _, text in sorted(self.finals.items()) if text),
-                                 "interim_text": "" if event.is_final else event.text})
-            else:
-                await self.send({"type": "interim", "text": provisional})
+            now = monotonic()
+            if event.is_final or now >= self._next_interim_preview_at:
+                confirmed = " ".join(text for _, text in sorted(self.finals.items()) if text)
+                provisional = confirmed
+                if not event.is_final and event.text:
+                    provisional = f"{confirmed} {event.text}".strip()
+                if len(provisional) > 64000:
+                    raise AppError(502, "stream_result_invalid", "Transcription checkpoint exceeds its limit")
+                if self.dictation:
+                    await self.send({"type": "dictation_preview", "window_no": self.window_no,
+                                     "confirmed_text": confirmed,
+                                     "interim_text": "" if event.is_final else event.text})
+                else:
+                    await self.send({"type": "interim", "text": provisional})
+                self._next_interim_preview_at = now + INTERIM_PREVIEW_MIN_INTERVAL_SECONDS
         return event
 
     def _window_has_final_coverage(self, start: int, end: int) -> bool:

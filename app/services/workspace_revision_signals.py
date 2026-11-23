@@ -41,6 +41,15 @@ _GLOBAL_MODELS = frozenset({
     "DefaultPromptTemplate", "DefaultPromptTemplateVersion",
     "DefaultQuickAction", "DefaultQuickActionVersion",
 })
+# Child changes can be resolved from already-loaded parents without any new
+# database reads. Otherwise the bounded full-refresh fallback still applies.
+_PARENT_MODELS = {
+    "GeneratedDocumentSection": ("GeneratedDocument", "generated_document_id"),
+    "RedactionEntity": ("RedactionRun", "redaction_run_id"),
+    "ClinicalEntity": ("ClinicalEntityRun", "clinical_entity_run_id"),
+    "PromptTemplateVersion": ("PromptTemplate", "template_id"),
+    "QuickActionVersion": ("QuickAction", "quick_action_id"),
+}
 _PENDING_KEY = "_workspace_revision_pending"
 _REDIS_KEY_PREFIX = "openscribe:workspace-revision:v1"
 
@@ -102,6 +111,21 @@ def _capture_workspace_changes(session: Session, *_args) -> None:
             team_id = getattr(obj, "id" if model == "Team" else "team_id", None)
             if team_id is not None:
                 teams.add(str(team_id))
+        if model in _PARENT_MODELS:
+            parent_model_name, parent_id_attr = _PARENT_MODELS[model]
+            parent_id = getattr(obj, parent_id_attr, None)
+            if parent_id is not None:
+                from app import models
+
+                parent_model = getattr(models, parent_model_name)
+                parent = session.identity_map.get(session.identity_key(parent_model, (parent_id,)))
+                if parent is not None:
+                    owner = getattr(parent, "owner_user_id", None)
+                    team = getattr(parent, "team_id", None)
+                    if owner is not None:
+                        owners.add(str(owner))
+                    if team is not None and owner is None:
+                        teams.add(str(team))
         if model in _GLOBAL_MODELS:
             global_change = True
     if not owners and not teams and not global_change:

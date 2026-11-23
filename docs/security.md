@@ -159,7 +159,7 @@ Provider metadata lives in PostgreSQL. Raw credentials live in Vault or the depl
 
 ## Queued work and temporary audio
 
-Generation and ingestion creation use a durable metadata-only task-dispatch outbox. Business data commits before broker publication; a one-second Beat publisher is the fallback when immediate publish fails.
+Generation and ingestion creation use a durable metadata-only task-dispatch outbox. Business data commits before broker publication; a ten-second Beat sweep is the fallback when the immediate publish is missed or fails, and for future-due ingestion retries. A missed eligible row normally waits up to ten seconds for recovery; failed broker publication keeps its existing retry backoff.
 
 - Broker payloads identify database rows; they do not contain transcript-derived content or credentials.
 - Provider credentials are resolved before a provider attempt is marked submitted.

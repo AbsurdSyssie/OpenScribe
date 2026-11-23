@@ -300,11 +300,11 @@ def test_celery_outbox_task_is_registered_and_scheduled():
     import app.tasks  # noqa: F401 - triggers Celery task registration
 
     assert "openscribe.process_task_dispatch_outbox" in celery_app.tasks
-    schedule = celery_app.conf.beat_schedule["publish-task-dispatch-outbox-every-1-second"]
+    schedule = celery_app.conf.beat_schedule["publish-task-dispatch-outbox-every-10-seconds"]
     assert schedule == {
         "task": "openscribe.process_task_dispatch_outbox",
-        "schedule": 1.0,
-        "options": {"expires": 1.0},
+        "schedule": 10.0,
+        "options": {"expires": 10.0},
     }
 
 
@@ -385,6 +385,57 @@ def test_publish_task_dispatch_handles_failure(db_session):
     assert dispatch.state is TaskDispatchState.pending
     assert dispatch.attempt_count == 1
     assert dispatch.last_error_code == PUBLISH_ERROR_CODE
+
+
+def test_failed_immediate_publication_recovers_on_sweep_after_backoff(db_session):
+    dispatch = add_pending_task_dispatch(
+        db_session, dispatch_kind=TaskDispatchKind.generation, source_id=uuid4(),
+    )
+    db_session.commit()
+    first_attempt_at = utcnow()
+
+    assert publish_task_dispatch(
+        db_session, task_id=dispatch.task_id,
+        publisher=RecordingPublisher(fail=True), now=first_attempt_at,
+    ) is False
+    publisher = RecordingPublisher()
+
+    # A failed immediate publish delays eligibility by ten seconds. Beat must
+    # respect that deadline and then recover the same durable task ID.
+    assert publish_pending_task_dispatches(
+        db_session, publisher=publisher, now=first_attempt_at + timedelta(seconds=9),
+    ) == 0
+    assert publish_pending_task_dispatches(
+        db_session, publisher=publisher, now=first_attempt_at + timedelta(seconds=10),
+    ) == 1
+    db_session.refresh(dispatch)
+
+    assert publisher.dispatches == [dispatch]
+    assert dispatch.state is TaskDispatchState.published
+    assert dispatch.attempt_count == 1
+    assert dispatch.last_error_code is None
+
+
+def test_future_ingestion_retry_gets_its_first_publish_from_sweep(db_session):
+    retry_at = utcnow() + timedelta(seconds=5)
+    dispatch = add_pending_task_dispatch(
+        db_session, dispatch_kind=TaskDispatchKind.ingestion,
+        source_id=uuid4(), dispatch_sequence=2, next_attempt_at=retry_at,
+    )
+    db_session.commit()
+    publisher = RecordingPublisher()
+
+    assert publish_pending_task_dispatches(
+        db_session, publisher=publisher, now=retry_at - timedelta(microseconds=1),
+    ) == 0
+    assert publish_pending_task_dispatches(
+        db_session, publisher=publisher, now=retry_at,
+    ) == 1
+    db_session.refresh(dispatch)
+
+    assert publisher.dispatches == [dispatch]
+    assert dispatch.state is TaskDispatchState.published
+    assert dispatch.dispatch_sequence == 2
 
 
 def _insert_generated_document(db_session, *, make_user, transcript_id=None, **overrides):

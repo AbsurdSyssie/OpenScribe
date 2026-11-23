@@ -1763,7 +1763,7 @@ _WORKSPACE_BUSY_STATUSES = frozenset({
 
 
 def workspace_stream_poll_interval_seconds(payload: dict[str, object]) -> float:
-    """Select the next *full* refresh interval from the last authorised snapshot."""
+    """Fallback full-refresh cadence when Redis revisions are unavailable."""
     transcript = payload.get("active_transcript")
     if isinstance(transcript, dict) and (
         transcript.get("status") in _WORKSPACE_BUSY_STATUSES

@@ -278,10 +278,11 @@ def load_generated_document_status_attempts(
     )
     for key, kind, status, outcomes in queries:
         if key == "checker_failed" and not any(
-            getattr(document, "hallucination_check_status", None).value
-            in {"failed_provider", "failed_invalid_response"}
+            getattr(
+                getattr(document, "hallucination_check_status", None),
+                "value", getattr(document, "hallucination_check_status", None),
+            ) in {"failed_provider", "failed_invalid_response"}
             for document in eligible.values()
-            if getattr(document, "hallucination_check_status", None) is not None
         ):
             continue
         statement = select(ProviderAttempt).where(

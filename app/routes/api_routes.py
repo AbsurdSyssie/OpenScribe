@@ -2582,6 +2582,9 @@ def upload_transcript_dictation_audio_file(
 def get_transcribe_workspace(
     transcript_id: UUID | None = None,
     queued_transcript_id: UUID | None = None,
+    compact_documents: bool = False,
+    selected_note_document_id: UUID | None = None,
+    selected_followup_document_id: UUID | None = None,
     context: AuthenticatedContext = Depends(require_full_context),
     db: Session = Depends(get_db),
 ):
@@ -2590,6 +2593,9 @@ def get_transcribe_workspace(
         current_user=context.user,
         transcript_id=str(transcript_id) if transcript_id is not None else None,
         queued_transcript_id=str(queued_transcript_id) if queued_transcript_id is not None else None,
+        compact_documents=compact_documents,
+        selected_note_document_id=selected_note_document_id,
+        selected_followup_document_id=selected_followup_document_id,
     )
 
 
@@ -2620,6 +2626,9 @@ async def stream_transcribe_workspace(
     transcript_id: UUID | None = None,
     queued_transcript_id: UUID | None = None,
     once: bool = False,
+    compact_documents: bool = False,
+    selected_note_document_id: UUID | None = None,
+    selected_followup_document_id: UUID | None = None,
 ):
     raw_session_token = request.cookies.get(SESSION_COOKIE_NAME)
     context = _require_full_context_from_token(request, raw_session_token)
@@ -2631,6 +2640,9 @@ async def stream_transcribe_workspace(
                 current_user=context.user,
                 transcript_id=str(transcript_id) if transcript_id is not None else None,
                 queued_transcript_id=str(queued_transcript_id) if queued_transcript_id is not None else None,
+                compact_documents=compact_documents,
+                selected_note_document_id=selected_note_document_id,
+                selected_followup_document_id=selected_followup_document_id,
                 request=request,
             ).model_dump(mode="json")
         return Response(
@@ -2650,6 +2662,9 @@ async def stream_transcribe_workspace(
             transcript_id=str(transcript_id) if transcript_id is not None else None,
             queued_transcript_id=str(queued_transcript_id) if queued_transcript_id is not None else None,
             once=once,
+            compact_documents=compact_documents,
+            selected_note_document_id=selected_note_document_id,
+            selected_followup_document_id=selected_followup_document_id,
         ),
         media_type="text/event-stream",
         headers={

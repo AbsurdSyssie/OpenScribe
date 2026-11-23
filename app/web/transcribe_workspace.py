@@ -980,6 +980,7 @@ def resolve_transcribe_workspace(
     request_is_localhost_only=None,
     live_stt_health_check: bool = True,
     include_html_fields: bool = True,
+    compact_documents: bool = False,
 ) -> dict[str, object]:
     active_transcript = None
     requested_transcript_id = queued_transcript_id or transcript_id
@@ -1131,7 +1132,10 @@ def resolve_transcribe_workspace(
         user_app_preferences_json.get("default_quick_action_id"),
     )
     generated_documents = (
-        list_generated_documents_for_transcript_service(db, current_user, transcript_id=active_transcript.id)
+        list_generated_documents_for_transcript_service(
+            db, current_user, transcript_id=active_transcript.id,
+            load_content_relations=not compact_documents,
+        )
         if active_transcript is not None and not current_user.is_system_admin
         else []
     )
@@ -1587,6 +1591,7 @@ def resolve_transcribe_workspace_detail(
         local_dev_emails=local_dev_emails,
         request_is_localhost_only=request_is_localhost_only,
         include_html_fields=False,
+        compact_documents=compact_documents,
     )
     return transcribe_workspace_response(
         db, workspace, current_user=current_user,

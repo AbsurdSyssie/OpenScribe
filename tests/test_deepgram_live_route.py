@@ -1419,3 +1419,30 @@ def test_coalesced_provisional_results_still_enforce_text_bounds(monkeypatch):
         await relay.close()
 
     asyncio.run(scenario())
+
+
+def test_content_free_batch_ack_avoids_redundant_owner_query(monkeypatch):
+    async def scenario():
+        socket = _FakeSocket()
+        owner_checks = []
+
+        async def owner_check(*_args, **_kwargs):
+            owner_checks.append(True)
+            return None
+
+        monkeypatch.setattr(live, "_owner_call", owner_check)
+        transcript_id = uuid4()
+        await live._send(socket, transcript_id, {"type": "received", "next_sample_offset": 16000})
+        assert owner_checks == []
+        assert socket.sent == [{"type": "received", "next_sample_offset": 16000}]
+
+        await live._send(socket, transcript_id, {"type": "interim", "text": "clinical text"})
+        assert len(owner_checks) == 1
+        await live._send(socket, transcript_id, {
+            "type": "received", "next_sample_offset": 16001, "text": "unexpected clinical data",
+        })
+        assert len(owner_checks) == 2  # never bypass for a receipt with extra fields
+        await live._send(socket, transcript_id, {"type": "received", "next_sample_offset": True})
+        assert len(owner_checks) == 3  # bool is not an integer audio offset
+
+    asyncio.run(scenario())

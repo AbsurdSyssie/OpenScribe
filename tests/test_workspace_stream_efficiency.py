@@ -1,6 +1,7 @@
 """Regression tests for bounded SSE workspace refresh costs."""
 
 import asyncio
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -204,3 +205,131 @@ def test_revision_gate_forces_bounded_full_reconcile(monkeypatch):
 
     assert len(asyncio.run(collect())) == 1
     assert fetch.call_count == 3
+
+
+def test_revision_gate_skips_active_full_hydration_until_lifecycle_revision(monkeypatch):
+    revisions = iter([(0, 0), (0, 0), (0, 0), (1, 0), (1, 0)])
+    fetch = Mock(side_effect=[
+        {"active_transcript": {"status": "recording"}},
+        {"active_transcript": {"status": "transcribing"}},
+    ])
+    monkeypatch.setattr(workspace, "revisions_enabled", lambda: True)
+    monkeypatch.setattr(workspace, "realtime_workspace_revision_scope", lambda **_: ("owner-one", None))
+    monkeypatch.setattr(workspace, "read_workspace_revisions", lambda *_: next(revisions))
+    monkeypatch.setattr(workspace, "resolve_realtime_workspace_payload", fetch)
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(workspace.asyncio, "sleep", fake_sleep)
+
+    class Request:
+        checks = 0
+
+        async def is_disconnected(self):
+            self.checks += 1
+            return self.checks > 4
+
+    async def collect():
+        return [
+            event async for event in workspace.stream_transcribe_workspace_events(
+                request=Request(), raw_session_token="synthetic", transcript_id=None,
+                queued_transcript_id=None, once=False,
+            )
+        ]
+
+    events = asyncio.run(collect())
+    assert len(events) == 2
+    assert '"status":"recording"' in events[0]
+    assert '"status":"transcribing"' in events[1]
+    assert fetch.call_count == 2  # not one full workspace hydration per second
+    assert sleeps == [workspace.WORKSPACE_REVISION_POLL_SECONDS] * 5
+
+
+def test_active_revision_gate_preserves_bounded_full_reconcile(monkeypatch):
+    fetch = Mock(return_value={"active_transcript": {"status": "recording"}})
+    monkeypatch.setattr(workspace, "revisions_enabled", lambda: True)
+    monkeypatch.setattr(workspace, "realtime_workspace_revision_scope", lambda **_: ("owner-one", None))
+    monkeypatch.setattr(workspace, "read_workspace_revisions", lambda *_: (1, 0))
+    monkeypatch.setattr(workspace, "resolve_realtime_workspace_payload", fetch)
+    monkeypatch.setattr(workspace, "WORKSPACE_MAX_ACTIVE_RECONCILE_SECONDS", 0.0)
+
+    async def fake_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(workspace.asyncio, "sleep", fake_sleep)
+
+    class Request:
+        checks = 0
+
+        async def is_disconnected(self):
+            self.checks += 1
+            return self.checks > 2
+
+    async def collect():
+        return [
+            event async for event in workspace.stream_transcribe_workspace_events(
+                request=Request(), raw_session_token="synthetic",
+                transcript_id=None, queued_transcript_id=None, once=False,
+            )
+        ]
+
+    assert len(asyncio.run(collect())) == 1
+    assert fetch.call_count == 3
+
+
+def test_redis_outage_preserves_active_one_second_fallback(monkeypatch):
+    fetch = Mock(return_value={"active_transcript": {"status": "recording"}})
+    monkeypatch.setattr(workspace, "revisions_enabled", lambda: True)
+    monkeypatch.setattr(workspace, "realtime_workspace_revision_scope", lambda **_: ("owner-one", None))
+    monkeypatch.setattr(workspace, "read_workspace_revisions", lambda *_: None)
+    monkeypatch.setattr(workspace, "resolve_realtime_workspace_payload", fetch)
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(workspace.asyncio, "sleep", fake_sleep)
+
+    class Request:
+        checks = 0
+
+        async def is_disconnected(self):
+            self.checks += 1
+            return self.checks > 2
+
+    async def collect():
+        return [
+            event async for event in workspace.stream_transcribe_workspace_events(
+                request=Request(), raw_session_token="synthetic",
+                transcript_id=None, queued_transcript_id=None, once=False,
+            )
+        ]
+
+    assert len(asyncio.run(collect())) == 1
+    assert fetch.call_count == 3
+    assert sleeps == [workspace.WORKSPACE_ACTIVE_POLL_SECONDS] * 3
+
+
+def test_recovery_expiry_schedules_reconcile_before_normal_active_deadline():
+    from app.models import utcnow
+
+    expiry = (utcnow() + timedelta(seconds=3)).isoformat()
+    payload = {
+        "active_transcript": {"status": "failed"},
+        "active_transcript_stream_gap": {
+            "recovery_available": True, "recovery_expires_at": expiry,
+        },
+    }
+    interval = workspace.workspace_stream_reconcile_interval_seconds(payload)
+    assert 1 <= interval <= 3.1
+    assert interval < workspace.WORKSPACE_MAX_ACTIVE_RECONCILE_SECONDS
+    assert workspace.workspace_stream_reconcile_interval_seconds({
+        "active_transcript": {"status": "recording"},
+    }) == workspace.WORKSPACE_MAX_ACTIVE_RECONCILE_SECONDS
+    assert workspace.workspace_stream_reconcile_interval_seconds({
+        "active_transcript_stream_gap": {
+            "recovery_available": True, "recovery_expires_at": "invalid",
+        },
+    }) == workspace.WORKSPACE_MAX_ACTIVE_RECONCILE_SECONDS

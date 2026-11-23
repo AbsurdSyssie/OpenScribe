@@ -1355,11 +1355,63 @@ def transcript_detail_response(
     return TranscriptDetail.model_validate(payload)
 
 
-def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, current_user: User | None = None) -> TranscribeWorkspaceDetail:
+def selected_workspace_document_ids(
+    documents: list[GeneratedDocument],
+    *,
+    selected_note_document_id: UUID | None = None,
+    selected_followup_document_id: UUID | None = None,
+) -> frozenset[UUID]:
+    """Only hydrate selected output types. Ignore missing or foreign IDs.
+
+    The list is already owner-scoped by list_generated_documents_for_transcript.
+    When a selection is absent, use the newest note/follow-up so an initial
+    page refresh still has visible document content.
+    """
+    note_documents = [
+        document for document in documents
+        if document.generator_type is GeneratedDocumentGeneratorType.template
+    ]
+    followup_documents = [
+        document for document in documents
+        if document.generator_type in {
+            GeneratedDocumentGeneratorType.followup,
+            GeneratedDocumentGeneratorType.quick_action,
+        }
+    ]
+    selected: set[UUID] = set()
+    for group, requested in (
+        (note_documents, selected_note_document_id),
+        (followup_documents, selected_followup_document_id),
+    ):
+        document = next((doc for doc in group if doc.id == requested), None)
+        if document is None and group:
+            document = group[0]
+        if document is not None:
+            selected.add(document.id)
+    return frozenset(selected)
+
+
+def transcribe_workspace_response(
+    db: Session,
+    workspace: dict[str, object],
+    *,
+    current_user: User | None = None,
+    compact_documents: bool = False,
+    selected_note_document_id: UUID | None = None,
+    selected_followup_document_id: UUID | None = None,
+) -> TranscribeWorkspaceDetail:
     active_transcript = workspace.get("active_transcript")
     post_consultation_dictation = workspace.get("post_consultation_dictation")
     recent_transcripts = workspace.get("recent_transcripts") or []
     generated_documents = workspace.get("generated_documents") or []
+    hydrated_document_ids = (
+        selected_workspace_document_ids(
+            generated_documents,
+            selected_note_document_id=selected_note_document_id,
+            selected_followup_document_id=selected_followup_document_id,
+        )
+        if compact_documents else None
+    )
     available_templates = workspace.get("available_templates") or []
     available_quick_actions = workspace.get("available_quick_actions") or []
     available_smart_phrases = workspace.get("available_smart_phrases") or []
@@ -1471,7 +1523,13 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, 
             else None
         ),
         active_working_note=workspace.get("active_working_note"),
-        generated_documents=[generated_document_response(db, document, actor=current_user) for document in generated_documents],
+        generated_documents=[
+            generated_document_response(
+                db, document, actor=current_user,
+                include_content=hydrated_document_ids is None or document.id in hydrated_document_ids,
+            )
+            for document in generated_documents
+        ],
         available_templates=[template_response(template) for template in available_templates],
         available_quick_actions=[quick_action_response(quick_action) for quick_action in available_quick_actions],
         smart_phrases=[smart_phrase_response(phrase) for phrase in available_smart_phrases],
@@ -1516,6 +1574,9 @@ def resolve_transcribe_workspace_detail(
     request=None,
     local_dev_emails: set[str] | None = None,
     request_is_localhost_only=None,
+    compact_documents: bool = False,
+    selected_note_document_id: UUID | None = None,
+    selected_followup_document_id: UUID | None = None,
 ) -> TranscribeWorkspaceDetail:
     workspace = resolve_transcribe_workspace(
         db,
@@ -1527,7 +1588,12 @@ def resolve_transcribe_workspace_detail(
         request_is_localhost_only=request_is_localhost_only,
         include_html_fields=False,
     )
-    return transcribe_workspace_response(db, workspace, current_user=current_user)
+    return transcribe_workspace_response(
+        db, workspace, current_user=current_user,
+        compact_documents=compact_documents,
+        selected_note_document_id=selected_note_document_id,
+        selected_followup_document_id=selected_followup_document_id,
+    )
 
 
 def render_transcribe(
@@ -1657,6 +1723,9 @@ def resolve_realtime_workspace_payload(
     raw_session_token: str | None,
     transcript_id: str | None,
     queued_transcript_id: str | None,
+    compact_documents: bool = False,
+    selected_note_document_id: UUID | None = None,
+    selected_followup_document_id: UUID | None = None,
 ) -> dict[str, object] | None:
     with open_realtime_workspace_db_session(request) as db:
         current_user = resolve_realtime_workspace_user(db, raw_session_token=raw_session_token)
@@ -1667,6 +1736,9 @@ def resolve_realtime_workspace_payload(
             current_user=current_user,
             transcript_id=transcript_id,
             queued_transcript_id=queued_transcript_id,
+            compact_documents=compact_documents,
+            selected_note_document_id=selected_note_document_id,
+            selected_followup_document_id=selected_followup_document_id,
         ).model_dump(mode="json")
 
 
@@ -1720,6 +1792,9 @@ async def stream_transcribe_workspace_events(
     transcript_id: str | None,
     queued_transcript_id: str | None,
     once: bool,
+    compact_documents: bool = False,
+    selected_note_document_id: UUID | None = None,
+    selected_followup_document_id: UUID | None = None,
 ):
     last_payload: dict[str, object] | None = None
     last_revision: tuple[int, ...] | None = None
@@ -1780,6 +1855,9 @@ async def stream_transcribe_workspace_events(
             raw_session_token=raw_session_token,
             transcript_id=transcript_id,
             queued_transcript_id=queued_transcript_id,
+            compact_documents=compact_documents,
+            selected_note_document_id=selected_note_document_id,
+            selected_followup_document_id=selected_followup_document_id,
         )
         if payload is None:
             break

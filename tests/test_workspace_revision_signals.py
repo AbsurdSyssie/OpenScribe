@@ -163,7 +163,7 @@ def test_noop_orm_changes_do_not_write_workspace_revisions(monkeypatch):
 
     monkeypatch.setattr(revisions, "revisions_enabled", lambda: True)
     redis_client = Mock()
-    monkeypatch.setattr(revisions, "_redis_client", redis_client)
+    monkeypatch.setattr(revisions, "_redis_client", lambda: redis_client)
     with Session() as session:
         transcript = Transcript(
             id=uuid4(), owner_user_id=uuid4(), team_id=uuid4(), title="synthetic",
@@ -175,7 +175,7 @@ def test_noop_orm_changes_do_not_write_workspace_revisions(monkeypatch):
         assert not session.is_modified(transcript)
         revisions._capture_workspace_changes(session)
         revisions._publish_workspace_changes(session)
-        redis_client.assert_not_called()
+        redis_client.pipeline.assert_not_called()
 
         transcript.title = "changed"
         revisions._capture_workspace_changes(session)

@@ -60,7 +60,7 @@ The old rule that team leaders cannot delete users is obsolete.
 ### Queued work and quotas
 
 - Business rows and deterministic task-dispatch outbox rows are committed transactionally.
-- Immediate broker publish is attempted; Beat retries pending outbox rows every second.
+- Immediate broker publish is attempted after commit; Beat checks pending outbox rows every 10 seconds for missed publication and retry recovery.
 - Retention, source-audio cleanup, provider-secret cleanup, and quota lifecycle run every 10 seconds.
 - Provider credentials are resolved before an attempt is marked submitted.
 - Definite pre-dispatch credential failure does not consume provider quota.

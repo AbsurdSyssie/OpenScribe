@@ -194,6 +194,7 @@ export function createDocumentNavigator({
   hasPendingGeneratedFollowupEdits,
   persistFollowupEditsSilently,
   shouldPreserveFollowupEditorRender,
+  loadSelectedDocument,
 }) {
   const {
     noteSelectorWrap,
@@ -620,8 +621,25 @@ export function createDocumentNavigator({
       }
       clearNoteEditorDirty?.();
       const selectedDocument = noteTargets(state).find((document) => document.id === documentId) || null;
+      const priorSelectedId = state.selectedNoteDocumentId;
+      const priorSlotKey = state.selectedNoteSlotKey;
       setState({ selectedNoteDocumentId: documentId });
       setState({ selectedNoteSlotKey: selectedDocument?.split_slot_key || null });
+      if (selectedDocument?.content_hydrated === false) {
+        const workspace = await loadSelectedDocument?.({ needsHydration: true });
+        const hydrated = workspace?.generated_documents?.some(
+          (document) => document.id === documentId && document.content_hydrated !== false
+        );
+        if (!hydrated) {
+          setState({ selectedNoteDocumentId: priorSelectedId, selectedNoteSlotKey: priorSlotKey });
+          renderSelectedNote();
+          return false;
+        }
+      } else {
+        // Already-hydrated HTML/REST data may be used immediately, but SSE
+        // must now follow the new selected document.
+        void loadSelectedDocument?.({ needsHydration: false });
+      }
       renderSelectedNote();
       setTab("output");
       window.document.dispatchEvent(new window.CustomEvent('transcribe:document-selected', { detail: { kind: 'note', documentId } }));
@@ -638,7 +656,22 @@ export function createDocumentNavigator({
       }
     }
     clearFollowupEditorDirty?.();
+    const priorSelectedId = state.selectedFollowupDocumentId;
+    const nextDocument = state.workspaceFollowupDocuments?.find((document) => document.id === documentId);
     setState({ selectedFollowupDocumentId: documentId });
+    if (nextDocument?.content_hydrated === false) {
+      const workspace = await loadSelectedDocument?.({ needsHydration: true });
+      const hydrated = workspace?.generated_documents?.some(
+        (document) => document.id === documentId && document.content_hydrated !== false
+      );
+      if (!hydrated) {
+        setState({ selectedFollowupDocumentId: priorSelectedId });
+        renderSelectedFollowup();
+        return false;
+      }
+    } else {
+      void loadSelectedDocument?.({ needsHydration: false });
+    }
     renderSelectedFollowup();
     setTab("followups");
     window.document.dispatchEvent(new window.CustomEvent('transcribe:document-selected', { detail: { kind: 'followup', documentId } }));

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
+from typing import Mapping
 
 
 _TEMPORARY_PROVIDER_CODES = frozenset({"connection_error", "timeout", "rate_limit_exceeded"})
@@ -236,7 +237,81 @@ def failed_transport_details(attempt: object | None) -> tuple[str | None, int | 
     return provider_code, status
 
 
-def generated_document_status_projection(db: object, document: object, actor: object | None) -> dict[str, object]:
+def load_generated_document_status_attempts(
+    db: object, documents: list[object], actor: object | None,
+) -> dict[UUID, dict[str, object]]:
+    """Fetch leader-only attempt metadata once per status/kind, not per document.
+
+    Each result must match the same owner, team and transcript as its document.
+    Sorting is identical to the individual projection queries; the first
+    matching attempt for each document wins. No clinical content is loaded.
+    """
+    from sqlalchemy import select
+
+    from app.models import AttemptKind, AttemptOutcome, AttemptStatus, ProviderAttempt, TeamRole
+
+    if (
+        actor is None or getattr(actor, "is_system_admin", False)
+        or getattr(actor, "team_role", None) is not TeamRole.leader
+        or getattr(actor, "team_id", None) is None
+    ):
+        return {}
+    eligible = {
+        document.id: document
+        for document in documents
+        if getattr(document, "owner_user_id", None) == actor.id
+        and getattr(document, "team_id", None) == actor.team_id
+    }
+    if not eligible:
+        return {}
+    attempts: dict[UUID, dict[str, object]] = {doc_id: {} for doc_id in eligible}
+    common = (
+        ProviderAttempt.generated_document_id.in_(eligible),
+        ProviderAttempt.owner_user_id == actor.id,
+        ProviderAttempt.team_id == actor.team_id,
+    )
+    queries = (
+        ("generation_submitted", AttemptKind.llm_generation, AttemptStatus.submitted, None),
+        ("checker_submitted", AttemptKind.llm_hallucination_check, AttemptStatus.submitted, None),
+        ("checker_failed", AttemptKind.llm_hallucination_check, AttemptStatus.settled,
+         (AttemptOutcome.failed, AttemptOutcome.unknown)),
+    )
+    for key, kind, status, outcomes in queries:
+        if key == "checker_failed" and not any(
+            getattr(document, "hallucination_check_status", None).value
+            in {"failed_provider", "failed_invalid_response"}
+            for document in eligible.values()
+            if getattr(document, "hallucination_check_status", None) is not None
+        ):
+            continue
+        statement = select(ProviderAttempt).where(
+            *common,
+            ProviderAttempt.attempt_kind == kind,
+            ProviderAttempt.status == status,
+        )
+        if outcomes is not None:
+            statement = statement.where(ProviderAttempt.outcome.in_(outcomes)).order_by(
+                ProviderAttempt.generated_document_id,
+                ProviderAttempt.settled_at.desc(),
+                ProviderAttempt.backup_of_attempt_id.is_not(None).desc(),
+                ProviderAttempt.attempt_number.desc(),
+            )
+        else:
+            statement = statement.order_by(
+                ProviderAttempt.generated_document_id,
+                ProviderAttempt.attempt_number.desc(),
+            )
+        for attempt in db.scalars(statement):
+            document = eligible.get(attempt.generated_document_id)
+            if document is not None and attempt.transcript_id == document.transcript_id:
+                attempts[document.id].setdefault(key, attempt)
+    return attempts
+
+
+def generated_document_status_projection(
+    db: object, document: object, actor: object | None,
+    *, attempts: Mapping[str, object] | None = None,
+) -> dict[str, object]:
     """Build generated-note status metadata after the caller's owner authorization."""
     from sqlalchemy import select
 
@@ -270,7 +345,7 @@ def generated_document_status_projection(db: object, document: object, actor: ob
             ProviderAttempt.team_id == document.team_id,
             ProviderAttempt.transcript_id == document.transcript_id,
         )
-        attempt = db.scalar(
+        attempt = attempts.get("generation_submitted") if attempts is not None else db.scalar(
             select(ProviderAttempt).where(
                 *attempt_predicates,
                 ProviderAttempt.attempt_kind == AttemptKind.llm_generation,
@@ -279,7 +354,7 @@ def generated_document_status_projection(db: object, document: object, actor: ob
         )
         retry = active_retry_presentation(attempt, reference=document.id) if attempt is not None else None
         if retry is None:
-            attempt = db.scalar(
+            attempt = attempts.get("checker_submitted") if attempts is not None else db.scalar(
                 select(ProviderAttempt).where(
                     *attempt_predicates,
                     ProviderAttempt.attempt_kind == AttemptKind.llm_hallucination_check,
@@ -306,7 +381,7 @@ def generated_document_status_projection(db: object, document: object, actor: ob
     if checker_failed:
         checker_attempt = None
         if leader:
-            checker_attempt = db.scalar(
+            checker_attempt = attempts.get("checker_failed") if attempts is not None else db.scalar(
                 select(ProviderAttempt).where(
                     ProviderAttempt.generated_document_id == document.id,
                     ProviderAttempt.owner_user_id == document.owner_user_id,

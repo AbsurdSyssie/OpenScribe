@@ -29,6 +29,8 @@ System-admin accounts are redirected to `/admin` rather than receiving the user 
 
 Recent consultation transcript-content checks use nullable metadata on current drafts and immutable transcript versions. Writers set flags from trimmed plaintext; blank edits clear the draft flag but nonblank historical versions still count, and deleting a version removes its contribution. Legacy NULL flags retain the existing owner-only decryption fallback. After migration `06f7a8b9c0d1`, run `python -m scripts.backfill_transcript_content_presence` once in the usual key-enabled app environment to populate old flags in bounded transactions. This backfill can be rerun and logs row counts only. Until it finishes, legacy history checks may still decrypt content.
 
+Migration `7ca9e231d4b0` adds owner-keyed, transcript-scoped digests to new transcript versions for PII freshness checks. Flat digest-bearing versions are matched without reading saved transcript plaintext; structured versions also validate the encrypted canonical projection and turns. Versions created before that migration retain the earlier owner-only exact-match fallback, including when a user returns to an older reviewed revision; they can therefore require legacy snapshot decryption until a normal writer replaces or reuses them.
+
 ## Consultation return behavior
 
 Browser `sessionStorage` remembers only the active transcript UUID under `openscribe.workspace.lastTranscriptId`. Back-to-Scribe and brand links submit that UUID as an untrusted query hint. Server-side transcript ownership and retention checks remain authoritative. Non-Scribe pages never replace the remembered UUID.
@@ -44,6 +46,8 @@ On the first fully authenticated Scribe visit, new accounts and existing account
 ## Recording navigation lock
 
 The media controller emits recording lifecycle events. Shared workspace code disables only controls marked `data-recording-navigation` while microphone capture is active and installs a `beforeunload` warning. Upload, transcription, generation, and other background states do not emit these events and therefore do not lock navigation.
+
+An idle hidden Scribe tab closes its workspace event stream. Active microphone capture, dictation, and unresolved Telehealth capture keep the stream available. Returning to the tab reconnects and requests a fresh workspace snapshot. The browser loads full generated-document content when selecting a historical note or follow-up from its summary.
 
 Post-consultation dictation remains a separate source from the consultation transcript. Save and Save & Generate can be selected while its microphone is recording or paused; the workspace waits for capture to stop and the preview transcription to finish before saving or queueing generation. A failed or empty preview requires an explicit retry.
 The dictation editor opens in a compact, full-width modal with recording and upload controls above the editable text area and template and save actions in the footer. The layout adapts to mobile widths; the live word count is a convenience display. Both dictation and consultation capture use the same 12-bar microphone visualizer; dictation uses a cosmetic Web Audio analyser while consultation capture continues to send its existing VAD audio frames and speech state to the shared renderer.

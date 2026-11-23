@@ -59,7 +59,7 @@ _IGNORED_DIRTY_FIELDS = {
     "User": frozenset({"last_login_at"}),
     "UserSession": frozenset({"last_seen_at"}),
 }
-_PENDING_KEY = "_workspace_revision_pending"
+_SCOPES_KEY = "_workspace_revision_scopes"
 _REDIS_KEY_PREFIX = "openscribe:workspace-revision:v1"
 
 
@@ -180,14 +180,48 @@ def _capture_workspace_changes(session: Session, *_args) -> None:
             global_change = True
     if not owners and not teams and not global_change:
         return
-    pending = session.info.setdefault(_PENDING_KEY, (set(), set(), False))
-    session.info[_PENDING_KEY] = (
+    # Keep mutations attached to the transaction/savepoint that produced them.
+    # A savepoint rollback must not discard earlier outer-transaction changes.
+    transaction = session.get_nested_transaction() or session.get_transaction()
+    if transaction is None:
+        return
+    scopes = session.info.setdefault(_SCOPES_KEY, {})
+    pending = scopes.setdefault(transaction, (set(), set(), False))
+    scopes[transaction] = (
         pending[0] | owners, pending[1] | teams, pending[2] or global_change,
     )
 
 
+def _merge_scope(session: Session, transaction):
+    scopes = session.info.get(_SCOPES_KEY)
+    if not scopes:
+        return (set(), set(), False)
+    pending = scopes.pop(transaction, (set(), set(), False))
+    parent = transaction.parent
+    if parent is None:
+        return pending
+    existing = scopes.get(parent, (set(), set(), False))
+    scopes[parent] = (
+        existing[0] | pending[0],
+        existing[1] | pending[1],
+        existing[2] or pending[2],
+    )
+
+
 def _publish_workspace_changes(session: Session) -> None:
-    owners, teams, global_change = session.info.pop(_PENDING_KEY, (set(), set(), False))
+    transaction = session.get_nested_transaction() or session.get_transaction()
+    if transaction is not None and transaction.nested:
+        # after_commit fires for a released savepoint too. Carry its changes to
+        # the parent transaction; never publish before the outer commit.
+        _merge_scope(session, transaction)
+        return
+    root = session.get_transaction()
+    owners, teams, global_change = (
+        _merge_scope(session, root) if root is not None else (set(), set(), False)
+    )
+    # A commit ends this unit of work. Do not let any orphaned scope leak into
+    # a later transaction if a callback ran after SQLAlchemy cleared the root.
+    session.info.pop(_SCOPES_KEY, None)
     if not (owners or teams or global_change) or not revisions_enabled():
         return
     # Commit has already succeeded. Redis failure cannot roll back a clinical
@@ -212,7 +246,18 @@ def _publish_workspace_changes(session: Session) -> None:
 
 
 def _discard_workspace_changes(session: Session) -> None:
-    session.info.pop(_PENDING_KEY, None)
+    transaction = session.get_nested_transaction() or session.get_transaction()
+    if transaction is not None and transaction.nested:
+        session.info.get(_SCOPES_KEY, {}).pop(transaction, None)
+        return
+    session.info.pop(_SCOPES_KEY, None)
+
+
+def _clear_ended_workspace_changes(session: Session, transaction) -> None:
+    # Session.close()/reset() can roll back an active transaction without
+    # emitting after_rollback. The root end is the final lifecycle boundary.
+    if transaction.parent is None:
+        session.info.pop(_SCOPES_KEY, None)
 
 
 def install_revision_events() -> None:
@@ -222,3 +267,4 @@ def install_revision_events() -> None:
     event.listen(Session, "before_flush", _capture_workspace_changes)
     event.listen(Session, "after_commit", _publish_workspace_changes)
     event.listen(Session, "after_rollback", _discard_workspace_changes)
+    event.listen(Session, "after_transaction_end", _clear_ended_workspace_changes)

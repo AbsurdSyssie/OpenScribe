@@ -195,6 +195,7 @@ export function createDocumentNavigator({
   persistFollowupEditsSilently,
   shouldPreserveFollowupEditorRender,
   loadSelectedDocument,
+  applySelectedWorkspace,
 }) {
   const {
     noteSelectorWrap,
@@ -521,7 +522,12 @@ export function createDocumentNavigator({
           : "";
         latestGeneratedOutput.dataset.latestGeneratedKind = selectedNote?.kind || "generated_note";
       }
-      if (preserveCurrentEditorRender && shouldInitializeHydratedNoteEditor?.(selectedNote)) {
+      if (selectedNote?.content_hydrated === false) {
+        // A compact workspace summary never supplies editable source text.
+        // Clear any prior editor and keep this transient state read-only until
+        // the fenced selected-document hydration applies.
+        renderGeneratedOutput({ ...selectedNote, status: 'processing', document_mode: '' }, {});
+      } else if (preserveCurrentEditorRender && shouldInitializeHydratedNoteEditor?.(selectedNote)) {
         initializeHydratedGeneratedDocument?.(selectedNote);
       } else if (!preserveCurrentEditorRender) {
         renderGeneratedOutput(selectedNote, selectedNote?.kind === "working_note" ? {} : (state.workspaceStructuredContext || {}));
@@ -579,7 +585,7 @@ export function createDocumentNavigator({
       const title = selectedFollowup ? followupDocumentLabel(selectedFollowup) : "Custom follow-up";
       if (followupOutputTitle instanceof window.HTMLInputElement || followupOutputTitle instanceof window.HTMLTextAreaElement) {
         followupOutputTitle.value = title;
-        followupOutputTitle.disabled = selectedFollowup?.status !== "ready";
+        followupOutputTitle.disabled = selectedFollowup?.status !== "ready" || selectedFollowup.content_hydrated === false;
       } else {
         followupOutputTitle.textContent = title;
       }
@@ -606,73 +612,141 @@ export function createDocumentNavigator({
     renderRedactionDebugPanel(followupRedactionSlot, selectedFollowup);
   };
 
-  const selectDocumentFromUi = async (kind, documentId) => {
-    if (!documentId) return false;
+  const selectionIntents = { note: 0, followup: 0 };
+  const pendingSelections = { note: null, followup: null };
+  const selectionIsCurrent = (kind, intent, transcriptId) => (
+    intent === selectionIntents[kind] && getState().activeTranscriptId === transcriptId
+  );
+  const loadHydratedSelection = async (kind, intent, transcriptId, documentId) => {
+    while (selectionIsCurrent(kind, intent, transcriptId)) {
+      const state = getState();
+      const selectedNoteDocumentId = kind === "note" ? documentId : state.selectedNoteDocumentId;
+      const selectedFollowupDocumentId = kind === "followup" ? documentId : state.selectedFollowupDocumentId;
+      const workspace = await loadSelectedDocument?.({
+        needsHydration: true,
+        selectedNoteDocumentId,
+        selectedFollowupDocumentId,
+      });
+      if (!selectionIsCurrent(kind, intent, transcriptId)) return null;
+      if (transcriptId && workspace?.active_transcript?.id !== transcriptId) return null;
+      const latestState = getState();
+      const otherSelectionChanged = kind === "note"
+        ? latestState.selectedFollowupDocumentId !== selectedFollowupDocumentId
+        : latestState.selectedNoteDocumentId !== selectedNoteDocumentId;
+      if (otherSelectionChanged) continue;
+      return workspace;
+    }
+    return null;
+  };
+
+  const selectDocumentFromUi = (kind, documentId) => {
+    if (!documentId) return Promise.resolve(false);
+    const pending = pendingSelections[kind];
+    if (pending?.documentId === documentId) return pending.promise;
+    const intent = ++selectionIntents[kind];
+    const promise = selectDocumentWithIntent(kind, documentId, intent).finally(() => {
+      if (pendingSelections[kind]?.intent === intent) pendingSelections[kind] = null;
+    });
+    pendingSelections[kind] = { documentId, intent, promise };
+    return promise;
+  };
+
+  const selectDocumentWithIntent = async (kind, documentId, intent) => {
     if (kind === "note") {
       const state = getState();
-      if (state.selectedNoteDocumentId === documentId) {
+      const transcriptId = state.activeTranscriptId;
+      const alreadySelected = noteTargets(state).find((document) => document.id === documentId);
+      if (state.selectedNoteDocumentId === documentId && alreadySelected?.content_hydrated !== false) {
         return true;
       }
       if (hasPendingGeneratedNoteEdits?.()) {
         const savedDocument = await persistNoteEditsSilently?.();
-        if (!savedDocument) {
+        if (!savedDocument || !selectionIsCurrent("note", intent, transcriptId)) {
           return false;
         }
       }
       clearNoteEditorDirty?.();
-      const selectedDocument = noteTargets(state).find((document) => document.id === documentId) || null;
-      const priorSelectedId = state.selectedNoteDocumentId;
-      const priorSlotKey = state.selectedNoteSlotKey;
-      setState({ selectedNoteDocumentId: documentId });
-      setState({ selectedNoteSlotKey: selectedDocument?.split_slot_key || null });
+      const selectedDocument = noteTargets(getState()).find((document) => document.id === documentId) || null;
       if (selectedDocument?.content_hydrated === false) {
-        const workspace = await loadSelectedDocument?.({ needsHydration: true });
+        let workspace = await loadHydratedSelection("note", intent, transcriptId, documentId);
+        if (!selectionIsCurrent("note", intent, transcriptId)) return false;
+        if (getState().activeTranscriptId !== transcriptId) return false;
         const hydrated = workspace?.generated_documents?.some(
           (document) => document.id === documentId && document.content_hydrated !== false
         );
         if (!hydrated) {
-          setState({ selectedNoteDocumentId: priorSelectedId, selectedNoteSlotKey: priorSlotKey });
-          renderSelectedNote();
           return false;
         }
+        if (hasPendingGeneratedNoteEdits?.()) {
+          const followupSelectionBeforeSave = getState().selectedFollowupDocumentId;
+          const savedDocument = await persistNoteEditsSilently?.();
+          if (!savedDocument || !selectionIsCurrent("note", intent, transcriptId)) return false;
+          if (getState().selectedFollowupDocumentId !== followupSelectionBeforeSave) {
+            workspace = await loadHydratedSelection("note", intent, transcriptId, documentId);
+            if (!selectionIsCurrent("note", intent, transcriptId)) return false;
+          }
+        }
+        if (hasPendingGeneratedNoteEdits?.() || !workspace?.generated_documents?.some(
+          (document) => document.id === documentId && document.content_hydrated !== false
+        )) return false;
+        setState({ selectedNoteDocumentId: documentId, selectedNoteSlotKey: selectedDocument?.split_slot_key || null });
+        applySelectedWorkspace?.(workspace);
       } else {
+        setState({ selectedNoteDocumentId: documentId, selectedNoteSlotKey: selectedDocument?.split_slot_key || null });
         // Already-hydrated HTML/REST data may be used immediately, but SSE
         // must now follow the new selected document.
         void loadSelectedDocument?.({ needsHydration: false });
       }
       renderSelectedNote();
+      if (!selectionIsCurrent("note", intent, transcriptId)) return false;
       setTab("output");
       window.document.dispatchEvent(new window.CustomEvent('transcribe:document-selected', { detail: { kind: 'note', documentId } }));
       return true;
     }
     const state = getState();
-    if (state.selectedFollowupDocumentId === documentId) {
+    const transcriptId = state.activeTranscriptId;
+    const alreadySelected = state.workspaceFollowupDocuments?.find((document) => document.id === documentId);
+    if (state.selectedFollowupDocumentId === documentId && alreadySelected?.content_hydrated !== false) {
       return true;
     }
     if (hasPendingGeneratedFollowupEdits?.()) {
       const savedDocument = await persistFollowupEditsSilently?.();
-      if (!savedDocument) {
+      if (!savedDocument || !selectionIsCurrent("followup", intent, transcriptId)) {
         return false;
       }
     }
     clearFollowupEditorDirty?.();
-    const priorSelectedId = state.selectedFollowupDocumentId;
-    const nextDocument = state.workspaceFollowupDocuments?.find((document) => document.id === documentId);
-    setState({ selectedFollowupDocumentId: documentId });
+    const nextDocument = getState().workspaceFollowupDocuments?.find((document) => document.id === documentId);
     if (nextDocument?.content_hydrated === false) {
-      const workspace = await loadSelectedDocument?.({ needsHydration: true });
+      let workspace = await loadHydratedSelection("followup", intent, transcriptId, documentId);
+      if (!selectionIsCurrent("followup", intent, transcriptId)) return false;
+      if (getState().activeTranscriptId !== transcriptId) return false;
       const hydrated = workspace?.generated_documents?.some(
         (document) => document.id === documentId && document.content_hydrated !== false
       );
       if (!hydrated) {
-        setState({ selectedFollowupDocumentId: priorSelectedId });
-        renderSelectedFollowup();
         return false;
       }
+      if (hasPendingGeneratedFollowupEdits?.()) {
+        const noteSelectionBeforeSave = getState().selectedNoteDocumentId;
+        const savedDocument = await persistFollowupEditsSilently?.();
+        if (!savedDocument || !selectionIsCurrent("followup", intent, transcriptId)) return false;
+        if (getState().selectedNoteDocumentId !== noteSelectionBeforeSave) {
+          workspace = await loadHydratedSelection("followup", intent, transcriptId, documentId);
+          if (!selectionIsCurrent("followup", intent, transcriptId)) return false;
+        }
+      }
+      if (hasPendingGeneratedFollowupEdits?.() || !workspace?.generated_documents?.some(
+        (document) => document.id === documentId && document.content_hydrated !== false
+      )) return false;
+      setState({ selectedFollowupDocumentId: documentId });
+      applySelectedWorkspace?.(workspace);
     } else {
+      setState({ selectedFollowupDocumentId: documentId });
       void loadSelectedDocument?.({ needsHydration: false });
     }
     renderSelectedFollowup();
+    if (!selectionIsCurrent("followup", intent, transcriptId)) return false;
     setTab("followups");
     window.document.dispatchEvent(new window.CustomEvent('transcribe:document-selected', { detail: { kind: 'followup', documentId } }));
     return true;

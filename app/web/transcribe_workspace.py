@@ -806,8 +806,10 @@ def transcript_pii_entities_response(
 ) -> list[TranscriptPiiEntitySummary | TranscriptPiiEntityDetail]:
     if transcript is None:
         return []
-    current_text = transcript_draft_text_service(db, transcript=transcript) or ""
     structured = transcript.current_draft_turns_encrypted is not None
+    current_text = ""
+    if structured or transcript.status is TranscriptStatus.ready:
+        current_text = transcript_draft_text_service(db, transcript=transcript) or ""
     current_version = (
         current_pii_transcript_version_service(db, transcript=transcript, plaintext=current_text)
         if structured or (transcript.status is TranscriptStatus.ready and current_text.strip())

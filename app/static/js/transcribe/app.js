@@ -1,6 +1,6 @@
 import { attachTranscribeActions } from './actions.js?v=20261108-final-merge-review';
 import { readTranscribeBootstrap } from './bootstrap.js?v=20261005-multiple-problems';
-import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261108-final-merge-review';
+import { clearDelayedGenerationStatus, createDocumentNavigator, createInitialNoteRenderPreserver, formatWorkspaceCreatedAt, generationFailureDetailsHtml, generationFailureMessage, generationLoadingHtml, scheduleDelayedGenerationStatus } from './documents.js?v=20261123-selection-race-fence';
 import { createTranscribeLayout } from './layout.js?v=20260810-followups-accessibility';
 import { createAudioCaptureController } from './media.js?v=20261106-patient-audio-meter';
 import { attachTelehealthControls } from './telehealthUI.js?v=20261121-first-audio-save';
@@ -19,7 +19,7 @@ import { createExampleConsultationBoundary, createExampleConsultationInitializer
 import { createTranscriptTurnsEditor } from './transcriptTurnsEditor.js?v=20261108-source-warning';
 import { createAutosaveController } from './autosaveController.js?v=20261022-diarized-turn-editor';
 import { createWorkingNoteAttemptStore } from './workingNoteSaveRecovery.js?v=20261103-working-note-save-recovery';
-import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261107-telehealth-switch-fence';
+import { createMultipleProblemsController, createSplitAnalysisRestorationPoller, createSplitGenerateController, createSplitPartialActionsController, createSplitReviewController, createWorkspaceFetchCoordinator, dispatchTemplateGeneration, isConsultationSplitCreateEnabled, splitDiagnosticMessage } from './splitReview.js?v=20261123-selection-race-fence';
 import {
   formatSessionRailCreatedAt,
   keepSessionRailItemVisible,
@@ -84,6 +84,7 @@ import {
       let selectedNoteDocumentId = null;
       let selectedNoteSlotKey = null;
       let selectedFollowupDocumentId = null;
+      let selectedSummaryHydrationEndpoint = null;
       let noteEditorDirty = false;
       let dirtyNoteTargetId = null;
       let dirtyNoteMode = null;
@@ -2639,6 +2640,7 @@ let statusDetailsHideTimer = null;
       const shouldSuspendHiddenWorkspaceRealtime = () => (
         document.visibilityState === 'hidden'
         && !captureController?.isCaptureUiActive?.()
+        && !telehealthUi?.isUnresolved?.()
         && !dictationLiveCapture
         && !dictationLiveStartup
         && !['starting', 'recording', 'paused', 'transcribing'].includes(dictationRecordingState)
@@ -4120,6 +4122,7 @@ let statusDetailsHideTimer = null;
         updatedAt: document?.updated_at || '',
         mode: document?.document_mode || '',
         generatorType: document?.generator_type || '',
+        contentHydrated: document?.content_hydrated !== false,
         hallucinationCheckBucket: document?.hallucination_check_bucket || '',
         sectionCount: Array.isArray(document?.sections) ? document.sections.length : 0,
       });
@@ -4468,6 +4471,20 @@ let statusDetailsHideTimer = null;
           setTitleInput('Custom follow-up', true);
           if (followupOutputSubtitle) followupOutputSubtitle.textContent = 'No follow-up selected';
           latestFollowupOutput.innerHTML = '<div class="empty-state"><div class="empty-state__text">Choose a quick action or add context, then select Generate.</div></div>';
+          return;
+        }
+        if (document.content_hydrated === false) {
+          latestFollowupOutput.dataset.latestFollowupUpdatedAt = document.updated_at || '';
+          latestFollowupOutput.setAttribute('aria-busy', 'true');
+          if (copyLatestFollowupButton) copyLatestFollowupButton.disabled = true;
+          if (deleteLatestFollowupButton) deleteLatestFollowupButton.disabled = true;
+          if (regenerateLatestFollowupButton) regenerateLatestFollowupButton.disabled = true;
+          setTitleInput('Loading saved follow-up…', true);
+          if (followupOutputSubtitle) followupOutputSubtitle.textContent = 'Loading saved follow-up';
+          latestFollowupOutput.innerHTML = generationLoadingHtml({
+            label: 'follow-up',
+            message: 'Loading this saved follow-up…',
+          });
           return;
         }
         latestFollowupOutput.dataset.latestFollowupUpdatedAt = document.updated_at || '';
@@ -4895,16 +4912,21 @@ let statusDetailsHideTimer = null;
         shouldPreserveNoteEditorRender,
         shouldInitializeHydratedNoteEditor,
         clearFollowupEditorDirty,
-        persistFollowupEditsSilently,
+        persistFollowupEditsSilently: persistFollowupEditsUntilDrained,
         hasPendingGeneratedFollowupEdits,
         shouldPreserveFollowupEditorRender,
-        loadSelectedDocument: async ({ needsHydration }) => {
-          // A selection changes the set of documents hydrated by the SSE
-          // stream. Reconnect with that selection before requesting a snapshot.
+        loadSelectedDocument: async ({ needsHydration, selectedNoteDocumentId, selectedFollowupDocumentId }) => {
+          if (needsHydration) {
+            return workspaceFetchCoordinator?.fetchPayload(transcriptId, {
+              selectedNoteDocumentId,
+              selectedFollowupDocumentId,
+            }) || null;
+          }
+          // Reconnect after a hydrated selection is committed.
           syncWorkspaceRealtimeConnection();
-          if (needsHydration) return fetchWorkspace();
           return null;
         },
+        applySelectedWorkspace: (workspace) => applyWorkspacePayload(workspace),
       });
 
       const saveWorkingNoteBeforeGeneration = async (targetTranscriptId = transcriptId) => {
@@ -5070,24 +5092,28 @@ let statusDetailsHideTimer = null;
 
       const waitForGenerationSubmission = () => generationSubmissionBarrier?.accepted || Promise.resolve(true);
 
-      const compactWorkspaceEndpoint = (endpoint) => {
+      const compactWorkspaceEndpoint = (endpoint, selection = {}) => {
         const params = new URLSearchParams();
         params.set('compact_documents', 'true');
         const isUuid = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));
-        if (isUuid(selectedNoteDocumentId)) {
-          params.set('selected_note_document_id', selectedNoteDocumentId);
+        const noteId = Object.prototype.hasOwnProperty.call(selection, 'selectedNoteDocumentId')
+          ? selection.selectedNoteDocumentId : selectedNoteDocumentId;
+        const followupId = Object.prototype.hasOwnProperty.call(selection, 'selectedFollowupDocumentId')
+          ? selection.selectedFollowupDocumentId : selectedFollowupDocumentId;
+        if (isUuid(noteId)) {
+          params.set('selected_note_document_id', noteId);
         }
-        if (isUuid(selectedFollowupDocumentId)) {
-          params.set('selected_followup_document_id', selectedFollowupDocumentId);
+        if (isUuid(followupId)) {
+          params.set('selected_followup_document_id', followupId);
         }
         return `${endpoint}${endpoint.includes('?') ? '&' : '?'}${params.toString()}`;
       };
 
-      const workspaceEndpointForTranscript = (nextTranscriptId) => {
+      const workspaceEndpointForTranscript = (nextTranscriptId, selection = {}) => {
         const endpoint = nextTranscriptId
           ? `/api/v1/transcribe/workspace?transcript_id=${nextTranscriptId}`
           : (initialWorkspaceEndpoint || '/api/v1/transcribe/workspace');
-        return compactWorkspaceEndpoint(endpoint);
+        return compactWorkspaceEndpoint(endpoint, selection);
       };
 
       const workspaceStreamEndpointForTranscript = (nextTranscriptId) => {
@@ -5222,6 +5248,7 @@ let statusDetailsHideTimer = null;
           splitPlaceholderState = null;
           splitBatchFallbackState = null;
           selectedNoteSlotKey = null;
+          selectedSummaryHydrationEndpoint = null;
           if (quickActionContextInput) {
             quickActionContextInput.value = '';
             quickActionContextInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -5505,6 +5532,18 @@ let statusDetailsHideTimer = null;
             ? selectedNoteDocumentId
             : (selectedDocumentFromList(workspaceNoteDocuments, null)?.id || (transcriptId ? workingNoteTargetId(transcriptId) : null)));
         selectedFollowupDocumentId = selectedDocumentFromList(followupDocuments, selectedFollowupDocumentId)?.id || null;
+        const selectedNote = workspaceNoteDocuments.find((document) => document.id === selectedNoteDocumentId);
+        const selectedFollowup = followupDocuments.find((document) => document.id === selectedFollowupDocumentId);
+        const needsSelectedContent = selectedNote?.content_hydrated === false || selectedFollowup?.content_hydrated === false;
+        const hydrationEndpoint = needsSelectedContent ? workspaceEndpointForTranscript(transcriptId) : null;
+        if (hydrationEndpoint !== selectedSummaryHydrationEndpoint) {
+          selectedSummaryHydrationEndpoint = hydrationEndpoint;
+          if (hydrationEndpoint && !shouldSuspendHiddenWorkspaceRealtime()) {
+            void fetchWorkspace(transcriptId, { guardTranscriptId: transcriptId }).finally(() => {
+              if (selectedSummaryHydrationEndpoint === hydrationEndpoint) selectedSummaryHydrationEndpoint = null;
+            });
+          }
+        }
         const noteRegionSignature = workspaceRegionSignature({
           transcriptId,
           workingNoteMode: workingNote?.mode || '',
@@ -5769,11 +5808,8 @@ let statusDetailsHideTimer = null;
        splitPartialActionsController = createSplitPartialActionsController({
          getTranscriptId: () => transcriptId,
          refreshWorkspace: (nextTranscriptId, options) => fetchWorkspace(nextTranscriptId, options),
-         selectDocument: (documentId) => {
-           selectedNoteDocumentId = documentId;
-           selectedNoteSlotKey = null;
-           setTab('output');
-           renderSelectedNote();
+         selectDocument: async (documentId) => {
+           if (await selectDocumentFromUi('note', documentId)) setTab('output');
          },
        });
        multipleProblemsController = createMultipleProblemsController({
@@ -5803,6 +5839,7 @@ let statusDetailsHideTimer = null;
         canSwitchTranscript: () => !(Boolean(telehealthUi?.isUnresolved?.())
           || Boolean(captureController?.isLiveCaptureUiActive?.())
           || currentTranscriptStatus === 'recording'),
+        getSelectionKey: () => JSON.stringify([selectedNoteDocumentId || null, selectedFollowupDocumentId || null]),
         requestsByEndpoint: workspaceFetchesByEndpoint,
       });
       splitAnalysisRestorationPoller = createSplitAnalysisRestorationPoller({

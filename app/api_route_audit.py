@@ -573,9 +573,21 @@ ALL_AUDIT_CASES: tuple[AuditCase, ...] = (
     # REST/SSE include owner-only durable split-intent metadata and consultation
     # saved-content presence for deletion confirmation; projection is read-only.
     AuditCase("GET", "/api/v1/transcribe/workspace", AccessTier.full),
+    AuditCase(
+        "GET",
+        "/api/v1/transcribe/workspace",
+        AccessTier.full,
+        query_params=_json(compact_documents=True, selected_note_document_id=PLACEHOLDER_UUID),
+    ),
     AuditCase("POST", "/api/v1/transcribe/example-consultation", AccessTier.full),
     AuditCase("POST", "/api/v1/transcribe/stt-health/recheck", AccessTier.full),
     AuditCase("GET", "/api/v1/transcribe/workspace/stream", AccessTier.full),
+    AuditCase(
+        "GET",
+        "/api/v1/transcribe/workspace/stream",
+        AccessTier.full,
+        query_params=_json(compact_documents=True, selected_followup_document_id=PLACEHOLDER_UUID),
+    ),
     AuditCase("POST", f"/api/v1/transcripts/{PLACEHOLDER_UUID}/consultation-split-analysis", AccessTier.full),
     # Create and explicit manual suggestion/retry use the same full-session owner gate.
     AuditCase(

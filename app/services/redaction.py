@@ -742,7 +742,7 @@ def _owner_detected_pii_entity_for_dismissal(
         )
         or ""
     ).strip()
-    # Dismissals must use the same bounded version check as workspace PII.
+    # Use the same freshness check for dismissals and workspace PII.
     from app.services.transcripts import current_pii_transcript_version
 
     current_version = current_pii_transcript_version(db, transcript=transcript, plaintext=current_draft_text)

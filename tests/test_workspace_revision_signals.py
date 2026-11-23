@@ -6,6 +6,22 @@ from unittest.mock import Mock
 from app.services import workspace_revision_signals as revisions
 
 
+def _fake_session(**values):
+    """Provide the Session transaction API used by revision capture hooks."""
+    transaction = Mock(nested=False)
+    transaction.parent = None
+    return SimpleNamespace(
+        **values,
+        get_nested_transaction=lambda: None,
+        get_transaction=lambda: transaction,
+    )
+
+
+def _pending_scope(session):
+    transaction = session.get_nested_transaction() or session.get_transaction()
+    return session.info[revisions._SCOPES_KEY][transaction]
+
+
 def test_owner_and_team_changes_publish_after_commit_only(monkeypatch):
     monkeypatch.setattr(revisions, "revisions_enabled", lambda: True)
 
@@ -26,7 +42,7 @@ def test_owner_and_team_changes_publish_after_commit_only(monkeypatch):
     fake_client.pipeline.return_value = pipeline
     monkeypatch.setattr(revisions, "_redis_client", lambda: fake_client)
 
-    session = SimpleNamespace(
+    session = _fake_session(
         new={Transcript(), QuickAction(), TranscriptStreamDelivery()},
         dirty=set(), deleted=set(), info={},
     )
@@ -50,7 +66,9 @@ def test_rollback_discards_pending_changes(monkeypatch):
     class UserAppPreference:
         user_id = "owner-one"
 
-    session = SimpleNamespace(new={UserAppPreference()}, dirty=set(), deleted=set(), info={})
+    session = _fake_session(
+        new={UserAppPreference()}, dirty=set(), deleted=set(), info={},
+    )
     revisions._capture_workspace_changes(session)
     assert session.info
     revisions._discard_workspace_changes(session)
@@ -83,13 +101,13 @@ def test_child_section_uses_loaded_document_identity_without_database_reads(monk
         generated_document_id = document_id
 
     parent = SimpleNamespace(owner_user_id="owner-one", team_id="team-one")
-    session = SimpleNamespace(
+    session = _fake_session(
         new={GeneratedDocumentSection()}, dirty=set(), deleted=set(), info={},
         identity_map={("GeneratedDocument", document_id): parent},
         identity_key=lambda model, pk: (model.__name__, pk[0]),
     )
     revisions._capture_workspace_changes(session)
-    owners, teams, global_change = session.info["_workspace_revision_pending"]
+    owners, teams, global_change = _pending_scope(session)
     assert owners == {"owner-one"}
     assert teams == set()
     assert global_change is False
@@ -109,14 +127,14 @@ def test_stream_lifecycle_status_signals_ignore_heartbeat_updates(monkeypatch):
     set_committed_value(stream, "status", TranscriptStreamStatus.active)
     set_committed_value(stream, "lease_expires_at", None)
     stream.lease_expires_at = "changed-heartbeat-only"
-    session = SimpleNamespace(new=set(), dirty={stream}, deleted=set(), info={})
+    session = _fake_session(new=set(), dirty={stream}, deleted=set(), info={})
 
     revisions._capture_workspace_changes(session)
     assert session.info == {}  # no revision for a frequent stream lease update
 
     stream.status = TranscriptStreamStatus.failed
     revisions._capture_workspace_changes(session)
-    owners, teams, global_change = session.info[revisions._PENDING_KEY]
+    owners, teams, global_change = _pending_scope(session)
     assert owners == {str(owner_id)}
     assert teams == set()
     assert global_change is False
@@ -141,14 +159,14 @@ def test_stream_window_recovery_status_signals_through_loaded_session(monkeypatc
     window = TranscriptStreamWindow(session_id=stream.id)
     set_committed_value(window, "status", TranscriptStreamWindowStatus.failed)
     window.status = TranscriptStreamWindowStatus.recovering
-    session = SimpleNamespace(
+    session = _fake_session(
         new=set(), dirty={window}, deleted=set(), info={},
         identity_map={(TranscriptStreamSession, stream.id): stream},
         identity_key=lambda model, pk: (model, pk[0]),
     )
 
     revisions._capture_workspace_changes(session)
-    owners, teams, global_change = session.info[revisions._PENDING_KEY]
+    owners, teams, global_change = _pending_scope(session)
     assert owners == {str(owner_id)}
     assert teams == set()
     assert global_change is False
@@ -231,11 +249,11 @@ def test_new_and_deleted_rows_still_publish_revisions(monkeypatch):
         new = UserSession(id=uuid4(), user_id=owner_id)
         session.add(new)
         revisions._capture_workspace_changes(session)
-        assert session.info[revisions._PENDING_KEY][0] == {str(owner_id)}
+        assert _pending_scope(session)[0] == {str(owner_id)}
         revisions._discard_workspace_changes(session)
         session.expunge(new)
         make_transient_to_detached(new)
         session.add(new)
         session.delete(new)
         revisions._capture_workspace_changes(session)
-        assert session.info[revisions._PENDING_KEY][0] == {str(owner_id)}
+        assert _pending_scope(session)[0] == {str(owner_id)}

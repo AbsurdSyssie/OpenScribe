@@ -295,6 +295,9 @@ def test_pii_entities_digest_skips_decrypting_history(db_session, make_user, mon
             db_session, transcript=transcript, owner_user_id=owner.id,
             plaintext=f"Old unrelated draft {index}.",
         )
+        # The test session deliberately disables autoflush; version numbers
+        # are allocated from the persisted maximum.
+        db_session.flush()
     latest = transcript_service._create_transcript_version_from_text(
         db_session, transcript=transcript, owner_user_id=owner.id,
         plaintext="John Smith reports asthma.",
@@ -316,14 +319,15 @@ def test_pii_entities_digest_skips_decrypting_history(db_session, make_user, mon
     assert (entities[0].start_index, entities[0].end_index) == (0, len("John Smith"))
 
 
-def test_legacy_pii_lookup_checks_only_newest_unknown_version(db_session, make_user, monkeypatch):
-    """Legacy content without a digest is conservative rather than O(history)."""
+def test_legacy_pii_lookup_preserves_historical_match(db_session, make_user, monkeypatch):
+    """A legacy draft can return to an older reviewed transcript version."""
     from app.services import transcripts as transcript_service
     from app.web.transcribe_workspace import transcript_pii_entities_response
 
     owner = make_user(email="pii-digest-legacy@example.com")
     transcript = _transcript_with_pii(db_session, owner=owner)
-    newest_id = None
+    run = db_session.query(RedactionRun).filter(RedactionRun.transcript_id == transcript.id).one()
+    legacy_ids = [run.transcript_version_id]
     for index in range(9):
         version_id = uuid4()
         db_session.add(TranscriptVersion(
@@ -334,7 +338,7 @@ def test_legacy_pii_lookup_checks_only_newest_unknown_version(db_session, make_u
                 plaintext=f"Different legacy revision {index}.",
             ),
         ))
-        newest_id = version_id
+        legacy_ids.append(version_id)
     db_session.commit()
 
     checked = []
@@ -343,13 +347,13 @@ def test_legacy_pii_lookup_checks_only_newest_unknown_version(db_session, make_u
     def bounded_decryption(*args, **kwargs):
         if kwargs.get("table") == "transcript_versions":
             checked.append(kwargs["record_id"])
-            assert kwargs["record_id"] == newest_id
         return original_decrypt(*args, **kwargs)
 
     monkeypatch.setattr(transcript_service, "decrypt_text_for_owner", bounded_decryption)
     entities = transcript_pii_entities_response(db_session, transcript)
-    assert checked == [newest_id]
-    assert entities[0].id is None  # Cannot prove the earlier redaction is current.
+    assert checked == list(reversed(legacy_ids))
+    assert entities[0].id is not None
+    assert (entities[0].start_index, entities[0].end_index) == (0, len("John Smith"))
 
 
 def test_pii_digest_invalidates_after_unsnapshotted_draft_edit(db_session, make_user):

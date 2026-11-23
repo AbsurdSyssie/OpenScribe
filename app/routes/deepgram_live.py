@@ -346,25 +346,32 @@ class _Relay:
             raise AppError(502, "stream_result_invalid", "Transcription checkpoint exceeds its limit")
         # Preserve the original total-size invariant even for previews skipped
         # by the rate limiter or events drained during finalization.
+        interim_text = "" if event.is_final else event.text
         total_chars = self._final_char_count + max(0, self._nonempty_final_count - 1)
-        if not event.is_final and event.text:
-            total_chars += len(event.text) + (1 if total_chars else 0)
+        if interim_text:
+            total_chars += len(interim_text) + (1 if total_chars else 0)
+        confirmed = None
+        provisional = None
+        if total_chars > 64000 and interim_text and not self.dictation:
+            # The raw count includes leading and trailing whitespace. Build the
+            # exact preview only when trimming could put it within the limit.
+            confirmed = " ".join(text for _, text in sorted(self.finals.items()) if text)
+            provisional = f"{confirmed} {interim_text}".strip()
+            total_chars = len(provisional)
         if total_chars > 64000:
             raise AppError(502, "stream_result_invalid", "Transcription checkpoint exceeds its limit")
         if deliver_interim:
             now = monotonic()
             if event.is_final or now >= self._next_interim_preview_at:
-                confirmed = " ".join(text for _, text in sorted(self.finals.items()) if text)
-                provisional = confirmed
-                if not event.is_final and event.text:
-                    provisional = f"{confirmed} {event.text}".strip()
-                if len(provisional) > 64000:
-                    raise AppError(502, "stream_result_invalid", "Transcription checkpoint exceeds its limit")
+                if confirmed is None:
+                    confirmed = " ".join(text for _, text in sorted(self.finals.items()) if text)
                 if self.dictation:
                     await self.send({"type": "dictation_preview", "window_no": self.window_no,
                                      "confirmed_text": confirmed,
-                                     "interim_text": "" if event.is_final else event.text})
+                                     "interim_text": interim_text})
                 else:
+                    if provisional is None:
+                        provisional = f"{confirmed} {interim_text}".strip() if interim_text else confirmed
                     await self.send({"type": "interim", "text": provisional})
                 if not event.is_final:
                     self._next_interim_preview_at = now + INTERIM_PREVIEW_MIN_INTERVAL_SECONDS

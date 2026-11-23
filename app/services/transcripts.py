@@ -58,7 +58,14 @@ from app.services.audio import (
 )
 from app.services.consultation_split_locks import lock_consultation_split_source_scope
 from app.services.telehealth_partial import job_is_not_accepted_partial
-from app.services.content_crypto import decrypt_json_for_owner, decrypt_text_for_owner, encrypt_json_for_owner, encrypt_text_for_owner, keyed_digest_for_owner
+from app.services.content_crypto import (
+    decrypt_json_for_owner,
+    decrypt_text_for_owner,
+    encrypt_json_for_owner,
+    encrypt_text_for_owner,
+    keyed_digest_for_existing_owner,
+    keyed_digest_for_owner,
+)
 from app.services.redaction import (
     effective_redaction_text_and_phi_index,
     ensure_redaction_run_for_transcript_version,
@@ -757,59 +764,67 @@ def current_pii_transcript_version(
     transcript: Transcript,
     plaintext: str | None = None,
 ) -> TranscriptVersion | None:
-    """Resolve PII actionability without decrypting historical transcript versions.
+    """Resolve the newest saved version that matches the current PII source.
 
-    New versions are matched by an owner-keyed digest. For legacy versions with
-    no digest, examine only the newest such version and fail closed on mismatch;
-    a later snapshot/reuse will persist its digest.
+    New versions are matched by an owner-keyed digest. Legacy versions retain
+    the previous exact-match behavior so returning to an older saved revision
+    does not hide a still-current redaction review.
     """
     from app.services.structured_transcripts import load_current_turns, turns_for_version
 
     current_text = transcript_draft_text(db, transcript=transcript) if plaintext is None else plaintext
     current_text = current_text or ""
-    digest = _transcript_version_content_digest(
-        db, owner_user_id=transcript.owner_user_id, transcript_id=transcript.id,
-        plaintext=current_text,
-    )
-    candidates = list(db.scalars(
-        select(TranscriptVersion)
-        .where(
-            TranscriptVersion.transcript_id == transcript.id,
-            TranscriptVersion.content_digest == digest,
-        )
-        .order_by(TranscriptVersion.version_no.desc())
-    ))
-    latest_legacy = db.scalar(
-        select(TranscriptVersion)
-        .where(
-            TranscriptVersion.transcript_id == transcript.id,
-            TranscriptVersion.content_digest.is_(None),
-        )
-        .order_by(TranscriptVersion.version_no.desc())
-        .limit(1)
-    )
-    if latest_legacy is not None:
-        candidates.append(latest_legacy)
-    candidates.sort(key=lambda version: version.version_no, reverse=True)
-
     current_turns = (
         load_current_turns(db, transcript=transcript)
         if transcript.current_draft_turns_encrypted is not None
         else None
     )
-    for version in candidates:
+
+    def version_matches(version: TranscriptVersion) -> bool:
         # For flat text the HMAC proves equality. Structured drafts require
         # exact projection and turn equality to prevent a false-current result
         # for identical text with different speaker/turn metadata.
         if version.content_digest is not None and current_turns is None:
-            return version
+            return True
         version_text = transcript_version_text(db, transcript_version=version) or ""
         if current_turns is not None:
-            if version_text == current_text and turns_for_version(db, version=version) == current_turns:
-                return version
-        elif version_text.strip() == current_text.strip():
-            return version
-    return None
+            return version_text == current_text and turns_for_version(db, version=version) == current_turns
+        return version_text.strip() == current_text.strip()
+
+    versions = (
+        select(TranscriptVersion)
+        .where(TranscriptVersion.transcript_id == transcript.id)
+        .order_by(TranscriptVersion.version_no.desc())
+    )
+    digest_version_id = db.scalar(
+        select(TranscriptVersion.id)
+        .where(
+            TranscriptVersion.transcript_id == transcript.id,
+            TranscriptVersion.content_digest.is_not(None),
+        )
+        .limit(1)
+    )
+    digest_match = None
+    if digest_version_id is not None:
+        # This is a read path: never create owner-key state merely to check
+        # whether legacy content matches a saved PII review.
+        digest = keyed_digest_for_existing_owner(
+            db,
+            owner_user_id=transcript.owner_user_id,
+            purpose=f"{_TRANSCRIPT_VERSION_CONTENT_DIGEST_PURPOSE}:{transcript.id}",
+            value=current_text.strip(),
+        )
+        digest_candidates = db.scalars(
+            versions.where(TranscriptVersion.content_digest == digest)
+        )
+        digest_match = next((version for version in digest_candidates if version_matches(version)), None)
+
+    legacy_versions = versions.where(TranscriptVersion.content_digest.is_(None))
+    if digest_match is not None:
+        # Only a newer legacy version can outrank the verified digest match.
+        legacy_versions = legacy_versions.where(TranscriptVersion.version_no > digest_match.version_no)
+    legacy_candidates = db.scalars(legacy_versions)
+    return next((version for version in legacy_candidates if version_matches(version)), digest_match)
 
 
 def _create_transcript_version_from_text(

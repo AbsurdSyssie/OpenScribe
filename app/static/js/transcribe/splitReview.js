@@ -199,13 +199,14 @@ export function createWorkspaceFetchCoordinator({
   endpointForTranscript,
   applyWorkspacePayload,
   getActiveTranscriptId,
+  getSelectionKey = () => null,
   canSwitchTranscript = () => true,
   requestsByEndpoint = new Map(),
 } = {}) {
   let latestSwitchIntent = 0;
 
-  const fetchPayload = (targetTranscriptId) => {
-    const endpoint = endpointForTranscript?.(targetTranscriptId);
+  const fetchPayload = (targetTranscriptId, selection = undefined) => {
+    const endpoint = endpointForTranscript?.(targetTranscriptId, selection);
     if (!endpoint) return Promise.resolve(null);
     if (requestsByEndpoint.has(endpoint)) return requestsByEndpoint.get(endpoint);
     const request = Promise.resolve()
@@ -228,9 +229,11 @@ export function createWorkspaceFetchCoordinator({
       allowTranscriptSwitch = false,
     } = {}) => {
       const activeTranscriptAtRequest = getActiveTranscriptId?.() || null;
+      const selectionKeyAtRequest = getSelectionKey?.();
       const switchIntent = allowTranscriptSwitch ? ++latestSwitchIntent : null;
       const workspace = await fetchPayload(targetTranscriptId);
       if (!workspace) return null;
+      if (!allowTranscriptSwitch && selectionKeyAtRequest !== getSelectionKey?.()) return null;
       if (guardTranscriptId) {
         if (!matchesActiveTranscript(workspace, guardTranscriptId)) return null;
       } else if (allowTranscriptSwitch) {

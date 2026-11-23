@@ -4372,7 +4372,7 @@ def test_transcribe_documents_show_hallucination_check_panel():
 
     assert "Hallucination check" in documents_js
     assert "Debug payload not available" not in documents_js
-    assert "documents.js?v=20261108-final-merge-review" in app_js
+    assert "documents.js?v=20261123-selection-race-fence" in app_js
 
 
 def test_admin_llm_draft_flow_hides_key_after_saved_and_shows_pending_state(

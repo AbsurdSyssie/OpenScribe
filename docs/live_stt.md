@@ -173,6 +173,8 @@ The Scribe workspace provides:
 
 For other-provider chunk capture, backgrounding flushes local VAD before browser timer throttling can delay chunking. For Deepgram, backgrounding leaves the local VAD and stream active while the tab remains open. On unload, both paths stop local microphone state and attempt best-effort finalization; this is not a guarantee against abrupt browser/process/network loss.
 
+Deepgram sends up to four provisional previews per second. Provider-final results and control messages are sent as they arrive. The relay rechecks authorization before sending clinical text. A content-free numeric audio receipt follows the authorization check for the acknowledged batch.
+
 The inactivity prompt does not upload/finalize/stop capture. Dismissal suppresses only the current silent interval; later detected speech re-arms the timer.
 
 ## Whole-file microphone batch

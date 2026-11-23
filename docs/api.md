@@ -388,6 +388,8 @@ Full-user owner-scoped routes include:
 - `GET /api/v1/transcribe/workspace/stream`
 - `POST /api/v1/transcribe/stt-health/recheck`
 
+The workspace snapshot and event stream accept `compact_documents=true`. Compact responses include summaries for historical generated documents and full content for one note and one follow-up. Clients can select them with `selected_note_document_id` and `selected_followup_document_id`. Selection is scoped to the active consultation and document kind, with a default chosen from the available documents if a selection is absent or unavailable. In compact responses, `content_hydrated: false` marks a summary. Requests without compact mode continue to return full document content.
+
 Consultation list items and details expose the nullable `first_content_at` timestamp. History pages, including the workspace history, sort by `first_content_at` when present and otherwise by `created_at`, with ID breaking ties. Pagination cursors are opaque. `created_at` and the retention deadline continue to reflect consultation creation.
 
 The first-run example endpoint requires a full authenticated user session and CSRF protection. It creates the fictional owner-only consultation once, without provider calls, and returns `{ "id": "<transcript UUID>" }`; a repeat call or an account with prior consultation history returns `{ "id": null }`. Workspace projections expose `example_consultation_pending` and mark the active example with `active_transcript.is_example`.

@@ -93,3 +93,62 @@ def test_child_section_uses_loaded_document_identity_without_database_reads(monk
     assert owners == {"owner-one"}
     assert teams == set()
     assert global_change is False
+
+
+def test_stream_lifecycle_status_signals_ignore_heartbeat_updates(monkeypatch):
+    """Only stream lifecycle transitions (not lease heartbeats) wake workspace SSE."""
+    from uuid import uuid4
+
+    from sqlalchemy.orm.attributes import set_committed_value
+
+    from app.models import TranscriptStreamSession, TranscriptStreamStatus
+
+    monkeypatch.setattr(revisions, "revisions_enabled", lambda: True)
+    owner_id = uuid4()
+    stream = TranscriptStreamSession(id=uuid4(), owner_user_id=owner_id)
+    set_committed_value(stream, "status", TranscriptStreamStatus.active)
+    set_committed_value(stream, "lease_expires_at", None)
+    stream.lease_expires_at = "changed-heartbeat-only"
+    session = SimpleNamespace(new=set(), dirty={stream}, deleted=set(), info={})
+
+    revisions._capture_workspace_changes(session)
+    assert session.info == {}  # no revision for a frequent stream lease update
+
+    stream.status = TranscriptStreamStatus.failed
+    revisions._capture_workspace_changes(session)
+    owners, teams, global_change = session.info[revisions._PENDING_KEY]
+    assert owners == {str(owner_id)}
+    assert teams == set()
+    assert global_change is False
+
+
+def test_stream_window_recovery_status_signals_through_loaded_session(monkeypatch):
+    from uuid import uuid4
+
+    from sqlalchemy.orm.attributes import set_committed_value
+
+    from app.models import (
+        TranscriptStreamSession,
+        TranscriptStreamStatus,
+        TranscriptStreamWindow,
+        TranscriptStreamWindowStatus,
+    )
+
+    monkeypatch.setattr(revisions, "revisions_enabled", lambda: True)
+    owner_id = uuid4()
+    stream = TranscriptStreamSession(id=uuid4(), owner_user_id=owner_id)
+    set_committed_value(stream, "status", TranscriptStreamStatus.failed)
+    window = TranscriptStreamWindow(session_id=stream.id)
+    set_committed_value(window, "status", TranscriptStreamWindowStatus.failed)
+    window.status = TranscriptStreamWindowStatus.recovering
+    session = SimpleNamespace(
+        new=set(), dirty={window}, deleted=set(), info={},
+        identity_map={(TranscriptStreamSession, stream.id): stream},
+        identity_key=lambda model, pk: (model, pk[0]),
+    )
+
+    revisions._capture_workspace_changes(session)
+    owners, teams, global_change = session.info[revisions._PENDING_KEY]
+    assert owners == {str(owner_id)}
+    assert teams == set()
+    assert global_change is False

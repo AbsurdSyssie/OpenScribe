@@ -1747,13 +1747,14 @@ def resolve_realtime_workspace_payload(
         ).model_dump(mode="json")
 
 
-# Active workflows retain one-second full refreshes. Idle workspaces use an
-# advisory Redis revision to avoid most full hydration; a bounded full-refresh
-# fallback handles missed signals and changes from bulk SQL writers.
+# Active and idle workspaces both use advisory Redis revisions to avoid
+# unnecessary hydration. Bounded reconciles cover missed signals, time-derived
+# presentation state, and writes that bypass ORM revision notifications.
 WORKSPACE_ACTIVE_POLL_SECONDS = 1.0
 WORKSPACE_IDLE_POLL_SECONDS = 5.0
 WORKSPACE_REVISION_POLL_SECONDS = 1.0
 WORKSPACE_MAX_IDLE_RECONCILE_SECONDS = 15.0
+WORKSPACE_MAX_ACTIVE_RECONCILE_SECONDS = 15.0
 WORKSPACE_ACCESS_RECHECK_SECONDS = 5.0
 _WORKSPACE_BUSY_STATUSES = frozenset({
     "recording", "transcribing", "queued", "processing", "active",
@@ -1779,6 +1780,42 @@ def workspace_stream_poll_interval_seconds(payload: dict[str, object]) -> float:
         if isinstance(item, dict) and item.get("status") in _WORKSPACE_BUSY_STATUSES:
             return WORKSPACE_ACTIVE_POLL_SECONDS
     return WORKSPACE_IDLE_POLL_SECONDS
+
+
+def workspace_stream_reconcile_interval_seconds(payload: dict[str, object]) -> float:
+    """Bound revision-only waits, including expiry-driven recovery and retention.
+
+    These timestamps can change a projected workspace state without a database
+    commit. Redis revision equality must never defer those transitions past
+    their deadlines (or the normal bounded reconciliation interval).
+    """
+    interval = (
+        WORKSPACE_MAX_ACTIVE_RECONCILE_SECONDS
+        if workspace_stream_poll_interval_seconds(payload) == WORKSPACE_ACTIVE_POLL_SECONDS
+        else WORKSPACE_MAX_IDLE_RECONCILE_SECONDS
+    )
+    transcript = payload.get("active_transcript")
+    gap = payload.get("active_transcript_stream_gap")
+    deadlines = []
+    if isinstance(transcript, dict):
+        deadlines.append(transcript.get("retention_expires_at"))
+    if isinstance(gap, dict) and gap.get("recovery_available"):
+        deadlines.append(gap.get("recovery_expires_at"))
+
+    for raw_deadline in deadlines:
+        if not isinstance(raw_deadline, str):
+            continue
+        try:
+            deadline = datetime.fromisoformat(raw_deadline.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if deadline.tzinfo is None:
+            continue
+        remaining = (deadline - utcnow()).total_seconds()
+        # Clamp expired deadlines to one revision tick so that a just-expired
+        # snapshot cannot turn the stream into an unbounded busy loop.
+        interval = min(interval, max(WORKSPACE_REVISION_POLL_SECONDS, remaining))
+    return interval
 
 
 def realtime_workspace_revision_scope(*, request, raw_session_token: str | None) -> tuple[str, str | None] | None:
@@ -1844,7 +1881,6 @@ async def stream_transcribe_workspace_events(
             and revision is not None
             and revision == last_revision
             and now < next_full_reconcile_at
-            and workspace_stream_poll_interval_seconds(last_payload) == WORKSPACE_IDLE_POLL_SECONDS
         ):
             if now >= next_heartbeat_at:
                 next_heartbeat_at = now + heartbeat_interval_seconds
@@ -1869,7 +1905,7 @@ async def stream_transcribe_workspace_events(
 
         current_time = loop.time()
         last_revision = revision
-        next_full_reconcile_at = current_time + WORKSPACE_MAX_IDLE_RECONCILE_SECONDS
+        next_full_reconcile_at = current_time + workspace_stream_reconcile_interval_seconds(payload)
         if last_payload is None or payload != last_payload:
             serialized_event = serialize_sse_event(event="workspace", payload=payload)
             last_payload = payload
@@ -1882,7 +1918,9 @@ async def stream_transcribe_workspace_events(
             next_heartbeat_at = current_time + heartbeat_interval_seconds
             yield ": keepalive\n\n"
 
-        if revision is not None and workspace_stream_poll_interval_seconds(payload) == WORKSPACE_IDLE_POLL_SECONDS:
+        if revision is not None:
             await asyncio.sleep(WORKSPACE_REVISION_POLL_SECONDS)
         else:
+            # Failed/disabled Redis retains the existing fast active-workflow
+            # fallback, including recovery polling, until revisions resume.
             await asyncio.sleep(workspace_stream_poll_interval_seconds(payload))

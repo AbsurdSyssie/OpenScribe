@@ -281,6 +281,29 @@ def test_generated_document_list_batches_sections_and_preserves_owner_root_guard
             assert "normalized_value_hash" not in entity_payload
     assert next(payload for payload in payloads if payload.id == no_redaction_run.id).pii_entities == []
 
+    # Compact SSE responses must not even SELECT historical encrypted child
+    # records, let alone decrypt them. Full-list endpoints remain eager above.
+    statements.clear()
+    db_session.expire_all()
+    event.listen(bind, "before_cursor_execute", capture_statement)
+    try:
+        compact_documents = template_service.list_generated_documents_for_transcript(
+            db_session, owner, transcript_id=transcript.id,
+            load_content_relations=False,
+        )
+        compact_payloads = [
+            generated_document_response(db_session, document, actor=owner, include_content=False)
+            for document in compact_documents
+        ]
+    finally:
+        event.remove(bind, "before_cursor_execute", capture_statement)
+    assert _section_select_count(statements) == 0
+    assert _redaction_run_select_count(statements) == 0
+    assert _redaction_entity_select_count(statements) == 0
+    assert all(payload.content_hydrated is False for payload in compact_payloads)
+    assert all(payload.sections == [] for payload in compact_payloads)
+    assert all(payload.original_output_text == "" and payload.edited_output_text == "" for payload in compact_payloads)
+
     for actor, expires_at, status_code in (
         (same_team_leader, transcript.retention_expires_at, 403),
         (owner, utcnow() - timedelta(seconds=1), 404),

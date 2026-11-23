@@ -1314,8 +1314,11 @@ def resolve_transcribe_workspace(
     return workspace
 
 
-def transcript_detail_response(db: Session, transcript: Transcript) -> TranscriptDetail:
-    transcript = reconcile_transcript_status_service(db, transcript=transcript)
+def transcript_detail_response(
+    db: Session, transcript: Transcript, *, already_reconciled: bool = False
+) -> TranscriptDetail:
+    if not already_reconciled:
+        transcript = reconcile_transcript_status_service(db, transcript=transcript)
     latest_job = latest_ingestion_job_for_transcript_service(db, transcript_id=transcript.id)
     retry_job = _earliest_retryable_ingestion_job(db, transcript=transcript)
     payload = transcript_list_item_response(db, transcript).model_dump()
@@ -1457,7 +1460,7 @@ def transcribe_workspace_response(db: Session, workspace: dict[str, object], *, 
         ],
         recent_transcripts_next_cursor=workspace.get("recent_transcripts_next_cursor"),
         recent_transcripts_has_more=bool(workspace.get("recent_transcripts_has_more")),
-        active_transcript=transcript_detail_response(db, active_transcript) if isinstance(active_transcript, Transcript) else None,
+        active_transcript=transcript_detail_response(db, active_transcript, already_reconciled=True) if isinstance(active_transcript, Transcript) else None,
         active_transcript_pii_entities=list(workspace.get("active_transcript_pii_entities") or []),
         active_transcript_redaction_status=dict(workspace.get("active_transcript_redaction_status") or {}),
         active_transcript_clinical_nlp_status=dict(workspace.get("active_transcript_clinical_nlp_status") or {}),
@@ -1560,7 +1563,7 @@ def render_transcribe(
         # resolver may have run before an expiry or ownership change.
         get_active_owner_transcript_service(db, current_user, transcript_id=active_transcript.id)
         workspace["active_working_note"] = _working_note_json_payload(workspace.get("active_working_note"))
-        workspace["active_transcript"] = transcript_detail_response(db, active_transcript)
+        workspace["active_transcript"] = transcript_detail_response(db, active_transcript, already_reconciled=True)
         workspace_endpoint = f"{workspace_endpoint}?transcript_id={active_transcript.id}"
         workspace_stream_endpoint = f"{workspace_stream_endpoint}?transcript_id={active_transcript.id}"
     recent_transcripts = workspace.get("recent_transcripts") or []
@@ -1666,6 +1669,36 @@ def resolve_realtime_workspace_payload(
         ).model_dump(mode="json")
 
 
+# Active workflows still get one-second updates. Idle workspaces trade at most
+# four additional seconds of external-change latency for 80% fewer full builds.
+WORKSPACE_ACTIVE_POLL_SECONDS = 1.0
+WORKSPACE_IDLE_POLL_SECONDS = 5.0
+_WORKSPACE_BUSY_STATUSES = frozenset({
+    "recording", "transcribing", "queued", "processing", "active",
+    "finalizing", "recovering", "analysis_pending", "generating", "verifying",
+})
+
+
+def workspace_stream_poll_interval_seconds(payload: dict[str, object]) -> float:
+    """Select the next *full* refresh interval from the last authorised snapshot."""
+    transcript = payload.get("active_transcript")
+    if isinstance(transcript, dict) and (
+        transcript.get("status") in _WORKSPACE_BUSY_STATUSES
+        or transcript.get("latest_ingestion_job_status") in _WORKSPACE_BUSY_STATUSES
+    ):
+        return WORKSPACE_ACTIVE_POLL_SECONDS
+    if payload.get("active_transcript_stream_gap") is not None:
+        return WORKSPACE_ACTIVE_POLL_SECONDS
+    for document in payload.get("generated_documents") or []:
+        if isinstance(document, dict) and document.get("status") in _WORKSPACE_BUSY_STATUSES:
+            return WORKSPACE_ACTIVE_POLL_SECONDS
+    for key in ("consultation_split_analysis", "consultation_split_intent", "consultation_split_batch"):
+        item = payload.get(key)
+        if isinstance(item, dict) and item.get("status") in _WORKSPACE_BUSY_STATUSES:
+            return WORKSPACE_ACTIVE_POLL_SECONDS
+    return WORKSPACE_IDLE_POLL_SECONDS
+
+
 async def stream_transcribe_workspace_events(
     *,
     request,
@@ -1674,10 +1707,9 @@ async def stream_transcribe_workspace_events(
     queued_transcript_id: str | None,
     once: bool,
 ):
-    last_event: str | None = None
+    last_payload: dict[str, object] | None = None
     sent_initial_event = False
     heartbeat_interval_seconds = 15.0
-    poll_interval_seconds = 1.0
     next_heartbeat_at = asyncio.get_running_loop().time() + heartbeat_interval_seconds
 
     while True:
@@ -1694,10 +1726,12 @@ async def stream_transcribe_workspace_events(
         if payload is None:
             break
 
-        serialized_event = serialize_sse_event(event="workspace", payload=payload)
         current_time = asyncio.get_running_loop().time()
-        if serialized_event != last_event:
-            last_event = serialized_event
+        # Compare JSON-safe payloads before serializing. Unchanged payloads
+        # must not pay the sort_keys/json.dumps cost each polling cycle.
+        if last_payload is None or payload != last_payload:
+            serialized_event = serialize_sse_event(event="workspace", payload=payload)
+            last_payload = payload
             next_heartbeat_at = current_time + heartbeat_interval_seconds
             yield serialized_event
             sent_initial_event = True
@@ -1707,4 +1741,4 @@ async def stream_transcribe_workspace_events(
             next_heartbeat_at = current_time + heartbeat_interval_seconds
             yield ": keepalive\n\n"
 
-        await asyncio.sleep(poll_interval_seconds)
+        await asyncio.sleep(workspace_stream_poll_interval_seconds(payload))

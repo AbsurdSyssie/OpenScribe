@@ -5,18 +5,7 @@ import os
 import sys
 import time
 
-import hvac
-
-from bootstrap_local_vault import (
-    RUNTIME_TOKEN_FILE, UNSEAL_KEY_FILE, VAULT_ADDR, _read_secret, bootstrap_local_vault,
-)
-
-
-def check_runtime() -> None:
-    client = hvac.Client(url=VAULT_ADDR, token=_read_secret(RUNTIME_TOKEN_FILE, label="runtime token"))
-    data = client.auth.token.lookup_self()["data"]
-    if set(data.get("policies", [])) != {"openscribe-runtime"} or int(data.get("ttl", 0)) <= 0:
-        raise ValueError("Runtime identity unavailable")
+from check_local_vault import check_runtime
 
 
 if __name__ == "__main__":
@@ -26,6 +15,12 @@ if __name__ == "__main__":
         except Exception:
             raise SystemExit("Vault runtime identity unavailable") from None
     else:
+        import hvac
+
+        from bootstrap_local_vault import (
+            RUNTIME_TOKEN_FILE, UNSEAL_KEY_FILE, VAULT_ADDR, _read_secret, bootstrap_local_vault,
+        )
+
         bootstrap_local_vault()
         os.chown(RUNTIME_TOKEN_FILE, 10001, 10001)
         # Steady state never provisions policy or reads the root token. Vault restarts

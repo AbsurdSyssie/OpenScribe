@@ -67,7 +67,7 @@ services:
       RESEND_API_KEY_VAULT_REF: "${RESEND_API_KEY_VAULT_REF:-}"
       CSRF_SECRET_VAULT_REF: "${CSRF_SECRET_VAULT_REF:-}"
     healthcheck:
-      test: ["CMD", "python", "scripts/supervise_local_vault.py", "--check"]
+      test: ["CMD", "python", "scripts/check_local_vault.py"]
       interval: 5s
       timeout: 5s
       retries: 20

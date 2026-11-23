@@ -1675,7 +1675,7 @@ WORKSPACE_ACTIVE_POLL_SECONDS = 1.0
 WORKSPACE_IDLE_POLL_SECONDS = 5.0
 _WORKSPACE_BUSY_STATUSES = frozenset({
     "recording", "transcribing", "queued", "processing", "active",
-    "finalizing", "recovering", "analysis_pending", "generating", "verifying",
+    "finalizing", "recovering", "analysis_pending", "generation_queued", "generating", "verifying",
 })
 
 

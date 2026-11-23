@@ -53,6 +53,12 @@ _PARENT_MODELS = {
     "PromptTemplateVersion": ("PromptTemplate", "template_id"),
     "QuickActionVersion": ("QuickAction", "quick_action_id"),
 }
+# Session activity is not workspace state. Security/session-status changes
+# remain relevant, and the SSE reader independently rechecks authorization.
+_IGNORED_DIRTY_FIELDS = {
+    "User": frozenset({"last_login_at"}),
+    "UserSession": frozenset({"last_seen_at"}),
+}
 _PENDING_KEY = "_workspace_revision_pending"
 _REDIS_KEY_PREFIX = "openscribe:workspace-revision:v1"
 
@@ -96,6 +102,25 @@ def read_workspace_revisions(owner_user_id: str, team_id: str | None) -> tuple[i
         return None
 
 
+def _has_relevant_workspace_change(session: Session, obj: object, model: str) -> bool:
+    """Exclude no-op dirty flags and known heartbeat fields without DB reads."""
+    if obj in session.new or obj in session.deleted:
+        return True
+    if obj not in session.dirty:
+        return False
+    is_modified = getattr(session, "is_modified", None)
+    if is_modified is not None and not is_modified(obj, include_collections=True):
+        return False
+    state = inspect(obj, raiseerr=False)
+    if state is None:
+        return True
+    ignored = _IGNORED_DIRTY_FIELDS.get(model, frozenset())
+    return any(
+        attr.history.has_changes()
+        for attr in state.attrs if attr.key not in ignored
+    )
+
+
 def _capture_workspace_changes(session: Session, *_args) -> None:
     if not revisions_enabled():
         return
@@ -104,6 +129,8 @@ def _capture_workspace_changes(session: Session, *_args) -> None:
     global_change = False
     for obj in session.new | session.dirty | session.deleted:
         model = type(obj).__name__
+        if not _has_relevant_workspace_change(session, obj, model):
+            continue
         if model in _OWNER_MODELS:
             owner = getattr(obj, "owner_user_id", None)
             if owner is not None:

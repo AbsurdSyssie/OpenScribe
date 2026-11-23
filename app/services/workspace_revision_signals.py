@@ -55,10 +55,12 @@ _REDIS_KEY_PREFIX = "openscribe:workspace-revision:v1"
 
 
 def revisions_enabled() -> bool:
+    # Test transactions must never invalidate live application workspaces, even
+    # when Compose maps a deployment's enabled production setting into tests.
+    if os.getenv("APP_ENV", "development").lower() in {"test", "testing"}:
+        return False
     explicit = os.getenv("WORKSPACE_REVISION_ENABLED")
-    if explicit is not None:
-        return explicit.lower() in {"1", "true", "yes"}
-    return os.getenv("APP_ENV", "development").lower() not in {"test", "testing"}
+    return explicit is None or explicit.lower() in {"1", "true", "yes"}
 
 
 @lru_cache(maxsize=4)

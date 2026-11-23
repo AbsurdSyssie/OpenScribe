@@ -327,6 +327,14 @@ class _Relay:
         # preview. Final results must still be validated and delivered promptly.
         if len(event.text) > 64000:
             raise AppError(502, "stream_result_invalid", "Transcription checkpoint exceeds its limit")
+        # Preserve the original total-size invariant even for previews skipped
+        # by the rate limiter or events drained during finalization.
+        finalized_lengths = [len(text) for text in self.finals.values() if text]
+        total_chars = sum(finalized_lengths) + max(0, len(finalized_lengths) - 1)
+        if not event.is_final and event.text:
+            total_chars += len(event.text) + (1 if total_chars else 0)
+        if total_chars > 64000:
+            raise AppError(502, "stream_result_invalid", "Transcription checkpoint exceeds its limit")
         if deliver_interim:
             now = monotonic()
             if event.is_final or now >= self._next_interim_preview_at:

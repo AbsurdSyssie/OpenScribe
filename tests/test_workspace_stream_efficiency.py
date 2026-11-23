@@ -103,3 +103,70 @@ def test_workspace_detail_can_reuse_already_reconciled_transcript(monkeypatch):
 
     workspace.transcript_detail_response(object(), transcript)
     reconcile.assert_called_once()
+
+
+def test_revision_gate_skips_idle_full_hydration_and_resumes_on_commit(monkeypatch):
+    revisions = iter([(0, 0), (0, 0), (1, 0), (1, 0)])
+    scope = Mock(return_value=("owner-one", "team-one"))
+    fetch = Mock(return_value={"active_transcript": {"status": "ready"}})
+    monkeypatch.setattr(workspace, "revisions_enabled", lambda: True)
+    monkeypatch.setattr(workspace, "realtime_workspace_revision_scope", scope)
+    monkeypatch.setattr(workspace, "read_workspace_revisions", lambda *_: next(revisions))
+    monkeypatch.setattr(workspace, "resolve_realtime_workspace_payload", fetch)
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(workspace.asyncio, "sleep", fake_sleep)
+
+    class Request:
+        checks = 0
+
+        async def is_disconnected(self):
+            self.checks += 1
+            return self.checks > 3
+
+    async def collect():
+        return [
+            event async for event in workspace.stream_transcribe_workspace_events(
+                request=Request(), raw_session_token="synthetic",
+                transcript_id=None, queued_transcript_id=None, once=False,
+            )
+        ]
+
+    events = asyncio.run(collect())
+    assert len(events) == 1  # same content after revision increment
+    assert fetch.call_count == 2  # initial plus changed revision
+    scope.assert_called_once()  # separate auth interval
+    assert sleeps == [workspace.WORKSPACE_REVISION_POLL_SECONDS] * 4
+
+
+def test_revision_gate_closes_when_session_is_revoked(monkeypatch):
+    scopes = iter([("owner-one", "team-one"), None])
+    fetch = Mock(return_value={"active_transcript": {"status": "ready"}})
+    monkeypatch.setattr(workspace, "revisions_enabled", lambda: True)
+    monkeypatch.setattr(workspace, "realtime_workspace_revision_scope", lambda **_: next(scopes))
+    monkeypatch.setattr(workspace, "read_workspace_revisions", lambda *_: (0, 0, 0))
+    monkeypatch.setattr(workspace, "resolve_realtime_workspace_payload", fetch)
+    monkeypatch.setattr(workspace, "WORKSPACE_ACCESS_RECHECK_SECONDS", 0.0)
+
+    async def fake_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(workspace.asyncio, "sleep", fake_sleep)
+
+    class Request:
+        async def is_disconnected(self):
+            return False
+
+    async def collect():
+        return [
+            event async for event in workspace.stream_transcribe_workspace_events(
+                request=Request(), raw_session_token="synthetic",
+                transcript_id=None, queued_transcript_id=None, once=False,
+            )
+        ]
+
+    assert len(asyncio.run(collect())) == 1
+    fetch.assert_called_once()

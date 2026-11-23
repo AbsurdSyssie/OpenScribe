@@ -629,6 +629,11 @@ def generated_document_response(
             # title remains the safe fallback.
             pass
     payload["content_hydrated"] = include_content
+    payload["hallucination_check_bucket"] = _hallucination_check_bucket(document.hallucination_check_status)
+    payload["structured_section_definitions_json"] = (
+        document.structured_section_definitions_json
+        if isinstance(document.structured_section_definitions_json, dict) else None
+    )
     # Workspace summaries carry status and safe document metadata only.
     # Decrypting all historical documents on every SSE tick scales with total
     # consultation history, even when the clinician views only one document.
@@ -637,8 +642,6 @@ def generated_document_response(
         payload["original_output_text"] = generated_document_text_service(db, document=document, field="original_output_text_encrypted")
         payload["edited_output_text"] = generated_document_text_service(db, document=document, field="edited_output_text_encrypted")
         payload["llm_request_payload_json"] = generated_document_llm_request_payload_service(db, document=document)
-        payload["structured_section_definitions_json"] = document.structured_section_definitions_json if isinstance(document.structured_section_definitions_json, dict) else None
-        payload["hallucination_check_bucket"] = _hallucination_check_bucket(document.hallucination_check_status)
         payload["hallucination_check_debug_json"] = None
         if (
             actor is not None

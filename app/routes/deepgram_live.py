@@ -119,8 +119,20 @@ async def _owner_call(socket: WebSocket, transcript_id: UUID, operation, *, chec
 
 
 async def _send(socket: WebSocket, transcript_id: UUID, payload: dict) -> None:
-    # Revocation and retention are rechecked before delivering any clinical text.
-    await _owner_call(socket, transcript_id, lambda db, owner, root: None)
+    # A numeric receipt acknowledges a batch that has *already* passed the
+    # owner/session/retention gate in authorize_stream_batch (and, if sent, in
+    # record_stream_batch_sent). The receipt contains no clinical text. Avoid a
+    # third DB session for that same batch. All other outbound messages retain
+    # a fresh owner check, including previews and finalized transcript data.
+    content_free_receipt = (
+        type(payload) is dict
+        and set(payload) == {"type", "next_sample_offset"}
+        and payload["type"] == "received"
+        and type(payload["next_sample_offset"]) is int
+        and payload["next_sample_offset"] >= 0
+    )
+    if not content_free_receipt:
+        await _owner_call(socket, transcript_id, lambda db, owner, root: None)
     await asyncio.wait_for(socket.send_json(payload), timeout=5)
 
 

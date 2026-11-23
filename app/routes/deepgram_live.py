@@ -350,7 +350,8 @@ class _Relay:
                                      "interim_text": "" if event.is_final else event.text})
                 else:
                     await self.send({"type": "interim", "text": provisional})
-                self._next_interim_preview_at = now + INTERIM_PREVIEW_MIN_INTERVAL_SECONDS
+                if not event.is_final:
+                    self._next_interim_preview_at = now + INTERIM_PREVIEW_MIN_INTERVAL_SECONDS
         return event
 
     def _window_has_final_coverage(self, start: int, end: int) -> bool:

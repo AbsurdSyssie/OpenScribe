@@ -1373,3 +1373,49 @@ def test_dictation_relay_distinguishes_final_and_provisional(monkeypatch):
         ]
         await relay.close()
     asyncio.run(scenario())
+
+
+def test_high_frequency_provisional_results_are_coalesced_but_finals_are_sent(monkeypatch):
+    async def scenario():
+        socket = _FakeSocket()
+        relay = live._Relay(socket, uuid4(), _started())
+        provider = _FakeProvider([
+            _result(start=0.0, duration=0.5, text="first", final=False),
+            _result(start=0.0, duration=0.5, text="first second", final=False),
+            _result(start=0.0, duration=0.5, text="first second", final=True),
+        ])
+        relay.provider = provider
+        relay.media_samples = 16000
+        monkeypatch.setattr(live, "_owner_call", _async_noop_owner_call)
+        relay._receive_provider()
+
+        await relay.provider_event()
+        # Force the second provisional update inside the coalescing window.
+        relay._next_interim_preview_at = live.monotonic() + 60
+        await relay.provider_event()
+        await relay.provider_event()
+
+        assert socket.sent == [
+            {"type": "interim", "text": "first"},
+            {"type": "interim", "text": "first second"},
+        ]
+        await relay.close()
+
+    asyncio.run(scenario())
+
+
+def test_coalesced_provisional_results_still_enforce_text_bounds(monkeypatch):
+    async def scenario():
+        relay = live._Relay(_FakeSocket(), uuid4(), _started())
+        provider = _FakeProvider([_result(duration=0.5, text="x" * 64001, final=False)])
+        relay.provider = provider
+        relay.media_samples = 16000
+        relay._receive_provider()
+        from app.errors import AppError
+
+        with pytest.raises(AppError) as exc_info:
+            await relay.provider_event(deliver_interim=False)
+        assert exc_info.value.code == "stream_result_invalid"
+        await relay.close()
+
+    asyncio.run(scenario())

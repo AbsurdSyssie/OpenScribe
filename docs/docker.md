@@ -14,7 +14,7 @@ This preserves the current local architecture. It is not a production reference 
 
 ## Prerequisites
 
-- Docker Engine with Compose v2 (`docker compose`);
+- Docker Engine 25.0 or later with Docker Compose 2.20.2 or later (`docker compose`);
 - Buildx is recommended; legacy builder fallback can still complete with a deprecation warning.
 
 ## First start
@@ -45,7 +45,7 @@ curl --fail http://127.0.0.1:8080/health
 
 The separate `vault-bootstrap` service initializes or unseals local Vault, ensures KV-v2 and the existing Transit key, and provisions the `openscribe-runtime` policy and a renewable 24-hour orphan token. Repeated bootstrap preserves a valid scoped token. Its steady-state supervisor checks for a sealed Vault every five seconds and unseals after a Vault/host restart; it does not continuously provision policy. Only this service mounts `vault_bootstrap`.
 
-The bootstrap container health check runs `scripts/check_local_vault.py`. This small standard-library probe reads only the scoped runtime token, calls Vault's token self-lookup directly, and succeeds only when the policy set is exactly `openscribe-runtime` and the token TTL is positive. Invalid credentials, malformed identity data, and unavailable Vault produce a generic unhealthy result; the token and response body are not printed. This health check is intentionally separate from bootstrap/provisioning work.
+The bootstrap container health check runs `scripts/check_local_vault.py`. This small standard-library probe reads only the scoped runtime token, calls Vault's token self-lookup directly, and succeeds only when the policy set is exactly `openscribe-runtime` and the token TTL is positive. Invalid credentials, malformed identity data, and unavailable Vault produce a generic unhealthy result; the token and response body are not printed. During the 90-second startup window Docker checks every five seconds while the container is starting. The first successful check opens the application startup gate. Once healthy, Docker checks every 60 seconds and marks the container unhealthy after two consecutive failures. This reduces steady-state scoped-token lookups from 12 per minute to one per minute while allowing up to about two minutes to detect a sustained outage. This health check remains separate from bootstrap/provisioning work.
 
 On application startup the entrypoint drops to UID/GID `10001`, waits for PostgreSQL/Redis, checks scoped token renewal, applies migrations, optionally seeds accounts, and starts the web, worker, Beat, and token-renewal processes. The application mounts only `vault_runtime` read-only, never the root token or unseal key. Token renewal runs at most hourly, and a renewal failure stops the supervised runtime so it fails visibly. A scoped token that expired during extended downtime is replaced by restarting `vault-bootstrap` before the application.
 
@@ -302,6 +302,16 @@ access log, while none of the markers or raw request targets appear. Keep the
 failure location and test credentials unavailable in production, use no
 clinical or real account data, and remove the staging test setup after the
 check.
+
+### Optional CrowdSec protection
+
+Operators can deploy CrowdSec separately from the Compose stack. For an origin behind a CDN or reverse proxy, enforce visitor IP decisions at the edge or at a proxy that can verify the original visitor IP. Accept forwarded client IPs only from trusted proxies that overwrite the header, and restrict direct access to the origin. [CrowdSec remediation components](https://docs.crowdsec.net/docs/bouncers/intro/)
+
+Use a dedicated security log with the minimum metadata needed for detection, such as visitor IP, timestamp, response status, and fixed scanner labels. Exclude raw request targets, query strings, headers, request bodies, and application logs from acquisition. For local-only operation, disable the CrowdSec Central API and leave AppSec request inspection disabled so requests stay within the existing OpenScribe ingress path. [CrowdSec Central API configuration](https://docs.crowdsec.net/u/troubleshooting/configuration/)
+
+Verify detection and enforcement with synthetic traffic, then check that ordinary requests can still reach `/health`. Keep the chosen log sources, decision thresholds, and rollback steps in the deployment's runbook.
+
+Local alerts can also trigger email through a configured SMTP provider while the Central API stays disabled. Use a summary template with the rule name, timestamp, and alert count. Keep visitor IPs and event details on the host, supply the SMTP credential through the deployment secret mechanism, and test delivery with a synthetic alert. [CrowdSec email plugin](https://docs.crowdsec.net/docs/local_api/notification_plugins/email/)
 
 ## Test-account seeding
 

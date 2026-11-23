@@ -145,9 +145,11 @@ services:
       CSRF_SECRET_VAULT_REF: "${CSRF_SECRET_VAULT_REF:-}"
     healthcheck:
       test: ["CMD", "python", "scripts/check_local_vault.py"]
-      interval: 5s
+      start_period: 90s
+      start_interval: 5s
+      interval: 60s
       timeout: 5s
-      retries: 20
+      retries: 2
     volumes:
       - vault_bootstrap:/app/.local/vault
       - vault_runtime:/app/.local/vault-runtime

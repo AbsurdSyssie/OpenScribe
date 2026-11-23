@@ -15,6 +15,7 @@ These documents are maintained as descriptions of implemented behavior or an exp
 | Local development | [setup.md](setup.md) |
 | Local evaluator demo | [local-demo.md](local-demo.md) |
 | Persistent single-host Docker runtime | [docker.md](docker.md) |
+| Cloudflare overnight homepage gate | [cloudflare-overnight.md](cloudflare-overnight.md) |
 | Environment variables | [environment.md](environment.md) |
 | Licence, source offer, and browser asset notices | [`LICENSE`](../LICENSE) and [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) |
 | Test strategy | [testing.md](testing.md) |

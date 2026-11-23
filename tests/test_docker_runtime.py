@@ -134,6 +134,14 @@ def test_application_vault_mount_is_scoped_read_only_and_tmpfs_is_bounded(compos
     assert "vault_bootstrap:/app/.local/vault" not in app.get("volumes", [])
     assert "vault_bootstrap:/app/.local/vault" in bootstrap["volumes"]
     assert "vault_runtime:/app/.local/vault-runtime" in bootstrap["volumes"]
+    assert bootstrap["healthcheck"] == {
+        "test": ["CMD", "python", "scripts/check_local_vault.py"],
+        "start_period": "90s",
+        "start_interval": "5s",
+        "interval": "60s",
+        "timeout": "5s",
+        "retries": 2,
+    }
     assert services["openscribe"]["depends_on"]["vault-bootstrap"]["condition"] == "service_healthy"
     assert app["tmpfs"] == ["/tmp:size=${DOCKER_TMPFS_SIZE:-1g},mode=1777,noexec,nosuid,nodev"]
     assert "DOCKER_TMPFS_SIZE=1g" in Path(".env.example").read_text().splitlines()

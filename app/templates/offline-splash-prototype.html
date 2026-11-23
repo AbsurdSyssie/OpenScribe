@@ -1,0 +1,196 @@
+<!doctype html>
+<!-- Local prototype: compare three overnight messages with ?variant=hero, centred, or notice. -->
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenScribe overnight page mock-ups</title>
+  <link rel="stylesheet" href="../static/css/tokens.css">
+  <link rel="stylesheet" href="../static/css/components.css">
+  <link rel="stylesheet" href="../static/css/splash.css">
+  <style>
+    .offline-header .nav { height: 80px; }
+    .offline-main { padding-block: clamp(48px, 12vh, 120px) 112px; }
+    .offline-main h1 { max-width: 16ch; text-wrap: balance; font-size: clamp(2.5rem, 6vw, 4.8rem); }
+    .offline-main .hero-copy { margin-bottom: 0; }
+    .offline-main .hero-grid { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); }
+    .offline-hours {
+      margin: 0;
+      padding: clamp(24px, 4vw, 42px);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--accent-pale);
+    }
+    .offline-hours dt { font-weight: 700; color: var(--accent); }
+    .offline-hours dd { margin: 8px 0 0; }
+    .offline-hours .hour { font: 500 clamp(1.7rem, 4vw, 3rem)/1.15 var(--font-display); }
+    .offline-hours svg { display: block; margin-bottom: 24px; color: var(--accent); }
+    .offline-centred {
+      max-width: 720px;
+      padding: clamp(16px, 4vw, 32px);
+      background: var(--bg);
+      border-radius: 24px;
+      text-align: center;
+    }
+    .offline-centred h1 { line-height: 1.14; }
+    .offline-centred h1, .offline-centred .hero-copy { margin-inline: auto; }
+    .offline-centred .brand-mark { margin: 0 auto 26px; }
+    .offline-centred .offline-hours {
+      width: min(100%, 320px);
+      margin: 30px auto 0;
+      padding: 22px 24px;
+      background: var(--accent-pale);
+    }
+    .offline-centred .hour { font-size: clamp(1.7rem, 4vw, 2.5rem); }
+    body:has(.offline-centred:not([hidden])) {
+      background:
+        radial-gradient(ellipse at 20% 18%, var(--accent-pale), transparent 50%),
+        radial-gradient(ellipse at 78% 46%, color-mix(in srgb, var(--accent-warm) 38%, var(--bg)), transparent 54%),
+        radial-gradient(ellipse at 70% 86%, color-mix(in srgb, var(--accent-green) 55%, var(--bg)), transparent 54%),
+        var(--bg);
+      background-size: 145% 145%;
+      background-position: 36% 28%;
+    }
+    @media (prefers-reduced-motion: no-preference) {
+      body:has(.offline-centred:not([hidden])) {
+        animation: overnight-colour-shift 28s ease-in-out infinite alternate;
+      }
+    }
+    @keyframes overnight-colour-shift {
+      from { background-position: 22% 16%; }
+      to { background-position: 78% 74%; }
+    }
+    .offline-notice { max-width: 880px; }
+    .offline-notice h1 { font-size: clamp(2.25rem, 5vw, 3.65rem); max-width: 24ch; }
+    .offline-notice .hero-copy { margin-bottom: 28px; }
+    .offline-notice .offline-hours {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 4px 20px;
+      padding: 16px 22px;
+      background: var(--parchment);
+    }
+    .offline-notice dd { margin: 0; }
+    .preview-switcher {
+      position: fixed;
+      z-index: 30;
+      inset: auto 0 max(16px, env(safe-area-inset-bottom));
+      margin-inline: auto;
+      width: min(380px, calc(100% - 24px));
+      display: grid;
+      grid-template-columns: 44px 1fr 44px;
+      align-items: center;
+      padding: 4px;
+      border-radius: 12px;
+      background: var(--ink);
+      color: white;
+      text-align: center;
+      font-size: .875rem;
+    }
+    .preview-switcher button {
+      min-height: 44px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      font: inherit;
+    }
+    .preview-switcher button:hover { background: #ffffff24; }
+    .preview-switcher button:focus-visible { outline: 2px solid white; outline-offset: -3px; }
+    @media (max-width: 740px) {
+      .offline-main .hero-grid { grid-template-columns: 1fr; gap: 32px; }
+      .offline-header .nav { height: 68px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page-shell">
+    <header class="site-header offline-header" id="site-brand">
+      <div class="container nav">
+        <span class="brand">
+          <span class="brand-mark" aria-hidden="true"><i data-lucide="feather"></i></span>
+          <span class="brand-name">OpenScribe</span>
+        </span>
+      </div>
+    </header>
+    <main class="offline-main">
+      <section class="container hero-grid" data-variant="hero" aria-labelledby="hero-heading">
+        <div>
+          <h1 id="hero-heading">OpenScribe is offline overnight</h1>
+          <p class="hero-copy">This OpenScribe service is switched off each evening. Please try again in the morning.</p>
+        </div>
+        <dl class="offline-hours">
+          <dt><i data-lucide="clock" aria-hidden="true"></i>Expected back</dt>
+          <dd class="hour">Around 7 am</dd>
+          <dd>UK time</dd>
+        </dl>
+      </section>
+      <section class="container offline-centred" data-variant="centred" aria-labelledby="centred-heading" hidden>
+        <span class="brand-mark" aria-hidden="true"><i data-lucide="feather"></i></span>
+        <h1 id="centred-heading">OpenScribe is offline overnight</h1>
+        <p class="hero-copy">Please come back in the morning.</p>
+        <dl class="offline-hours">
+          <dt>Expected back</dt>
+          <dd class="hour">Around 7&nbsp;am</dd>
+          <dd>UK time</dd>
+        </dl>
+      </section>
+      <section class="container offline-notice" data-variant="notice" aria-labelledby="notice-heading" hidden>
+        <h1 id="notice-heading">OpenScribe is offline overnight</h1>
+        <p class="hero-copy">Please try again when the service reopens.</p>
+        <dl class="offline-hours">
+          <dt>Usual offline hours</dt>
+          <dd>7 pm to 7 am UK time</dd>
+        </dl>
+      </section>
+    </main>
+  </div>
+  <nav class="preview-switcher" aria-label="Prototype variants" hidden>
+    <button type="button" data-step="-1" aria-label="Previous mock-up">←</button>
+    <span id="variant-label" aria-live="polite"></span>
+    <button type="button" data-step="1" aria-label="Next mock-up">→</button>
+  </nav>
+  <script src="../static/vendor/lucide/1.8.0/lucide.min.js"></script>
+  <script>
+    window.lucide?.createIcons();
+
+    const names = ['Landing-page hero', 'Centred message', 'Service notice'];
+    const variants = [...document.querySelectorAll('[data-variant]')];
+    const switcher = document.querySelector('.preview-switcher');
+    const siteBrand = document.querySelector('#site-brand');
+    const label = document.querySelector('#variant-label');
+    let current = 0;
+
+    function renderVariant() {
+      const key = new URLSearchParams(location.search).get('variant');
+      current = Math.max(0, variants.findIndex(section => section.dataset.variant === key));
+      variants.forEach((section, index) => { section.hidden = index !== current; });
+      siteBrand.hidden = variants[current].dataset.variant === 'centred';
+      label.textContent = `Mock-up ${current + 1} of ${variants.length} · ${names[current]}`;
+    }
+
+    function move(step) {
+      const index = (current + step + variants.length) % variants.length;
+      const url = new URL(location.href);
+      url.searchParams.set('variant', variants[index].dataset.variant);
+      history.replaceState(null, '', url);
+      renderVariant();
+    }
+
+    switcher.querySelectorAll('button').forEach(button => {
+      button.addEventListener('click', () => move(Number(button.dataset.step)));
+    });
+    document.addEventListener('keydown', event => {
+      const step = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+      if (!step || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      event.preventDefault();
+      move(step);
+    });
+    renderVariant();
+    switcher.hidden = false;
+  </script>
+</body>
+</html>

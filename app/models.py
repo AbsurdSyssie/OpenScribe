@@ -1668,6 +1668,7 @@ class Transcript(Base):
     multiple_problems: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_example: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     current_draft_text_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_draft_has_content: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # NULL: legacy
     current_draft_turns_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     structured_context_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     working_note_mode: Mapped[TranscriptWorkingNoteMode | None] = mapped_column(Enum(TranscriptWorkingNoteMode), nullable=True)
@@ -1981,6 +1982,7 @@ class TranscriptVersion(Base):
     text_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     # Owner-keyed HMAC of the trimmed transcript text; NULL for legacy versions.
     content_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    has_content: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # NULL: legacy
     structured_turns_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     structured_turns_schema_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

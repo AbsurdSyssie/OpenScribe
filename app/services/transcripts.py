@@ -629,6 +629,7 @@ def _create_transcript_row(
         team_id=owner.team_id,
         title=title,
         is_example=is_example,
+        current_draft_has_content=bool((current_draft_text_encrypted or "").strip()),
         current_draft_text_encrypted=(
             encrypt_text_for_owner(
                 db,
@@ -824,6 +825,7 @@ def _create_transcript_version_from_text(
         id=version_id,
         transcript_id=transcript.id,
         version_no=(current_max or 0) + 1,
+        has_content=bool(plaintext.strip()),
         content_digest=_transcript_version_content_digest(
             db, owner_user_id=owner_user_id, transcript_id=transcript.id, plaintext=plaintext,
         ),
@@ -1271,6 +1273,7 @@ def clear_working_note(
 
 
 def set_transcript_draft_text(db: Session, *, transcript: Transcript, plaintext: str | None) -> None:
+    transcript.current_draft_has_content = bool((plaintext or "").strip())
     transcript.current_draft_text_encrypted = (
         encrypt_text_for_owner(
             db,
@@ -1919,6 +1922,7 @@ def snapshot_current_transcript_version(
         id=version_id,
         transcript_id=transcript.id,
         version_no=(current_max or 0) + 1,
+        has_content=bool(current_text.strip()),
         content_digest=_transcript_version_content_digest(
             db, owner_user_id=transcript.owner_user_id, transcript_id=transcript.id,
             plaintext=current_text,

@@ -27,6 +27,8 @@ Deleting selected consultations prompts for confirmation when any selected trans
 
 System-admin accounts are redirected to `/admin` rather than receiving the user workspace.
 
+Recent consultation transcript-content checks use nullable metadata on current drafts and immutable transcript versions. Writers set flags from trimmed plaintext; blank edits clear the draft flag but nonblank historical versions still count, and deleting a version removes its contribution. Legacy NULL flags retain the existing owner-only decryption fallback. After migration `06f7a8b9c0d1`, run `python -m scripts.backfill_transcript_content_presence` once in the usual key-enabled app environment to populate old flags in bounded transactions. This backfill can be rerun and logs row counts only. Until it finishes, legacy history checks may still decrypt content.
+
 ## Consultation return behavior
 
 Browser `sessionStorage` remembers only the active transcript UUID under `openscribe.workspace.lastTranscriptId`. Back-to-Scribe and brand links submit that UUID as an untrusted query hint. Server-side transcript ownership and retention checks remain authoritative. Non-Scribe pages never replace the remembered UUID.

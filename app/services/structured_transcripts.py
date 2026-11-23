@@ -202,6 +202,7 @@ def _encrypt_current_turns(db: Session, *, transcript: Transcript, turns: list[d
         plaintext={"version": STRUCTURED_TURNS_SCHEMA_VERSION, "turns": turns},
     )
     projection = canonical_transcript_projection(turns)
+    transcript.current_draft_has_content = bool(projection.strip())
     transcript.current_draft_text_encrypted = encrypt_text_for_owner(
         db, owner_user_id=transcript.owner_user_id, table="transcripts",
         field="current_draft_text_encrypted", record_id=transcript.id,

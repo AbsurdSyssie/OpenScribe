@@ -485,15 +485,7 @@ def _generated_note_has_content(db: Session, document: GeneratedDocument | None)
 
 
 def _transcript_has_content(db: Session, transcript: Transcript) -> bool:
-    draft_text = transcript_draft_text_service(db, transcript=transcript) or ""
-    if draft_text.strip():
-        return True
-    versions = db.scalars(
-        select(TranscriptVersion)
-        .where(TranscriptVersion.transcript_id == transcript.id)
-    )
-    return any((transcript_version_text_service(db, transcript_version=version) or "").strip() for version in versions)
-
+    return _transcript_content_by_id_for_history_page(db, [transcript])[transcript.id]
 
 def _derived_content_by_transcript_id(
     db: Session,
@@ -579,36 +571,52 @@ def _transcript_content_by_id_for_history_page(
     db: Session,
     transcripts: list[Transcript],
 ) -> dict[UUID, bool]:
-    """Read page-row drafts once and batch only their blank-draft histories."""
-    content_by_id: dict[UUID, bool] = {}
-    blank_draft_ids: list[UUID] = []
+    """Use presence flags for saved text, with a decrypt fallback for legacy NULLs."""
+    result: dict[UUID, bool] = {}
+    missing: list[UUID] = []
     for transcript in transcripts:
-        draft_text = transcript_draft_text_service(db, transcript=transcript) or ""
-        has_content = bool(draft_text.strip())
-        content_by_id[transcript.id] = has_content
-        if not has_content:
-            blank_draft_ids.append(transcript.id)
+        draft_present = transcript.current_draft_has_content
+        if draft_present is None:
+            draft_present = bool((transcript_draft_text_service(db, transcript=transcript) or "").strip())
+        result[transcript.id] = draft_present
+        if not draft_present:
+            missing.append(transcript.id)
+    if not missing:
+        return result
 
-    if not blank_draft_ids:
-        return content_by_id
+    # Per-version flags preserve nonempty historical versions after blank draft
+    # edits, and disappear automatically when individual versions are deleted.
+    for transcript_id in db.scalars(
+        select(TranscriptVersion.transcript_id)
+        .where(
+            TranscriptVersion.transcript_id.in_(missing),
+            TranscriptVersion.has_content.is_(True),
+        )
+        .distinct()
+    ):
+        result[transcript_id] = True
 
+    unresolved = [tid for tid in missing if not result[tid]]
+    if not unresolved:
+        return result
     versions = db.scalars(
         select(TranscriptVersion)
-        .where(TranscriptVersion.transcript_id.in_(blank_draft_ids))
+        .where(
+            TranscriptVersion.transcript_id.in_(unresolved),
+            TranscriptVersion.has_content.is_(None),
+        )
         .execution_options(yield_per=100)
     )
     try:
-        for version_batch in versions.partitions(100):
-            for version in version_batch:
-                if content_by_id[version.transcript_id]:
-                    continue
-                content_by_id[version.transcript_id] = bool(
-                    (transcript_version_text_service(db, transcript_version=version) or "").strip()
-                )
+        for batch in versions.partitions(100):
+            for version in batch:
+                if not result[version.transcript_id]:
+                    result[version.transcript_id] = bool(
+                        (transcript_version_text_service(db, transcript_version=version) or "").strip()
+                    )
     finally:
         versions.close()
-    return content_by_id
-
+    return result
 
 def transcript_list_item_response(
     db: Session,

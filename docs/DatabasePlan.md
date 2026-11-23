@@ -251,7 +251,7 @@ User base limits plus grants/reservations/attempts provide authoritative token/a
 
 ### Durable task dispatch
 
-Business row + deterministic task-dispatch outbox creation is transactional. Immediate broker publish is attempted; Beat retries pending rows every second. Publication uses claim/idempotency/backoff and terminal failure after `TASK_OUTBOX_MAX_ATTEMPTS`.
+Business row + deterministic task-dispatch outbox creation is transactional. Immediate broker publish is attempted after commit; Beat checks pending rows every 10 seconds for first delivery after a missed fast path, automatic future-due ingestion retries, or recovery after failed publication. An eligible row normally waits at most one sweep interval (previously 1 second); failed immediate publication retains its minimum 10-second backoff before the sweep can retry. Publication uses database-backed claims, deterministic task IDs, duplicate-delivery guards, bounded backoff, and terminal failure after `TASK_OUTBOX_MAX_ATTEMPTS`.
 
 ### Usage
 

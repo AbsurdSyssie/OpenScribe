@@ -170,3 +170,37 @@ def test_revision_gate_closes_when_session_is_revoked(monkeypatch):
 
     assert len(asyncio.run(collect())) == 1
     fetch.assert_called_once()
+
+
+def test_revision_gate_forces_bounded_full_reconcile(monkeypatch):
+    payload = {"active_transcript": {"status": "ready"}}
+    fetch = Mock(return_value=payload)
+    monkeypatch.setattr(workspace, "revisions_enabled", lambda: True)
+    monkeypatch.setattr(workspace, "realtime_workspace_revision_scope", lambda **_: ("owner-one", None))
+    monkeypatch.setattr(workspace, "read_workspace_revisions", lambda *_: (1, 0))
+    monkeypatch.setattr(workspace, "resolve_realtime_workspace_payload", fetch)
+    # An expired age gate must override an unchanged revision.
+    monkeypatch.setattr(workspace, "WORKSPACE_MAX_IDLE_RECONCILE_SECONDS", 0.0)
+
+    async def fake_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(workspace.asyncio, "sleep", fake_sleep)
+
+    class Request:
+        checks = 0
+
+        async def is_disconnected(self):
+            self.checks += 1
+            return self.checks > 2
+
+    async def collect():
+        return [
+            event async for event in workspace.stream_transcribe_workspace_events(
+                request=Request(), raw_session_token="synthetic",
+                transcript_id=None, queued_transcript_id=None, once=False,
+            )
+        ]
+
+    assert len(asyncio.run(collect())) == 1
+    assert fetch.call_count == 3

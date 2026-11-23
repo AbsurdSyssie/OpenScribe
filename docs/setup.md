@@ -116,7 +116,7 @@ The default combined development worker consumes `control`, `generation`, and `i
 
 Beat schedules:
 
-- task-dispatch outbox publication every 1 second;
+- task-dispatch outbox recovery publication every 10 seconds (ordinary new tasks attempt publication immediately after commit);
 - transcript retention cleanup every 10 seconds;
 - transcript-audio cleanup retry every 10 seconds;
 - failed-ingestion source-audio expiry every 10 seconds;
@@ -131,7 +131,7 @@ Disable both development worker and Beat startup with:
 DEV_START_CELERY=false
 ```
 
-Queued asynchronous work will not complete without a worker, and durable periodic cleanup/outbox fallback will not run without Beat.
+Queued asynchronous work will not complete without a worker, and durable periodic cleanup/outbox fallback will not run without Beat. After a commit followed by process exit, an eligible outbox row normally waits up to 10 seconds for the next sweep, rather than the previous 1 second. Failed immediate broker publication backs off at least 10 seconds before a sweep can retry it (normally 10–20 seconds after that attempt); automatic ingestion retries with future due times likewise wait up to one sweep interval after becoming due. Delays can be longer when Beat, the broker, or control workers are unavailable.
 
 ## Transactional email
 

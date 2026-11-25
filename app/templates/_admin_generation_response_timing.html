@@ -1,0 +1,57 @@
+<section class="usage-panel generation-timing" aria-labelledby="generation-timing-heading">
+  <header>
+    <h2 id="generation-timing-heading">Time to draft</h2>
+    <p>Time from submitting a job to a ready draft or failure. The trend and histogram cover successful drafts for the selected period. Times are in UTC.</p>
+  </header>
+  {% for source_key, source_label in [('notes', 'Note generation'), ('followups', 'Follow-up generation')] %}
+  {% set source_data = (generation_response_timing or {}).get(source_key, {}) %}
+  <section class="generation-timing__source" aria-labelledby="generation-timing-{{ source_key }}-heading">
+    <h3 id="generation-timing-{{ source_key }}-heading">{{ source_label }}</h3>
+    {% if source_data.get('jobs') %}
+    <script type="application/json" data-generation-timing-data="{{ source_key }}">{{ source_data|tojson }}</script>
+    <div class="generation-timing__counts" data-generation-timing-counts="{{ source_key }}"></div>
+    <div class="generation-timing__charts">
+      <figure class="generation-timing__figure generation-timing__timeline">
+        <figcaption>Job durations in completion order</figcaption>
+        <div class="generation-timing__stage-chart" data-generation-stage-chart="{{ source_key }}" role="img" aria-label="Stacked generation stage durations over time"></div>
+        <ul class="generation-timing__markers" data-generation-markers="{{ source_key }}" hidden aria-label="Job outcome markers"></ul>
+        {% if source_data.get('detail_capped') %}<p class="usage-detail">Showing the latest {{ source_data.detail_count }} of {{ source_data.total_count }} jobs.</p>{% endif %}
+      </figure>
+      <figure class="generation-timing__figure">
+        <figcaption>Average duration of successful jobs</figcaption>
+        <div class="generation-timing__average-chart" data-generation-average-chart="{{ source_key }}" role="img" aria-label="Successful generation average duration over time"></div>
+      </figure>
+      <figure class="generation-timing__figure">
+        <figcaption>Successful job duration distribution</figcaption>
+        <div class="generation-timing__histogram" data-generation-histogram="{{ source_key }}" role="img" aria-label="Histogram of successful generation durations"></div>
+      </figure>
+    </div>
+    <div class="generation-timing__selected">
+      <label class="generation-timing__job-picker">Choose a job
+        <select data-generation-job-picker="{{ source_key }}"><option value="">Choose a job</option></select>
+      </label>
+      <div data-generation-selected="{{ source_key }}" aria-live="polite">
+        <p>Select a bar or choose a job to see its stages and any failures.</p>
+      </div>
+    </div>
+    <details class="generation-timing__details">
+      <summary>View exact timing values and distribution counts</summary>
+      <div class="usage-table-wrap table-scroll-region" tabindex="0" role="region" aria-label="Scrollable generation response timing values">
+        <table class="usage-table">
+          <thead><tr><th scope="col">Finished (UTC)</th><th scope="col">Duration</th><th scope="col">Outcome</th><th scope="col">Stage durations</th><th scope="col">Failure causes</th></tr></thead>
+          <tbody data-generation-jobs="{{ source_key }}"></tbody>
+        </table>
+      </div>
+      <div class="usage-table-wrap table-scroll-region" tabindex="0" role="region" aria-label="Scrollable successful average duration values">
+        <table class="usage-table"><caption>Successful average duration by time</caption><thead><tr><th scope="col">Time (UTC)</th><th scope="col">Average duration</th><th scope="col">Successful jobs</th></tr></thead><tbody data-generation-average-values="{{ source_key }}"></tbody></table>
+      </div>
+      <div class="usage-table-wrap table-scroll-region" tabindex="0" role="region" aria-label="Scrollable successful duration distribution values">
+        <table class="usage-table"><caption>Successful job duration distribution</caption><thead><tr><th scope="col">Duration range</th><th scope="col">Job count</th></tr></thead><tbody data-generation-histogram-values="{{ source_key }}"></tbody></table>
+      </div>
+    </details>
+    {% else %}
+    <p class="usage-empty">No generation timing data for this source in the selected period.</p>
+    {% endif %}
+  </section>
+  {% endfor %}
+</section>

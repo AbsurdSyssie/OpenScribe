@@ -11,6 +11,7 @@
                   {% include "_admin_usage_user_breakdown.html" %}
                   {% else %}
                   {% include "_admin_usage_summary_table.html" %}
+                  {% include "_admin_generation_response_timing.html" %}
 
                   <section class="usage-panel usage-summary-panel">
                     <header><h2>Consumption and health · {{ usage_range_label }}</h2><p>{{ usage_range_bucket|title }} aggregates{% if usage_has_comparison %}, with shaded previous-period comparison{% endif %}.</p></header>

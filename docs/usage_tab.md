@@ -203,6 +203,21 @@ controlled provider code, and HTTP status. It does not serialize an ORM object
 or event row to the browser. The all-available range includes retained failed
 split executions even when no provider usage event was recorded.
 
+**Time to draft** shows note generation and follow-ups separately for the
+selected team and reporting range. It measures server time from accepting a
+generation job to finishing it. The stacked timeline shows queue wait,
+preparation, generation, checking, and finalising where recorded timestamps
+support those stages. Unattributed time appears as **Unknown**. The timeline
+shows up to the 120 most recent jobs of each kind.
+
+The average line and histogram cover the full selected range of retained
+successful drafts, including jobs completed after a retry or backup call.
+The timeline flags recoveries and terminal failures separately. Select a
+job to inspect its timings and any recorded failure categories, such as a
+primary HTTP 504 followed by a successful backup. Failure categories count
+affected jobs among the displayed results. The view uses operational metadata
+only.
+
 The page also has **Operational health · last 15 minutes** and **Recent failures
 and retries** panels. Health counts observed failed provider requests once, including authentication responses, connection errors, and timeouts. Preflight configuration failures that make no request do not count. It retains separate HTTP 429/503 and timeout counts,
 including recovered rate-limit retries, reports mean recorded request duration

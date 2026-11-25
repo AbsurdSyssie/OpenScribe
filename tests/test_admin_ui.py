@@ -10637,6 +10637,7 @@ def test_new_admin_team_usage_views_scope_charts_and_user_table(client, db_sessi
     owner = make_user(email="scoped-user@example.com", password="password-2", team=team, team_role=TeamRole.user)
     other_owner = make_user(email="other-user@example.com", password="password-3", team=other_team, team_role=TeamRole.user)
 
+    completed_at = utcnow() - timedelta(minutes=2)
     for user, user_team, tokens, title in (
         (owner, team, 321, "Scoped confidential title"),
         (other_owner, other_team, 987, "Other confidential title"),
@@ -10650,6 +10651,31 @@ def test_new_admin_team_usage_views_scope_charts_and_user_table(client, db_sessi
         )
         db_session.add(transcript)
         db_session.flush()
+        version = TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted=title)
+        db_session.add(version)
+        db_session.flush()
+        generation_examples = [(GeneratedDocumentGeneratorType.template, 32 if user_team is team else 91)]
+        if user_team is team:
+            generation_examples.append((GeneratedDocumentGeneratorType.followup, 18))
+        for generator_type, seconds in generation_examples:
+            created_at = completed_at - timedelta(seconds=seconds)
+            db_session.add(GeneratedDocument(
+                owner_user_id=user.id,
+                team_id=user_team.id,
+                transcript_id=transcript.id,
+                transcript_version_id=version.id,
+                generator_type=generator_type,
+                source_template_name="Synthetic generation template",
+                status=GeneratedDocumentStatus.ready,
+                title="Synthetic generated content sentinel",
+                document_mode=TemplateMode.freeform,
+                original_output_text_encrypted="Synthetic generated body sentinel",
+                edited_output_text_encrypted="Synthetic generated body sentinel",
+                retention_expires_at=transcript.retention_expires_at,
+                created_at=created_at,
+                worker_received_at=created_at + timedelta(seconds=2),
+                completed_at=completed_at,
+            ))
         db_session.add(ProviderUsageEvent(
             team_id=user_team.id,
             owner_user_id=user.id,
@@ -10681,6 +10707,14 @@ def test_new_admin_team_usage_views_scope_charts_and_user_table(client, db_sessi
     assert page.text.count('class="usage-echart"') == 4
     assert "Scoped confidential title" not in page.text
     assert "Other confidential title" not in page.text
+    for kind, seconds in (("notes", 32), ("followups", 18)):
+        payload = re.search(rf'data-generation-timing-data="{kind}">(.+?)</script>', page.text, re.S)
+        assert payload is not None, (kind, "Time to draft" in page.text)
+        assert [job["total_ms"] for job in json.loads(payload[1])["jobs"]] == [seconds * 1000]
+        assert str(owner.id) not in payload[1]
+        assert "Synthetic generated" not in payload[1]
+    assert "Synthetic generated content sentinel" not in page.text
+    assert "Synthetic generated body sentinel" not in page.text
 
     users_page = client.get(f"/admin/usage?team_id={team.id}&view=users&range=90d")
     assert users_page.status_code == 200
@@ -10692,6 +10726,7 @@ def test_new_admin_team_usage_views_scope_charts_and_user_table(client, db_sessi
     assert '<span class="usage-range-current">Last 90 days</span>' in users_page.text
     assert "Scoped confidential title" not in users_page.text
     assert "Other confidential title" not in users_page.text
+    assert "data-generation-timing-data" not in users_page.text
 
 
 def test_admin_usage_split_failure_diagnostics_are_bounded_scoped_and_content_free(

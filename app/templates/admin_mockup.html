@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OpenScribe Admin — Team Workspace Mock-up</title>
+    {% if active_admin_tab == 'usage' or workspace_team_tab == 'usage' %}
+    <link rel="stylesheet" href="/static/css/admin-generation-response-timing.css?v=20261125" />
+    {% endif %}
     <style nonce="{{ request.state.csp_nonce }}">
       /* Canonical admin workspace palette and flat panel treatment. */
       :root {
@@ -3803,6 +3806,7 @@
             </div>
             <div class="usage-page usage-page--global">
               {% include "_admin_usage_summary_table.html" %}
+              {% include "_admin_generation_response_timing.html" %}
 
               <section class="usage-panel">
                 <header><h2>Window comparison</h2><p>Consumption and health across common reporting windows.</p></header>
@@ -10025,6 +10029,7 @@
     <script id="usage-chart-data" type="application/json" data-range-label="{{ usage_range_label }}" data-has-comparison="{{ 'true' if usage_has_comparison else 'false' }}">{{ usage_comparison_trend_points|tojson }}</script>
     <script src="/static/vendor/echarts/6.1.0/echarts.min.js"></script>
     <script src="/static/js/admin-usage-charts.js?v=20261025-usage-layout"></script>
+    <script src="/static/js/admin-generation-response-timing.js?v=20261125" defer></script>
     {% endif %}
     {% if standalone_usage or active_admin_tab == 'usage' or workspace_team_tab == 'usage' %}
     <script src="/static/js/admin-usage-table-sort.js?v=20261025-table-sort" defer></script>

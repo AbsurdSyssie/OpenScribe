@@ -79,6 +79,7 @@ from app.schemas import (
     TeamCreate,
     UserCreate,
 )
+from app.services.admin_generation_timing import generation_response_timing
 from app.services.auth import lock_user_credentials, revoke_credential_authority, revoke_sessions_for_user, revoke_trusted_devices_for_user
 from app.services.content_crypto import ensure_user_dek
 from app.services.default_assets import ensure_builtin_default_assets, seed_team_default_assets
@@ -1663,6 +1664,7 @@ def admin_usage_overview(
     db: Session, *, team_id: UUID | None = None, range_key: str = "30d",
     monitor_reference: str | None = None, monitor_since: datetime | None = None,
     monitor_lookup_error: str | None = None,
+    include_generation_timing: bool = True,
 ) -> dict[str, object]:
     now = utcnow()
     range_definitions = {
@@ -1777,6 +1779,9 @@ def admin_usage_overview(
         "usage_team_rows": _team_usage_rows(db, since=range_since, team_id=team_id),
         "usage_user_rows": _user_usage_rows(db, since=range_since, team_id=team_id) if team_id is not None else [],
         "usage_provider_rows": _provider_usage_rows(db, since=range_since, team_id=team_id),
+        "generation_response_timing": generation_response_timing(
+            db, since=range_since, until=now, team_id=team_id, bucket=range_bucket,
+        ) if include_generation_timing else {},
         "usage_generation_latency_rows": _generation_latency_rows(db, since=range_since, until=now, team_id=team_id),
         "usage_generator_rows": _generator_usage_rows(db, since=range_since, team_id=team_id),
         "usage_ingestion_rows": _ingestion_usage_rows(db, since=range_since, team_id=team_id),

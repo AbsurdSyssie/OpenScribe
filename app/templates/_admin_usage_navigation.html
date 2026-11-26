@@ -1,16 +1,21 @@
 {% set usage_navigation_range = request.query_params.get('range', '30d') %}
 {% if usage_navigation_range not in ['30d', '90d', '1y', 'all'] %}
-{% set usage_navigation_range = usage_range_key|default('30d') %}
+  {% set usage_navigation_range = usage_range_key|default('30d') %}
 {% endif %}
-{% set usage_range_menu_view = usage_page_view if standalone_usage else ('users' if request.query_params.get('usage_view') == 'users' else 'team') %}
-{% set usage_range_menu_team_id = selected_team.id %}
+{% set current_usage_view = usage_page_view if standalone_usage else ('quotas' if workspace_team_tab == 'quotas' else ('users' if request.query_params.get('usage_view') == 'users' else 'team')) %}
+{% set usage_range_menu_view = current_usage_view %}
+{% set usage_range_menu_team_id = selected_team.id if selected_team else none %}
+{% set destinations = [('team', 'Overview'), ('response-times', 'Response times'), ('operations', 'Operations')] %}
+{% if selected_team %}
+  {% set destinations = destinations + [('users', 'Users'), ('quotas', 'Quotas')] %}
+{% endif %}
 <div class="usage-view-bar">
-<nav class="tabs usage-view-navigation" aria-label="Team usage views">
-  <a class="tab" href="/admin/usage?team_id={{ selected_team.id }}&amp;view=team&amp;range={{ usage_navigation_range }}"{% if (standalone_usage and usage_page_view == 'team') or (not standalone_usage and workspace_team_tab != 'quotas' and request.query_params.get('usage_view') != 'users') %} aria-current="page"{% endif %}>Team</a>
-  <a class="tab" href="/admin/usage?team_id={{ selected_team.id }}&amp;view=users&amp;range={{ usage_navigation_range }}"{% if (standalone_usage and usage_page_view == 'users') or (not standalone_usage and workspace_team_tab != 'quotas' and request.query_params.get('usage_view') == 'users') %} aria-current="page"{% endif %}>Users</a>
-  <a class="tab" href="/admin/usage?team_id={{ selected_team.id }}&amp;view=quotas&amp;range={{ usage_navigation_range }}"{% if (standalone_usage and usage_page_view == 'quotas') or (not standalone_usage and workspace_team_tab == 'quotas') %} aria-current="page"{% endif %}>Quotas</a>
-</nav>
-{% if (standalone_usage and usage_page_view != 'quotas') or (not standalone_usage and workspace_team_tab == 'usage') %}
-  {% include "_admin_usage_range_menu.html" %}
-{% endif %}
+  <nav class="tabs usage-view-navigation" aria-label="Usage views">
+    {% for view, label in destinations %}
+    <a class="tab" href="/admin/usage?{% if selected_team %}team_id={{ selected_team.id }}&amp;{% endif %}view={{ view }}&amp;range={{ usage_navigation_range }}"{% if current_usage_view == view %} aria-current="page"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav>
+  {% if current_usage_view != 'quotas' %}
+    {% include "_admin_usage_range_menu.html" %}
+  {% endif %}
 </div>

@@ -1,5 +1,13 @@
 # Discovered issues
 
+### ADMIN-QUOTAS-REFLOW-1024 — 2026-11-26
+
+- Discovery baseline: `f91a12c` plus existing admin usage changes in the working tree.
+- Locations: `app/templates/admin_quota_panel.html` (`.quota-member-table`), `app/templates/admin_mockup.html` (`.quota-member-table-wrap`), and `tests/accessibility/test_admin.py::test_team_usage_views_keep_scope_ranges_and_quota_navigation`.
+- Evidence: the synthetic browser regression reached the selected-team Quotas view at 1024 CSS pixels and measured a document scroll width of 1076 pixels. Its overflow diagnostics included a visually hidden span in the member table.
+- Impact: the Quotas view can create horizontal page scroll at this width.
+- Resolution: the quota table scroll region now contains absolutely positioned labels. Chromium measured a document scroll width of 1024 pixels at the same viewport, with horizontal scrolling still available inside the table region.
+
 ### STT-CAPTURE-SNAPSHOT-TEST-DB-DOUBLE — 2026-11-21
 
 - Discovery baseline: `51de6ec` plus pre-existing first-content tracking changes in the working tree.

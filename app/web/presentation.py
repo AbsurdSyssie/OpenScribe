@@ -1194,6 +1194,7 @@ def render_admin(
         "usage_recent_split_failure_rows": [],
         "usage_recent_operational_rows": [],
         "usage_generation_latency_rows": [],
+        "generation_response_timing": {},
         "usage_operational_health": {},
         "usage_monitor_reference": "",
         "usage_monitor_since": "",
@@ -1225,6 +1226,7 @@ def render_admin(
             monitor_reference=monitor_reference,
             monitor_since=monitor_since,
             monitor_lookup_error=monitor_lookup_error,
+            include_generation_timing=usage_page_view == "response-times",
         )
         usage_context["usage_monitor_since"] = monitor_since_text
     audit_context = {

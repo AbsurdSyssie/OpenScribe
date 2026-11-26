@@ -306,7 +306,11 @@ def admin_usage_page(
         return response
     if not context.user.is_system_admin:
         return HTMLResponse("Forbidden", status_code=status.HTTP_403_FORBIDDEN)
-    if view not in {"team", "users", "quotas"}:
+    if view == "team" and (reference or monitor_since):
+        # Legacy failure lookup links used the Team view value; retain their
+        # filters while opening the new Operations destination.
+        view = "operations"
+    if view not in {"team", "users", "quotas", "response-times", "operations"}:
         view = "team"
     if team_id:
         try:

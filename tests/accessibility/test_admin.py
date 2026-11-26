@@ -576,7 +576,7 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
     db_session,
     axe_source,
 ):
-    """Team Usage tabs preserve aggregate scope and usable navigation without JS routing."""
+    """Usage tabs preserve aggregate scope and usable navigation without JS routing."""
     page, blocked = audit_browser
     admin = synthetic_admin_context
     other_team = make_team(name="Other synthetic usage team")
@@ -612,11 +612,13 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
     response = page.goto(global_path, wait_until="domcontentloaded")
     assert response is not None and response.status == 200
     assert page.get_by_role("heading", name="Usage", exact=True).is_visible()
-    assert page.locator("nav[aria-label='Team usage views']").count() == 0
+    usage_nav = page.get_by_role("navigation", name="Usage views")
+    reporting_tabs = ["Overview", "Response times", "Operations"]
+    assert usage_nav.get_by_role("link").all_inner_texts() == reporting_tabs
+    assert usage_nav.locator('[aria-current="page"]').inner_text() == "Overview"
     assert page.locator("[data-team-navigation]").count() == 0
     assert page.locator(".team-summary").count() == 1
     assert page.get_by_role("heading", name="Usage", exact=True).is_visible()
-    assert page.locator("nav.tabs").count() == 0
     assert page.get_by_text(admin["member_email"], exact=True).count() == 0
     assert page.get_by_text(other_member.email, exact=True).count() == 0
     global_summary = page.get_by_role("region", name="Usage summary table")
@@ -707,7 +709,7 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
     assert page.locator(".team-summary").count() == 1
     assert page.locator("#team-title").inner_text() == admin["team_name"]
     assert page.locator("[data-team-navigation]").count() == 0
-    assert page.locator("nav[aria-label='Team usage views'].tabs").count() == 1
+    assert page.locator("nav[aria-label='Usage views'].tabs").count() == 1
     team_summary = page.get_by_role("region", name="Usage summary table")
     team_table = team_summary.get_by_role("table")
     assert team_table.get_by_role("columnheader").all_inner_texts() == [
@@ -731,20 +733,21 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
         f"a[href='/admin/usage?view=team&team_id={admin['team_id']}&range=30d']"
     ).count() == 1
     assert page.locator("form.usage-range-scope-form, select[name='range']").count() == 0
-    usage_nav = page.get_by_role("navigation", name="Team usage views")
-    team_link = usage_nav.get_by_role("link", name="Team", exact=True)
+    assert usage_nav.get_by_role("link").all_inner_texts() == [*reporting_tabs, "Users", "Quotas"]
+    overview_link = usage_nav.get_by_role("link", name="Overview", exact=True)
     users_link = usage_nav.get_by_role("link", name="Users", exact=True)
     quotas_link = usage_nav.get_by_role("link", name="Quotas", exact=True)
-    assert team_link.get_attribute("aria-current") == "page"
-    assert "range=90d" in team_link.get_attribute("href")
+    assert overview_link.get_attribute("aria-current") == "page"
+    assert "range=90d" in overview_link.get_attribute("href")
     assert "view=users" in users_link.get_attribute("href")
     assert "range=90d" in users_link.get_attribute("href")
     assert "view=quotas" in quotas_link.get_attribute("href")
     assert "range=90d" in quotas_link.get_attribute("href")
     assert page.locator(".usage-chart").count() == 4
-    assert page.get_by_role("heading", name="Operational health · last 15 minutes").is_visible()
-    assert page.get_by_role("heading", name="Recent failures and retries").is_visible()
-    assert page.get_by_role("heading", name="Recent split failures").is_visible()
+    assert page.get_by_role("heading", name="Time to draft").count() == 0
+    assert page.get_by_role("heading", name="Operational health · last 15 minutes").count() == 0
+    assert page.get_by_role("heading", name="Recent failures and retries").count() == 0
+    assert page.get_by_role("heading", name="Recent split failures").count() == 0
     assert page.get_by_role("heading", name="User usage breakdown").count() == 0
     assert page.locator(".usage-user-table").count() == 0
     for width in widths:
@@ -809,13 +812,40 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
     assert series_toggle.is_checked() is False
     assert first_chart.get_attribute("aria-describedby")
 
+    for tab, view, headings in (
+        ("Response times", "response-times", ("Time to draft", "Generation provider latency")),
+        ("Operations", "operations", ("Operational health · last 15 minutes", "Recent failures and retries", "Recent split failures")),
+    ):
+        usage_nav.get_by_role("link", name=tab, exact=True).click()
+        query = parse_qs(urlparse(page.url).query)
+        assert query["view"] == [view] and query["range"] == ["90d"]
+        assert query["team_id"] == [admin["team_id"]]
+        assert usage_nav.locator('[aria-current="page"]').inner_text() == tab
+        for heading in headings:
+            assert page.get_by_role("heading", name=heading, exact=True).is_visible()
+        assert page.locator("details.usage-range-disclosure a[aria-current='page']").get_attribute("href") == (
+            f"/admin/usage?view={view}&team_id={admin['team_id']}&range=90d"
+        )
+        for width in (1440, 390, 320):
+            page.set_viewport_size({"width": width, "height": 900})
+            _assert_no_horizontal_overflow(page, width)
+            if width < 600:
+                assert usage_nav.get_by_role("link").evaluate_all(
+                    "(links) => links.every(link => getComputedStyle(link).whiteSpace === 'nowrap')"
+                )
+            if screenshot_dir:
+                page.screenshot(
+                    path=str(Path(screenshot_dir) / f"team-usage-{view}-{width}.png"),
+                    animations="disabled",
+                )
+
     users_href = users_link.get_attribute("href")
     response = page.goto(users_href, wait_until="domcontentloaded")
     assert response is not None and response.status == 200
     assert "view=users" in page.url and "range=90d" in page.url
     assert page.get_by_role("heading", name="User usage", exact=True).is_visible()
     assert page.get_by_role("heading", name="User usage breakdown").is_visible()
-    assert page.get_by_role("navigation", name="Team usage views").get_by_role(
+    assert page.get_by_role("navigation", name="Usage views").get_by_role(
         "link", name="Users", exact=True
     ).get_attribute("aria-current") == "page"
     user_region = page.get_by_role("region", name="Scrollable user usage table")
@@ -899,7 +929,7 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
 
     # Quotas reuses the same range-aware view links, without inheriting the
     # selected user or dropping the validated team context.
-    page.get_by_role("navigation", name="Team usage views").get_by_role(
+    page.get_by_role("navigation", name="Usage views").get_by_role(
         "link", name="Quotas", exact=True
     ).click()
     assert "view=quotas" in page.url and "range=1y" in page.url
@@ -917,9 +947,9 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
                 full_page=False,
                 animations="disabled",
             )
-    quota_nav = page.get_by_role("navigation", name="Team usage views")
+    quota_nav = page.get_by_role("navigation", name="Usage views")
     assert quota_nav.get_by_role("link", name="Quotas", exact=True).get_attribute("aria-current") == "page"
-    assert "range=1y" in quota_nav.get_by_role("link", name="Team", exact=True).get_attribute("href")
+    assert "range=1y" in quota_nav.get_by_role("link", name="Overview", exact=True).get_attribute("href")
     assert "view=users" in quota_nav.get_by_role("link", name="Users", exact=True).get_attribute("href")
     for width in widths:
         page.set_viewport_size({"width": width, "height": 900})
@@ -942,7 +972,7 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
     assert page.locator("[data-team-navigation]").count() == 0
     assert page.locator(".team-summary").count() == 1
     assert page.get_by_role("heading", name="Quotas", exact=True).is_visible()
-    assert page.get_by_role("navigation", name="Team usage views").locator(".tab").count() == 3
+    assert page.get_by_role("navigation", name="Usage views").locator(".tab").count() == 5
     assert page.locator(".usage-chart, .usage-user-table").count() == 0
     assert page.get_by_role("heading", name=admin["member_email"]).is_visible()
     assert page.locator(".usage-intro select[name='team_id']").count() == 0
@@ -963,7 +993,7 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
     response = page.go_back(wait_until="domcontentloaded")
     assert response is not None and response.status == 200
     assert "view=users" in page.url and "range=1y" in page.url
-    assert page.get_by_role("navigation", name="Team usage views").get_by_role(
+    assert page.get_by_role("navigation", name="Usage views").get_by_role(
         "link", name="Users", exact=True
     ).get_attribute("aria-current") == "page"
     quota_context_path = (
@@ -981,6 +1011,8 @@ def test_team_usage_views_keep_scope_ranges_and_quota_navigation(
     selection.config.adapter_kind = LlmAdapterKind.gemini_enterprise
     selection.config.model_name = model
     selection.config.available_models_json = [model]
+    selection.config.model_policy.enabled_models_json = [model]
+    selection.config.model_policy.default_model_name = model
     selection.allowed_models_json = [model]
     selection.model_name_override = model
     member.daily_token_limit = 10_000
@@ -2121,7 +2153,9 @@ def test_rendered_usage_and_quota_tables_sort_without_reformatting_or_losing_act
         amount = row.locator("td").nth(2).get_attribute("data-sort-value")
         action = row.locator("form.quota-revoke-form").get_attribute("action")
         expected_key = "audio-5" if row.locator("td").nth(2).get_attribute("data-sort-group") == "audio_seconds" else f"tokens-{amount}"
-        assert action.endswith(f"/{grant_ids[expected_key].id}/revoke")
+        action_url = urlparse(action)
+        assert action_url.path == f"/admin/users/{quota_member.id}/quota-grants/{grant_ids[expected_key].id}/revoke"
+        assert parse_qs(action_url.query)["quota_period"] == ["monthly"]
     assert allowances.locator("thead th").last.locator("button.usage-table-sort-button").count() == 0
     amount_button.click()
     assert rows.evaluate_all(

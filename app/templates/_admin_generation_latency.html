@@ -1,9 +1,48 @@
-<section class="usage-panel">
+<section class="usage-panel generation-latency" id="provider-model-latency" tabindex="-1" aria-labelledby="provider-model-latency-heading">
   <header>
-    <h2>Generation provider latency</h2>
+    <h2 id="provider-model-latency-heading">Generation provider latency</h2>
     <p>{{ usage_range_label }}. Each sample is one provider call, including retries and backup calls. Queue time and retry pauses are excluded.</p>
   </header>
   {% if usage_generation_latency_rows %}
+  {% set successful_rows = usage_generation_latency_rows | selectattr('outcome', 'equalto', 'Success') | sort(attribute='sample_count', reverse=true) %}
+  {% set compared_rows = successful_rows[:8] %}
+  {% if compared_rows %}
+  {% set scale_max = [1, compared_rows | map(attribute='p95_seconds') | max] | max %}
+  <figure class="generation-latency__comparison">
+    <figcaption>
+      <h3>Successful calls by provider and model</h3>
+      <p class="usage-detail">
+        Median and P95 call duration on the same scale.
+        {% if successful_rows | length > compared_rows | length %}Showing the {{ compared_rows | length }} pairs with the most successful calls.{% endif %}
+      </p>
+    </figcaption>
+    <ul class="generation-latency__pairs">
+      {% for row in compared_rows %}
+      <li class="generation-latency__pair">
+        <div class="generation-latency__identity">
+          <strong>{{ row.model or 'Unknown model' }}</strong>
+          <span>{{ row.provider_adapter or 'Unknown provider' }} · {{ '{:,}'.format(row.sample_count) }} {{ 'call' if row.sample_count == 1 else 'calls' }}</span>
+        </div>
+        <div class="generation-latency__bars">
+          <div class="generation-latency__value">
+            <span>Median</span>
+            <meter min="0" max="{{ scale_max }}" value="{{ row.p50_seconds }}" aria-hidden="true"></meter>
+            <strong>{{ '{:g}'.format(row.p50_seconds) }} s</strong>
+          </div>
+          <div class="generation-latency__value generation-latency__value--p95">
+            <span>P95</span>
+            <meter min="0" max="{{ scale_max }}" value="{{ row.p95_seconds }}" aria-hidden="true"></meter>
+            <strong>{{ '{:g}'.format(row.p95_seconds) }} s</strong>
+          </div>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </figure>
+  <p class="usage-detail">P95 is the time within which about 95% of calls in a group finished. Small samples can make this estimate unstable.</p>
+  <details class="generation-timing__details">
+    <summary>View all provider latency values and outcomes</summary>
+  {% endif %}
   <div class="usage-table-wrap table-scroll-region" tabindex="0" role="region" aria-label="Scrollable generation provider latency table">
     <table class="usage-table" data-sortable-table>
       <thead>
@@ -30,7 +69,11 @@
       </tbody>
     </table>
   </div>
-  <p class="usage-detail">P95 is the time within which about 95% of calls in that row finished. A small sample can make this estimate unstable.</p>
+  {% if compared_rows %}
+  </details>
+  {% else %}
+  <p class="usage-detail">No successful calls with recorded durations in this range. P95 estimates can be unstable for small samples.</p>
+  {% endif %}
   {% else %}
   <p class="usage-empty">No timed generation responses or timeouts recorded in this range.</p>
   {% endif %}

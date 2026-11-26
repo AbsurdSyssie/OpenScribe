@@ -8,28 +8,35 @@ This document describes the implemented system-administrator Usage surfaces and 
 
 Usage has a dedicated system-administrator route in the `/admin` shell:
 
-- global Team view: `/admin/usage`;
-- selected-team Team view: `/admin/usage?team_id=<team_uuid>&view=team`;
-- selected-team Users view: `/admin/usage?team_id=<team_uuid>&view=users`;
-- selected-team Quotas view: `/admin/usage?team_id=<team_uuid>&view=quotas`;
+- global Overview: `/admin/usage` or `/admin/usage?view=team`;
+- global Response times: `/admin/usage?view=response-times`;
+- global Operations: `/admin/usage?view=operations`;
+- selected-team Response times: `/admin/usage?team_id=<team_uuid>&view=response-times`;
+- selected-team Operations: `/admin/usage?team_id=<team_uuid>&view=operations`;
+- selected-team Overview: `/admin/usage?team_id=<team_uuid>&view=team`;
+- selected-team Users: `/admin/usage?team_id=<team_uuid>&view=users`;
+- selected-team Quotas: `/admin/usage?team_id=<team_uuid>&view=quotas`;
 - per-user aggregate rows appear only inside a validated selected-team scope.
 
 The sidebar Usage destination opens this standalone surface. It uses the same
-summary bar as Members, with Usage, Team usage, User usage or Quotas as the
-area title. With a selected team, supporting text identifies the team; its
-Team, Users and Quotas tabs switch the reporting view. Use the top team picker
-to change scope; its Usage links preserve the current view and reporting range
-while clearing member and editor context. **All teams**
-returns to the global Team view. With a team selected, **Team** shows charts and
-operational reports, **Users** shows that team's aggregate user table, and
-**Quotas** opens the quota panel without loading usage telemetry. The Usage
-range is selected from a compact inline disclosure with direct links, and is
-preserved when navigating among these views. Quotas does not show a reporting
-range control because quota windows use their own daily and monthly boundaries;
-its navigation links retain the last report range. The Users view remains
-constrained to users belonging to the validated team. With no team selected,
-Usage stays in the global Team view;
-Users and Quotas are not available globally and no per-user rows are rendered.
+summary bar as Members. Its area title names the selected view, and supporting
+text identifies the team when one is selected. The linked tabs show Overview,
+Response times, and Operations globally; selected-team scope adds Users and
+Quotas. Use the top team picker to change scope; its Usage links preserve the
+current view and reporting range while clearing member and editor context.
+**All teams** returns to the global view, falling back to Overview when the
+current view is only available within a team. Overview shows consumption
+summaries, trends, comparisons, and aggregate breakdowns. Response times shows
+Time to draft and generation provider latency. Operations shows recent health,
+failures, retries, and split failures. Users shows that team's aggregate user
+table. Quotas opens the quota panel without loading Usage reporting telemetry.
+The Usage range is selected from a compact inline disclosure with direct links,
+and is preserved when navigating among these views. Quotas does not show a
+reporting range control because quota windows use their own daily and monthly
+boundaries; its navigation links retain the last report range. The Users view
+remains constrained to users belonging to the validated team. With no team
+selected, Users and Quotas are not available globally and no per-user rows are
+rendered.
 
 For a selected team, Quotas begins with that team's finite daily/monthly token
 and transcription-audio defaults for newly created members, followed by a
@@ -69,11 +76,22 @@ Search, focus and scroll position are preserved. Failed requests retain the
 current view and offer retry guidance. Existing GET navigation remains the
 fallback when JavaScript is unavailable.
 
-The view defaults to `team`. An unknown view also resolves to Team. Invalid or
-unknown team identifiers resolve to the global Team view; requesting Users or
-Quotas without a valid team does the same and clears member/editor state. In a
-valid team Quotas view, malformed, cross-team, system-admin, or otherwise
-ineligible member IDs show a selection error without loading quota detail.
+The view defaults to `team` (Overview). An unknown view also resolves to
+Overview. Supported view values are `team`, `response-times`, `operations`,
+`users`, and `quotas`. Global scope shows Overview, Response times, and
+Operations. A validated team scope adds Users and Quotas. Invalid or unknown
+team identifiers resolve to the global Overview; requesting Users or Quotas
+without a valid team does the same and clears member/editor state. In a valid
+team Quotas view, malformed, cross-team, system-admin, or otherwise ineligible
+member IDs show a selection error without loading quota detail. Legacy failure lookup URLs using `reference` or `monitor_since` with the former
+`view=team` default (or no `view`) open Operations and retain their filters;
+other legacy Usage URLs retain their Overview default.
+
+Overview contains the consumption summary, trends, reporting-window and team
+comparisons, and provider/activity breakdown. Response times contains Time to
+draft and Generation provider latency. Operations contains the 15-minute
+health summary, recent failures/retries, and split failures. The range remains
+in the URL across views; operation search filters remain local to Operations.
 
 Older Usage URLs remain compatible and redirect to the dedicated route after
 the usual authorization and team validation: `/admin?tab=usage`,
@@ -203,8 +221,25 @@ controlled provider code, and HTTP status. It does not serialize an ORM object
 or event row to the browser. The all-available range includes retained failed
 split executions even when no provider usage event was recorded.
 
-The page also has **Operational health · last 15 minutes** and **Recent failures
-and retries** panels. Health counts observed failed provider requests once, including authentication responses, connection errors, and timeouts. Preflight configuration failures that make no request do not count. It retains separate HTTP 429/503 and timeout counts,
+**Time to draft** shows note generation and follow-ups separately for the
+selected scope and reporting range. It measures server time from accepting a
+generation job to finishing it. The stacked timeline shows queue wait,
+preparation, generation, checking, and finalising where recorded timestamps
+support those stages. Unattributed time appears as **Unknown**. The timeline
+shows up to the 120 most recent jobs of each kind.
+
+The average line and histogram cover the full selected range of retained
+successful drafts, including jobs completed after a retry or backup call.
+The timeline flags recoveries and terminal failures separately. Select a job
+to inspect timings, submitted provider and model pairs for generation and
+checking, and recorded failures such as a primary HTTP 504. A job can show
+multiple pairs after a retry, repair or fallback. The pairs describe submitted
+attempts and can include attempts that failed. Failure categories count
+affected jobs among the displayed results. The view uses operational metadata
+only.
+
+The Operations view has **Operational health · last 15 minutes** and **Recent
+failures and retries** panels. Health counts observed failed provider requests once, including authentication responses, connection errors, and timeouts. Preflight configuration failures that make no request do not count. It retains separate HTTP 429/503 and timeout counts,
 including recovered rate-limit retries, reports mean recorded request duration
 and queue wait where timestamps exist, and shows the oldest queued work and
 currently overdue provider attempts. It warns when queued work is over 60
@@ -214,8 +249,10 @@ thresholds concern transport failures; invalid generated output is reported sepa
 overdue counts describe current open work; request/error and latency summaries
 cover the trailing 15 minutes.
 
-**Generation provider latency** uses the selected team and reporting range. It
-groups recorded calls by provider adapter, model, and outcome. Each row shows
+**Generation provider latency** uses the selected scope and reporting range.
+Its comparison chart plots median and P95 duration for successful calls on a
+common scale, showing up to eight provider and model pairs by call count.
+The full table groups recorded calls by provider adapter, model, and outcome. Each row shows
 the sample count, median (P50), 95th percentile (P95), and count over 20 seconds.
 Successes, HTTP 504 responses, local timeouts without an HTTP status, and other
 provider timeouts have separate rows. Each call is a sample, including calls
@@ -283,11 +320,12 @@ The canonical admin workspace renders:
 - provider/model, generator-type, ingestion-type, and failure aggregates;
 - selected-team user aggregate rows;
 - a selected-team Users view containing the user aggregate table without the
-  Team operational-report panels;
-- a bounded recent split-failure metadata projection in global and selected-team
-  Usage views;
-- bounded recent operational failure/retry projections and a 15-minute health
-  summary in global and selected-team Usage views.
+  Overview or operational-report panels;
+- a Response times view containing Time to draft and generation provider
+  latency for global or selected-team scope;
+- an Operations view containing bounded recent split-failure and operational
+  failure/retry projections with a 15-minute health summary for global or
+  selected-team scope.
 
 Charts use the locally vendored Apache ECharts runtime and server-rendered aggregate data. No usage data or runtime code is loaded from a public CDN.
 
@@ -307,10 +345,11 @@ server-side filters. Without JavaScript, tables retain their original readable
 order. Sort controls are keyboard buttons and expose the active direction with
 `aria-sort`.
 
-Global Usage does not expose per-user rows. The selected-team Team, Users, and
-Quotas links retain the validated team identifier and reporting range; the
-Users table constrains rows to members of that team. The Quotas link opens the
-existing quota-management route and does not carry a selected member.
+Global Usage does not expose per-user rows. The selected-team Overview,
+Response times, Operations, Users, and Quotas links retain the validated team
+identifier and reporting range; the Users table constrains rows to members of
+that team. The Quotas link opens the existing quota-management route and does
+not carry a selected member.
 
 ## Comparison and display rules
 

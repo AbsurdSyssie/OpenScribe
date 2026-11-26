@@ -433,24 +433,28 @@ model, responsive 320–1440 CSS-pixel layout, a 10,000-token warning, and
 finite/Unlimited transitions as the limit crosses the 30,000-token output cap.
 The populated Usage regression checks global and selected-team scopes at
 320–1440 CSS pixels, the five-column summary table (including provider-reported
-total tokens, grouped counts, and zero audio), the Team/Users/Quotas
-destinations, sidebar scope/range preservation and context clearing, keyboard
-chart controls, and that the Users table contains only members of the selected
-team. The range disclosure contains no team selector; select a team through the sidebar.
+total tokens, grouped counts, and zero audio), the Overview/Response times/
+Operations destinations plus team-only Users/Quotas, sidebar scope/range
+preservation and context clearing, keyboard chart controls, and that the Users
+table contains only members of the selected team. Response times contains Time
+to draft and generation provider latency; Operations contains 15-minute health
+and bounded failure tables; Overview contains summary trends and consumption
+breakdowns. The range disclosure contains no team selector; select a team through the sidebar.
 Usage range changes use a native disclosure with ordinary GET links for 30d,
 90d, 1y and all; opening it is keyboard operable, Escape closes it and returns
 focus to its summary, outside click closes it, and each destination marks the
 current range. Quotas omits the reporting-range control while its local and
-sidebar navigation retain the last report range. The separate operational
-search form keeps its own reference/date filters.
+sidebar navigation retain the last report range. The Operations search form
+keeps its own reference/date filters. Legacy failure lookup links that use
+`view=team` or omit `view` open Operations and retain those filters.
 The same audit also checks the multi-row table sorter with synthetic DOM and
 rendered Usage/Quota records: raw numeric/date ordering, stable ties, missing
 values last in both directions, resource-grouped allowance amounts, independent
 table state, keyboard activation, `aria-sort`, row-action attachment, and the
 server-rendered order when the sorter script is unavailable.
 The standalone route omits selected-team workspace chrome;
-unscoped or malformed Users/Quotas requests resolve to global Team, while an
-invalid member in a valid Quotas scope yields no quota detail. It checks that
+unscoped or malformed Users/Quotas requests resolve to global Overview, while
+an invalid member in a valid Quotas scope yields no quota detail. It checks that
 Quota rendering skips Usage telemetry, and that old Usage, Quotas, and member
 detail URLs redirect to the canonical route. Quota mutation regressions retain
 the same POST fields, CSRF handling, 303 success location, and 422 draft values

@@ -1888,7 +1888,7 @@ def test_gemini_priority_fallback_setting_renders_and_roundtrips_in_provider_det
         db_session, attempt_id=backup.id, reported_total_tokens=5, now=now + timedelta(seconds=3),
     )
     db_session.commit()
-    page.goto(f"/admin/usage?view=team&range=30d&team_id={team.id}", wait_until="domcontentloaded")
+    page.goto(f"/admin/usage?view=operations&range=30d&team_id={team.id}", wait_until="domcontentloaded")
     page.get_by_role("heading", name="Recent failures and retries").scroll_into_view_if_needed()
     panel_text = page.locator(".usage-panel").filter(has=page.get_by_role("heading", name="Recent failures and retries")).inner_text()
     assert "Priority failed" in panel_text, f"Priority row was not rendered. Recent failures panel text: {panel_text}"

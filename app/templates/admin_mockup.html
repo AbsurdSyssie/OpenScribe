@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OpenScribe Admin — Team Workspace Mock-up</title>
+    {% if standalone_usage and usage_page_view == 'response-times' %}
+    <link rel="stylesheet" href="/static/css/admin-generation-response-timing.css?v=20261126-provider-comparison" />
+    {% endif %}
     <style nonce="{{ request.state.csp_nonce }}">
       /* Canonical admin workspace palette and flat panel treatment. */
       :root {
@@ -1243,21 +1246,13 @@
         background: transparent;
         backdrop-filter: none;
       }
-      .usage-range-row--global {
-        display: flex;
-        justify-content: flex-end;
-        min-width: 0;
-        margin: 0 0 12px;
-      }
-      .usage-view-bar .usage-range-disclosure,
-      .usage-range-row .usage-range-disclosure {
+      .usage-view-bar .usage-range-disclosure {
         position: relative;
         z-index: 20;
         flex: 0 0 auto;
         min-width: 0;
       }
-      .usage-view-bar .usage-range-disclosure > .usage-range-summary,
-      .usage-range-row .usage-range-disclosure > .usage-range-summary {
+      .usage-view-bar .usage-range-disclosure > .usage-range-summary {
         display: flex;
         align-items: center;
         gap: 8px;
@@ -1269,8 +1264,7 @@
       }
       .usage-range-label { color: var(--muted); font-size: 12px; font-weight: 500; }
       .usage-range-current { color: var(--ink); font-size: 13px; font-weight: 600; }
-      .usage-view-bar .usage-range-menu,
-      .usage-range-row .usage-range-menu {
+      .usage-view-bar .usage-range-menu {
         top: calc(100% + 2px);
         right: 0;
         left: auto;
@@ -1304,12 +1298,7 @@
       .usage-range-check { width: 8px; height: 5px; flex: 0 0 auto; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; opacity: 0; transform: rotate(45deg) translate(-1px, -1px); }
       .usage-range-option[aria-current="page"] .usage-range-check { opacity: 1; }
       .usage-range-summary:focus-visible { z-index: 1; }
-      .usage-range-row .usage-range-disclosure { margin-left: auto; }
       .usage-view-bar .usage-range-disclosure { margin-left: auto; }
-      .usage-range-row .usage-range-summary { border: 1px solid transparent; }
-      .usage-range-row .usage-range-summary:hover { background: rgba(29, 79, 94, 0.06); }
-      .usage-range-row--global .usage-range-disclosure { margin-left: auto; }
-      .usage-range-row .usage-range-disclosure[open] > .usage-range-summary::after,
       .usage-view-bar .usage-range-disclosure[open] > .usage-range-summary::after { transform: rotate(225deg) translate(-1px, -1px); }
       .usage-page--global,
       .usage-page--team { gap: 24px; }
@@ -1449,7 +1438,11 @@
         .usage-summary-table { min-width: 540px; }
         .usage-summary-table th,
         .usage-summary-table td { padding: 8px 10px; }
-        .usage-view-navigation .tab { flex: 1 1 0; padding-inline: 8px; }
+        .usage-view-navigation .tab {
+          flex: 0 0 auto;
+          padding-inline: 7px;
+          white-space: nowrap;
+        }
       }
       .usage-panel {
         padding-top: 28px;
@@ -1661,7 +1654,7 @@
       .quota-period-selector { display: flex; width: fit-content; margin: 0 0 12px; border-bottom: 1px solid var(--border); }
       .quota-period-selector .tab { min-height: 40px; padding: 9px 13px; color: var(--admin-muted); text-decoration: none; }
       .quota-period-selector .tab.active { color: var(--accent); }
-      .quota-member-table-wrap { width: 100%; min-width: 0; overflow-x: auto; border: 1px solid var(--border); background: rgba(255, 255, 255, .86); }
+      .quota-member-table-wrap { position: relative; width: 100%; min-width: 0; overflow-x: auto; border: 1px solid var(--border); background: rgba(255, 255, 255, .86); }
       .quota-member-table { width: 100%; min-width: 880px; border-collapse: collapse; text-align: left; }
       .quota-member-table th, .quota-member-table td { padding: 12px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
       .quota-member-table thead th { background: var(--parchment); color: var(--admin-muted); font-size: 12px; font-weight: 700; }
@@ -3076,10 +3069,8 @@
         .tab-disclosure-menu { position: static; min-width: 0; max-width: none; padding: 0 0 4px 14px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
         .tab-disclosure:last-of-type .tab-disclosure-menu { right: auto; left: auto; }
         .tab-disclosure-menu .tab { min-height: 44px; }
-        .usage-view-bar .usage-range-disclosure,
-        .usage-range-row .usage-range-disclosure { position: relative; }
-        .usage-view-bar .usage-range-disclosure .usage-range-menu,
-        .usage-range-row .usage-range-disclosure .usage-range-menu {
+        .usage-view-bar .usage-range-disclosure { position: relative; }
+        .usage-view-bar .usage-range-disclosure .usage-range-menu {
           position: static;
           top: auto;
           right: auto;
@@ -3262,7 +3253,6 @@
         }
         .usage-view-bar { flex-wrap: wrap; gap: 0 8px; }
         .usage-view-navigation { flex: 1 1 100%; }
-        .usage-range-row--global { margin-bottom: 12px; }
         .usage-toolbar > form {
           display: flex;
           align-items: end;
@@ -3388,7 +3378,7 @@
         data-admin-team-id="{{ selected_team.id if selected_team else '' }}"
         data-admin-team-tab="{{ workspace_team_tab if not standalone_usage and workspace_team_tab in ['overview','members','quotas','provider-policy','stt','llm','deidentification','security-data'] else 'overview' }}"
         data-admin-standalone-usage="{{ 'true' if standalone_usage else 'false' }}"
-        data-admin-usage-view="{{ usage_page_view if standalone_usage and usage_page_view in ['team','users','quotas'] else '' }}"
+        data-admin-usage-view="{{ usage_page_view if standalone_usage and usage_page_view in ['team','users','quotas','response-times','operations'] else '' }}"
         data-admin-range="{{ request.query_params.get('range', '30d') if request.query_params.get('range', '30d') in ['30d','90d','1y','all'] else '30d' }}"
         data-admin-create-team-open="{{ 'true' if admin_create_team_open else 'false' }}">
     {% set admin_usage_sidebar_range = request.query_params.get('range', '30d') %}
@@ -3396,7 +3386,8 @@
     <div class="app-shell">
       {% set admin_team_tabs = ['overview', 'members', 'quotas', 'provider-policy', 'stt', 'llm', 'deidentification', 'security-data'] %}
       {% set admin_current_team_tab = workspace_team_tab if workspace_team_tab in admin_team_tabs else ('overview' if selected_team else '') %}
-      {% set admin_current_usage_view = usage_page_view if usage_page_view in ['team', 'users', 'quotas'] else 'team' %}
+      {% set admin_current_usage_view = usage_page_view if usage_page_view in ['team', 'users', 'quotas', 'response-times', 'operations'] else 'team' %}
+      {% set admin_global_usage_view = admin_current_usage_view if admin_current_usage_view in ['response-times', 'operations'] else 'team' %}
       {% set admin_global_scope = not selected_team and active_admin_tab in ['requests', 'system-admins', 'global-defaults', 'deid-providers', 'audit', 'legal'] %}
       <aside class="sidebar">
         <div class="brand brand-static" aria-label="OpenScribe">
@@ -3416,7 +3407,7 @@
                 <label for="admin-team-search">Search teams</label>
                 <input id="admin-team-search" type="search" data-team-search autocomplete="off" placeholder="Search by team name" />
                 <div class="sidebar-team-options">
-                  <a class="sidebar-team-link{% if not selected_team and (standalone_usage or active_admin_tab == 'providers') %} active{% endif %}" data-all-teams-option href="{% if workspace_team_tab in ['provider-policy', 'stt', 'llm', 'deidentification'] or (not selected_team and active_admin_tab == 'providers') %}/admin?tab=providers{% else %}/admin/usage?view=team&amp;range={{ admin_usage_sidebar_range }}{% endif %}"{% if not selected_team and (standalone_usage or active_admin_tab == 'providers') %} aria-current="page"{% endif %}>
+                  <a class="sidebar-team-link{% if not selected_team and (standalone_usage or active_admin_tab == 'providers') %} active{% endif %}" data-all-teams-option href="{% if workspace_team_tab in ['provider-policy', 'stt', 'llm', 'deidentification'] or (not selected_team and active_admin_tab == 'providers') %}/admin?tab=providers{% else %}/admin/usage?view={{ admin_global_usage_view }}&amp;range={{ admin_usage_sidebar_range }}{% endif %}"{% if not selected_team and (standalone_usage or active_admin_tab == 'providers') %} aria-current="page"{% endif %}>
                     <span class="sidebar-team-dot"></span><span>All teams</span><span></span><span class="sidebar-team-check">{% if not selected_team and (standalone_usage or active_admin_tab == 'providers') %}✓{% endif %}</span>
                   </a>
                   {% for team in teams|sort(attribute='status.value') %}
@@ -3442,7 +3433,7 @@
           {% set provider_tabs = ['provider-policy', 'stt', 'llm', 'deidentification'] %}
           <nav class="nav-group" aria-label="Team settings">
             <div class="nav-label">Team settings</div>
-            <a class="nav-link sidebar-usage-link{% if standalone_usage or active_admin_tab == 'usage' %} active{% endif %}" id="admin-usage-nav-link" href="/admin/usage{% if standalone_usage and selected_team %}?team_id={{ selected_team.id }}&amp;view={{ admin_current_usage_view }}&amp;range={{ admin_usage_sidebar_range }}{% elif standalone_usage %}?view=team&amp;range={{ admin_usage_sidebar_range }}{% elif selected_team %}?team_id={{ selected_team.id }}&amp;view=team{% endif %}"{% if standalone_usage or active_admin_tab == 'usage' %} aria-current="page"{% endif %}>
+            <a class="nav-link sidebar-usage-link{% if standalone_usage or active_admin_tab == 'usage' %} active{% endif %}" id="admin-usage-nav-link" href="/admin/usage{% if standalone_usage and selected_team %}?team_id={{ selected_team.id }}&amp;view={{ admin_current_usage_view }}&amp;range={{ admin_usage_sidebar_range }}{% elif standalone_usage %}?view={{ admin_global_usage_view }}&amp;range={{ admin_usage_sidebar_range }}{% elif selected_team %}?team_id={{ selected_team.id }}&amp;view=team{% endif %}"{% if standalone_usage or active_admin_tab == 'usage' %} aria-current="page"{% endif %}>
               <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M4 19V5m0 14h16M8 15l3-4 3 2 5-7" /></svg></span>Usage &amp; Quotas
             </a>
 
@@ -3503,10 +3494,24 @@
         {% endif %} {% if standalone_usage or not selected_team or active_admin_tab in ['requests','system-admins','global-defaults','deid-providers','usage','audit','legal'] %}
         <section class="detail-pane" {% if standalone_usage %}aria-label="Usage workspace"{% else %}aria-label="Admin workspace"{% endif %}>
           {% if standalone_usage %}
-          {% set workspace_header_title = 'Quotas' if usage_page_view == 'quotas' else ('User usage' if usage_page_view == 'users' else ('Team usage' if selected_team else 'Usage')) %}
-          {% set workspace_header_description = ('Quota management for ' ~ selected_team.name ~ '.') if selected_team and usage_page_view == 'quotas' else (('Aggregate activity for users belonging to ' ~ selected_team.name ~ '. Metadata only.') if selected_team and usage_page_view == 'users' else (('Consumption and health for ' ~ selected_team.name ~ '. Metadata only.') if selected_team else 'Service health and consumption across all teams. Metadata only.')) %}
+          {% if usage_page_view == 'quotas' %}
+            {% set workspace_header_title = 'Quotas' %}
+            {% set workspace_header_description = 'Quota management for ' ~ selected_team.name ~ '.' %}
+          {% elif usage_page_view == 'users' %}
+            {% set workspace_header_title = 'User usage' %}
+            {% set workspace_header_description = 'Aggregate activity for users belonging to ' ~ selected_team.name ~ '. Metadata only.' %}
+          {% elif usage_page_view == 'response-times' %}
+            {% set workspace_header_title = 'Response times' %}
+            {% set workspace_header_description = 'Generation timing for ' ~ (selected_team.name if selected_team else 'all teams') ~ '. Metadata only.' %}
+          {% elif usage_page_view == 'operations' %}
+            {% set workspace_header_title = 'Operations' %}
+            {% set workspace_header_description = 'Operational health and failures for ' ~ (selected_team.name if selected_team else 'all teams') ~ '. Metadata only.' %}
+          {% else %}
+            {% set workspace_header_title = 'Team usage' if selected_team else 'Usage' %}
+            {% set workspace_header_description = ('Consumption and health for ' ~ selected_team.name ~ '. Metadata only.') if selected_team else 'Service health and consumption across all teams. Metadata only.' %}
+          {% endif %}
           {% include "_admin_team_summary.html" %}
-          {% if selected_team %}{% include "_admin_usage_navigation.html" %}{% endif %}
+          {% include "_admin_usage_navigation.html" %}
           {% elif active_admin_tab == 'usage' %}
           {% set workspace_header_title = 'Usage' %}
           {% set workspace_header_description = 'Service health and consumption across all teams. Metadata only.' %}
@@ -3796,14 +3801,12 @@
             </article>
             </div>
             {% elif active_admin_tab == 'usage' %}
-            {% set usage_range_menu_view = 'team' %}
-            {% set usage_range_menu_team_id = selected_team_id %}
-            <div class="usage-range-row usage-range-row--global">
-              {% include "_admin_usage_range_menu.html" %}
-            </div>
             <div class="usage-page usage-page--global">
+              {% if usage_page_view == 'response-times' %}
+              {% include "_admin_generation_response_timing.html" %}
+              {% include "_admin_generation_latency.html" %}
+              {% elif usage_page_view != 'operations' %}
               {% include "_admin_usage_summary_table.html" %}
-
               <section class="usage-panel">
                 <header><h2>Window comparison</h2><p>Consumption and health across common reporting windows.</p></header>
                 <div class="usage-window-grid">
@@ -3888,6 +3891,8 @@
                   </section>
                 </div>
               </section>
+              {% endif %}
+              {% if usage_page_view == 'operations' %}
               <section class="usage-panel">
                 <header><h2>Operational health · last 15 minutes</h2><p>Provider error counts include recovered and failed HTTP requests; overdue attempts and queue age show current open work.</p></header>
                 <div class="usage-kpi-grid">
@@ -3902,16 +3907,15 @@
                 <p class="usage-detail">{{ usage_operational_health.degraded_calls }} degraded requests / {{ usage_operational_health.observed_calls }} observed requests{% if usage_operational_health.degradation_pct is not none %} ({{ usage_operational_health.degradation_pct }}%){% endif %}.</p>
                 {% if usage_operational_health.alerts %}<p class="usage-detail">{% for alert in usage_operational_health.alerts %}{% if alert == 'queued_work_over_60_seconds' %}Queued work is older than 60 seconds.{% elif alert == 'provider_attempts_overdue' %}One or more provider attempts passed their deadline.{% elif alert == 'provider_errors_elevated' %}At least 5 provider errors occurred and reached 20% of observed attempts.{% endif %}{% if not loop.last %} {% endif %}{% endfor %}</p>{% else %}<p class="usage-detail">No operational warning thresholds were reached.</p>{% endif %}
               </section>
-              {% include "_admin_generation_latency.html" %}
               <section class="usage-panel">
                 <header><h2>Recent failures and retries</h2><p>Bounded operational metadata for support lookup. This table contains no clinical or provider response content.</p></header>
                 <form method="get" action="/admin/usage" class="usage-filter-form">
                   <input type="hidden" name="range" value="{{ usage_range_key }}" />
-                  <input type="hidden" name="view" value="team" />{% if selected_team_id %}<input type="hidden" name="team_id" value="{{ selected_team_id }}" />{% endif %}
+                  <input type="hidden" name="view" value="operations" />{% if selected_team_id %}<input type="hidden" name="team_id" value="{{ selected_team_id }}" />{% endif %}
                   <label>Operation reference <input name="reference" value="{{ usage_monitor_reference }}" placeholder="UUID" /></label>
                   <label>From (UTC) <input type="datetime-local" name="monitor_since" value="{{ usage_monitor_since[:16] }}" /></label>
                   <button class="btn small" type="submit">Search</button>
-                  <a class="btn small" href="/admin/usage?range={{ usage_range_key }}{% if selected_team_id %}&amp;team_id={{ selected_team_id }}{% endif %}">Clear</a>
+                  <a class="btn small" href="/admin/usage?view=operations&amp;range={{ usage_range_key }}{% if selected_team_id %}&amp;team_id={{ selected_team_id }}{% endif %}">Clear</a>
                 </form>
                 {% if usage_monitor_lookup_error %}<p class="usage-detail" role="alert">{{ usage_monitor_lookup_error }}</p>{% endif %}
                 {% if usage_recent_operational_rows %}<div class="usage-table-wrap table-scroll-region" tabindex="0" role="region" aria-label="Scrollable usage table"><table class="usage-table" data-sortable-table><thead><tr><th scope="col" data-sort-type="date">Time (UTC)</th><th scope="col" data-sort-type="text">Stage</th><th scope="col" data-sort-type="text">Reference</th><th scope="col" data-sort-type="text">Outcome</th><th scope="col" data-sort-type="number">Retries</th><th scope="col" data-sort-type="text">Gemini tier</th><th scope="col" data-sort-type="text">Error</th><th scope="col" data-sort-type="text" title="Sorts by provider error code, or HTTP status when no code is present">Provider / HTTP</th><th scope="col" data-sort-type="text" title="Sorts by provider, then model">Provider / model / latency</th></tr></thead><tbody>
@@ -3932,6 +3936,7 @@
                 </div>
                 {% else %}<div class="usage-empty">No retained split failures in this range.</div>{% endif %}
               </section>
+              {% endif %}
             </div>
             {% elif active_admin_tab == 'legal' %}
             {% include "_admin_legal_content_panel.html" %}
@@ -9603,7 +9608,7 @@
         const registry = document.querySelector("#admin-team-registry");
         const teamTabs = new Set(["overview", "members", "quotas", "provider-policy", "stt", "llm", "deidentification", "security-data"]);
         const providerSections = new Set(["provider-policy", "stt", "llm", "deidentification"]);
-        const usageViews = new Set(["team", "users", "quotas"]);
+        const usageViews = new Set(["team", "response-times", "operations", "users", "quotas"]);
         const ranges = new Set(["30d", "90d", "1y", "all"]);
         const accountKey = `openscribe.admin.navigation.v1:${body.dataset.adminUserId || "unknown"}`;
         const teamsById = new Map([...((registry?.content || document).querySelectorAll("[data-team-id]"))].map((node) => [node.dataset.teamId, node]));
@@ -9689,7 +9694,7 @@
             if (!raw) return null;
             const parsed = JSON.parse(raw);
             if (!parsed || typeof parsed !== "object" || !teamsById.has(parsed.teamId)) throw new Error("invalid team scope");
-            const section = typeof parsed.section === "string" && (teamTabs.has(parsed.section) || ["usage:team", "usage:users", "usage:quotas"].includes(parsed.section)) ? parsed.section : "overview";
+            const section = typeof parsed.section === "string" && (teamTabs.has(parsed.section) || (parsed.section.startsWith("usage:") && usageViews.has(parsed.section.slice(6)))) ? parsed.section : "overview";
             const range = ranges.has(parsed.range) ? parsed.range : "30d";
             return { teamId: parsed.teamId, section, range };
           } catch (_) {
@@ -10021,7 +10026,10 @@
     <div class="toast-container" data-toast-container></div>
     <div class="admin-live-status" data-admin-live-status role="status" aria-live="polite" aria-atomic="true"></div>
     <div class="admin-live-status" data-admin-live-error role="alert" aria-live="assertive" aria-atomic="true"></div>
-    {% if active_admin_tab == 'usage' or workspace_team_tab == 'usage' %}
+    {% if standalone_usage and usage_page_view == 'response-times' %}
+    <script src="/static/vendor/echarts/6.1.0/echarts.min.js"></script>
+    <script src="/static/js/admin-generation-response-timing.js?v=20261126-provider-comparison" defer></script>
+    {% elif (active_admin_tab == 'usage' or workspace_team_tab == 'usage') and (not standalone_usage or usage_page_view == 'team') %}
     <script id="usage-chart-data" type="application/json" data-range-label="{{ usage_range_label }}" data-has-comparison="{{ 'true' if usage_has_comparison else 'false' }}">{{ usage_comparison_trend_points|tojson }}</script>
     <script src="/static/vendor/echarts/6.1.0/echarts.min.js"></script>
     <script src="/static/js/admin-usage-charts.js?v=20261025-usage-layout"></script>

@@ -3941,6 +3941,10 @@ def test_admin_usage_standalone_route_scope_auth_and_legacy_redirects(
     assert "Generations" in global_page.text
     assert re.search(r'<details class="tab-disclosure usage-range-disclosure"', global_page.text)
     assert "Reporting range" in global_page.text and "Last 30 days" in global_page.text
+    assert 'href="/admin/usage?view=team&amp;range=30d" aria-current="page">Overview</a>' in global_page.text
+    assert 'href="/admin/usage?view=response-times&amp;range=30d">Response times</a>' in global_page.text
+    assert 'href="/admin/usage?view=operations&amp;range=30d">Operations</a>' in global_page.text
+    assert ">Users</a>" not in global_page.text and ">Quotas</a>" not in global_page.text
     assert '/admin/usage?view=team&amp;range=30d' in global_page.text
     assert 'class="usage-range-scope-form"' not in global_page.text
     assert not re.search(r'<select[^>]*name="range"', global_page.text)
@@ -3954,6 +3958,10 @@ def test_admin_usage_standalone_route_scope_auth_and_legacy_redirects(
     assert 'class="usage-user-table"' not in team_page.text
     assert 'data-panel="quotas"' not in team_page.text
     assert 'class="usage-range-scope-form"' not in team_page.text
+    assert 'href="/admin/usage?team_id=' + str(team.id) + '&amp;view=response-times&amp;range=90d">Response times</a>' in team_page.text
+    assert 'href="/admin/usage?team_id=' + str(team.id) + '&amp;view=operations&amp;range=90d">Operations</a>' in team_page.text
+    assert f'href="/admin/usage?team_id={team.id}&amp;view=users&amp;range=90d">Users</a>' in team_page.text
+    assert f'href="/admin/usage?team_id={team.id}&amp;view=quotas&amp;range=90d">Quotas</a>' in team_page.text
     assert re.search(r'<details class="tab-disclosure usage-range-disclosure"', team_page.text)
     assert "Last 90 days" in team_page.text
     assert 'href="/admin/usage?view=team&amp;team_id=' + str(team.id) + '&amp;range=90d"' in team_page.text
@@ -3962,6 +3970,39 @@ def test_admin_usage_standalone_route_scope_auth_and_legacy_redirects(
     assert 'role="region" aria-label="Usage summary table" tabindex="0"' in team_page.text
     assert f"Usage summary for {team.name} · Last 90 days" in team_page.text
     assert f"/admin/usage?team_id={other_team.id}&amp;view=team&amp;range=90d" in team_page.text
+
+    response_times_page = client.get(f"/admin/usage?team_id={team.id}&view=response-times&range=90d")
+    assert response_times_page.status_code == 200
+    assert "Time to draft" in response_times_page.text
+    assert "Generation provider latency" in response_times_page.text
+    assert "Operational health · last 15 minutes" not in response_times_page.text
+    assert "Team comparison ·" not in response_times_page.text
+    assert "Last 90 days" in response_times_page.text
+
+    operations_page = client.get(f"/admin/usage?team_id={team.id}&view=operations&range=90d")
+    assert operations_page.status_code == 200
+    assert "Operational health · last 15 minutes" in operations_page.text
+    assert "Recent failures and retries" in operations_page.text
+    assert "Recent split failures" in operations_page.text
+    assert "Time to draft" not in operations_page.text
+    assert "Consumption and health ·" not in operations_page.text
+
+    # Legacy failure lookup links used both an omitted view and explicit view=team.
+    legacy_failure_filter = client.get(
+        f"/admin/usage?team_id={team.id}&reference=not-a-uuid"
+    )
+    assert legacy_failure_filter.status_code == 200
+    assert "Operational health · last 15 minutes" in legacy_failure_filter.text
+    assert 'name="reference" value="not-a-uuid"' in legacy_failure_filter.text
+    legacy_team_reference = client.get(
+        f"/admin/usage?team_id={team.id}&view=team&reference=not-a-uuid"
+    )
+    assert "Operational health · last 15 minutes" in legacy_team_reference.text
+    legacy_team_since = client.get(
+        f"/admin/usage?team_id={team.id}&view=team&monitor_since=2025-01-01T00%3A00"
+    )
+    assert "Operational health · last 15 minutes" in legacy_team_since.text
+    assert 'name="monitor_since" value="2025-01-01T00:00"' in legacy_team_since.text
 
     users_page = client.get(f"/admin/usage?team_id={team.id}&view=users")
     assert users_page.status_code == 200
@@ -10417,6 +10458,23 @@ def test_admin_page_usage_tab_shows_team_and_user_telemetry(client, db_session, 
     assert "43" in users_page.text
 
 
+def test_admin_usage_overview_can_skip_generation_timing_query(db_session, monkeypatch):
+    calls = []
+
+    def record_query(*args, **kwargs):
+        calls.append(kwargs)
+        return {"queried": True}
+
+    monkeypatch.setattr("app.services.admin.generation_response_timing", record_query)
+    overview = admin_usage_overview(db_session, include_generation_timing=False)
+    assert overview["generation_response_timing"] == {}
+    assert calls == []
+
+    overview = admin_usage_overview(db_session)
+    assert overview["generation_response_timing"] == {"queried": True}
+    assert len(calls) == 1
+
+
 def test_new_admin_usage_table_shows_metadata_only_team_comparison(client, db_session, make_team, make_user):
     team = make_team(name="Clinic Table")
     admin = make_user(email="admin-usage-table@example.com", password="password-1", is_system_admin=True)
@@ -10637,6 +10695,7 @@ def test_new_admin_team_usage_views_scope_charts_and_user_table(client, db_sessi
     owner = make_user(email="scoped-user@example.com", password="password-2", team=team, team_role=TeamRole.user)
     other_owner = make_user(email="other-user@example.com", password="password-3", team=other_team, team_role=TeamRole.user)
 
+    completed_at = utcnow() - timedelta(minutes=2)
     for user, user_team, tokens, title in (
         (owner, team, 321, "Scoped confidential title"),
         (other_owner, other_team, 987, "Other confidential title"),
@@ -10650,6 +10709,31 @@ def test_new_admin_team_usage_views_scope_charts_and_user_table(client, db_sessi
         )
         db_session.add(transcript)
         db_session.flush()
+        version = TranscriptVersion(transcript_id=transcript.id, version_no=1, text_encrypted=title)
+        db_session.add(version)
+        db_session.flush()
+        generation_examples = [(GeneratedDocumentGeneratorType.template, 32 if user_team is team else 91)]
+        if user_team is team:
+            generation_examples.append((GeneratedDocumentGeneratorType.followup, 18))
+        for generator_type, seconds in generation_examples:
+            created_at = completed_at - timedelta(seconds=seconds)
+            db_session.add(GeneratedDocument(
+                owner_user_id=user.id,
+                team_id=user_team.id,
+                transcript_id=transcript.id,
+                transcript_version_id=version.id,
+                generator_type=generator_type,
+                source_template_name="Synthetic generation template",
+                status=GeneratedDocumentStatus.ready,
+                title="Synthetic generated content sentinel",
+                document_mode=TemplateMode.freeform,
+                original_output_text_encrypted="Synthetic generated body sentinel",
+                edited_output_text_encrypted="Synthetic generated body sentinel",
+                retention_expires_at=transcript.retention_expires_at,
+                created_at=created_at,
+                worker_received_at=created_at + timedelta(seconds=2),
+                completed_at=completed_at,
+            ))
         db_session.add(ProviderUsageEvent(
             team_id=user_team.id,
             owner_user_id=user.id,
@@ -10676,11 +10760,24 @@ def test_new_admin_team_usage_views_scope_charts_and_user_table(client, db_sessi
     assert re.search(r'"current_input"\s*:\s*321\b', page.text)
     assert not re.search(r'"current_input"\s*:\s*987\b', page.text)
     assert f'href="/admin/usage?view=team&amp;team_id={team.id}&amp;range=90d" aria-current="page"' in page.text
-    assert f'name="team_id" value="{team.id}"' in page.text
-    assert 'name="view" value="team"' in page.text
     assert page.text.count('class="usage-echart"') == 4
     assert "Scoped confidential title" not in page.text
     assert "Other confidential title" not in page.text
+    assert "Time to draft" not in page.text
+    assert "data-generation-timing-data" not in page.text
+
+    response_times_page = client.get(f"/admin/usage?team_id={team.id}&view=response-times&range=90d")
+    assert response_times_page.status_code == 200
+    assert "Time to draft" in response_times_page.text
+    assert "Generation provider latency" in response_times_page.text
+    for kind, seconds in (("notes", 32), ("followups", 18)):
+        payload = re.search(rf'data-generation-timing-data="{kind}">(.+?)</script>', response_times_page.text, re.S)
+        assert payload is not None, (kind, "Time to draft" in response_times_page.text)
+        assert [job["total_ms"] for job in json.loads(payload[1])["jobs"]] == [seconds * 1000]
+        assert str(owner.id) not in payload[1]
+        assert "Synthetic generated" not in payload[1]
+    assert "Synthetic generated content sentinel" not in response_times_page.text
+    assert "Synthetic generated body sentinel" not in response_times_page.text
 
     users_page = client.get(f"/admin/usage?team_id={team.id}&view=users&range=90d")
     assert users_page.status_code == 200
@@ -10692,6 +10789,7 @@ def test_new_admin_team_usage_views_scope_charts_and_user_table(client, db_sessi
     assert '<span class="usage-range-current">Last 90 days</span>' in users_page.text
     assert "Scoped confidential title" not in users_page.text
     assert "Other confidential title" not in users_page.text
+    assert "data-generation-timing-data" not in users_page.text
 
 
 def test_admin_usage_split_failure_diagnostics_are_bounded_scoped_and_content_free(
@@ -10815,7 +10913,7 @@ def test_admin_usage_split_failure_diagnostics_are_bounded_scoped_and_content_fr
     db_session.commit()
 
     client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
-    page = client.get(f"/admin/usage?team_id={team.id}&view=team&range=30d")
+    page = client.get(f"/admin/usage?team_id={team.id}&view=operations&range=30d")
 
     assert page.status_code == 200
     assert "Recent split failures" in page.text
@@ -10836,13 +10934,19 @@ def test_admin_usage_split_failure_diagnostics_are_bounded_scoped_and_content_fr
     assert "Private split diagnostic transcript" not in page.text
     assert "Other private split diagnostic transcript" not in page.text
 
-    global_page = client.get("/admin?tab=usage&range=30d")
+    global_page = client.get("/admin/usage?view=operations&range=30d")
     assert global_page.status_code == 200
-    assert "Split analysis" in global_page.text
-    assert "Split generation" in global_page.text
-    assert "consultation_split_provider_failed · provider rate_limit_exceeded · HTTP 429" in global_page.text
+    assert re.search(r"<td[^>]*>Analysis</td>", global_page.text)
+    assert re.search(r"<td[^>]*>Generation</td>", global_page.text)
+    assert "rate_limit_exceeded" in global_page.text
+    assert "HTTP 429" in global_page.text
     assert str(generation_execution.id) in global_page.text
     assert str(generation_batch.id) in global_page.text
+
+    global_overview = client.get("/admin/usage?range=30d")
+    assert "Split analysis" in global_overview.text
+    assert "Split generation" in global_overview.text
+    assert "consultation_split_provider_failed · provider rate_limit_exceeded · HTTP 429" in global_overview.text
 
     overview = admin_usage_overview(db_session, team_id=team.id, range_key="30d")
     rows = overview["usage_recent_split_failure_rows"]
@@ -11038,8 +11142,9 @@ def test_admin_usage_reports_recovered_transport_retry_and_recent_health(db_sess
     assert health["avg_provider_latency_ms"] == 210.0
 
 
-def test_admin_usage_generation_latency_groups_transport_outcomes_and_respects_scope(db_session, make_team, make_user):
+def test_admin_usage_generation_latency_groups_transport_outcomes_and_respects_scope(client, db_session, make_team, make_user):
     team = make_team(name="Synthetic latency clinic")
+    admin = make_user(email="latency-admin@example.com", password="password-1", is_system_admin=True)
     owner = make_user(email="latency-owner@example.com", password="password-1", team=team)
     other_team = make_team(name="Other synthetic latency clinic")
     other_owner = make_user(email="other-latency-owner@example.com", password="password-1", team=other_team)
@@ -11092,6 +11197,21 @@ def test_admin_usage_generation_latency_groups_transport_outcomes_and_respects_s
     }
     assert summary()[success_key][0] == 4
     assert summary(team_id=team.id, range_key="all")[success_key][0] == 4
+
+    client.post("/login", data={"email": admin.email, "password": "password-1"}, follow_redirects=False)
+    page = client.get(f"/admin/usage?team_id={team.id}&view=response-times&range=30d")
+    assert page.status_code == 200
+    comparison = page.text.split('<figure class="generation-latency__comparison">', 1)[1].split("</figure>", 1)[0]
+    assert comparison.count('<li class="generation-latency__pair">') == 2
+    assert comparison.index("synthetic-flash") < comparison.index("synthetic-pro")
+    assert "gemini_enterprise · 3 calls" in comparison
+    assert "gemini_enterprise · 1 call" in comparison
+    assert re.findall(r'<meter min="0" max="([^"]+)" value="([^"]+)"', comparison) == [
+        ("40.0", "20.0"), ("40.0", "23.6"), ("40.0", "40.0"), ("40.0", "40.0"),
+    ]
+    assert "HTTP 504" not in comparison
+    assert "View all provider latency values and outcomes" in page.text
+    assert "<td>HTTP 504</td>" in page.text
 
 
 def test_admin_usage_sanitizes_unknown_provider_failure_metadata(db_session, make_team, make_user):

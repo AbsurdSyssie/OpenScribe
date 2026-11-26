@@ -1,0 +1,91 @@
+.generation-timing__source { margin-top: 28px; padding-top: 18px; border-top: 1px solid var(--border, #e2ded6); }
+.generation-timing__source h3 { margin: 0 0 14px; color: var(--ink, #1a202c); font: 600 1.05rem/1.35 "DM Sans", ui-sans-serif, sans-serif; }
+.generation-timing__charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 24px; }
+.generation-timing__timeline { grid-column: 1 / -1; }
+.generation-timing__figure { min-width: 0; margin: 0; padding: 14px 0 0; border-top: 1px solid var(--border, #e2ded6); }
+.generation-timing__figure figcaption { margin-bottom: 8px; color: var(--slate, #2d3748); font-weight: 600; }
+.generation-timing__stage-chart, .generation-timing__average-chart { width: 100%; height: 300px; }
+.generation-timing__stage-chart { cursor: pointer; }
+.generation-timing__histogram { width: 100%; height: 220px; }
+.generation-timing__figure .usage-detail { margin: 4px 0 0; }
+.generation-timing__details { margin-top: 16px; }
+.generation-timing__details summary { width: fit-content; color: var(--primary, #1d4f5e); cursor: pointer; font-weight: 600; text-underline-offset: 3px; }
+.generation-timing__details summary:hover { text-decoration: underline; }
+.generation-timing__details summary:focus-visible, .generation-timing__job-picker select:focus-visible { outline: 3px solid var(--admin-focus, #0b667b); outline-offset: 2px; }
+.generation-timing__job-picker { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; color: var(--slate, #2d3748); font-weight: 600; }
+.generation-timing__job-picker select { min-height: 38px; max-width: 100%; padding: 6px 30px 6px 10px; border: 1px solid var(--admin-border-strong, #81776b); border-radius: 5px; background: #fff; color: var(--ink, #1a202c); }
+.generation-timing__counts { margin: 8px 0 14px; color: var(--slate, #2d3748); }
+.generation-timing__counts p { margin: 2px 0; }
+.generation-timing__counts p:first-child { color: var(--ink, #1a202c); font-weight: 600; }
+.generation-timing__markers:not([hidden]) { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 0; margin: 0 0 8px; color: var(--muted, #56616f); list-style: none; font-size: 0.85rem; }
+.generation-timing__markers li { display: inline-flex; align-items: center; gap: 7px; }
+.generation-timing__marker { inline-size: 8px; block-size: 8px; background: var(--warning, #80520a); }
+.generation-timing__marker--retry { transform: rotate(45deg); }
+.generation-timing__marker--backup { background: var(--accent-soft, #3d7a8c); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.generation-timing__marker--failed { background: var(--error, #c53030); border-radius: 50%; }
+.generation-timing__selected { margin: 16px 0; padding: 12px 0; border-top: 1px solid var(--border, #e2ded6); border-bottom: 1px solid var(--border, #e2ded6); }
+.generation-timing__selected h4 { margin: 0 0 6px; font-size: 0.95rem; }
+.generation-timing__selected p { margin: 4px 0; }
+.generation-timing__selected--active { padding: 12px; background: #f5f1eb; }
+.generation-timing__stage-list { min-width: 240px; }
+.generation-timing__providers { overflow-wrap: anywhere; }
+.generation-timing__providers span { display: block; }
+ul.generation-timing__providers { margin: 4px 0 8px; padding-inline-start: 20px; }
+.generation-timing__latency-link { color: var(--primary, #1d4f5e); text-underline-offset: 3px; }
+.generation-timing__cause { display: block; max-width: 28ch; }
+.generation-timing__outcome { font-weight: 600; }
+.generation-timing__outcome--retry, .generation-timing__outcome--backup { color: var(--admin-warning, #80520a); }
+.generation-timing__outcome--warning { color: var(--warning, #80520a); }
+.generation-timing__outcome--failed { color: var(--error, #c53030); }
+.generation-timing__outcome--ready { color: var(--admin-success, #246b46); }
+.generation-latency { scroll-margin-top: 160px; }
+.generation-latency__comparison { margin: 14px 0 8px; }
+.generation-latency__comparison h3 { margin: 0 0 4px; font-size: 1rem; }
+.generation-latency__pairs { list-style: none; padding: 0; margin: 12px 0 0; }
+.generation-latency__pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 16px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid var(--border, #e2ded6);
+}
+.generation-latency__identity { display: grid; gap: 2px; overflow-wrap: anywhere; }
+.generation-latency__identity span { color: var(--muted, #56616f); font-size: 0.85rem; }
+.generation-latency__bars { display: grid; gap: 4px; }
+.generation-latency__value {
+  --generation-latency-fill: #3d7a8c;
+  display: grid;
+  grid-template-columns: 4em minmax(0, 1fr) 6em;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+.generation-latency__value--p95 { --generation-latency-fill: #1d4f5e; }
+.generation-latency__value strong { text-align: right; }
+.generation-latency__value meter { width: 100%; height: 8px; }
+.generation-latency__value meter::-webkit-meter-bar {
+  background: var(--border, #e2ded6);
+  border: 0;
+  border-radius: 2px;
+}
+.generation-latency__value meter::-webkit-meter-optimum-value {
+  background: var(--generation-latency-fill);
+  border-radius: 2px;
+}
+.generation-latency__value meter::-moz-meter-bar { background: var(--generation-latency-fill); }
+@media (max-width: 760px) {
+  .generation-timing__charts { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .generation-timing__stage-chart, .generation-timing__average-chart { height: 270px; }
+  .generation-timing__histogram { height: 200px; }
+  .generation-timing__timeline { grid-column: auto; }
+  .generation-timing__job-picker { align-items: flex-start; flex-direction: column; }
+  .generation-timing__job-picker select { width: 100%; }
+  .generation-latency { scroll-margin-top: 12px; }
+  .generation-latency__pair { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+}
+@media (forced-colors: active) {
+  .generation-timing__outcome { color: CanvasText; }
+  .generation-timing__details summary:focus-visible, .generation-timing__job-picker select:focus-visible { outline-color: Highlight; }
+}
